@@ -167,12 +167,22 @@ def oauth_callback(
         #     return default_user
         # return None
         
-        # Store user's name info from Google OAuth in metadata
-        # Google provides: name, given_name, family_name, email, picture
+        # Store all available user data from Google OAuth in metadata
+        # Google provides: name, given_name, family_name, email, picture, locale, hd
         if raw_user_data.get("name"):
             default_user.metadata["name"] = raw_user_data["name"]
         if raw_user_data.get("given_name"):
             default_user.metadata["given_name"] = raw_user_data["given_name"]
+        if raw_user_data.get("family_name"):
+            default_user.metadata["family_name"] = raw_user_data["family_name"]
+        if raw_user_data.get("email"):
+            default_user.metadata["email"] = raw_user_data["email"]
+        if raw_user_data.get("picture"):
+            default_user.metadata["picture"] = raw_user_data["picture"]
+        if raw_user_data.get("locale"):
+            default_user.metadata["locale"] = raw_user_data["locale"]
+        if raw_user_data.get("hd"):
+            default_user.metadata["hd"] = raw_user_data["hd"]
         
         # Allow all Google users
         return default_user
