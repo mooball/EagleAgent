@@ -31,21 +31,18 @@ Follow the detailed instructions in [GOOGLE_OAUTH_SETUP.md](GOOGLE_OAUTH_SETUP.m
 
 ### 3. Set Up Data Layer (For Conversation History)
 
-Follow [CHAINLIT_DATA_LAYER_SETUP.md](CHAINLIT_DATA_LAYER_SETUP.md) to set up PostgreSQL for storing conversation history.
+Follow [CHAINLIT_DATA_LAYER_SETUP.md](CHAINLIT_DATA_LAYER_SETUP.md) for complete setup instructions.
 
-**Quick option (local testing):**
+**Quick setup:**
 ```bash
-# Start PostgreSQL with Docker
-docker run -d --name chainlit-postgres \
-  -e POSTGRES_PASSWORD=secret \
-  -e POSTGRES_DB=chainlit_db \
-  -p 5432:5432 postgres:14
+# Install required packages
+uv add sqlalchemy aiosqlite greenlet
 
-# Add to .env
-DATABASE_URL="postgresql://postgres:secret@localhost:5432/chainlit_db"
+# Initialize SQLite database
+uv run init_sqlite_db.py
 
-# Run migrations (clone and run official data layer repo)
-# See CHAINLIT_DATA_LAYER_SETUP.md for details
+# DATABASE_URL is already configured in .env
+# DATABASE_URL=sqlite+aiosqlite:///./chainlit.db
 ```
 
 ### 4. Run the Application
@@ -62,10 +59,11 @@ Visit `http://localhost:8000`, sign in with Google, and start chatting!
 
 EagleAgent uses a two-layer persistence system:
 
-1. **Chainlit Data Layer (PostgreSQL)**:
+1. **Chainlit Data Layer (SQLite)**:
    - Stores conversation metadata, messages, and elements
    - Powers the chat history sidebar UI
    - Enables browsing past conversations
+   - File-based database (`chainlit.db`)
 
 2. **LangGraph Checkpoints (Firestore)**:
    - Stores the actual conversation state
@@ -73,7 +71,7 @@ EagleAgent uses a two-layer persistence system:
    - Automatic TTL cleanup after 7 days
 
 When you resume a conversation:
-- Chainlit restores the UI from PostgreSQL
+- Chainlit restores the UI from SQLite
 - `@cl.on_chat_resume` restores the thread_id
 - LangGraph loads the state from Firestore checkpoints
 - Your conversation continues exactly where you left off!
@@ -90,7 +88,7 @@ When you resume a conversation:
 - **Chainlit**: Web UI, authentication, and data persistence
 - **LangGraph**: Conversation orchestration with state management
 - **Firestore**: Checkpoint persistence with TTL policies
-- **PostgreSQL**: Conversation history and metadata
+- **SQLite**: Conversation history and metadata
 - **Google Gemini**: LLM backend
 
 ## Utility Scripts
@@ -103,7 +101,7 @@ When you resume a conversation:
 
 ## Next Steps
 
-- [ ] Deploy to production with proper domain configuration  
-- [ ] Set up cloud PostgreSQL (Google Cloud SQL recommended)
-- [ ] Configure cloud storage for file attachments
+- [ ] Deploy to production with proper domain configuration
+- [ ] Configure cloud storage for file attachments (GCS, S3, or Azure)
 - [ ] Add custom chat profiles for different use cases
+- [ ] Consider upgrading to PostgreSQL for production deployments with high traffic
