@@ -29,6 +29,7 @@ Example usage:
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 from google.cloud import firestore
+from google.cloud.firestore_v1.field_path import FieldPath
 from langgraph.store.base import BaseStore, Op, Result, GetOp, PutOp, SearchOp, ListNamespacesOp, Item, SearchItem
 
 
@@ -123,9 +124,9 @@ class FirestoreStore(BaseStore):
                 if namespace_prefix:
                     # Use Firestore document ID range query
                     query = query.where(
-                        firestore.FieldPath.document_id(), ">=", f"{namespace_prefix}:"
+                        FieldPath.document_id(), ">=", f"{namespace_prefix}:"
                     ).where(
-                        firestore.FieldPath.document_id(), "<", f"{namespace_prefix}:\uf8ff"
+                        FieldPath.document_id(), "<", f"{namespace_prefix}:\uf8ff"
                     )
                 
                 # Apply filter if provided
