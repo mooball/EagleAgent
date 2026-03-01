@@ -1,44 +1,144 @@
 import chainlit as cl
 from chainlit.types import ThreadDict
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
+from langgraph.store.base import BaseStore
+from langgraph.prebuilt import ToolNode
 from langchain_google_genai import ChatGoogleGenerativeAI
-from typing import TypedDict, Sequence, Annotated, Dict, Optional
+from typing import TypedDict, Sequence, Annotated, Dict, Optional, Any, Literal
 import operator
 import os
 from dotenv import load_dotenv
 from timestamped_firestore_saver import TimestampedFirestoreSaver
+from firestore_store import FirestoreStore
+from user_profile_tools import create_profile_tools
 
 # Load environment variables
 load_dotenv()
+
+# Add cross-thread persistent store for user profiles and long-term memory
+# Initialize this early so we can use it to create tools
+store = FirestoreStore(project_id="mooballai", collection="user_memory")
 
 
 # Initialize the model
 # Using gemini-3-flash-preview as per user request (and verified existence)
 # Provide your API key in the .env file
-model = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", google_api_key=os.getenv("GOOGLE_API_KEY"))
+base_model = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", google_api_key=os.getenv("GOOGLE_API_KEY"))
 
 # Define the state
 class AgentState(TypedDict):
     messages: Annotated[Sequence[HumanMessage | AIMessage | SystemMessage], operator.add]
+    user_id: str  # User email for cross-thread memory lookup
 
 # Define the node function that calls the model
-async def call_model(state: AgentState):
+async def call_model(
+    state: AgentState
+):
+    """
+    Call the LLM with user profile context from cross-thread memory.
+    
+    Args:
+        state: Current conversation state
+    """
     messages = state["messages"]
-    response = await model.ainvoke(messages)
+    user_id = state.get("user_id")
+    
+    # Create user-specific tools
+    if user_id and store:
+        tools = create_profile_tools(store, user_id)
+        model_with_tools = base_model.bind_tools(tools)
+    else:
+        model_with_tools = base_model
+    
+    # Load user profile from store (cross-thread memory)
+    user_profile = None
+    if user_id and store:
+        user_profile = await store.aget(("users",), user_id)
+    
+    # If user profile exists, add context to the conversation
+    enhanced_messages = list(messages)
+    if user_profile and user_profile.value:
+        profile_data = user_profile.value
+        
+        # Build context string from profile
+        profile_context = "User profile information:"
+        if "name" in profile_data:
+            profile_context += f"\n- Name: {profile_data['name']}"
+        if "preferences" in profile_data:
+            prefs = profile_data['preferences']
+            if isinstance(prefs, list):
+                profile_context += f"\n- Preferences: {', '.join(prefs)}"
+            else:
+                profile_context += f"\n- Preferences: {prefs}"
+        if "facts" in profile_data:
+            facts = profile_data['facts']
+            if isinstance(facts, list):
+                profile_context += f"\n- Facts: {', '.join(facts)}"
+            else:
+                profile_context += f"\n- Facts: {facts}"
+        
+        # Add tool usage instructions
+        profile_context += "\n\nWhen the user tells you information about themselves (name, preferences, facts, etc.), use the remember_user_info tool to save it for future conversations."
+        
+        # Prepend system message with user context if not already present
+        if not any(isinstance(m, SystemMessage) for m in enhanced_messages):
+            enhanced_messages = [SystemMessage(content=profile_context)] + enhanced_messages
+    else:
+        # No profile yet - just add instruction to save info
+        if user_id and not any(isinstance(m, SystemMessage) for m in enhanced_messages):
+            enhanced_messages = [SystemMessage(content="When the user tells you information about themselves (name, preferences, facts, etc.), use the remember_user_info tool to save it for future conversations.")] + enhanced_messages
+    
+    response = await model_with_tools.ainvoke(enhanced_messages)
     return {"messages": [response]}
+
+# Tool execution node
+def should_continue(state: AgentState) -> Literal["tools", END]:
+    """Determine if we should continue to tools or end."""
+    messages = state["messages"]
+    last_message = messages[-1]
+    
+    # If the LLM makes a tool call, route to tools node
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "tools"
+    
+    # Otherwise, end
+    return END
+
+async def call_tools(
+    state: AgentState
+):
+    """Execute tool calls."""
+    user_id = state.get("user_id")
+    messages = state["messages"]
+    last_message = messages[-1]
+    
+    # Create tools for this user
+    tools = create_profile_tools(store, user_id) if user_id and store else []
+    
+    # Create a tool node and invoke it
+    tool_node = ToolNode(tools)
+    result = await tool_node.ainvoke(state)
+    
+    return result
 
 # Build the graph
 builder = StateGraph(AgentState)
 builder.add_node("model", call_model)
+builder.add_node("tools", call_tools)
+
+# Add edges
 builder.add_edge(START, "model")
-builder.add_edge("model", END)
+builder.add_conditional_edges("model", should_continue, ["tools", END])
+builder.add_edge("tools", "model")
 
 # Add Firestore-based memory to persist state across interactions and restarts
 # TimestampedFirestoreSaver adds `created_at` field to each checkpoint for TTL policies
 checkpointer = TimestampedFirestoreSaver(project_id="mooballai", checkpoints_collection="checkpoints")
-graph = builder.compile(checkpointer=checkpointer)
+
+# Compile graph with both checkpointer (thread state) and store (cross-thread memory)
+graph = builder.compile(checkpointer=checkpointer, store=store)
 
 @cl.oauth_callback
 def oauth_callback(
@@ -89,6 +189,10 @@ async def start():
     thread_id = str(uuid.uuid4())
     cl.user_session.set("thread_id", thread_id)
     
+    # Store user_id for cross-thread memory
+    if user:
+        cl.user_session.set("user_id", user.identifier)
+    
     # Personalized welcome message
     if user:
         welcome_msg = f"Hello {user.identifier}! I am connected to Google Gemini. How can I help you today?"
@@ -112,6 +216,11 @@ async def on_chat_resume(thread: ThreadDict):
     # Store it in the user session
     cl.user_session.set("thread_id", thread_id)
     
+    # Store user_id for cross-thread memory
+    user = cl.user_session.get("user")
+    if user:
+        cl.user_session.set("user_id", user.identifier)
+    
     # Log for debugging
     print(f"Resuming conversation with thread_id: {thread_id}")
     
@@ -119,7 +228,6 @@ async def on_chat_resume(thread: ThreadDict):
     # LangGraph's checkpointer will automatically load the state when we use this thread_id
     
     # Optional: Send a welcome back message
-    user = cl.user_session.get("user")
     if user:
         await cl.Message(
             content=f"Welcome back, {user.identifier}! Continuing our previous conversation.",
@@ -130,10 +238,14 @@ async def on_chat_resume(thread: ThreadDict):
 async def main(message: cl.Message):
     # Use the session ID as the thread ID to maintain conversation history
     thread_id = cl.user_session.get("thread_id")
+    user_id = cl.user_session.get("user_id", "")
     config = {"configurable": {"thread_id": thread_id}}
     
-    # Run the graph with the new user message
-    inputs = {"messages": [HumanMessage(content=message.content)]}
+    # Run the graph with the new user message and user_id
+    inputs = {
+        "messages": [HumanMessage(content=message.content)],
+        "user_id": user_id
+    }
     
     # Invoke the graph and stream the response
     msg = cl.Message(content="")

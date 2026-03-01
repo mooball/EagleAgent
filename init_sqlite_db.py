@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS steps (
     "generation" TEXT,
     "showInput" TEXT,
     "language" TEXT,
+    "defaultOpen" INTEGER DEFAULT 0,
     FOREIGN KEY ("threadId") REFERENCES threads("id") ON DELETE CASCADE
 );
 
