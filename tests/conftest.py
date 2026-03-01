@@ -16,8 +16,8 @@ from google.cloud import firestore
 # Add parent directory to path to import project modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from firestore_store import FirestoreStore
-from timestamped_firestore_saver import TimestampedFirestoreSaver
+from includes.firestore_store import FirestoreStore
+from includes.timestamped_firestore_saver import TimestampedFirestoreSaver
 
 
 # ============================================================================

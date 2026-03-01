@@ -23,7 +23,10 @@ Usage:
 
 import asyncio
 import sys
-from firestore_store import FirestoreStore
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from includes.firestore_store import FirestoreStore
 
 
 async def set_profile(store: FirestoreStore, user_id: str, field: str, value: str):

@@ -13,7 +13,7 @@ class TestCrossThreadMemory:
     
     async def test_profile_persists_across_threads(self, test_store, test_user_id):
         """Test that profile saved in one context is available in another."""
-        from user_profile_tools import create_profile_tools
+        from includes.user_profile_tools import create_profile_tools
         
         # Thread 1: User tells their name
         tools_thread1 = create_profile_tools(test_store, test_user_id)
@@ -33,7 +33,7 @@ class TestCrossThreadMemory:
     
     async def test_multiple_users_isolated(self, test_store):
         """Test that different users have isolated profiles."""
-        from user_profile_tools import create_profile_tools
+        from includes.user_profile_tools import create_profile_tools
         
         users = {
             "alice@test.com": {"name": "Alice", "job": "Engineer"},
@@ -69,7 +69,7 @@ class TestCheckpointAndStore:
         self, test_checkpointer, test_store, test_user_id, test_thread_id
     ):
         """Test using both checkpoint and store in the same conversation."""
-        from user_profile_tools import create_profile_tools
+        from includes.user_profile_tools import create_profile_tools
         from datetime import datetime, timezone
         
         # Setup: Save user profile
@@ -112,7 +112,7 @@ class TestEndToEndConversation:
         self, test_store, test_checkpointer, test_user_id
     ):
         """Test a realistic conversation that builds a user profile."""
-        from user_profile_tools import create_profile_tools
+        from includes.user_profile_tools import create_profile_tools
         from datetime import datetime, timezone
         
         tools = create_profile_tools(test_store, test_user_id)
@@ -168,7 +168,7 @@ class TestEndToEndConversation:
         self, test_store, test_checkpointer, test_user_id
     ):
         """Test resuming a conversation with existing profile."""
-        from user_profile_tools import create_profile_tools
+        from includes.user_profile_tools import create_profile_tools
         from datetime import datetime, timezone
         
         tools = create_profile_tools(test_store, test_user_id)
@@ -230,7 +230,7 @@ class TestGraphWithStubModel:
         monkeypatch.setattr(app, "store", test_store)
         
         # Create a user profile
-        from user_profile_tools import create_profile_tools
+        from includes.user_profile_tools import create_profile_tools
         tools = create_profile_tools(test_store, test_user_id)
         await tools[0].ainvoke({"category": "name", "information": "Test User"})
         

@@ -19,7 +19,34 @@ This approach ensures:
 
 ## Quick Start
 
-### 1. Install Test Dependencies
+### Easiest Way: Use the Test Runner Script
+
+The simplest way to run tests is using the automated test runner:
+
+```bash
+# One command - handles everything automatically
+./run_tests.sh
+```
+
+That's it! The script will:
+- ✅ Check if Firestore emulator is running
+- ✅ Start it automatically if needed
+- ✅ Set required environment variables
+- ✅ Run all tests with proper configuration
+
+You can also pass pytest options:
+
+```bash
+./run_tests.sh --maxfail=1        # Stop after first failure
+./run_tests.sh -k test_profile    # Run only matching tests
+./run_tests.sh -v --tb=short      # Verbose with short tracebacks
+```
+
+### Manual Setup (Alternative)
+
+If you prefer to run tests manually or need more control:
+
+#### 1. Install Test Dependencies
 
 ```bash
 uv sync --group dev
@@ -30,9 +57,9 @@ This installs:
 - `pytest-asyncio` (1.3.0) - Async test support
 - `pytest-timeout` (2.4.0) - Prevent hanging tests
 
-### 2. Install Firestore Emulator
+#### 2. Install Firestore Emulator
 
-#### Option A: Via gcloud CLI (Recommended)
+**Option A: Via gcloud CLI (Recommended)**
 
 ```bash
 # Install gcloud CLI if needed
@@ -42,11 +69,11 @@ This installs:
 gcloud components install cloud-firestore-emulator
 ```
 
-#### Option B: Standalone JAR
+**Option B: Standalone JAR**
 
 Download from: https://firebase.google.com/docs/emulator-suite/install_and_configure
 
-### 3. Start the Firestore Emulator
+#### 3. Start the Firestore Emulator
 
 ```bash
 # Start emulator (leave this running in a terminal)
@@ -59,7 +86,7 @@ You should see:
   export FIRESTORE_EMULATOR_HOST=localhost:8686
 ```
 
-### 4. Run Tests
+#### 4. Run Tests Manually
 
 In a **new terminal**:
 
@@ -98,6 +125,30 @@ tests/
 
 **Total: 63 tests covering ~1,300 lines of test code**
 
+### Project Structure
+
+```
+EagleAgent/
+├── app.py                        # Main application
+├── run.sh                        # Start the app
+├── kill.sh                       # Stop the app
+├── run_tests.sh                  # Run tests (automated)
+├── includes/                     # Core modules
+│   ├── firestore_store.py       # Firestore store implementation
+│   ├── timestamped_firestore_saver.py  # Checkpoint saver
+│   └── user_profile_tools.py    # User profile tools
+├── scripts/                      # Utility scripts
+│   ├── init_sqlite_db.py        # Initialize SQLite database
+│   ├── clear_checkpoints.py     # Clear checkpoints
+│   ├── list_checkpoints.py      # List checkpoints
+│   ├── manage_user_profile.py   # Manage user profiles
+│   └── ...                      # Other utilities
+└── tests/                        # All test files
+    ├── conftest.py              # Shared fixtures
+    ├── test_*.py                # Individual test modules
+    └── ...
+```
+
 ### Test Categories
 
 **Unit Tests** (fast, isolated):
@@ -118,7 +169,36 @@ tests/
 
 ## Running Tests
 
-### Run All Tests
+### Using the Test Runner (Recommended)
+
+The `run_tests.sh` script handles all setup automatically:
+
+```bash
+# Run all tests
+./run_tests.sh
+
+# Run with pytest options
+./run_tests.sh -x                 # Stop on first failure
+./run_tests.sh -v --tb=short      # Verbose with short tracebacks
+./run_tests.sh -k test_firestore  # Run only matching tests
+./run_tests.sh --maxfail=3        # Stop after 3 failures
+./run_tests.sh -m integration     # Run only integration tests
+./run_tests.sh -m "not slow"      # Skip slow tests
+```
+
+**What the script does:**
+1. Checks if Firestore emulator is running
+2. Starts it automatically if not found
+3. Waits for emulator to be ready
+4. Sets `FIRESTORE_EMULATOR_HOST` environment variable
+5. Runs pytest with your options
+6. Reports success/failure with clear output
+
+### Manual Test Execution
+
+If you prefer to run tests manually:
+
+#### Run All Tests
 
 ```bash
 export FIRESTORE_EMULATOR_HOST=localhost:8686
@@ -243,7 +323,13 @@ async def test_example(test_checkpointer):
 
 ### Error: "Firestore emulator not detected"
 
-**Solution**: Make sure the emulator is running and the environment variable is set:
+**Quick Fix**: Use the automated test runner which handles this automatically:
+
+```bash
+./run_tests.sh
+```
+
+**Manual Fix**: Make sure the emulator is running and the environment variable is set:
 
 ```bash
 # Terminal 1: Start emulator
@@ -393,14 +479,26 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
       
-      - name: Install Firestore Emulator
-        run: |
-          wget -q https://storage.googleapis.com/firebase-preview-drop/emulator/cloud-firestore-emulator-*.jar
-          java -version
+      - name: Install gcloud SDK
+        uses: google-github-actions/setup-gcloud@v1
       
+      - name: Install Firestore Emulator
+        run: gcloud components install cloud-firestore-emulator --quiet
+      
+      - name: Run Tests
+        run: ./run_tests.sh
+```
+
+**Note**: The `run_tests.sh` script handles starting the emulator and setting environment variables automatically, simplifying your CI/CD pipeline.
+
+### Manual CI/CD Setup (Alternative)
+
+If you prefer manual control in CI/CD:
+
+```yaml
       - name: Start Firestore Emulator
         run: |
-          gcloud emulators firestore start --host-port=localhost:8686 &
+          gcloud emulators firestore start --host-port=localhost:8686 > /tmp/emulator.log 2>&1 &
           sleep 5
       
       - name: Run Tests
@@ -463,14 +561,17 @@ uv run pytest tests/ --durations=10
 
 ## FAQ
 
+**Q: What's the easiest way to run tests?**  
+A: Use `./run_tests.sh` - it handles everything automatically including starting the Firestore emulator if needed.
+
 **Q: Do I need to restart the emulator between test runs?**  
-A: No, the test fixtures handle cleanup automatically.
+A: No, the test fixtures handle cleanup automatically. The `run_tests.sh` script will reuse an existing emulator instance.
 
 **Q: Can I run tests without the emulator?**  
 A: No, Firestore tests require the emulator. SQLite tests will still run.
 
 **Q: How do I debug a failing test?**  
-A: Use `pytest -v -s` to see print statements, or add `pytest.set_trace()` for breakpoints.
+A: Use `./run_tests.sh -v -s` to see print statements, or add `pytest.set_trace()` for breakpoints.
 
 **Q: Can I use the same emulator for development and testing?**  
 A: Yes, but be careful - tests clean up all data after running.
@@ -480,6 +581,9 @@ A: Don't. Use the emulator for tests. For E2E testing, use a separate staging en
 
 **Q: Why do tests use unique thread IDs?**  
 A: Each test gets a unique thread ID (via `test_thread_id` fixture) to ensure complete isolation. This prevents data contamination between tests running in the same session.
+
+**Q: Can I pass pytest options to the test runner?**  
+A: Yes! Use `./run_tests.sh <pytest-options>`. Examples: `./run_tests.sh -x`, `./run_tests.sh -k test_name`, `./run_tests.sh -m integration`.
 
 ---
 

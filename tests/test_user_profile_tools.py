@@ -5,7 +5,7 @@ and forget user information.
 """
 
 import pytest
-from user_profile_tools import create_profile_tools
+from includes.user_profile_tools import create_profile_tools
 
 
 class TestRememberUserInfo:
