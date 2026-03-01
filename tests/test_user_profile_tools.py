@@ -221,7 +221,7 @@ class TestGetUserInfo:
         result = await get_tool.ainvoke({})
         
         # Assert
-        assert "no information" in result.lower() or "nothing stored" in result.lower()
+        assert "no user information" in result.lower() or "nothing stored" in result.lower()
     
     async def test_get_nonexistent_category(self, test_store, test_user_id):
         """Test retrieving a category that doesn't exist."""

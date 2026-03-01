@@ -186,7 +186,12 @@ def test_store(test_firestore_client):
     
     yield store
     
-    # Cleanup is handled by test_firestore_client fixture
+    # Additional cleanup: explicitly delete store documents
+    try:
+        collection = test_firestore_client.collection("test_user_memory")
+        delete_collection(collection, batch_size=100)
+    except Exception:
+        pass  # Ignore cleanup errors
 
 
 @pytest.fixture
@@ -206,7 +211,12 @@ def test_checkpointer(test_firestore_client):
     
     yield checkpointer
     
-    # Cleanup is handled by test_firestore_client fixture
+    # Additional cleanup: explicitly delete checkpoint documents
+    try:
+        collection = test_firestore_client.collection("test_checkpoints")
+        delete_collection(collection, batch_size=100)
+    except Exception:
+        pass  # Ignore cleanup errors
 
 
 # ============================================================================
@@ -233,8 +243,9 @@ def test_user_profile():
 
 @pytest.fixture
 def test_thread_id():
-    """Provide a consistent test thread ID."""
-    return "test-thread-12345"
+    """Generate a unique thread ID for each test to ensure test isolation."""
+    import uuid
+    return f"test-thread-{uuid.uuid4()}"
 
 
 # ============================================================================

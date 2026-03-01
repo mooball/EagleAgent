@@ -130,6 +130,9 @@ class TestThreadOperations:
         thread_id = str(uuid.uuid4())
         
         async with aiosqlite.connect(temp_sqlite_db) as db:
+            # Enable foreign keys for this connection
+            await db.execute("PRAGMA foreign_keys = ON;")
+            
             # Create user and thread
             await db.execute(
                 "INSERT INTO users (id, identifier, metadata) VALUES (?, ?, ?)",
@@ -185,7 +188,8 @@ class TestStepOperations:
             
             assert result is not None
             assert result[1] == "on_message"  # name
-            assert result[6] == "Hello"  # input
+            assert result[10] == "Hello"  # input (column index 10)
+            assert result[11] == "Hi there!"  # output (column index 11)
 
 
 class TestConnectionString:

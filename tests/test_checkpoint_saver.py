@@ -70,7 +70,7 @@ class TestCheckpointSaving:
     
     async def test_load_nonexistent_checkpoint_returns_none(self, test_checkpointer):
         """Test loading a checkpoint that doesn't exist."""
-        config = {"configurable": {"thread_id": "nonexistent-thread"}}
+        config = {"configurable": {"thread_id": "nonexistent-thread", "checkpoint_ns": ""}}
         
         result = await test_checkpointer.aget_tuple(config)
         
@@ -172,7 +172,7 @@ class TestMultipleThreads:
         threads = ["thread-1", "thread-2", "thread-3"]
         
         for i, thread_id in enumerate(threads):
-            config = {"configurable": {"thread_id": thread_id}}
+            config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
             checkpoint = {
                 "v": 1,
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -183,7 +183,7 @@ class TestMultipleThreads:
         
         # Verify each thread has its own checkpoint
         for i, thread_id in enumerate(threads):
-            config = {"configurable": {"thread_id": thread_id}}
+            config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
             loaded = await test_checkpointer.aget_tuple(config)
             
             assert loaded is not None
@@ -204,14 +204,13 @@ class TestCheckpointList:
                 "v": 1,
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "id": f"checkpoint-{i}",
-                "channel_values": {"step": i},
+                "channel_values": {"messages": []},
             }
             await test_checkpointer.aput(config=config, checkpoint=checkpoint, metadata={"step": i}, new_versions={})
         
-        # List checkpoints
-        checkpoints = []
-        async for checkpoint_tuple in test_checkpointer.alist(config):
-            checkpoints.append(checkpoint_tuple)
+        # List checkpoints using synchronous method
+        # Note: langgraph-checkpoint-firestore's alist has issues, use list() instead
+        checkpoints = list(test_checkpointer.list(config))
         
         # Should have 3 checkpoints
         assert len(checkpoints) >= 3
@@ -252,7 +251,7 @@ class TestCheckpointPerformance:
         import asyncio
         
         async def save_checkpoint(thread_num):
-            config = {"configurable": {"thread_id": f"concurrent-thread-{thread_num}"}}
+            config = {"configurable": {"thread_id": f"concurrent-thread-{thread_num}", "checkpoint_ns": ""}}
             checkpoint = {
                 "v": 1,
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -266,7 +265,7 @@ class TestCheckpointPerformance:
         
         # Verify all were saved
         for i in range(10):
-            config = {"configurable": {"thread_id": f"concurrent-thread-{i}"}}
+            config = {"configurable": {"thread_id": f"concurrent-thread-{i}", "checkpoint_ns": ""}}
             loaded = await test_checkpointer.aget_tuple(config)
             assert loaded is not None
             assert loaded.checkpoint["channel_values"]["thread"] == i

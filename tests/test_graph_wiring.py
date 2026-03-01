@@ -20,6 +20,10 @@ class StubChatModel:
         last = messages[-1]
         content = getattr(last, "content", "")
         return AIMessage(content=f"stub-response: {content}")
+    
+    def bind_tools(self, tools):
+        """Support tool binding for compatibility."""
+        return self
 
 
 def test_langgraph_wiring_with_stub(monkeypatch):

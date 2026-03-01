@@ -116,40 +116,47 @@ class FirestoreStore(BaseStore):
             
             elif isinstance(op, SearchOp):
                 # Search documents by namespace prefix
-                namespace_prefix = "/".join(op.namespace_prefix) if op.namespace_prefix else ""
-                
-                # Query documents where doc ID starts with namespace prefix
+                # Note: Firestore doesn't have native startsWith for arrays,
+                # so we filter in memory after retrieving matching documents
                 query = self.collection
                 
-                if namespace_prefix:
-                    # Use Firestore document ID range query
-                    query = query.where(
-                        FieldPath.document_id(), ">=", f"{namespace_prefix}:"
-                    ).where(
-                        FieldPath.document_id(), "<", f"{namespace_prefix}:\uf8ff"
-                    )
+                # If we have a namespace prefix, we need to filter documents
+                # Firestore limitation: can't do prefix search on array fields efficiently,
+                # so we'll fetch all docs and filter in memory
+                # For production at scale, consider maintaining a separate index collection
                 
-                # Apply filter if provided
+                # Apply filter on value fields if provided (this can use index)
                 if op.filter:
                     for field, value in op.filter.items():
                         # Simple equality filter on value fields
-                        query = query.where(f"value.{field}", "==", value)
-                
-                # Apply pagination
-                query = query.limit(op.limit).offset(op.offset)
+                        query = query.where(filter=firestore.FieldFilter(f"value.{field}", "==", value))
                 
                 # Execute query
-                docs = query.stream()
+                docs = list(query.stream())
                 
-                search_results = []
+                # Filter by namespace prefix in memory
+                filtered_docs = []
                 for doc in docs:
                     data = doc.to_dict()
                     namespace = tuple(data.get("namespace", []))
-                    key = data.get("key", "")
                     
+                    # Check if namespace matches prefix
+                    if op.namespace_prefix:
+                        if len(namespace) < len(op.namespace_prefix):
+                            continue
+                        if namespace[:len(op.namespace_prefix)] != op.namespace_prefix:
+                            continue
+                    
+                    filtered_docs.append((doc, data, namespace))
+                
+                # Apply pagination
+                paginated_docs = filtered_docs[op.offset:op.offset + op.limit]
+                
+                search_results = []
+                for doc, data, namespace in paginated_docs:
                     search_results.append(SearchItem(
                         value=data.get("value", {}),
-                        key=key,
+                        key=data.get("key", ""),
                         namespace=namespace,
                         created_at=data.get("created_at"),
                         updated_at=data.get("updated_at"),
@@ -168,13 +175,21 @@ class FirestoreStore(BaseStore):
                     data = doc.to_dict()
                     namespace = tuple(data.get("namespace", []))
                     
-                    # Apply prefix filter if specified
-                    if op.prefix and not namespace[:len(op.prefix)] == op.prefix:
-                        continue
-                    
-                    # Apply suffix filter if specified
-                    if op.suffix and not namespace[-len(op.suffix):] == op.suffix:
-                        continue
+                    # Apply match_conditions if specified
+                    # match_conditions is a list of tuples like: [("prefix", ("users",)), ("suffix", ("admin",))]
+                    if op.match_conditions:
+                        matches = True
+                        for condition_type, condition_value in op.match_conditions:
+                            if condition_type == "prefix":
+                                if not namespace[:len(condition_value)] == condition_value:
+                                    matches = False
+                                    break
+                            elif condition_type == "suffix":
+                                if not namespace[-len(condition_value):] == condition_value:
+                                    matches = False
+                                    break
+                        if not matches:
+                            continue
                     
                     # Apply max_depth filter if specified
                     if op.max_depth and len(namespace) > op.max_depth:

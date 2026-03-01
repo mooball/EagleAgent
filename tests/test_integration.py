@@ -119,7 +119,7 @@ class TestEndToEndConversation:
         remember_tool, get_tool = tools[0], tools[1]
         
         thread_id = "conversation-1"
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
         
         # Turn 1: User introduces themselves
         await remember_tool.ainvoke({"category": "name", "information": "Bob"})
@@ -179,7 +179,7 @@ class TestEndToEndConversation:
         await remember_tool.ainvoke({"category": "preferred_name", "information": "Chuck"})
         
         thread_id = "resume-conversation"
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
         
         # Save previous conversation state
         old_checkpoint = {
@@ -209,7 +209,7 @@ class TestEndToEndConversation:
 class TestGraphWithStubModel:
     """Test the complete graph with stubbed LLM."""
     
-    async def test_graph_with_user_profile(self, test_store, test_user_id, stub_chat_model, monkeypatch):
+    async def test_graph_with_user_profile(self, test_store, test_user_id, test_thread_id, stub_chat_model, monkeypatch):
         """Test that the graph can access user profiles."""
         import sys
         import pathlib
@@ -235,7 +235,7 @@ class TestGraphWithStubModel:
         await tools[0].ainvoke({"category": "name", "information": "Test User"})
         
         # Run the graph
-        config = {"configurable": {"thread_id": "test-graph-thread"}}
+        config = {"configurable": {"thread_id": test_thread_id, "checkpoint_ns": ""}}
         result = await app.graph.ainvoke(
             {
                 "messages": [HumanMessage(content="hello")],
