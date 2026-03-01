@@ -26,9 +26,9 @@ uv sync --group dev
 ```
 
 This installs:
-- `pytest` - Test framework
-- `pytest-asyncio` - Async test support
-- `pytest-timeout` - Prevent hanging tests
+- `pytest` (9.0.2) - Test framework
+- `pytest-asyncio` (1.3.0) - Async test support
+- `pytest-timeout` (2.4.0) - Prevent hanging tests
 
 ### 2. Install Firestore Emulator
 
@@ -75,21 +75,28 @@ uv run pytest tests/test_firestore_store.py -v
 uv run pytest tests/test_user_profile_tools.py -v
 ```
 
+**Expected output:**
+```
+======================= 63 passed, 118 warnings in ~2s =======================
+```
+
 ---
 
 ## Test Organization
 
 ```
 tests/
-├── conftest.py                    # Shared fixtures
+├── conftest.py                    # Shared fixtures (279 lines)
 ├── test_smoke.py                  # Basic sanity test
 ├── test_graph_wiring.py          # LangGraph wiring with stub
-├── test_sqlite_data_layer.py     # SQLite CRUD operations
-├── test_firestore_store.py       # User profile storage
-├── test_checkpoint_saver.py      # Conversation checkpoints
-├── test_user_profile_tools.py    # Agent tools for memory
-└── test_integration.py           # End-to-end scenarios
+├── test_sqlite_data_layer.py     # SQLite CRUD operations (11 tests)
+├── test_firestore_store.py       # User profile storage (20 tests)
+├── test_checkpoint_saver.py      # Conversation checkpoints (10 tests)
+├── test_user_profile_tools.py    # Agent tools for memory (19 tests)
+└── test_integration.py           # End-to-end scenarios (6 tests)
 ```
+
+**Total: 63 tests covering ~1,300 lines of test code**
 
 ### Test Categories
 
@@ -222,11 +229,13 @@ async def test_example(test_checkpointer):
 - Sample complete user profile
 
 #### `test_thread_id`
-- Returns: `"test-thread-12345"`
+- Returns: Unique thread ID per test (e.g., `"test-thread-<uuid>"`)
+- Ensures complete test isolation
 
 #### `stub_chat_model`
 - Stubbed LLM for testing without API calls
 - Returns deterministic responses
+- Includes `bind_tools()` method for compatibility
 
 ---
 
@@ -441,13 +450,14 @@ uv run pytest tests/ --durations=10
 - Write descriptive test names
 - Use `@pytest.mark` for organization
 - Test both success and error cases
+- Use provided fixtures like `test_thread_id` for proper test isolation
 
 ❌ **DON'T:**
 - Access production databases in tests
 - Hardcode credentials
 - Leave tests hanging (use timeouts)
 - Test external APIs (use stubs/mocks)
-- Share state between tests
+- Share state between tests (always use unique IDs from fixtures)
 
 ---
 
@@ -467,6 +477,9 @@ A: Yes, but be careful - tests clean up all data after running.
 
 **Q: How do I test against real Firestore?**  
 A: Don't. Use the emulator for tests. For E2E testing, use a separate staging environment.
+
+**Q: Why do tests use unique thread IDs?**  
+A: Each test gets a unique thread ID (via `test_thread_id` fixture) to ensure complete isolation. This prevents data contamination between tests running in the same session.
 
 ---
 
