@@ -34,7 +34,7 @@ def create_profile_tools(store: BaseStore, user_id: str):
         be remembered long-term (across different conversations).
         
         Args:
-            category: The category of information (e.g., "name", "preferences", "job", "location", "facts")
+            category: The category of information (e.g., "name", "preferred_name", "preferences", "job", "location", "facts")
             information: The information to remember
         
         Returns:
@@ -42,6 +42,7 @@ def create_profile_tools(store: BaseStore, user_id: str):
         
         Examples:
             - User: "My name is Tom" -> remember_user_info("name", "Tom")
+            - User: "Call me Tommy" -> remember_user_info("preferred_name", "Tommy")
             - User: "I love Python programming" -> remember_user_info("preferences", "loves Python programming")
             - User: "I work at MooBall" -> remember_user_info("job", "works at MooBall")
         """
@@ -50,8 +51,9 @@ def create_profile_tools(store: BaseStore, user_id: str):
         profile = profile_item.value if profile_item else {}
         
         # Update the specific category
-        if category == "name":
-            profile["name"] = information
+        if category in ["name", "preferred_name", "job", "location"]:
+            # Store as simple string value
+            profile[category] = information
         elif category == "facts":
             # Append to facts list
             if "facts" not in profile:

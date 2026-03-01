@@ -12,7 +12,7 @@ from google.cloud import firestore
 
 load_dotenv()
 
-client = firestore.Client(project="mooballai", database="(default)")
+client = firestore.Client(project=os.getenv("GOOGLE_PROJECT_ID"), database="(default)")
 checkpoints_ref = client.collection("checkpoints")
 
 

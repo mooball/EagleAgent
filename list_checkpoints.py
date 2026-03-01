@@ -15,13 +15,13 @@ from google.cloud import firestore
 load_dotenv()
 
 # Initialize Firestore client
-client = firestore.Client(project="mooballai", database="(default)")
+client = firestore.Client(project=os.getenv("GOOGLE_PROJECT_ID"), database="(default)")
 checkpoints_collection = client.collection("checkpoints")
 
 
 def list_documents():
     """List all top-level documents in the checkpoints collection."""
-    print(f"Project: mooballai")
+    print(f"Project: {os.getenv('GOOGLE_PROJECT_ID')}")
     print(f"Database: (default)")
     print(f"Collection path: checkpoints")
     print(f"Client info: {client.project}\n")

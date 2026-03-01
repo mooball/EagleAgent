@@ -19,7 +19,7 @@ load_dotenv()
 
 # Add cross-thread persistent store for user profiles and long-term memory
 # Initialize this early so we can use it to create tools
-store = FirestoreStore(project_id="mooballai", collection="user_memory")
+store = FirestoreStore(project_id=os.getenv("GOOGLE_PROJECT_ID"), collection="user_memory")
 
 
 # Initialize the model
@@ -64,7 +64,9 @@ async def call_model(
         
         # Build context string from profile
         profile_context = "User profile information:"
-        if "name" in profile_data:
+        if "preferred_name" in profile_data:
+            profile_context += f"\n- Preferred name: {profile_data['preferred_name']} (use this to address the user)"
+        elif "name" in profile_data:
             profile_context += f"\n- Name: {profile_data['name']}"
         if "preferences" in profile_data:
             prefs = profile_data['preferences']
@@ -80,7 +82,7 @@ async def call_model(
                 profile_context += f"\n- Facts: {facts}"
         
         # Add tool usage instructions
-        profile_context += "\n\nWhen the user tells you information about themselves (name, preferences, facts, etc.), use the remember_user_info tool to save it for future conversations."
+        profile_context += "\n\nWhen the user tells you information about themselves, use the remember_user_info tool to save it for future conversations. If they say 'call me X' or 'I prefer X', use the 'preferred_name' category."
         
         # Prepend system message with user context if not already present
         if not any(isinstance(m, SystemMessage) for m in enhanced_messages):
@@ -88,7 +90,7 @@ async def call_model(
     else:
         # No profile yet - just add instruction to save info
         if user_id and not any(isinstance(m, SystemMessage) for m in enhanced_messages):
-            enhanced_messages = [SystemMessage(content="When the user tells you information about themselves (name, preferences, facts, etc.), use the remember_user_info tool to save it for future conversations.")] + enhanced_messages
+            enhanced_messages = [SystemMessage(content="When the user tells you information about themselves, use the remember_user_info tool to save it for future conversations. If they say 'call me X' or 'I prefer X', use the 'preferred_name' category.")] + enhanced_messages
     
     response = await model_with_tools.ainvoke(enhanced_messages)
     return {"messages": [response]}
@@ -135,7 +137,7 @@ builder.add_edge("tools", "model")
 
 # Add Firestore-based memory to persist state across interactions and restarts
 # TimestampedFirestoreSaver adds `created_at` field to each checkpoint for TTL policies
-checkpointer = TimestampedFirestoreSaver(project_id="mooballai", checkpoints_collection="checkpoints")
+checkpointer = TimestampedFirestoreSaver(project_id=os.getenv("GOOGLE_PROJECT_ID"), checkpoints_collection="checkpoints")
 
 # Compile graph with both checkpointer (thread state) and store (cross-thread memory)
 graph = builder.compile(checkpointer=checkpointer, store=store)
@@ -165,6 +167,13 @@ def oauth_callback(
         #     return default_user
         # return None
         
+        # Store user's name info from Google OAuth in metadata
+        # Google provides: name, given_name, family_name, email, picture
+        if raw_user_data.get("name"):
+            default_user.metadata["name"] = raw_user_data["name"]
+        if raw_user_data.get("given_name"):
+            default_user.metadata["given_name"] = raw_user_data["given_name"]
+        
         # Allow all Google users
         return default_user
     
@@ -189,13 +198,34 @@ async def start():
     thread_id = str(uuid.uuid4())
     cl.user_session.set("thread_id", thread_id)
     
-    # Store user_id for cross-thread memory
+    # Get user's name for personalized greeting
+    user_name = None
+    
     if user:
+        # Store user_id for cross-thread memory
         cl.user_session.set("user_id", user.identifier)
+        
+        # Priority order:
+        # 1. Preferred name from user profile store
+        # 2. Given name from Google OAuth
+        # 3. Email as fallback
+        
+        # Try to get preferred_name from user profile store
+        user_profile = await store.aget(("users",), user.identifier)
+        if user_profile and user_profile.value and "preferred_name" in user_profile.value:
+            user_name = user_profile.value["preferred_name"]
+        
+        # Fall back to given_name from Google OAuth
+        if not user_name and user.metadata and "given_name" in user.metadata:
+            user_name = user.metadata["given_name"]
+        
+        # Fall back to email if name not available
+        if not user_name:
+            user_name = user.identifier
     
     # Personalized welcome message
-    if user:
-        welcome_msg = f"Hello {user.identifier}! I am connected to Google Gemini. How can I help you today?"
+    if user_name:
+        welcome_msg = f"Hello {user_name}! I am connected to Google Gemini. How can I help you today?"
     else:
         welcome_msg = "Hello! I am connected to Google Gemini. How can I help you today?"
     
@@ -227,10 +257,32 @@ async def on_chat_resume(thread: ThreadDict):
     # Note: Chainlit automatically restores messages to the UI
     # LangGraph's checkpointer will automatically load the state when we use this thread_id
     
-    # Optional: Send a welcome back message
+    # Get user's name for personalized greeting
+    user_name = None
+    
     if user:
+        # Priority order:
+        # 1. Preferred name from user profile store
+        # 2. Given name from Google OAuth
+        # 3. Email as fallback
+        
+        # Try to get preferred_name from user profile store
+        user_profile = await store.aget(("users",), user.identifier)
+        if user_profile and user_profile.value and "preferred_name" in user_profile.value:
+            user_name = user_profile.value["preferred_name"]
+        
+        # Fall back to given_name from Google OAuth
+        if not user_name and user.metadata and "given_name" in user.metadata:
+            user_name = user.metadata["given_name"]
+        
+        # Fall back to email if name not available
+        if not user_name:
+            user_name = user.identifier
+    
+    # Optional: Send a welcome back message
+    if user_name:
         await cl.Message(
-            content=f"Welcome back, {user.identifier}! Continuing our previous conversation.",
+            content=f"Welcome back, {user_name}! Continuing our previous conversation.",
             author="system"
         ).send()
 

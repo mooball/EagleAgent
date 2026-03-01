@@ -99,6 +99,11 @@ async def list_users(store: FirestoreStore):
 
 
 async def main():
+    import os
+    from dotenv import load_dotenv
+    
+    load_dotenv()
+    
     if len(sys.argv) < 2:
         print(__doc__)
         return
@@ -106,7 +111,7 @@ async def main():
     command = sys.argv[1].lower()
     
     # Initialize store
-    store = FirestoreStore(project_id="mooballai", collection="user_memory")
+    store = FirestoreStore(project_id=os.getenv("GOOGLE_PROJECT_ID"), collection="user_memory")
     
     if command == "set":
         if len(sys.argv) != 5:

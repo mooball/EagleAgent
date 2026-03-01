@@ -15,7 +15,7 @@ from google.cloud import firestore
 load_dotenv()
 
 # Initialize Firestore client
-client = firestore.Client(project="mooballai", database="(default)")
+client = firestore.Client(project=os.getenv("GOOGLE_PROJECT_ID"), database="(default)")
 checkpoints_collection = client.collection("checkpoints")
 
 
