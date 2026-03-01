@@ -1,8 +1,10 @@
 import chainlit as cl
+from chainlit.types import ThreadDict
+from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langchain_google_genai import ChatGoogleGenerativeAI
-from typing import TypedDict, Sequence, Annotated
+from typing import TypedDict, Sequence, Annotated, Dict, Optional
 import operator
 import os
 from dotenv import load_dotenv
@@ -38,13 +40,91 @@ builder.add_edge("model", END)
 checkpointer = TimestampedFirestoreSaver(project_id="mooballai", checkpoints_collection="checkpoints")
 graph = builder.compile(checkpointer=checkpointer)
 
+@cl.oauth_callback
+def oauth_callback(
+    provider_id: str,
+    token: str,
+    raw_user_data: Dict[str, str],
+    default_user: cl.User,
+) -> Optional[cl.User]:
+    """
+    OAuth callback to authenticate users via Google.
+    
+    Args:
+        provider_id: The OAuth provider (e.g., "google")
+        token: The OAuth token
+        raw_user_data: User data from the OAuth provider
+        default_user: Default user object created by Chainlit
+    
+    Returns:
+        cl.User if authentication successful, None otherwise
+    """
+    if provider_id == "google":
+        # Optional: restrict to specific domain
+        # if raw_user_data.get("hd") == "yourdomain.com":
+        #     return default_user
+        # return None
+        
+        # Allow all Google users
+        return default_user
+    
+    return None
+
+@cl.data_layer
+def get_data_layer():
+    """
+    Configure SQLite-based data layer for conversation history persistence.
+    This enables the chat history sidebar in the Chainlit UI.
+    """
+    return SQLAlchemyDataLayer(conninfo=os.getenv("DATABASE_URL"))
+
 @cl.on_chat_start
 async def start():
-    # Generate a session ID for the thread
     import uuid
+    
+    # Get authenticated user
+    user = cl.user_session.get("user")
+    
+    # Create thread_id (will be managed by Chainlit's data layer once set up)
     thread_id = str(uuid.uuid4())
     cl.user_session.set("thread_id", thread_id)
-    await cl.Message(content="Hello! I am connected to Google Gemini. How can I help you today?").send()
+    
+    # Personalized welcome message
+    if user:
+        welcome_msg = f"Hello {user.identifier}! I am connected to Google Gemini. How can I help you today?"
+    else:
+        welcome_msg = "Hello! I am connected to Google Gemini. How can I help you today?"
+    
+    await cl.Message(content=welcome_msg).send()
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    """
+    Called when a user resumes a previous conversation.
+    Restores the thread_id so LangGraph can load the conversation state from Firestore.
+    
+    Args:
+        thread: The persisted conversation thread containing id, steps, and metadata
+    """
+    # Extract the thread_id from the persisted conversation
+    thread_id = thread["id"]
+    
+    # Store it in the user session
+    cl.user_session.set("thread_id", thread_id)
+    
+    # Log for debugging
+    print(f"Resuming conversation with thread_id: {thread_id}")
+    
+    # Note: Chainlit automatically restores messages to the UI
+    # LangGraph's checkpointer will automatically load the state when we use this thread_id
+    
+    # Optional: Send a welcome back message
+    user = cl.user_session.get("user")
+    if user:
+        await cl.Message(
+            content=f"Welcome back, {user.identifier}! Continuing our previous conversation.",
+            author="system"
+        ).send()
 
 @cl.on_message
 async def main(message: cl.Message):
