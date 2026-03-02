@@ -5,13 +5,17 @@ AI-powered assistant using Google Gemini and LangGraph, with Google OAuth authen
 
 ## Features
 
-- 🤖 **Google Gemini Integration**: Powered by gemini-3-flash-preview
+- 🤖 **Google Gemini Integration**: Powered by gemini-3-flash-preview with multimodal support
 - 🔐 **Google OAuth Authentication**: Secure login with Google accounts
 - 💬 **Chat History**: Browse and resume past conversations
+- 📎 **File Attachments**: Upload images, PDFs, text files, and audio with automatic processing
+- 🖼️ **Vision Analysis**: Gemini vision capabilities for image understanding
+- 📄 **Document Processing**: Automatic text extraction from PDFs and documents
 - 💾 **Dual Persistence**: 
   - Chainlit data layer for conversation UI/metadata
   - Firestore checkpoints for LangGraph state
-- ⏰ **Automatic TTL**: Conversations automatically expire after 7 days (configurable)
+  - Google Cloud Storage for file attachments
+- ⏰ **Automatic TTL**: Conversations expire after 7 days, files after 30 days (configurable)
 - 🎨 **Chainlit UI**: Clean, modern chat interface with history sidebar
 
 ## Quick Start
@@ -45,7 +49,26 @@ uv run init_sqlite_db.py
 # DATABASE_URL=sqlite+aiosqlite:///./chainlit_datalayer.db
 ```
 
-### 4. Run the Application
+### 4. Configure Cloud Storage (Optional but Recommended)
+
+For persistent file storage, create a Google Cloud Storage bucket:
+
+```bash
+# Using gcloud CLI
+gcloud storage buckets create gs://YOUR_BUCKET_NAME --location=us-central1
+
+# Or create manually in GCP Console: https://console.cloud.google.com/storage
+```
+
+Add the bucket name to your `.env` file:
+
+```bash
+GCP_BUCKET_NAME=YOUR_BUCKET_NAME
+```
+
+**Note**: File uploads work without GCS configured, but files will only be processed temporarily and won't persist across restarts. For production, GCS is required.
+
+### 5. Run the Application
 
 ```bash
 ./run.sh
@@ -77,7 +100,59 @@ When you resume a conversation:
 - Your conversation continues exactly where you left off!
 
 ### Cross-Thread Memory & User Profiles
+# File Attachments & Document Processing
 
+EagleAgent supports uploading and processing various file types with intelligent content extraction:
+
+**Supported File Types**:
+- **Images** (JPEG, PNG, GIF, etc.): Processed using Gemini's vision capabilities for visual understanding
+- **PDFs**: Automatic text extraction from all pages
+- **Text files** (.txt, .md, .json, .csv, etc.): Direct content reading
+- **Audio files**: Metadata tracking (transcription coming soon)
+
+**How It Works**:
+
+1. **Upload**: Click the paperclip icon and select files (up to 20 files, 50MB each)
+2. **Storage**: Files uploaded to Google Cloud Storage bucket (configurable)
+3. **Processing**:
+   - Images → Base64 encoded and sent to Gemini vision API
+   - PDFs → Text extracted using pdfplumber
+   - Text files → Content read and included in context
+   - Audio → Metadata stored (transcription planned)
+4. **Context**: Extracted content automatically included in conversation
+5. **Retention**: Files kept for 30 days, then auto-deleted
+
+**File Storage**:
+```
+GCS Bucket Structure:
+uploads/
+  {user_id}/
+    {thread_id}/
+      20260302_143025_document.pdf
+      20260302_143030_image.jpg
+```
+
+**File Cleanup**:
+
+Run the cleanup script manually or via cron to remove files older than 30 days:
+
+```bash
+# Dry run (see what would be deleted)
+./scripts/cleanup_old_files.py --dry-run
+
+# Delete files older than 30 days
+./scripts/cleanup_old_files.py
+
+# Custom retention period (e.g., 60 days)
+./scripts/cleanup_old_files.py --days 60
+```
+
+**Key files**:
+- `includes/storage_utils.py`: GCS upload/download/delete functions
+- `includes/document_processing.py`: File processing and content extraction
+- `scripts/cleanup_old_files.py`: Automated file cleanup with TTL
+
+##
 EagleAgent includes a sophisticated **cross-thread memory system** that remembers user information across all conversations:
 
 1. **User Profile Store (Firestore)**:
@@ -163,13 +238,15 @@ The system prompt sent to the LLM is built using the `build_system_prompt()` fun
 See [CONTEXT_ARCHITECTURE.md](CONTEXT_ARCHITECTURE.md) for a complete explanation of how context flows through the system.
 
 ### Testing Prompt Changes
+- `scripts/cleanup_old_files.py`: Remove expired file attachments from GCS
 
-After modifying `includes/prompts.py`, run the prompt tests:
+## Next Steps
 
-```bash
-export FIRESTORE_EMULATOR_HOST=localhost:8686
-uv run pytest tests/test_prompts.py -v
-```
+- [ ] Deploy to production with proper domain configuration
+- [x] Configure cloud storage for file attachments (GCS implemented)
+- [ ] Add custom chat profiles for different use cases
+- [ ] Consider upgrading to PostgreSQL for production deployments with high traffic
+- [ ] Implement audio transcription for uploaded audio files (Whisper API)
 
 Or run the full test suite:
 

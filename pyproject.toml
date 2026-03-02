@@ -8,11 +8,14 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "chainlit>=2.9.6",
     "google-cloud-firestore>=2.23.0",
+    "google-cloud-storage>=3.9.0",
     "greenlet>=3.3.2",
     "langchain>=1.2.10",
     "langchain-google-genai>=4.2.1",
     "langgraph>=1.0.9",
     "langgraph-checkpoint-firestore>=0.1.7",
+    "pdfplumber>=0.11.9",
+    "pillow>=12.1.1",
     "sqlalchemy>=2.0.47",
 ]
 

@@ -6,17 +6,27 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.store.base import BaseStore
 from langgraph.prebuilt import ToolNode
 from langchain_google_genai import ChatGoogleGenerativeAI
-from typing import TypedDict, Sequence, Annotated, Dict, Optional, Any, Literal
+from typing import TypedDict, Sequence, Annotated, Dict, Optional, Any, Literal, NotRequired
 import operator
 import os
+import logging
 from dotenv import load_dotenv
 from includes.timestamped_firestore_saver import TimestampedFirestoreSaver
 from includes.firestore_store import FirestoreStore
 from includes.user_profile_tools import create_profile_tools
 from includes.prompts import build_system_prompt
+from includes.storage_utils import (
+    upload_file_to_gcs,
+    generate_object_key,
+    get_storage_client
+)
+from includes.document_processing import process_file, create_multimodal_content
 
 # Load environment variables
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
 # Add cross-thread persistent store for user profiles and long-term memory
 # Initialize this early so we can use it to create tools
@@ -32,6 +42,7 @@ base_model = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", google_api_k
 class AgentState(TypedDict):
     messages: Annotated[Sequence[HumanMessage | AIMessage | SystemMessage], operator.add]
     user_id: str  # User email for cross-thread memory lookup
+    file_attachments: NotRequired[list[Dict[str, Any]]]  # Optional: uploaded file metadata
 
 # Define the node function that calls the model
 async def call_model(
@@ -284,11 +295,73 @@ async def main(message: cl.Message):
     user_id = cl.user_session.get("user_id", "")
     config = {"configurable": {"thread_id": thread_id}}
     
+    # Process file attachments if present
+    processed_files = []
+    file_metadata = []
+    
+    if message.elements:
+        bucket_name = os.getenv("GCP_BUCKET_NAME")
+        
+        for element in message.elements:
+            try:
+                # Generate unique object key for GCS
+                object_key = generate_object_key(user_id, thread_id, element.name)
+                
+                # Upload to GCS if bucket configured
+                gcs_url = None
+                if bucket_name:
+                    try:
+                        gcs_url = upload_file_to_gcs(
+                            element.path,
+                            bucket_name,
+                            object_key,
+                            content_type=element.mime
+                        )
+                        logging.info(f"Uploaded {element.name} to GCS: {gcs_url}")
+                    except Exception as e:
+                        logging.error(f"Failed to upload {element.name} to GCS: {e}")
+                        await cl.Message(
+                            content=f"⚠️ Failed to upload {element.name} to cloud storage. Processing locally.",
+                            author="system"
+                        ).send()
+                
+                # Process file content
+                with open(element.path, "rb") as f:
+                    file_bytes = f.read()
+                
+                processed_file = process_file(file_bytes, element.mime, element.name)
+                processed_files.append(processed_file)
+                
+                # Store metadata for database
+                file_metadata.append({
+                    "name": element.name,
+                    "mime_type": element.mime,
+                    "size": element.size,
+                    "object_key": object_key,
+                    "gcs_url": gcs_url,
+                    "processed_type": processed_file.get("processed_type")
+                })
+                
+                logging.info(f"Processed file: {element.name} ({processed_file.get('processed_type')})")
+                
+            except Exception as e:
+                logging.error(f"Error processing file {element.name}: {e}")
+                await cl.Message(
+                    content=f"⚠️ Error processing {element.name}: {str(e)}",
+                    author="system"
+                ).send()
+    
+    # Create multimodal message content (text + files)
+    message_content = create_multimodal_content(message.content, processed_files)
+    
     # Run the graph with the new user message and user_id
     inputs = {
-        "messages": [HumanMessage(content=message.content)],
+        "messages": [HumanMessage(content=message_content)],
         "user_id": user_id
     }
+    
+    if file_metadata:
+        inputs["file_attachments"] = file_metadata
     
     # Invoke the graph and stream the response
     msg = cl.Message(content="")
