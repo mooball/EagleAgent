@@ -6,3 +6,4 @@ __pycache__/
 .DS_Store
 .chainlit/
 service-account-key.json
+chainlit.db
