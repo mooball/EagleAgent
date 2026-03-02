@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS feedbacks (
 
 async def init_database():
     """Initialize the SQLite database with required schema."""
-    async with aiosqlite.connect("chainlit.db") as db:
+    async with aiosqlite.connect("chainlit_datalayer.db") as db:
         # Enable foreign keys
         await db.execute("PRAGMA foreign_keys = ON;")
         

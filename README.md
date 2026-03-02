@@ -42,7 +42,7 @@ uv add sqlalchemy aiosqlite greenlet
 uv run init_sqlite_db.py
 
 # DATABASE_URL is already configured in .env
-# DATABASE_URL=sqlite+aiosqlite:///./chainlit.db
+# DATABASE_URL=sqlite+aiosqlite:///./chainlit_datalayer.db
 ```
 
 ### 4. Run the Application
@@ -63,7 +63,7 @@ EagleAgent uses a two-layer persistence system:
    - Stores conversation metadata, messages, and elements
    - Powers the chat history sidebar UI
    - Enables browsing past conversations
-   - File-based database (`chainlit.db`)
+   - File-based database (`chainlit_datalayer.db`)
 
 2. **LangGraph Checkpoints (Firestore)**:
    - Stores the actual conversation state

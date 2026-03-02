@@ -34,7 +34,7 @@ This app uses **two separate databases** for conversation persistence:
 - Feedback and ratings
 - File attachments
 
-**Current Implementation:** SQLite database (`chainlit.db`)
+**Current Implementation:** SQLite database (`chainlit_datalayer.db`)
 
 ### 2. LangGraph Checkpoints (Firestore) - "Hot Storage"  
 **Purpose:** Active conversation state for resuming agent workflows
@@ -109,7 +109,7 @@ uv run init_sqlite_db.py
 ```
 
 **What this script does:**
-1. Creates `chainlit.db` SQLite file in your project root
+1. Creates `chainlit_datalayer.db` SQLite file in your project root
 2. Enables foreign key constraints (`PRAGMA foreign_keys = ON`)
 3. Creates five tables with proper relationships
 4. Uses `CREATE TABLE IF NOT EXISTS` for safe re-runs
@@ -124,7 +124,7 @@ uv run init_sqlite_db.py
 
 #### 1. Environment Variable (`.env`)
 ```bash
-DATABASE_URL=sqlite+aiosqlite:///./chainlit.db
+DATABASE_URL=sqlite+aiosqlite:///./chainlit_datalayer.db
 ```
 
 **Important:** The connection string must use `sqlite+aiosqlite://` (not just `sqlite://`) to enable async support.
@@ -257,7 +257,7 @@ CREATE TABLE feedbacks (
 **Advantages:**
 - ✅ Perfect for local development and testing
 - ✅ Zero setup - no external database server needed
-- ✅ File-based - easy to backup/delete (`chainlit.db`)
+- ✅ File-based - easy to backup/delete (`chainlit_datalayer.db`)
 - ✅ Portable - can copy database file between machines
 - ✅ No configuration - works out of the box
 
@@ -278,7 +278,7 @@ CREATE TABLE feedbacks (
 **Project files related to data persistence:**
 - `app.py` - Contains `@cl.data_layer` decorator and `@cl.on_chat_resume` callback
 - `init_sqlite_db.py` - Database initialization script for SQLite
-- `chainlit.db` - SQLite database file (created after running init script)
+- `chainlit_datalayer.db` - SQLite database file (created after running init script)
 - `timestamped_firestore_saver.py` - Custom Firestore saver with TTL support
 - `.env` - Contains `DATABASE_URL` configuration
 - `FIRESTORE_TTL.md` - Documentation for Firestore TTL policies
@@ -306,7 +306,7 @@ uv run init_sqlite_db.py
 - SQLite doesn't handle high concurrency well
 - Close other connections to the database
 - Kill any running instances of the app: `./kill.sh`
-- If persistent, delete `chainlit.db` and reinitialize: `uv run init_sqlite_db.py`
+- If persistent, delete `chainlit_datalayer.db` and reinitialize: `uv run init_sqlite_db.py`
 
 ### General Issues
 
