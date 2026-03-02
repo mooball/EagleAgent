@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from includes.timestamped_firestore_saver import TimestampedFirestoreSaver
 from includes.firestore_store import FirestoreStore
 from includes.user_profile_tools import create_profile_tools
+from includes.prompts import build_system_prompt
 
 # Load environment variables
 load_dotenv()
@@ -57,40 +58,14 @@ async def call_model(
     if user_id and store:
         user_profile = await store.aget(("users",), user_id)
     
-    # If user profile exists, add context to the conversation
+    # Build system prompt using centralized configuration from includes/prompts.py
+    # This ensures consistent context construction and easier prompt management
     enhanced_messages = list(messages)
-    if user_profile and user_profile.value:
-        profile_data = user_profile.value
-        
-        # Build context string from profile
-        profile_context = "User profile information:"
-        if "preferred_name" in profile_data:
-            profile_context += f"\n- Preferred name: {profile_data['preferred_name']} (use this to address the user)"
-        elif "name" in profile_data:
-            profile_context += f"\n- Name: {profile_data['name']}"
-        if "preferences" in profile_data:
-            prefs = profile_data['preferences']
-            if isinstance(prefs, list):
-                profile_context += f"\n- Preferences: {', '.join(prefs)}"
-            else:
-                profile_context += f"\n- Preferences: {prefs}"
-        if "facts" in profile_data:
-            facts = profile_data['facts']
-            if isinstance(facts, list):
-                profile_context += f"\n- Facts: {', '.join(facts)}"
-            else:
-                profile_context += f"\n- Facts: {facts}"
-        
-        # Add tool usage instructions
-        profile_context += "\n\nWhen the user tells you information about themselves, use the remember_user_info tool to save it for future conversations. If they say 'call me X' or 'I prefer X', use the 'preferred_name' category."
-        
-        # Prepend system message with user context if not already present
-        if not any(isinstance(m, SystemMessage) for m in enhanced_messages):
-            enhanced_messages = [SystemMessage(content=profile_context)] + enhanced_messages
-    else:
-        # No profile yet - just add instruction to save info
-        if user_id and not any(isinstance(m, SystemMessage) for m in enhanced_messages):
-            enhanced_messages = [SystemMessage(content="When the user tells you information about themselves, use the remember_user_info tool to save it for future conversations. If they say 'call me X' or 'I prefer X', use the 'preferred_name' category.")] + enhanced_messages
+    if not any(isinstance(m, SystemMessage) for m in enhanced_messages):
+        # Construct system prompt with user profile (if available)
+        profile_data = user_profile.value if (user_profile and user_profile.value) else None
+        system_content = build_system_prompt(profile_data)
+        enhanced_messages = [SystemMessage(content=system_content)] + enhanced_messages
     
     response = await model_with_tools.ainvoke(enhanced_messages)
     return {"messages": [response]}

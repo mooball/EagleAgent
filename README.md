@@ -76,12 +76,128 @@ When you resume a conversation:
 - LangGraph loads the state from Firestore checkpoints
 - Your conversation continues exactly where you left off!
 
+### Cross-Thread Memory & User Profiles
+
+EagleAgent includes a sophisticated **cross-thread memory system** that remembers user information across all conversations:
+
+1. **User Profile Store (Firestore)**:
+   - Stores user preferences, facts, and preferred names
+   - Persists across all conversation threads
+   - Users can say "call me X" in any conversation, and all future conversations remember it
+   - Accessible via tools (`remember_user_info`, `recall_user_info`)
+
+2. **Context Injection**:
+   - User profile loaded from store on each turn
+   - System prompt dynamically constructed with latest profile data
+   - Agent addresses users by preferred name automatically
+
+**Key files**:
+- `includes/firestore_store.py`: Firestore-backed BaseStore implementation
+- `includes/user_profile_tools.py`: Tools for saving/recalling user information
+- See [CROSS_THREAD_MEMORY.md](CROSS_THREAD_MEMORY.md) for detailed architecture
+
+## Agent Configuration
+
+EagleAgent's behavior, personality, and system prompts are configured in a centralized location for easy customization.
+
+### Modifying Agent Behavior
+
+All agent configuration is managed in **`includes/prompts.py`**:
+
+```python
+# Agent identity (name, role, personality traits)
+AGENT_CONFIG = {
+    "name": "EagleAgent",
+    "role": "AI Assistant",
+    "personality": {
+        "traits": ["Helpful and friendly", "Professional yet approachable"],
+        "tone": "conversational and supportive"
+    }
+}
+
+# Tool usage instructions
+TOOL_INSTRUCTIONS = {
+    "remember_user_info": {
+        "prompt_template": "When the user tells you information..."
+    }
+}
+
+# User profile context templates
+PROFILE_TEMPLATES = {
+    "header": "User profile information:",
+    "sections": {
+        "preferred_name": "- Preferred name: {preferred_name}...",
+        "preferences": "- Preferences: {preferences}",
+        "facts": "- Facts: {facts}"
+    }
+}
+```
+
+### What You Can Configure
+
+- **Agent Identity**: Change the agent's name, role, and description
+- **Personality**: Modify personality traits and conversation tone
+- **Tool Instructions**: Customize how tools are introduced/used
+- **Profile Context**: Change how user profile information is presented
+- **Behavior Guidelines**: Add or modify behavioral rules
+
+### How Context is Constructed
+
+The system prompt sent to the LLM is built using the `build_system_prompt()` function:
+
+1. **With User Profile**:
+   ```
+   User profile information:
+   - Preferred name: Tom (use this to address the user)
+   - Preferences: Python, concise explanations
+   - Facts: Software engineer
+   
+   When the user tells you information about themselves...
+   ```
+
+2. **Without User Profile** (new users):
+   ```
+   When the user tells you information about themselves, use the remember_user_info tool...
+   ```
+
+See [CONTEXT_ARCHITECTURE.md](CONTEXT_ARCHITECTURE.md) for a complete explanation of how context flows through the system.
+
+### Testing Prompt Changes
+
+After modifying `includes/prompts.py`, run the prompt tests:
+
+```bash
+export FIRESTORE_EMULATOR_HOST=localhost:8686
+uv run pytest tests/test_prompts.py -v
+```
+
+Or run the full test suite:
+
+```bash
+bash run_tests.sh
+```
+
+### Future YAML Migration
+
+The current configuration uses Python dictionaries that are structured to mirror YAML format. When you're ready to make prompts editable by non-developers:
+
+1. Copy dictionary structures from `includes/prompts.py` to `config/prompts.yaml`
+2. Add `pyyaml` dependency: `uv add pyyaml`
+3. Update prompt loader to read from YAML file
+4. See `config/prompts.yaml.example` for the YAML structure
+
+This allows prompt engineering without code changes and enables non-technical team members to modify agent behavior.
+
 ## Configuration Files
 
 - **[GOOGLE_OAUTH_SETUP.md](GOOGLE_OAUTH_SETUP.md)**: Step-by-step OAuth setup guide
 - **[CHAINLIT_DATA_LAYER_SETUP.md](CHAINLIT_DATA_LAYER_SETUP.md)**: Database setup for conversation history
+- **[CROSS_THREAD_MEMORY.md](CROSS_THREAD_MEMORY.md)**: Cross-thread user profile architecture
+- **[CONTEXT_ARCHITECTURE.md](CONTEXT_ARCHITECTURE.md)**: Complete guide to context and message flow
 - **[FIRESTORE_TTL.md](FIRESTORE_TTL.md)**: Configure automatic data expiration
+- **[TESTING.md](TESTING.md)**: Testing guide and best practices
 - **[.env.example](.env.example)**: Template for environment variables
+- **`includes/prompts.py`**: Agent configuration and prompt templates
 
 ## Architecture
 
@@ -95,9 +211,10 @@ When you resume a conversation:
 
 - `./run.sh`: Start the development server
 - `./kill.sh`: Stop the server
-- `list_checkpoints.py`: View Firestore checkpoints
-- `clear_checkpoints.py`: Delete old checkpoints
-- `verify_timestamps.py`: Verify TTL timestamps
+- `scripts/list_checkpoints.py`: View Firestore checkpoints
+- `scripts/clear_checkpoints.py`: Delete old checkpoints
+- `scripts/verify_timestamps.py`: Verify TTL timestamps
+- `scripts/manage_user_profile.py`: View/edit user profiles in the cross-thread store
 
 ## Next Steps
 
