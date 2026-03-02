@@ -178,12 +178,12 @@ def build_system_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
     Build the complete system prompt for the agent.
     
     This function constructs the system message that provides context to the LLM,
-    including agent identity (optional), user profile information (if available),
+    including agent identity, user profile information (if available),
     and tool usage instructions.
     
     Args:
         profile_data: Optional dictionary containing user profile information.
-                     If None, only tool instructions are included.
+                     If None, only agent identity and tool instructions are included.
     
     Returns:
         Complete system prompt string ready to be used in a SystemMessage
@@ -192,6 +192,8 @@ def build_system_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
         >>> # With profile data
         >>> profile = {"preferred_name": "Tom", "preferences": ["Python", "AI"]}
         >>> prompt = build_system_prompt(profile)
+        >>> "EagleAgent" in prompt
+        True
         >>> "Tom" in prompt
         True
         >>> "remember_user_info" in prompt
@@ -199,10 +201,18 @@ def build_system_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
         
         >>> # Without profile data (new user)
         >>> prompt = build_system_prompt(None)
+        >>> "EagleAgent" in prompt
+        True
         >>> "remember_user_info" in prompt
         True
     """
     parts = []
+    
+    # Always add agent identity at the start
+    agent_identity = get_agent_identity_prompt()
+    if agent_identity:
+        parts.append(agent_identity)
+        parts.append("")  # Blank line after identity
     
     # Build user profile section if available
     if profile_data:
@@ -223,16 +233,16 @@ def build_system_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
 
 def get_agent_identity_prompt() -> Optional[str]:
     """
-    Build an optional agent identity prompt from AGENT_CONFIG.
+    Build the agent identity prompt from AGENT_CONFIG.
     
-    This is currently not used but can be enabled to give the agent
-    a stronger sense of identity and purpose.
+    This gives the agent a clear sense of identity and purpose, ensuring
+    it responds appropriately when asked about its name, role, or capabilities.
     
     Returns:
-        Agent identity prompt or None if identity prompts are disabled
+        Agent identity prompt string
     
     Example:
-        You are EagleAgent, an AI Assistant.
+        You are EagleAgent, a AI Assistant.
         You are helpful and friendly, professional yet approachable.
         
         Your capabilities include:
@@ -240,8 +250,6 @@ def get_agent_identity_prompt() -> Optional[str]:
         - Personalize responses based on user profile
         ...
     """
-    # This function is available for future use but not currently integrated
-    # To enable agent identity, modify build_system_prompt() to include this
     
     parts = [
         f"You are {AGENT_CONFIG['name']}, a {AGENT_CONFIG['role']}.",

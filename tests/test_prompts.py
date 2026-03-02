@@ -161,6 +161,10 @@ class TestBuildSystemPrompt:
         }
         prompt = build_system_prompt(profile)
         
+        # Should include agent identity
+        assert "EagleAgent" in prompt
+        assert "AI Assistant" in prompt
+        
         # Should include profile header
         assert "User profile information:" in prompt
         
@@ -179,15 +183,25 @@ class TestBuildSystemPrompt:
         profile = {"preferred_name": "T"}
         prompt = build_system_prompt(profile)
         
+        # Should include agent identity
+        assert "EagleAgent" in prompt
+        
+        # Should include profile info
         assert "User profile information:" in prompt
         assert "T" in prompt
+        
+        # Should include tool instructions
         assert "remember_user_info" in prompt
     
     def test_system_prompt_with_none_profile(self):
         """Test system prompt for new user with no profile."""
         prompt = build_system_prompt(None)
         
-        # Should NOT include profile header
+        # Should include agent identity
+        assert "EagleAgent" in prompt
+        assert "AI Assistant" in prompt
+        
+        # Should NOT include profile header (no profile data)
         assert "User profile information:" not in prompt
         
         # Should still include tool instructions
@@ -198,34 +212,49 @@ class TestBuildSystemPrompt:
         """Test system prompt with empty dict."""
         prompt = build_system_prompt({})
         
+        # Should include agent identity
+        assert "EagleAgent" in prompt
+        
         # Empty profile should be treated like no profile
-        # (no profile header, just tool instructions)
+        # (no profile header, just agent identity and tool instructions)
         assert "remember_user_info" in prompt
     
     def test_profile_and_instructions_separated(self):
-        """Test that profile and instructions are properly separated."""
+        """Test that sections are properly separated with blank lines."""
         profile = {"preferred_name": "Tom"}
         prompt = build_system_prompt(profile)
         
-        # Should have blank line between profile and instructions
+        # Should have blank lines between sections
         lines = prompt.split("\n")
         assert "" in lines  # Blank line exists
         
-        # Profile should come before instructions
+        # Agent identity should come first
+        agent_line_idx = next(i for i, line in enumerate(lines) if "EagleAgent" in line)
+        
+        # Profile should come after agent identity
         profile_line_idx = next(i for i, line in enumerate(lines) if "Tom" in line)
+        
+        # Instructions should come after profile
         instructions_line_idx = next(i for i, line in enumerate(lines) if "remember_user_info" in line)
-        assert profile_line_idx < instructions_line_idx
+        
+        assert agent_line_idx < profile_line_idx < instructions_line_idx
     
     def test_system_prompt_instructions_always_present(self):
-        """Test that tool instructions appear in all cases."""
+        """Test that agent identity and tool instructions appear in all cases."""
         # With profile
-        assert "remember_user_info" in build_system_prompt({"preferred_name": "Tom"})
+        prompt_with_profile = build_system_prompt({"preferred_name": "Tom"})
+        assert "EagleAgent" in prompt_with_profile
+        assert "remember_user_info" in prompt_with_profile
         
         # Without profile
-        assert "remember_user_info" in build_system_prompt(None)
+        prompt_without_profile = build_system_prompt(None)
+        assert "EagleAgent" in prompt_without_profile
+        assert "remember_user_info" in prompt_without_profile
         
         # Empty profile
-        assert "remember_user_info" in build_system_prompt({})
+        prompt_empty = build_system_prompt({})
+        assert "EagleAgent" in prompt_empty
+        assert "remember_user_info" in prompt_empty
 
 
 class TestGetAgentIdentityPrompt:
@@ -340,6 +369,9 @@ class TestRealWorldScenarios:
         """Simulate new user with no profile."""
         prompt = build_system_prompt(None)
         
+        # Should introduce agent identity
+        assert "EagleAgent" in prompt
+        
         # Should encourage user to share information
         assert "remember_user_info" in prompt
         assert "call me" in prompt.lower()
@@ -352,6 +384,9 @@ class TestRealWorldScenarios:
             "facts": ["PhD in CS", "works at university"]
         }
         prompt = build_system_prompt(profile)
+        
+        # Should include agent identity
+        assert "EagleAgent" in prompt
         
         # Should include personalization
         assert "Dr. Smith" in prompt
