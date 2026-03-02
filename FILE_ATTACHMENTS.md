@@ -53,7 +53,13 @@ Ensure your `.env` file has:
 GCP_BUCKET_NAME=eagleagent
 GOOGLE_APPLICATION_CREDENTIALS=./service-account-key.json
 GOOGLE_PROJECT_ID=mooballai
+
+# Temporary files upload folder (default: .files)
+# This is where Chainlit stores uploaded files before processing
+TEMP_FILES_FOLDER=.files
 ```
+
+**Note**: The `TEMP_FILES_FOLDER` directory stores temporary files during upload. This folder should be added to `.gitignore` to prevent versioning temporary files. You can change this location if needed (e.g., `TEMP_FILES_FOLDER=temp_uploads`).
 
 ### 4. Install Dependencies
 
