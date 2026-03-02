@@ -1,0 +1,57 @@
+# MCP Server Configuration
+#
+# Configure MCP (Model Context Protocol) servers that provide additional tools
+# to the EagleAgent. Supports STDIO, HTTP, and SSE transports.
+#
+# Copy this file to mcp_servers.yaml and configure your servers.
+# Environment variables can be referenced using ${VAR_NAME} syntax.
+
+servers:
+  # Example: Filesystem MCP Server (STDIO transport)
+  # Provides file system operations
+  filesystem:
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-filesystem"
+      - "${MCP_FS_PATH}"  # Set MCP_FS_PATH env var to allowed directory path
+    env:
+      # Optional environment variables for the MCP server process
+      # HOME: "${HOME}"
+  
+  # Example: GitHub MCP Server (STDIO transport)
+  # Provides GitHub API operations
+  # Requires GITHUB_TOKEN environment variable
+  github:
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-github"
+    env:
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"  # Set in .env file
+  
+  # Example: Custom HTTP MCP Server (HTTP transport)
+  # For custom MCP servers with HTTP/REST interface
+  # custom_api:
+  #   transport: http
+  #   url: "${MCP_API_URL}"  # e.g., https://api.example.com/mcp
+  #   headers:
+  #     Authorization: "Bearer ${MCP_API_TOKEN}"
+  #     Content-Type: "application/json"
+  
+  # Example: Server-Sent Events transport
+  # sse_server:
+  #   transport: sse
+  #   url: "${MCP_SSE_URL}"  # e.g., https://mcp.example.com/stream
+  #   headers:
+  #     Authorization: "Bearer ${MCP_SSE_TOKEN}"
+
+# Notes:
+# - STDIO servers run as local processes (command + args required)
+# - HTTP/SSE servers connect to remote endpoints (url required)
+# - OAuth tokens can be passed via headers for HTTP/SSE servers
+# - Missing environment variables will log warnings but won't crash the app
+# - Invalid server configs are skipped during initialization
+# - The agent works normally even if no MCP servers are configured

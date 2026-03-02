@@ -10,3 +10,6 @@ __pycache__/
 temp_files/
 service-account-key.json
 chainlit_datalayer.db
+
+# MCP server configuration (contains secrets)
+config/mcp_servers.yaml

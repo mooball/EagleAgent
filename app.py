@@ -21,6 +21,8 @@ from includes.storage_utils import (
     get_storage_client
 )
 from includes.document_processing import process_file, create_multimodal_content
+from includes.mcp_config import load_mcp_config
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 # Load environment variables
 load_dotenv()
@@ -31,6 +33,20 @@ logging.basicConfig(level=logging.INFO)
 # Add cross-thread persistent store for user profiles and long-term memory
 # Initialize this early so we can use it to create tools
 store = FirestoreStore(project_id=os.getenv("GOOGLE_PROJECT_ID"), collection="user_memory")
+
+# Initialize MCP client for external tool integration
+# Loads MCP server configurations from config/mcp_servers.yaml
+mcp_client = None
+try:
+    mcp_config = load_mcp_config("config/mcp_servers.yaml")
+    if mcp_config:
+        mcp_client = MultiServerMCPClient(mcp_config)
+        logging.info(f"MCP client initialized with {len(mcp_config)} server(s)")
+    else:
+        logging.info("No MCP servers configured")
+except Exception as e:
+    logging.warning(f"Failed to initialize MCP client: {e}. Agent will work without MCP tools.")
+    mcp_client = None
 
 
 # Initialize the model
@@ -57,9 +73,21 @@ async def call_model(
     messages = state["messages"]
     user_id = state.get("user_id")
     
-    # Create user-specific tools
+    # Create user-specific tools and add MCP tools
+    tools = []
     if user_id and store:
-        tools = create_profile_tools(store, user_id)
+        tools.extend(create_profile_tools(store, user_id))
+    
+    # Add MCP tools if available
+    if mcp_client:
+        try:
+            mcp_tools = await mcp_client.get_tools()
+            tools.extend(mcp_tools)
+            logging.debug(f"Added {len(mcp_tools)} MCP tools")
+        except Exception as e:
+            logging.error(f"Failed to get MCP tools: {e}")
+    
+    if tools:
         model_with_tools = base_model.bind_tools(tools)
     else:
         model_with_tools = base_model
@@ -103,7 +131,17 @@ async def call_tools(
     last_message = messages[-1]
     
     # Create tools for this user
-    tools = create_profile_tools(store, user_id) if user_id and store else []
+    tools = []
+    if user_id and store:
+        tools.extend(create_profile_tools(store, user_id))
+    
+    # Add MCP tools if available
+    if mcp_client:
+        try:
+            mcp_tools = await mcp_client.get_tools()
+            tools.extend(mcp_tools)
+        except Exception as e:
+            logging.error(f"Failed to get MCP tools during execution: {e}")
     
     # Create a tool node and invoke it
     tool_node = ToolNode(tools)
