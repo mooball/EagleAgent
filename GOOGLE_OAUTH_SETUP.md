@@ -53,6 +53,12 @@ CHAINLIT_AUTH_SECRET=your_generated_secret_here
 OAUTH_GOOGLE_CLIENT_ID=your_client_id_here.apps.googleusercontent.com
 OAUTH_GOOGLE_CLIENT_SECRET=your_client_secret_here
 
+# OAuth Domain Restriction (Optional)
+# Comma-separated list of allowed Google Workspace domains
+# Only users from these domains will be able to authenticate
+# Leave empty or comment out to allow all Google accounts (including personal Gmail)
+OAUTH_ALLOWED_DOMAINS=mooball.com,eagle-exports.com
+
 # Only needed if running behind a reverse proxy (production)
 # CHAINLIT_URL=https://yourdomain.com
 ```
@@ -72,26 +78,30 @@ OAUTH_GOOGLE_CLIENT_SECRET=your_client_secret_here
 
 5. After successful authentication, you'll be redirected back to the chat interface
 
-## Optional: Restrict to Specific Domain
+## Optional: Restrict to Specific Domain(s)
 
-To only allow users from a specific Google Workspace domain, edit the `oauth_callback` function in `app.py`:
+**Domain restriction is now configured via environment variable!**
 
-```python
-@cl.oauth_callback
-def oauth_callback(
-    provider_id: str,
-    token: str,
-    raw_user_data: Dict[str, str],
-    default_user: cl.User,
-) -> Optional[cl.User]:
-    if provider_id == "google":
-        # Only allow users from yourdomain.com
-        if raw_user_data.get("hd") == "yourdomain.com":
-            return default_user
-        return None  # Reject users from other domains
-    
-    return None
+To restrict authentication to specific Google Workspace domains, set `OAUTH_ALLOWED_DOMAINS` in your `.env` file:
+
+```bash
+# Single domain
+OAUTH_ALLOWED_DOMAINS=yourcompany.com
+
+# Multiple domains (comma-separated)
+OAUTH_ALLOWED_DOMAINS=mooball.com,eagle-exports.com,partner.com
 ```
+
+**How it works:**
+- Only users with email addresses from the specified domains can authenticate
+- Personal Gmail accounts (@gmail.com) will be **rejected** when domain restriction is enabled
+- The `hd` (hosted domain) field from Google OAuth is checked against the allowed list
+- Leave `OAUTH_ALLOWED_DOMAINS` empty or unset to allow all Google accounts
+
+**Example scenarios:**
+- `OAUTH_ALLOWED_DOMAINS=mooball.com` - Only @mooball.com users allowed
+- `OAUTH_ALLOWED_DOMAINS=` (empty) - All Google users allowed (including Gmail)
+- Commented out or not set - All Google users allowed
 
 ## Troubleshooting
 
@@ -105,9 +115,15 @@ def oauth_callback(
 - Make sure required scopes are added (email, profile, openid)
 - Add your email as a test user if the app is in testing mode
 
+### Authentication rejected / can't log in
+- **Check domain restriction**: If `OAUTH_ALLOWED_DOMAINS` is set, ensure your Google account's domain is in the list
+- Personal Gmail accounts won't have a hosted domain (`hd` field) and will be rejected when domain restriction is enabled
+- Check application logs for "Authentication rejected" message showing which domain was attempted
+- Verify `.env` file is loaded correctly: `grep OAUTH_ALLOWED_DOMAINS .env`
+
 ### Users can't see chat history
 - Chat history requires both authentication AND a data layer
-- See `README.md` for data layer setup (coming soon)
+- See `CHAINLIT_DATA_LAYER_SETUP.md` for data layer setup
 
 ## Next Steps
 

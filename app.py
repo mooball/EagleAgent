@@ -162,10 +162,16 @@ def oauth_callback(
         cl.User if authentication successful, None otherwise
     """
     if provider_id == "google":
-        # Optional: restrict to specific domain
-        # if raw_user_data.get("hd") == "yourdomain.com":
-        #     return default_user
-        # return None
+        # Check if user's domain is in the allowed domains list
+        allowed_domains_str = os.getenv("OAUTH_ALLOWED_DOMAINS", "")
+        if allowed_domains_str:
+            allowed_domains = [domain.strip() for domain in allowed_domains_str.split(",")]
+            user_domain = raw_user_data.get("hd")
+            
+            # Reject if no domain (personal Gmail) or domain not in allowed list
+            if not user_domain or user_domain not in allowed_domains:
+                print(f"Authentication rejected: domain '{user_domain}' not in allowed list: {allowed_domains}")
+                return None
         
         # Store all available user data from Google OAuth in metadata
         # Google provides: name, given_name, family_name, email, picture, locale, hd
@@ -184,7 +190,7 @@ def oauth_callback(
         if raw_user_data.get("hd"):
             default_user.metadata["hd"] = raw_user_data["hd"]
         
-        # Allow all Google users
+        # Authentication successful
         return default_user
     
     return None
