@@ -104,7 +104,9 @@ uv run pytest tests/test_user_profile_tools.py -v
 
 **Expected output:**
 ```
-======================= 63 passed, 118 warnings in ~2s =======================
+======================= test session starts =======================
+... [all tests passed] ...
+======================= passed in ~2s =======================
 ```
 
 ---
@@ -113,17 +115,17 @@ uv run pytest tests/test_user_profile_tools.py -v
 
 ```
 tests/
-├── conftest.py                    # Shared fixtures (279 lines)
+├── conftest.py                    # Shared fixtures
 ├── test_smoke.py                  # Basic sanity test
 ├── test_graph_wiring.py          # LangGraph wiring with stub
-├── test_sqlite_data_layer.py     # SQLite CRUD operations (11 tests)
-├── test_firestore_store.py       # User profile storage (20 tests)
-├── test_checkpoint_saver.py      # Conversation checkpoints (10 tests)
-├── test_user_profile_tools.py    # Agent tools for memory (19 tests)
-└── test_integration.py           # End-to-end scenarios (6 tests)
+├── test_sqlite_data_layer.py     # SQLite CRUD operations
+├── test_firestore_store.py       # User profile storage
+├── test_checkpoint_saver.py      # Conversation checkpoints
+├── test_user_profile_tools.py    # Agent tools for memory
+└── test_integration.py           # End-to-end scenarios
 ```
 
-**Total: 63 tests covering ~1,300 lines of test code**
+**Comprehensive test coverage across the codebase**
 
 ### Project Structure
 
