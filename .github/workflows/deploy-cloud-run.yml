@@ -82,15 +82,20 @@ jobs:
             --add-volume-mount volume=gcs-data,mount-path=/data \
             --env-vars-file env-vars.yaml
       
-      - name: Get Service URL
+      - name: Get Service URL and Configure CHAINLIT_URL
         run: |
           SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
             --region ${{ env.REGION }} \
             --format 'value(status.url)')
           echo "🚀 Service deployed to: $SERVICE_URL"
+          
+          # Set CHAINLIT_URL for OAuth redirect URIs
+          echo "Setting CHAINLIT_URL environment variable..."
+          gcloud run services update ${{ env.SERVICE_NAME }} \
+            --region ${{ env.REGION }} \
+            --update-env-vars "CHAINLIT_URL=$SERVICE_URL"
+          
+          echo "✅ CHAINLIT_URL configured: $SERVICE_URL"
           echo ""
-          echo "⚠️  MANUAL STEP REQUIRED (first deployment only):"
-          echo "Set CHAINLIT_URL environment variable to: $SERVICE_URL"
-          echo ""
-          echo "Run this command:"
-          echo "gcloud run services update ${{ env.SERVICE_NAME }} --region ${{ env.REGION }} --update-env-vars \"CHAINLIT_URL=$SERVICE_URL\""
+          echo "📋 OAuth Redirect URI: ${SERVICE_URL}/auth/oauth/google/callback"
+          echo "⚠️  Make sure this URI is added to Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client"

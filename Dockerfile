@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     gnupg \
+    sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x LTS for MCP servers (npx)
@@ -35,6 +36,7 @@ COPY app.py ./
 COPY chainlit.md ./
 COPY includes/ ./includes/
 COPY config/*.example ./config/
+COPY scripts/ ./scripts/
 
 # Create directories
 RUN mkdir -p /tmp/files /data

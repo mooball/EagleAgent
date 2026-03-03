@@ -78,9 +78,9 @@ CREATE TABLE IF NOT EXISTS feedbacks (
 );
 """
 
-async def init_database():
+async def init_database(db_path="chainlit_datalayer.db"):
     """Initialize the SQLite database with required schema."""
-    async with aiosqlite.connect("chainlit_datalayer.db") as db:
+    async with aiosqlite.connect(db_path) as db:
         # Enable foreign keys
         await db.execute("PRAGMA foreign_keys = ON;")
         
@@ -92,4 +92,6 @@ async def init_database():
         print("✅ Created tables: users, threads, steps, elements, feedbacks")
 
 if __name__ == "__main__":
-    asyncio.run(init_database())
+    import sys
+    db_path = sys.argv[1] if len(sys.argv) > 1 else "chainlit_datalayer.db"
+    asyncio.run(init_database(db_path))

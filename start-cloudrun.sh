@@ -54,6 +54,18 @@ done
 mkdir -p /data/database
 echo "✅ Created /data/database directory for SQLite"
 
+# Initialize database schema if database doesn't exist or is empty
+DB_PATH="/data/database/chainlit_datalayer.db"
+if [ ! -f "$DB_PATH" ] || ! sqlite3 "$DB_PATH" "SELECT name FROM sqlite_master WHERE type='table' AND name='users';" 2>/dev/null | grep -q users; then
+    echo "🔧 Initializing database schema..."
+    cd /data/database
+    uv run python /app/scripts/init_sqlite_db.py
+    cd /app
+    echo "✅ Database schema initialized"
+else
+    echo "✅ Database already initialized"
+fi
+
 # Set default port if not provided
 PORT=${PORT:-8080}
 echo "🌐 Starting Chainlit on port $PORT"
