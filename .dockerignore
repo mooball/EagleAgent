@@ -27,8 +27,8 @@ chainlit.db
 
 # Development tools and tests
 tests/
-scripts/
 run_tests.sh
+# Note: scripts/ is needed for database initialization in Cloud Run
 
 # Documentation (except chainlit.md)
 *.md
