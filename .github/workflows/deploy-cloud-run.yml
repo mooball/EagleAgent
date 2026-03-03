@@ -11,7 +11,7 @@ env:
   REGION: australia-southeast1
   SERVICE_NAME: eagleagent
   GCS_BUCKET_NAME: ${{ secrets.GCS_BUCKET_NAME }}
-  OAUTH_ALLOWED_DOMAINS: mooball.com^,^eagle-exports.com
+  OAUTH_ALLOWED_DOMAINS: mooball.com,eagle-exports.com
 
 jobs:
   deploy:
@@ -52,6 +52,20 @@ jobs:
       
       - name: Deploy to Cloud Run
         run: |
+          # Create env vars file to handle commas in values
+          cat > env-vars.yaml <<EOF
+          GOOGLE_API_KEY: "${{ secrets.GOOGLE_API_KEY }}"
+          CHAINLIT_AUTH_SECRET: "${{ secrets.CHAINLIT_AUTH_SECRET }}"
+          OAUTH_GOOGLE_CLIENT_ID: "${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}"
+          OAUTH_GOOGLE_CLIENT_SECRET: "${{ secrets.OAUTH_GOOGLE_CLIENT_SECRET }}"
+          OAUTH_ALLOWED_DOMAINS: "${{ env.OAUTH_ALLOWED_DOMAINS }}"
+          GOOGLE_PROJECT_ID: "${{ env.PROJECT_ID }}"
+          GCP_BUCKET_NAME: "${{ env.GCS_BUCKET_NAME }}"
+          DATABASE_URL: "sqlite+aiosqlite:////data/database/chainlit_datalayer.db"
+          TEMP_FILES_FOLDER: "/tmp/files"
+          WORKSPACE_MCP_CREDENTIALS_DIR: "/data/mcp_credentials/google_workspace"
+          EOF
+          
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
             --region ${{ env.REGION }} \
@@ -66,7 +80,7 @@ jobs:
             --allow-unauthenticated \
             --add-volume name=gcs-data,type=cloud-storage,bucket=${{ env.GCS_BUCKET_NAME }} \
             --add-volume-mount volume=gcs-data,mount-path=/data \
-            --set-env-vars "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }},CHAINLIT_AUTH_SECRET=${{ secrets.CHAINLIT_AUTH_SECRET }},OAUTH_GOOGLE_CLIENT_ID=${{ secrets.OAUTH_GOOGLE_CLIENT_ID }},OAUTH_GOOGLE_CLIENT_SECRET=${{ secrets.OAUTH_GOOGLE_CLIENT_SECRET }},OAUTH_ALLOWED_DOMAINS=${{ env.OAUTH_ALLOWED_DOMAINS }},GOOGLE_PROJECT_ID=${{ env.PROJECT_ID }},GCP_BUCKET_NAME=${{ env.GCS_BUCKET_NAME }},DATABASE_URL=sqlite+aiosqlite:////data/database/chainlit_datalayer.db,TEMP_FILES_FOLDER=/tmp/files,WORKSPACE_MCP_CREDENTIALS_DIR=/data/mcp_credentials/google_workspace"
+            --env-vars-file env-vars.yaml
       
       - name: Get Service URL
         run: |
