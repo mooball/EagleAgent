@@ -88,10 +88,9 @@ jobs:
             --region ${{ env.REGION }} \
             --format 'value(status.url)')
           echo "🚀 Service deployed to: $SERVICE_URL"
-          echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_ENV
-      
-      - name: Update CHAINLIT_URL
-        run: |
-          gcloud run services update ${{ env.SERVICE_NAME }} \
-            --region ${{ env.REGION }} \
-            --update-env-vars "CHAINLIT_URL=${{ env.SERVICE_URL }}"
+          echo ""
+          echo "⚠️  MANUAL STEP REQUIRED (first deployment only):"
+          echo "Set CHAINLIT_URL environment variable to: $SERVICE_URL"
+          echo ""
+          echo "Run this command:"
+          echo "gcloud run services update ${{ env.SERVICE_NAME }} --region ${{ env.REGION }} --update-env-vars \"CHAINLIT_URL=$SERVICE_URL\""
