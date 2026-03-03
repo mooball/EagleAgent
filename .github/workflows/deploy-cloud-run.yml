@@ -61,7 +61,7 @@ jobs:
             --timeout 300s \
             --min-instances 0 \
             --max-instances 10 \
-            --service-account ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }} \
+            --service-account ${{ secrets.GCP_SERVICE_ACCOUNT }} \
             --allow-unauthenticated \
             --add-volume name=gcs-data,type=cloud-storage,bucket=${{ env.GCS_BUCKET_NAME }} \
             --add-volume-mount volume=gcs-data,mount-path=/data \
