@@ -8,36 +8,55 @@ import os
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
+import google.auth
 from google.cloud import storage
 from google.oauth2 import service_account
 
 logger = logging.getLogger(__name__)
 
 
-def get_storage_client() -> storage.Client:
+def get_gcp_credentials():
     """
-    Initialize and return a Google Cloud Storage client.
+    Get GCP credentials using Application Default Credentials or service account key.
     
-    Uses service account credentials from service-account-key.json.
+    In Cloud Run (production): Uses Application Default Credentials (ADC)
+    In local development: Uses service account key file if GOOGLE_APPLICATION_CREDENTIALS is set
     
     Returns:
-        storage.Client: Initialized GCS client
+        google.auth.credentials.Credentials: GCP credentials
     """
-    # Get the path to service account key
+    # Check if GOOGLE_APPLICATION_CREDENTIALS env var is set (local dev)
+    if creds_file := os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        if os.path.exists(creds_file):
+            logger.info(f"Using service account credentials from {creds_file}")
+            return service_account.Credentials.from_service_account_file(creds_file)
+    
+    # Fallback to checking for service-account-key.json in project root (legacy)
     service_account_path = os.path.join(
         os.path.dirname(os.path.dirname(__file__)), 
         "service-account-key.json"
     )
     
-    if not os.path.exists(service_account_path):
-        raise FileNotFoundError(
-            f"Service account key not found at {service_account_path}"
-        )
+    if os.path.exists(service_account_path):
+        logger.info(f"Using service account credentials from {service_account_path}")
+        return service_account.Credentials.from_service_account_file(service_account_path)
     
-    credentials = service_account.Credentials.from_service_account_file(
-        service_account_path
-    )
+    # Use Application Default Credentials (Cloud Run, GCE, Cloud Shell)
+    logger.info("Using Application Default Credentials")
+    credentials, project = google.auth.default()
+    return credentials
+
+
+def get_storage_client() -> storage.Client:
+    """
+    Initialize and return a Google Cloud Storage client.
     
+    Uses Application Default Credentials in Cloud Run or service account key locally.
+    
+    Returns:
+        storage.Client: Initialized GCS client
+    """
+    credentials = get_gcp_credentials()
     return storage.Client(credentials=credentials)
 
 

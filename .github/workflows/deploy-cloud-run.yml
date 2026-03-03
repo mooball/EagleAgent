@@ -1,0 +1,91 @@
+name: Deploy to Google Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: australia-southeast1
+  SERVICE_NAME: eagleagent
+  GCS_BUCKET_NAME: ${{ secrets.GCS_BUCKET_NAME }}
+
+jobs:
+  deploy:
+    name: Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      id-token: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+      
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker gcr.io
+      
+      - name: Build Docker image
+        run: |
+          docker build -t gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
+          docker tag gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+                     gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:latest
+      
+      - name: Push Docker image
+        run: |
+          docker push gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          docker push gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:latest
+      
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --execution-environment gen2 \
+            --memory 2Gi \
+            --cpu 2 \
+            --timeout 300s \
+            --min-instances 0 \
+            --max-instances 10 \
+            --service-account ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }} \
+            --allow-unauthenticated \
+            --add-volume name=gcs-data,type=cloud-storage,bucket=${{ env.GCS_BUCKET_NAME }} \
+            --add-volume-mount volume=gcs-data,mount-path=/data \
+            --set-env-vars "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}" \
+            --set-env-vars "CHAINLIT_AUTH_SECRET=${{ secrets.CHAINLIT_AUTH_SECRET }}" \
+            --set-env-vars "OAUTH_GOOGLE_CLIENT_ID=${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}" \
+            --set-env-vars "OAUTH_GOOGLE_CLIENT_SECRET=${{ secrets.OAUTH_GOOGLE_CLIENT_SECRET }}" \
+            --set-env-vars "OAUTH_ALLOWED_DOMAINS=${{ secrets.OAUTH_ALLOWED_DOMAINS }}" \
+            --set-env-vars "GOOGLE_PROJECT_ID=${{ env.PROJECT_ID }}" \
+            --set-env-vars "GCP_BUCKET_NAME=${{ env.GCS_BUCKET_NAME }}" \
+            --set-env-vars "DATABASE_URL=sqlite+aiosqlite:////data/database/chainlit_datalayer.db" \
+            --set-env-vars "TEMP_FILES_FOLDER=/tmp/files" \
+            --set-env-vars "WORKSPACE_MCP_CREDENTIALS_DIR=/data/mcp_credentials/google_workspace"
+      
+      - name: Get Service URL
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region ${{ env.REGION }} \
+            --format 'value(status.url)')
+          echo "🚀 Service deployed to: $SERVICE_URL"
+          echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_ENV
+      
+      - name: Update CHAINLIT_URL
+        run: |
+          gcloud run services update ${{ env.SERVICE_NAME }} \
+            --region ${{ env.REGION }} \
+            --update-env-vars "CHAINLIT_URL=${{ env.SERVICE_URL }}"

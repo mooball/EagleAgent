@@ -1,0 +1,47 @@
+# Python virtual environment and cache
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Environment and secrets (never in container)
+.env
+service-account-key.json
+*.json
+config/mcp_servers.yaml
+
+# Local runtime data
+.chainlit/
+.files/
+temp_files/
+chainlit_datalayer.db
+chainlit.db
+*.db
+
+# Git and CI/CD
+.git/
+.github/
+.gitignore
+
+# Development tools and tests
+tests/
+scripts/
+run_tests.sh
+
+# Documentation (except chainlit.md)
+*.md
+!chainlit.md
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log

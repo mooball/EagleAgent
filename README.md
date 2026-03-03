@@ -267,14 +267,111 @@ This allows prompt engineering without code changes and enables non-technical te
 
 ## Configuration Files
 
+- **[DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md)**: Quick reference for daily development workflow ⭐
+- **[CLOUD_RUN_DEPLOYMENT.md](CLOUD_RUN_DEPLOYMENT.md)**: Complete Google Cloud Run deployment guide
+- **[DOCKER_LOCAL_TESTING.md](DOCKER_LOCAL_TESTING.md)**: Testing Docker containers locally before deployment
 - **[GOOGLE_OAUTH_SETUP.md](GOOGLE_OAUTH_SETUP.md)**: Step-by-step OAuth setup guide
 - **[CHAINLIT_DATA_LAYER_SETUP.md](CHAINLIT_DATA_LAYER_SETUP.md)**: Database setup for conversation history
 - **[CROSS_THREAD_MEMORY.md](CROSS_THREAD_MEMORY.md)**: Cross-thread user profile architecture
 - **[CONTEXT_ARCHITECTURE.md](CONTEXT_ARCHITECTURE.md)**: Complete guide to context and message flow
 - **[FIRESTORE_TTL.md](FIRESTORE_TTL.md)**: Configure automatic data expiration
 - **[TESTING.md](TESTING.md)**: Testing guide and best practices
-- **[.env.example](.env.example)**: Template for environment variables
+- **[.env.example](.env.example)**: Template for environment variables (local development)
+- **[.env.docker.example](.env.docker.example)**: Template for Docker local testing
+- **[.env.cloudrun.example](.env.cloudrun.example)**: Template for Cloud Run environment variables
 - **`includes/prompts.py`**: Agent configuration and prompt templates
+
+## Deployment
+
+### Local Development vs Production
+
+| Feature | Local Development | Cloud Run Production |
+|---------|------------------|---------------------|
+| **Database** | SQLite (file-based) | SQLite on GCSFuse volume mount |
+| **Checkpoints** | Firestore Emulator or Cloud | Cloud Firestore |
+| **Files** | Local `/tmp/files` | GCS bucket + ephemeral `/tmp` |
+| **Auth** | Service account key file | Application Default Credentials |
+| **Scaling** | Single instance | Auto-scaling 0-10 instances |
+| **Region** | N/A | Australia (Sydney) |
+| **Cost** | Free (local) | ~$26/month (light usage) |
+
+### Production Deployment (Google Cloud Run)
+
+Deploy EagleAgent to Google Cloud Run with persistent storage using GCSFuse volume mounts:
+
+```
+┌─────────────────────────────────┐
+│   Google Cloud Run (Gen2)       │
+│   - Python 3.12 + Node.js 20    │
+│   - Auto-scaling (0-10)         │
+│   - 2Gi RAM, 2 vCPU             │
+└────────┬───────────────┬────────┘
+         │               │
+    /data mount     /tmp/files
+         │          (ephemeral)
+         ▼
+┌────────────────────────┐
+│  GCS Bucket (GCSFuse)  │
+│  ├─ database/          │ ← SQLite persistence
+│  ├─ uploads/           │ ← File attachments
+│  └─ mcp_credentials/   │ ← MCP OAuth tokens
+└────────────────────────┘
+         │
+    ┌────┴─────┬──────────────┐
+    ▼          ▼              ▼
+Firestore  Secret Manager  OAuth 2.0
+```
+
+**Key Features**:
+- ✅ **True persistence**: SQLite database on GCS-mounted volume (survives restarts)
+- ✅ **Auto-scaling**: Scales to zero when idle, up to 10 instances under load
+- ✅ **Multi-runtime**: Single container with Python + Node.js for MCP servers
+- ✅ **Secure**: Secrets in Secret Manager, Workload Identity for GitHub Actions
+- ✅ **Cost-effective**: ~$26/month light usage, ~$5-10/month with scale-to-zero
+- ✅ **Australian region**: Deployed to Sydney for low latency
+
+**Quick Deploy**:
+
+```bash
+# See full guide for prerequisites and setup
+# CLOUD_RUN_DEPLOYMENT.md
+
+# One-line deploy
+gcloud run deploy eagleagent \
+  --source . \
+  --region australia-southeast1 \
+  --execution-environment gen2 \
+  --memory 2Gi \
+  --add-volume name=gcs-data,type=cloud-storage,bucket=eagleagent-data \
+  --add-volume-mount volume=gcs-data,mount-path=/data
+```
+
+**Local Testing**:
+
+Before deploying to Cloud Run, test the Docker container locally:
+
+```bash
+# Build Docker image
+docker build -t eagleagent:local .
+
+# Run with local Firestore emulator
+docker run -d --name eagleagent \
+  -v /tmp/eagleagent-data:/data \
+  -p 8080:8080 \
+  --env-file .env.docker \
+  eagleagent:local
+
+# Access at http://localhost:8080
+open http://localhost:8080
+```
+
+📖 **See [DOCKER_LOCAL_TESTING.md](DOCKER_LOCAL_TESTING.md) for complete local testing guide**
+
+**CI/CD Options**:
+- **GitHub Actions**: Automated deployment on push to `main` (see [.github/workflows/deploy-cloud-run.yml](.github/workflows/deploy-cloud-run.yml))
+- **Cloud Build**: GCP-native CI/CD alternative (see [cloudbuild.yaml](cloudbuild.yaml))
+
+📖 **See [CLOUD_RUN_DEPLOYMENT.md](CLOUD_RUN_DEPLOYMENT.md) for complete deployment instructions**
 
 ## Architecture
 

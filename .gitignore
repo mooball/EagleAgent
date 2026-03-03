@@ -3,6 +3,7 @@ __pycache__/
 *$py.class
 .venv/
 .env
+.env.docker
 .DS_Store
 .chainlit/
 .files/
@@ -10,6 +11,11 @@ __pycache__/
 temp_files/
 service-account-key.json
 chainlit_datalayer.db
+chainlit.db
+*.db
 
 # MCP server configuration (contains secrets)
 config/mcp_servers.yaml
+
+# Docker artifacts should NOT be ignored
+# Dockerfile, .dockerignore, start-cloudrun.sh are tracked

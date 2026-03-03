@@ -103,6 +103,76 @@ OAUTH_ALLOWED_DOMAINS=mooball.com,eagle-exports.com,partner.com
 - `OAUTH_ALLOWED_DOMAINS=` (empty) - All Google users allowed (including Gmail)
 - Commented out or not set - All Google users allowed
 
+## Cloud Run Production Setup
+
+When deploying to Google Cloud Run, you need to update the OAuth redirect URIs to include your Cloud Run service URL.
+
+### Initial Setup
+
+1. During initial deployment, the Cloud Run URL is dynamically generated
+2. Add a temporary redirect URI for local development first
+3. Deploy to Cloud Run and get the service URL
+4. Update Google Console with the Cloud Run redirect URI
+
+### Getting Your Cloud Run URL
+
+After deploying (see [CLOUD_RUN_DEPLOYMENT.md](CLOUD_RUN_DEPLOYMENT.md)):
+
+```bash
+# Get your Cloud Run service URL
+gcloud run services describe eagleagent \
+  --region=australia-southeast1 \
+  --format='value(status.url)'
+
+# Example output: https://eagleagent-abc123xyz-ts.a.run.app
+```
+
+### Update OAuth Redirect URIs
+
+1. Go to [Google Cloud Console Credentials](https://console.developers.google.com/apis/credentials)
+2. Click on your OAuth 2.0 Client ID
+3. Under **Authorized redirect URIs**, add:
+   ```
+   https://eagleagent-abc123xyz-ts.a.run.app/auth/oauth/google/callback
+   ```
+   Replace with your actual Cloud Run URL
+
+4. **Important**: 
+   - Cloud Run URLs are **permanent** and don't change between deployments
+   - Each Cloud Run region/service has a unique URL
+   - Wildcard URIs (e.g., `https://*.run.app/...`) are **not supported** by Google OAuth
+   - You must add the exact full URL
+
+### Custom Domain (Optional)
+
+If you map a custom domain to Cloud Run:
+
+```bash
+# Map custom domain
+gcloud run domain-mappings create \
+  --service eagleagent \
+  --domain app.yourdomain.com \
+  --region australia-southeast1
+```
+
+Add the custom domain redirect URI:
+```
+https://app.yourdomain.com/auth/oauth/google/callback
+```
+
+### Environment Variables for Cloud Run
+
+Ensure these are set in Cloud Run:
+
+```bash
+CHAINLIT_URL=https://eagleagent-abc123xyz-ts.a.run.app
+OAUTH_GOOGLE_CLIENT_ID=your_client_id
+OAUTH_GOOGLE_CLIENT_SECRET=your_client_secret
+OAUTH_ALLOWED_DOMAINS=yourdomain.com
+```
+
+See [CLOUD_RUN_DEPLOYMENT.md](CLOUD_RUN_DEPLOYMENT.md) for complete deployment instructions including Secret Manager setup.
+
 ## Troubleshooting
 
 ### "Redirect URI mismatch" error
