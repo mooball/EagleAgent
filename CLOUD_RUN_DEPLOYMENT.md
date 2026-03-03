@@ -77,16 +77,14 @@ Create a bucket for persistent storage (database, uploads, MCP credentials):
 
 ```bash
 # Create bucket in Sydney region
-gcloud storage buckets create gs://eagleagent-data \
+gcloud storage buckets create gs://eagleagent \
   --location=australia-southeast1 \
   --uniform-bucket-level-access
 
-# Create directory structure
-gcloud storage cp --recursive - gs://eagleagent-data/ <<EOF
-database/.keep
-uploads/.keep
-mcp_credentials/google_workspace/.keep
-EOF
+# Create directory structure with .keep files
+echo -n "" | gcloud storage cp - gs://eagleagent/database/.keep
+echo -n "" | gcloud storage cp - gs://eagleagent/uploads/.keep
+echo -n "" | gcloud storage cp - gs://eagleagent/mcp_credentials/google_workspace/.keep
 ```
 
 **Optional**: Set lifecycle policy to auto-delete old uploads:
