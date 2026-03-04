@@ -35,7 +35,7 @@ RUN uv sync --frozen --no-dev
 COPY app.py ./
 COPY chainlit.md ./
 COPY includes/ ./includes/
-COPY config/*.example ./config/
+COPY config/ ./config/
 COPY scripts/ ./scripts/
 
 # Create directories
