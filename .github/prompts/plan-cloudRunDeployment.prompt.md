@@ -1,6 +1,6 @@
 # Plan: Google Cloud Run Deployment with GCSFuse for SQLite
 
-**TL;DR**: Containerize EagleAgent with Docker supporting both Python (uv) and Node.js for MCP servers, deploy to Google Cloud Run with Firestore/GCS backend using GCSFuse volume mounts for persistent SQLite database storage, manage secrets via Secret Manager, and automate deployment via GitHub Actions. Temp files use ephemeral `/tmp` (acceptable for file uploads), while SQLite database persists on GCS-mounted volume.
+**TL;DR**: Containerize EagleAgent with Docker supporting both Python (uv) and Node.js for MCP servers, deploy to Google Cloud Run with Firestore/GCS backend using GCSFuse volume mounts for persistent SQLite database storage, manage secrets via GitHub Secrets, and automate deployment via GitHub Actions. Temp files use ephemeral `/tmp` (acceptable for file uploads), while SQLite database persists on GCS-mounted volume.
 
 **Key architectural changes**: Mount GCS bucket as persistent volume for SQLite database at `/data`, configure dynamic port binding, implement Application Default Credentials for GCP services, and configure OAuth redirect URIs for Cloud Run domain. This provides true database persistence across restarts and deployments without Cloud SQL complexity. All resources deployed to **Australia (Sydney) region** (`australia-southeast1`).
 
@@ -86,7 +86,7 @@
 - Create `CLOUD_RUN_DEPLOYMENT.md` documenting:
   - **Prerequisites**: 
     - GCP project setup with billing enabled
-    - Enable APIs: Cloud Run Admin API, Artifact Registry API, Secret Manager API, Cloud Firestore API, Cloud Storage API
+    - Enable APIs: Cloud Run Admin API, Artifact Registry API, Cloud Firestore API, Cloud Storage API
     - Install gcloud CLI locally
   - **GCS Bucket Setup**:
     - Create bucket: `gcloud storage buckets create gs://eagleagent-data --location=australia-southeast1`
@@ -94,11 +94,13 @@
     - Set lifecycle policy: 30-day retention for `uploads/` prefix (optional)
   - **Service Account Setup**:
     - Create SA: `gcloud iam service-accounts create eagleagent-runner`
-    - Grant roles: `roles/datastore.user`, `roles/storage.objectAdmin`, `roles/secretmanager.secretAccessor`
+    - Grant roles: `roles/datastore.user`, `roles/storage.objectAdmin`
     - For GCSFuse: Ensure SA has `storage.objects.get`, `storage.objects.create`, `storage.objects.delete` on bucket
   - **Secrets Configuration**:
-    - Create secrets in Secret Manager: `GOOGLE_API_KEY`, `CHAINLIT_AUTH_SECRET`, `OAUTH_GOOGLE_CLIENT_ID`, `OAUTH_GOOGLE_CLIENT_SECRET`
-    - Grant SA access: `gcloud secrets add-iam-policy-binding SECRET_NAME --member=serviceAccount:eagleagent-runner@PROJECT.iam.gserviceaccount.com --role=roles/secretmanager.secretAccessor`
+    - All secrets managed in GitHub and passed as environment variables
+    - Configure in GitHub repository (Settings → Secrets and variables → Actions):
+      - `GOOGLE_API_KEY`, `CHAINLIT_AUTH_SECRET`, `OAUTH_GOOGLE_CLIENT_ID`, `OAUTH_GOOGLE_CLIENT_SECRET`
+      - `GCP_PROJECT_ID`, `GCS_BUCKET_NAME`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`
   - **OAuth Configuration**:
     - Get Cloud Run URL after first deployment: `gcloud run services describe eagleagent --region=australia-southeast1 --format='value(status.url)'`
     - Add to Google Console Authorized redirect URIs: `https://YOUR-SERVICE.run.app/auth/oauth/google/callback`
@@ -111,10 +113,10 @@
     - **No runtime OAuth callbacks needed** - refresh tokens auto-renew indefinitely
   - **Environment Variables for Cloud Run**:
     ```bash
-    GOOGLE_API_KEY=<from-secret-manager>
-    CHAINLIT_AUTH_SECRET=<from-secret-manager>
-    OAUTH_GOOGLE_CLIENT_ID=<from-secret-manager>
-    OAUTH_GOOGLE_CLIENT_SECRET=<from-secret-manager>
+    GOOGLE_API_KEY=<from-github-secrets>
+    CHAINLIT_AUTH_SECRET=<from-github-secrets>
+    OAUTH_GOOGLE_CLIENT_ID=<from-github-secrets>
+    OAUTH_GOOGLE_CLIENT_SECRET=<from-github-secrets>
     OAUTH_ALLOWED_DOMAINS=yourdomain.com
     CHAINLIT_URL=https://YOUR-SERVICE.run.app
     DATABASE_URL=sqlite+aiosqlite:////data/database/chainlit_datalayer.db
@@ -167,18 +169,18 @@
 - Create `.env.cloudrun.example` with Cloud Run-specific configuration:
   ```bash
   # Google Cloud Run Configuration
-  # These should be set via Secret Manager or Cloud Run env vars
+  # These should be set via GitHub Secrets and passed as Cloud Run env vars
   
   # LLM
-  GOOGLE_API_KEY=<secret-manager>
+  GOOGLE_API_KEY=<from-github-secrets>
   
   # GCP Project
   GOOGLE_PROJECT_ID=your-project-id
   
   # Authentication
-  CHAINLIT_AUTH_SECRET=<secret-manager>
-  OAUTH_GOOGLE_CLIENT_ID=<secret-manager>
-  OAUTH_GOOGLE_CLIENT_SECRET=<secret-manager>
+  CHAINLIT_AUTH_SECRET=<from-github-secrets>
+  OAUTH_GOOGLE_CLIENT_ID=<from-github-secrets>
+  OAUTH_GOOGLE_CLIENT_SECRET=<from-github-secrets>
   OAUTH_ALLOWED_DOMAINS=yourdomain.com
   
   # Deployment
@@ -228,7 +230,7 @@
 
 - Add **Deployment** section to `README.md`:
   - Link to `CLOUD_RUN_DEPLOYMENT.md`
-  - Architecture diagram: Cloud Run ↔ Firestore + GCS (GCSFuse) + Secret Manager
+  - Architecture diagram: Cloud Run ↔ Firestore + GCS (GCSFuse) + GitHub Secrets
   - Development vs Production configuration table
   - Quick start for local development vs cloud deployment
 - Update `GOOGLE_OAUTH_SETUP.md`:

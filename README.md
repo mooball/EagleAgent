@@ -317,16 +317,16 @@ Deploy EagleAgent to Google Cloud Run with persistent storage using GCSFuse volu
 │  └─ mcp_credentials/   │ ← MCP OAuth tokens
 └────────────────────────┘
          │
-    ┌────┴─────┬──────────────┐
-    ▼          ▼              ▼
-Firestore  Secret Manager  OAuth 2.0
+    ┌────┴──────────────┐
+    ▼                    ▼
+Firestore            OAuth 2.0
 ```
 
 **Key Features**:
 - ✅ **True persistence**: SQLite database on GCS-mounted volume (survives restarts)
 - ✅ **Auto-scaling**: Scales to zero when idle, up to 10 instances under load
 - ✅ **Multi-runtime**: Single container with Python + Node.js for MCP servers
-- ✅ **Secure**: Secrets in Secret Manager, Workload Identity for GitHub Actions
+- ✅ **Secure**: Encrypted environment variables, Workload Identity for GitHub Actions
 - ✅ **Cost-effective**: ~$26/month light usage, ~$5-10/month with scale-to-zero
 - ✅ **Australian region**: Deployed to Sydney for low latency
 

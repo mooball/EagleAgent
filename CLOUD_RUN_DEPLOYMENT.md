@@ -1,6 +1,6 @@
 # Google Cloud Run Deployment Guide
 
-This guide covers deploying EagleAgent to Google Cloud Run with persistent SQLite storage using GCSFuse volume mounts, Firestore for checkpoints, and Secret Manager for secure configuration.
+This guide covers deploying EagleAgent to Google Cloud Run with persistent SQLite storage using GCSFuse volume mounts and Firestore for checkpoints. Secrets are managed via GitHub and passed as environment variables during deployment.
 
 **💡 Quick tip**: For daily development workflow, see [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md)
 
@@ -14,6 +14,7 @@ This guide covers deploying EagleAgent to Google Cloud Run with persistent SQLit
 │  │  - Python 3.12 + uv                     │   │
 │  │  - Node.js 20 (MCP servers)             │   │
 │  │  - Chainlit Web UI                      │   │
+│  │  - Environment variables (from GitHub)  │   │
 │  └─────────────────────────────────────────┘   │
 │              │                │                  │
 │         /data mount      /tmp/files             │
@@ -29,12 +30,12 @@ This guide covers deploying EagleAgent to Google Cloud Run with persistent SQLit
     │  └─ mcp_credentials/  │
     └──────────────────────┘
                │
-    ┌──────────┴────────────┬─────────────────┐
-    ▼                       ▼                 ▼
-┌─────────┐         ┌──────────────┐   ┌──────────────┐
-│Firestore│         │Secret Manager│   │ OAuth 2.0    │
-│(Checkpts)│        │(API Keys)    │   │ (Google Auth)│
-└─────────┘         └──────────────┘   └──────────────┘
+    ┌──────────┴──────────────────┐
+    ▼                             ▼
+┌─────────┐              ┌──────────────┐
+│Firestore│              │ OAuth 2.0    │
+│(Checkpts)│              │ (Google Auth)│
+└─────────┘              └──────────────┘
 ```
 
 **Region**: All resources deployed to `australia-southeast1` (Sydney)
@@ -58,7 +59,6 @@ This guide covers deploying EagleAgent to Google Cloud Run with persistent SQLit
      run.googleapis.com \
      storage.googleapis.com \
      firestore.googleapis.com \
-     secretmanager.googleapis.com \
      artifactregistry.googleapis.com \
      cloudbuild.googleapis.com
    ```
@@ -138,31 +138,27 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:${SA_EMAIL}" \
   --role="roles/storage.objectAdmin"
-
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/secretmanager.secretAccessor"
 ```
 
-### 4. Secrets Configuration
+### 4. GitHub Secrets Configuration
 
-Store sensitive credentials in Secret Manager:
+All secrets are managed in GitHub and passed as environment variables during deployment. This is secure—Cloud Run encrypts environment variables at rest and in transit.
 
-```bash
-# Create secrets
-echo -n "YOUR_GOOGLE_API_KEY" | gcloud secrets create GOOGLE_API_KEY --data-file=-
-echo -n "$(openssl rand -hex 32)" | gcloud secrets create CHAINLIT_AUTH_SECRET --data-file=-
-echo -n "YOUR_OAUTH_CLIENT_ID" | gcloud secrets create OAUTH_GOOGLE_CLIENT_ID --data-file=-
-echo -n "YOUR_OAUTH_CLIENT_SECRET" | gcloud secrets create OAUTH_GOOGLE_CLIENT_SECRET --data-file=-
-echo -n "yourdomain.com" | gcloud secrets create OAUTH_ALLOWED_DOMAINS --data-file=-
+Configure these secrets in your GitHub repository (Settings → Secrets and variables → Actions):
 
-# Grant service account access
-for SECRET in GOOGLE_API_KEY CHAINLIT_AUTH_SECRET OAUTH_GOOGLE_CLIENT_ID OAUTH_GOOGLE_CLIENT_SECRET OAUTH_ALLOWED_DOMAINS; do
-  gcloud secrets add-iam-policy-binding $SECRET \
-    --member="serviceAccount:${SA_EMAIL}" \
-    --role="roles/secretmanager.secretAccessor"
-done
-```
+**API Keys & Auth:**
+- `GOOGLE_API_KEY` - Your Google AI API key
+- `CHAINLIT_AUTH_SECRET` - Random secret for session auth (generate: `openssl rand -hex 32`)
+- `OAUTH_GOOGLE_CLIENT_ID` - From Google Cloud Console OAuth 2.0 setup
+- `OAUTH_GOOGLE_CLIENT_SECRET` - From Google Cloud Console OAuth 2.0 setup
+
+**GCP Configuration:**
+- `GCP_PROJECT_ID` - Your Google Cloud project ID
+- `GCS_BUCKET_NAME` - Your GCS bucket name (e.g., `eagleagent`)
+- `GCP_WORKLOAD_IDENTITY_PROVIDER` - Full resource name from Workload Identity setup
+- `GCP_SERVICE_ACCOUNT` - Service account email (e.g., `eagleagent-runner@PROJECT.iam.gserviceaccount.com`)
+
+**Note**: These secrets are automatically passed to Cloud Run during deployment and are not visible in logs.
 
 ### 5. OAuth Configuration
 
@@ -171,7 +167,7 @@ done
 1. Go to [Google Cloud Console](https://console.cloud.google.com) → APIs & Services → Credentials
 2. Create OAuth 2.0 Client ID (Web application)
 3. Add temporary redirect URI: `http://localhost:8000/auth/oauth/google/callback`
-4. Save Client ID and Client Secret to Secret Manager (done in step 4)
+4. Save Client ID and Client Secret to GitHub Secrets (see step 4 above)
 
 #### Post-Deployment Update
 
@@ -211,21 +207,23 @@ gcloud storage cp -r ~/.google_workspace_mcp/credentials/* \
 
 ### 7. Manual Deployment
 
-Deploy to Cloud Run using gcloud:
+**Note**: Manual deployment is optional. The recommended approach is to use GitHub Actions which automatically deploys when you push to the `main` branch.
+
+If you need to deploy manually, use the following commands. You'll need to set environment variables with your secret values:
 
 ```bash
 # Set variables
 PROJECT_ID=$(gcloud config get-value project)
 REGION=australia-southeast1
 SERVICE_NAME=eagleagent
-GCS_BUCKET=eagleagent-data
+GCS_BUCKET=eagleagent
 
-# Get secrets
-GOOGLE_API_KEY=$(gcloud secrets versions access latest --secret=GOOGLE_API_KEY)
-CHAINLIT_AUTH_SECRET=$(gcloud secrets versions access latest --secret=CHAINLIT_AUTH_SECRET)
-OAUTH_CLIENT_ID=$(gcloud secrets versions access latest --secret=OAUTH_GOOGLE_CLIENT_ID)
-OAUTH_CLIENT_SECRET=$(gcloud secrets versions access latest --secret=OAUTH_GOOGLE_CLIENT_SECRET)
-OAUTH_ALLOWED_DOMAINS=$(gcloud secrets versions access latest --secret=OAUTH_ALLOWED_DOMAINS)
+# Set secrets (replace with actual values)
+GOOGLE_API_KEY="your-google-api-key"
+CHAINLIT_AUTH_SECRET="your-chainlit-auth-secret"
+OAUTH_CLIENT_ID="your-oauth-client-id"
+OAUTH_CLIENT_SECRET="your-oauth-client-secret"
+OAUTH_ALLOWED_DOMAINS="yourdomain.com"
 
 # Deploy
 gcloud run deploy $SERVICE_NAME \
