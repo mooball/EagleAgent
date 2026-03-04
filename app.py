@@ -19,9 +19,11 @@ from includes.prompts import build_system_prompt
 from includes.storage_utils import (
     upload_file_to_gcs,
     generate_object_key,
-    get_storage_client
+    get_storage_client,
+    generate_signed_url
 )
 from includes.document_processing import process_file, create_multimodal_content
+from includes.gcs_storage_client import GCSStorageClient
 from includes.mcp_config import load_mcp_config
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -225,8 +227,15 @@ def get_data_layer():
     """
     Configure SQLite-based data layer for conversation history persistence.
     This enables the chat history sidebar in the Chainlit UI.
+    Includes GCS storage client for persistent file attachments.
     """
-    return SQLAlchemyDataLayer(conninfo=config.DATABASE_URL)
+    # Initialize GCS storage client for file attachments
+    storage_client = GCSStorageClient(bucket_name=config.GCS_BUCKET_NAME)
+    
+    return SQLAlchemyDataLayer(
+        conninfo=config.DATABASE_URL,
+        storage_provider=storage_client
+    )
 
 @cl.on_chat_start
 async def start():
@@ -332,52 +341,35 @@ async def main(message: cl.Message):
     # Use the session ID as the thread ID to maintain conversation history
     thread_id = cl.user_session.get("thread_id")
     user_id = cl.user_session.get("user_id", "")
-    config = {"configurable": {"thread_id": thread_id}}
+    graph_config = {"configurable": {"thread_id": thread_id}}
     
     # Process file attachments if present
+    # Re-attach elements to response message to trigger persistence
     processed_files = []
     file_metadata = []
+    uploaded_elements = []  # Track elements for re-attachment
     
     if message.elements:
-        bucket_name = config.GCS_BUCKET_NAME
-        
+        logging.info(f"Received {len(message.elements)} file attachments")
         for element in message.elements:
+            # Log element details for debugging
+            logging.info(f"Element: id={element.id}, name={element.name}, for_id={element.for_id}, thread_id={element.thread_id}")
             try:
-                # Generate unique object key for GCS
-                object_key = generate_object_key(user_id, thread_id, element.name)
-                
-                # Upload to GCS if bucket configured
-                gcs_url = None
-                if bucket_name:
-                    try:
-                        gcs_url = upload_file_to_gcs(
-                            element.path,
-                            bucket_name,
-                            object_key,
-                            content_type=element.mime
-                        )
-                        logging.info(f"Uploaded {element.name} to GCS: {gcs_url}")
-                    except Exception as e:
-                        logging.error(f"Failed to upload {element.name} to GCS: {e}")
-                        await cl.Message(
-                            content=f"⚠️ Failed to upload {element.name} to cloud storage. Processing locally.",
-                            author="system"
-                        ).send()
-                
-                # Process file content
+                # Process file content for LLM
                 with open(element.path, "rb") as f:
                     file_bytes = f.read()
                 
                 processed_file = process_file(file_bytes, element.mime, element.name)
                 processed_files.append(processed_file)
                 
-                # Store metadata for database
+                # Keep track of elements for persistence
+                uploaded_elements.append(element)
+                
+                # Store metadata
                 file_metadata.append({
                     "name": element.name,
                     "mime_type": element.mime,
                     "size": element.size,
-                    "object_key": object_key,
-                    "gcs_url": gcs_url,
                     "processed_type": processed_file.get("processed_type")
                 })
                 
@@ -389,6 +381,13 @@ async def main(message: cl.Message):
                     content=f"⚠️ Error processing {element.name}: {str(e)}",
                     author="system"
                 ).send()
+        
+        # Re-attach elements to a confirmation message to trigger persistence
+        if uploaded_elements:
+            await cl.Message(
+                content=f"📎 Received {len(uploaded_elements)} file(s)",
+                elements=uploaded_elements
+            ).send()
     
     # Create multimodal message content (text + files)
     message_content = create_multimodal_content(message.content, processed_files)
@@ -406,7 +405,7 @@ async def main(message: cl.Message):
     msg = cl.Message(content="")
     await msg.send()
     
-    async for event in graph.astream_events(inputs, config=config, version="v1"):
+    async for event in graph.astream_events(inputs, config=graph_config, version="v1"):
         kind = event["event"]
         if kind == "on_chat_model_stream":
             content = event["data"]["chunk"].content
