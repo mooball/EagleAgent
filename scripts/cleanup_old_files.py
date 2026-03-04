@@ -12,11 +12,13 @@ import os
 import sys
 import logging
 from datetime import datetime, timedelta
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from includes.storage_utils import delete_file_from_gcs
+from config import config
 
-# Load environment variables
+# Load environment variables (for secrets like GOOGLE_APPLICATION_CREDENTIALS)
 load_dotenv()
 
 logging.basicConfig(
@@ -34,8 +36,8 @@ def cleanup_expired_files(days: int = 30, dry_run: bool = False):
         days: Number of days to keep files (default: 30)
         dry_run: If True, only report what would be deleted without deleting
     """
-    database_url = os.getenv("DATABASE_URL")
-    bucket_name = os.getenv("GCP_BUCKET_NAME")
+    database_url = config.DATABASE_URL
+    bucket_name = config.GCS_BUCKET_NAME
     
     if not database_url:
         logger.error("DATABASE_URL not set in environment")

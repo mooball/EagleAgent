@@ -8,20 +8,23 @@ Usage:
 """
 
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 from google.cloud import firestore
+from config import config
 
-# Load environment variables
+# Load environment variables (for secrets like GOOGLE_APPLICATION_CREDENTIALS)
 load_dotenv()
 
 # Initialize Firestore client
-client = firestore.Client(project=os.getenv("GOOGLE_PROJECT_ID"), database="(default)")
+client = firestore.Client(project=config.GCP_PROJECT_ID, database="(default)")
 checkpoints_collection = client.collection("checkpoints")
 
 
 def list_documents():
     """List all top-level documents in the checkpoints collection."""
-    print(f"Project: {os.getenv('GOOGLE_PROJECT_ID')}")
+    print(f"Project: {config.GCP_PROJECT_ID}")
     print(f"Database: (default)")
     print(f"Collection path: checkpoints")
     print(f"Client info: {client.project}\n")

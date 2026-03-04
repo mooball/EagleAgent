@@ -27,6 +27,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from includes.firestore_store import FirestoreStore
+from config import config
 
 
 async def set_profile(store: FirestoreStore, user_id: str, field: str, value: str):
@@ -114,7 +115,7 @@ async def main():
     command = sys.argv[1].lower()
     
     # Initialize store
-    store = FirestoreStore(project_id=os.getenv("GOOGLE_PROJECT_ID"), collection="user_memory")
+    store = FirestoreStore(project_id=config.GCP_PROJECT_ID, collection="user_memory")
     
     if command == "set":
         if len(sys.argv) != 5:

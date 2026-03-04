@@ -24,10 +24,90 @@
 - Use streaming where supported and expose it through Chainlit for better UX.
 
 ## Environment & Configuration
-- Never hard-code API keys or secrets.
-- Read configuration from environment variables, loaded via `python-dotenv` from `.env`.
-- Keep an example file: `.env.example` updated whenever new config is added.
-- Validate required env vars early (e.g. at startup) and fail with clear messages.
+
+### Configuration Module (`config/settings.py`)
+- **Non-secret configuration** (project IDs, bucket names, model names, etc.) lives in `config/settings.py`.
+- This file is **version-controlled** and provides defaults for all configuration values.
+- Configuration values can be overridden by environment variables if needed.
+- To add a new configuration setting:
+  1. Add it to the `Config` class in `config/settings.py` with a sensible default.
+  2. Use `os.getenv("VAR_NAME", "default_value")` to allow environment override.
+  3. Document the setting with a comment.
+  4. Import and use: `from config import config` then `config.YOUR_SETTING`.
+
+### Secrets & Environment Variables
+- **Secrets** (API keys, OAuth secrets, auth tokens) must **never** be in version control.
+- Store secrets in `.env` file locally (ignored by git).
+- Read secrets using `os.getenv("SECRET_NAME")` directly in code, **not** via config module.
+- Keep `.env.example` updated whenever new secrets are added (with placeholder values).
+
+### Configuration Hierarchy
+1. **Defaults**: Defined in `config/settings.py` (version-controlled)
+2. **Environment Variables**: Override defaults when present (`.env` locally, GitHub Secrets in CI/CD)
+3. **Runtime**: Application uses values from `config` module or `os.getenv()` for secrets
+
+### When to Use Each Approach
+- **Use `config/settings.py`** for:
+  - Non-secret settings (project IDs, bucket names, model names)
+  - Settings that should be visible and auditable
+  - Settings that are the same across dev/prod (or have sensible defaults)
+  
+- **Use `.env` / environment variables** for:
+  - API keys, passwords, OAuth secrets
+  - Environment-specific secrets (different keys for dev/prod)
+  - Local development overrides
+
+### Validation
+- Validate required configuration early at startup using `config.validate()` if needed.
+- Fail fast with clear error messages when required config is missing.
+
+### Code Examples
+
+**Using configuration values:**
+```python
+from config import config
+
+# Use configuration settings
+project_id = config.GCP_PROJECT_ID
+bucket_name = config.GCS_BUCKET_NAME
+model = config.DEFAULT_MODEL
+```
+
+**Using secrets:**
+```python
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Secrets are read directly from environment
+api_key = os.getenv("GOOGLE_API_KEY")
+oauth_secret = os.getenv("OAUTH_GOOGLE_CLIENT_SECRET")
+```
+
+**Mixed approach (typical in application code):**
+```python
+import os
+from dotenv import load_dotenv
+from config import config
+
+load_dotenv()
+
+# Configuration from config module
+model = ChatGoogleGenerativeAI(
+    model=config.DEFAULT_MODEL,  # From config/settings.py
+    google_api_key=os.getenv("GOOGLE_API_KEY")  # Secret from .env
+)
+```
+
+### GitHub Secrets & Cloud Deployment
+- **GitHub Secrets** should only contain actual secrets (API keys, OAuth credentials, service account keys).
+- **Non-secret configuration** is now in `config/settings.py`, not in GitHub Secrets.
+- When deploying to Cloud Run:
+  - Secrets are passed as environment variables via `--set-env-vars` in deployment commands.
+  - Configuration values come from `config/settings.py` (baked into the Docker image).
+  - Cloud-specific overrides can still use environment variables if needed.
+- See `CLOUD_RUN_DEPLOYMENT.md` for deployment documentation.
 
 ## Chainlit
 - Use `chainlit` handlers as the boundary between UI and core logic:
@@ -57,6 +137,23 @@
 - Use descriptive variable and function names (avoid single-letter names except for very short scopes).
 - Prefer small, composable functions over large monoliths.
 - When adding tests, use `pytest` and keep tests in a top-level `tests/` folder.
+
+## Testing
+- **Always use `./run_tests.sh`** to run tests, not direct `pytest` commands.
+- The `run_tests.sh` script:
+  - Automatically checks if Firestore emulator is running.
+  - Starts the emulator if needed (on `localhost:8686`).
+  - Sets the `FIRESTORE_EMULATOR_HOST` environment variable.
+  - Runs `pytest` with proper environment setup.
+  - Accepts additional pytest arguments: `./run_tests.sh -k test_name` or `./run_tests.sh -v`.
+- Tests require Firestore emulator for:
+  - Checkpoint persistence tests (`test_checkpoint_saver.py`)
+  - Firestore store tests (`test_firestore_store.py`)
+  - Integration tests that use checkpointer/store
+- To manually start/stop the emulator:
+  - Start: `gcloud emulators firestore start --host-port=localhost:8686`
+  - Stop: `pkill -f "firestore"`
+  - Check status: `ps aux | grep cloud-firestore-emulator`
 
 ## Git & Repository
 - Do not commit `.env`, `.venv`, or other secrets / local artifacts.

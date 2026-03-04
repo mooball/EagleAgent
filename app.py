@@ -11,6 +11,7 @@ import operator
 import os
 import logging
 from dotenv import load_dotenv
+from config import config
 from includes.timestamped_firestore_saver import TimestampedFirestoreSaver
 from includes.firestore_store import FirestoreStore
 from includes.user_profile_tools import create_profile_tools
@@ -24,7 +25,7 @@ from includes.document_processing import process_file, create_multimodal_content
 from includes.mcp_config import load_mcp_config
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-# Load environment variables
+# Load environment variables (still needed for secrets like GOOGLE_API_KEY)
 load_dotenv()
 
 # Configure logging
@@ -32,7 +33,7 @@ logging.basicConfig(level=logging.INFO)
 
 # Add cross-thread persistent store for user profiles and long-term memory
 # Initialize this early so we can use it to create tools
-store = FirestoreStore(project_id=os.getenv("GOOGLE_PROJECT_ID"), collection="user_memory")
+store = FirestoreStore(project_id=config.GCP_PROJECT_ID, collection="user_memory")
 
 # Initialize MCP client for external tool integration
 # Loads MCP server configurations from config/mcp_servers.yaml
@@ -50,9 +51,9 @@ except Exception as e:
 
 
 # Initialize the model
-# Using gemini-3-flash-preview as per user request (and verified existence)
-# Provide your API key in the .env file
-base_model = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", google_api_key=os.getenv("GOOGLE_API_KEY"))
+# Model configuration is in config/settings.py (DEFAULT_MODEL)
+# API key is loaded from environment variable (secret)
+base_model = ChatGoogleGenerativeAI(model=config.DEFAULT_MODEL, google_api_key=os.getenv("GOOGLE_API_KEY"))
 
 # Define the state
 class AgentState(TypedDict):
@@ -161,7 +162,7 @@ builder.add_edge("tools", "model")
 
 # Add Firestore-based memory to persist state across interactions and restarts
 # TimestampedFirestoreSaver adds `created_at` field to each checkpoint for TTL policies
-checkpointer = TimestampedFirestoreSaver(project_id=os.getenv("GOOGLE_PROJECT_ID"), checkpoints_collection="checkpoints")
+checkpointer = TimestampedFirestoreSaver(project_id=config.GCP_PROJECT_ID, checkpoints_collection="checkpoints")
 
 # Compile graph with both checkpointer (thread state) and store (cross-thread memory)
 graph = builder.compile(checkpointer=checkpointer, store=store)
@@ -187,7 +188,7 @@ def oauth_callback(
     """
     if provider_id == "google":
         # Check if user's domain is in the allowed domains list
-        allowed_domains_str = os.getenv("OAUTH_ALLOWED_DOMAINS", "")
+        allowed_domains_str = config.OAUTH_ALLOWED_DOMAINS
         if allowed_domains_str:
             allowed_domains = [domain.strip() for domain in allowed_domains_str.split(",")]
             user_domain = raw_user_data.get("hd")
@@ -225,7 +226,7 @@ def get_data_layer():
     Configure SQLite-based data layer for conversation history persistence.
     This enables the chat history sidebar in the Chainlit UI.
     """
-    return SQLAlchemyDataLayer(conninfo=os.getenv("DATABASE_URL"))
+    return SQLAlchemyDataLayer(conninfo=config.DATABASE_URL)
 
 @cl.on_chat_start
 async def start():
@@ -338,7 +339,7 @@ async def main(message: cl.Message):
     file_metadata = []
     
     if message.elements:
-        bucket_name = os.getenv("GCP_BUCKET_NAME")
+        bucket_name = config.GCS_BUCKET_NAME
         
         for element in message.elements:
             try:
