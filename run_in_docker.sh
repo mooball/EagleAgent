@@ -45,9 +45,11 @@ echo ""
 docker run -d \
     --name $CONTAINER_NAME \
     --env-file .env \
-    -e DATABASE_URL="sqlite+aiosqlite:///./chainlit_datalayer.db" \
+    -e DATABASE_URL="sqlite+aiosqlite:////data/database/chainlit_datalayer.db" \
     -e TEMP_FILES_FOLDER="/tmp/files" \
     -e CHAINLIT_URL="http://localhost:$HOST_PORT" \
+    -e GOOGLE_APPLICATION_CREDENTIALS="/app/service-account-key.json" \
+    -v "$(pwd)/service-account-key.json:/app/service-account-key.json:ro" \
     -p $HOST_PORT:$CONTAINER_PORT \
     $IMAGE_NAME
 
