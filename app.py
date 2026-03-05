@@ -2,6 +2,7 @@ import chainlit as cl
 from chainlit.types import ThreadDict
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.store.base import BaseStore
 from langgraph.prebuilt import ToolNode
@@ -14,7 +15,7 @@ from dotenv import load_dotenv
 from config import config
 from includes.timestamped_firestore_saver import TimestampedFirestoreSaver
 from includes.firestore_store import FirestoreStore
-from includes.user_profile_tools import create_profile_tools
+from includes.tools.user_profile import create_profile_tools
 from includes.prompts import build_system_prompt
 from includes.storage_utils import (
     upload_file_to_gcs,
@@ -25,7 +26,9 @@ from includes.storage_utils import (
 from includes.document_processing import process_file, create_multimodal_content
 from includes.gcs_storage_client import GCSStorageClient
 from includes.mcp_config import load_mcp_config
+from includes.agents.browser_agent import BrowserAgent
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_core.tools import tool
 
 # Load environment variables (still needed for secrets like GOOGLE_API_KEY)
 load_dotenv()
@@ -57,6 +60,9 @@ except Exception as e:
 # API key is loaded from environment variable (secret)
 base_model = ChatGoogleGenerativeAI(model=config.DEFAULT_MODEL, google_api_key=os.getenv("GOOGLE_API_KEY"))
 
+# Initialize browser agent for web automation
+browser_agent = BrowserAgent(model=base_model, store=store)
+
 # Define the state
 class AgentState(TypedDict):
     messages: Annotated[Sequence[HumanMessage | AIMessage | SystemMessage], operator.add]
@@ -76,10 +82,64 @@ async def call_model(
     messages = state["messages"]
     user_id = state.get("user_id")
     
+    # Create browser agent delegation tool
+    @tool
+    async def use_browser_agent(task: str, config: RunnableConfig) -> str:
+        """
+        Delegate web browsing and automation tasks to specialized browser agent.
+        
+        Use this tool when you need to:
+        - Search for information online
+        - Navigate to and extract data from websites  
+        - Interact with web pages (click, fill forms, etc.)
+        - Get current/real-time information from the web
+        
+        The browser agent has access to a headless Chromium browser and can:
+        - Open web pages
+        - Click buttons and links
+        - Fill out forms
+        - Extract text and data
+        - Take screenshots
+        
+        Args:
+            task: Clear description of the browsing task to perform.
+                  Examples:
+                  - "Search Google for Python 3.12 release date"
+                  - "Go to python.org and find the latest version"
+                  - "Search for weather in Sydney and extract the forecast"
+        
+        Returns:
+            Results from the browser agent as a string
+        """
+        try:
+            # Create a sub-state for the browser agent
+            browser_state = {
+                "messages": [HumanMessage(content=task)],
+                "user_id": user_id
+            }
+            
+            # Invoke the browser agent
+            logging.info(f"Delegating to browser agent: {task[:100]}...")
+            result = await browser_agent(browser_state, config)
+            
+            # Extract the response message
+            response_message = result["messages"][-1]
+            response_text = response_message.content if hasattr(response_message, "content") else str(response_message)
+            
+            logging.info(f"Browser agent completed: {len(response_text)} chars")
+            return response_text
+            
+        except Exception as e:
+            logging.error(f"Browser agent error: {e}")
+            return f"Browser agent error: {str(e)}"
+    
     # Create user-specific tools and add MCP tools
     tools = []
     if user_id and store:
         tools.extend(create_profile_tools(store, user_id))
+    
+    # Add browser agent delegation tool
+    tools.append(use_browser_agent)
     
     # Add MCP tools if available
     if mcp_client:
@@ -101,12 +161,13 @@ async def call_model(
         user_profile = await store.aget(("users",), user_id)
     
     # Build system prompt using centralized configuration from includes/prompts.py
-    # This ensures consistent context construction and easier prompt management
+    # Include only relevant tool instructions based on available tools
     enhanced_messages = list(messages)
     if not any(isinstance(m, SystemMessage) for m in enhanced_messages):
-        # Construct system prompt with user profile (if available)
+        # Construct system prompt with user profile (if available) and available tool names
         profile_data = user_profile.value if (user_profile and user_profile.value) else None
-        system_content = build_system_prompt(profile_data)
+        tool_names = [tool.name for tool in tools] if tools else None
+        system_content = build_system_prompt(profile_data, available_tool_names=tool_names)
         enhanced_messages = [SystemMessage(content=system_content)] + enhanced_messages
     
     response = await model_with_tools.ainvoke(enhanced_messages)
@@ -133,10 +194,32 @@ async def call_tools(
     messages = state["messages"]
     last_message = messages[-1]
     
+    # Create browser agent delegation tool (same as in call_model)
+    @tool
+    async def use_browser_agent(task: str, config: RunnableConfig) -> str:
+        """Delegate web browsing tasks to browser agent."""
+        try:
+            browser_state = {
+                "messages": [HumanMessage(content=task)],
+                "user_id": user_id
+            }
+            logging.info(f"Delegating to browser agent: {task[:100]}...")
+            result = await browser_agent(browser_state, config)
+            response_message = result["messages"][-1]
+            response_text = response_message.content if hasattr(response_message, "content") else str(response_message)
+            logging.info(f"Browser agent completed: {len(response_text)} chars")
+            return response_text
+        except Exception as e:
+            logging.error(f"Browser agent error: {e}")
+            return f"Browser agent error: {str(e)}"
+    
     # Create tools for this user
     tools = []
     if user_id and store:
         tools.extend(create_profile_tools(store, user_id))
+    
+    # Add browser agent delegation tool
+    tools.append(use_browser_agent)
     
     # Add MCP tools if available
     if mcp_client:

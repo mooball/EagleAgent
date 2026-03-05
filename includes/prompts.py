@@ -74,6 +74,17 @@ TOOL_INSTRUCTIONS = {
             "facts": "Use for biographical information or facts about the user"
         },
         "prompt_template": """When the user tells you information about themselves, use the remember_user_info tool to save it for future conversations. If they say 'call me X' or 'I prefer X', use the 'preferred_name' category."""
+    },
+    
+    "use_browser_agent": {
+        "description": "Delegate web browsing and automation tasks to specialized browser agent",
+        "when_to_use": [
+            "When user asks to search the web",
+            "When user wants to browse a specific website",
+            "When user needs to extract information from web pages",
+            "When user asks about current/real-time online information"
+        ],
+        "prompt_template": """For web browsing tasks (searching, navigating websites, extracting online information), use the use_browser_agent tool by providing a clear description of the browsing task. The browser agent will handle all web automation and return the results to you."""
     }
 }
 
@@ -173,7 +184,10 @@ def build_profile_context(profile_data: Dict[str, Any]) -> List[str]:
     return sections
 
 
-def build_system_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
+def build_system_prompt(
+    profile_data: Optional[Dict[str, Any]] = None,
+    available_tool_names: Optional[List[str]] = None
+) -> str:
     """
     Build the complete system prompt for the agent.
     
@@ -184,6 +198,9 @@ def build_system_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
     Args:
         profile_data: Optional dictionary containing user profile information.
                      If None, only agent identity and tool instructions are included.
+        available_tool_names: Optional list of tool names to include instructions for.
+                             If None, includes all tool instructions.
+                             Use this for dynamic/context-aware prompts.
     
     Returns:
         Complete system prompt string ready to be used in a SystemMessage
@@ -196,15 +213,13 @@ def build_system_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
         True
         >>> "Tom" in prompt
         True
-        >>> "remember_user_info" in prompt
-        True
         
-        >>> # Without profile data (new user)
-        >>> prompt = build_system_prompt(None)
-        >>> "EagleAgent" in prompt
-        True
+        >>> # With specific tools only
+        >>> prompt = build_system_prompt(None, ["remember_user_info"])
         >>> "remember_user_info" in prompt
         True
+        >>> "browser" in prompt
+        False
     """
     parts = []
     
@@ -225,10 +240,20 @@ def build_system_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
         # Add spacing before tool instructions
         parts.append("")
     
-    # Always add tool instructions
-    parts.append(TOOL_INSTRUCTIONS["remember_user_info"]["prompt_template"])
+    # Add tool instructions (either all or filtered by available_tool_names)
+    if available_tool_names is None:
+        # Include all tool instructions
+        for tool_name, tool_config in TOOL_INSTRUCTIONS.items():
+            parts.append(tool_config["prompt_template"])
+            parts.append("")  # Spacing between instructions
+    else:
+        # Only include instructions for available tools
+        for tool_name in available_tool_names:
+            if tool_name in TOOL_INSTRUCTIONS:
+                parts.append(TOOL_INSTRUCTIONS[tool_name]["prompt_template"])
+                parts.append("")  # Spacing between instructions
     
-    return "\n".join(parts)
+    return "\n".join(parts).strip()
 
 
 def get_agent_identity_prompt() -> Optional[str]:
