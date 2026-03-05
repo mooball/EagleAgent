@@ -1,9 +1,10 @@
 import chainlit as cl
 from chainlit.types import ThreadDict
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, trim_messages, RemoveMessage, BaseMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
 from langgraph.store.base import BaseStore
 from langgraph.prebuilt import ToolNode
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -65,7 +66,7 @@ browser_agent = BrowserAgent(model=base_model, store=store)
 
 # Define the state
 class AgentState(TypedDict):
-    messages: Annotated[Sequence[HumanMessage | AIMessage | SystemMessage], operator.add]
+    messages: Annotated[Sequence[BaseMessage], add_messages]
     user_id: str  # User email for cross-thread memory lookup
     file_attachments: NotRequired[list[Dict[str, Any]]]  # Optional: uploaded file metadata
 
@@ -173,8 +174,29 @@ async def call_model(
         system_content = build_system_prompt(profile_data, available_tool_names=tool_names)
         enhanced_messages = [SystemMessage(content=system_content)] + enhanced_messages
     
-    response = await model_with_tools.ainvoke(enhanced_messages)
-    return {"messages": [response]}
+    # Trim history to ~30 messages to prevent hitting Firestore 1MiB checkpoint limit
+    trimmed_messages = trim_messages(
+        enhanced_messages,
+        max_tokens=30, # Max number of messages to retain
+        strategy="last",
+        token_counter=len, # Count each message as 1
+        include_system=True,
+        allow_partial=False
+    )
+    
+    response = await model_with_tools.ainvoke(trimmed_messages)
+    
+    # Explicitly remove pruned messages from state so they don't bloat the checkpointer
+    retained_ids = {m.id for m in trimmed_messages if getattr(m, "id", None)}
+    
+    # Exclude system message when figuring out what to remove, as we dynamically add it and it's not in State
+    messages_to_remove = [
+        RemoveMessage(id=m.id) 
+        for m in messages 
+        if getattr(m, "id", None) and m.id not in retained_ids
+    ]
+    
+    return {"messages": messages_to_remove + [response]}
 
 # Tool execution node
 def should_continue(state: AgentState) -> Literal["tools", END]:

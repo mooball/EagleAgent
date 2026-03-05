@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 import google.auth
+from google.auth.transport.requests import Request
 from google.cloud import storage
 from google.oauth2 import service_account
 
@@ -224,11 +225,40 @@ def generate_signed_url(
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(object_key)
         
-        url = blob.generate_signed_url(
-            version="v4",
-            expiration=timedelta(hours=expiration_hours),
-            method="GET"
-        )
+        kwargs = {
+            "version": "v4",
+            "expiration": timedelta(hours=expiration_hours),
+            "method": "GET"
+        }
+        
+        # On Cloud Run / Compute Engine, default credentials lack a private key (sign_bytes).
+        # We must use the IAM signBlob API by passing the token and service account email directly.
+        credentials = client._credentials
+        if credentials and not hasattr(credentials, "sign_bytes"):
+            if not credentials.valid:
+                credentials.refresh(Request())
+            
+            token = credentials.token
+            email = getattr(credentials, "service_account_email", None)
+            
+            # Fallback to fetching it directly from the metadata server if attribute is missing
+            if not email:
+                import urllib.request
+                req = urllib.request.Request(
+                    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
+                    headers={"Metadata-Flavor": "Google"}
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=2) as response:
+                        email = response.read().decode("utf-8").strip()
+                except Exception as meta_error:
+                    logger.warning(f"Could not retrieve service account email from metadata: {meta_error}")
+
+            if token and email:
+                kwargs["access_token"] = token
+                kwargs["service_account_email"] = email
+        
+        url = blob.generate_signed_url(**kwargs)
         
         logger.info(f"Generated signed URL for {object_key}")
         return url

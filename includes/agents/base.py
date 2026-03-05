@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 from abc import ABC, abstractmethod
 from langchain_core.runnables.config import RunnableConfig
 from langchain_core.tools import BaseTool
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, trim_messages
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.store.base import BaseStore
 import logging
