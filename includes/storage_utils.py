@@ -44,7 +44,8 @@ def get_gcp_credentials():
     
     # Use Application Default Credentials (Cloud Run, GCE, Cloud Shell)
     logger.info("Using Application Default Credentials")
-    credentials, project = google.auth.default()
+    scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    credentials, project = google.auth.default(scopes=scopes)
     return credentials
 
 
