@@ -4,9 +4,9 @@
 
 **Steps**
 
-**Phase 1: Foundation & Browser Agent (Week 1-2)**
+**Phase 1: Foundation & Browser Agent (Week 1-2) - COMPLETED**
 
-1. **Create folder structure for multi-agent system**
+- [x] 1. **Create folder structure for multi-agent system**
    - Create [includes/agents/](includes/agents/) directory with `__init__.py`
    - Create [includes/agents/base.py](includes/agents/base.py) with `BaseSubAgent` class (shared patterns for all future agents)
    - Create [includes/tools/](includes/tools/) directory with `__init__.py`
@@ -14,41 +14,41 @@
    - Update import in [app.py](app.py#L19) from `includes.user_profile_tools` to `includes.tools.user_profile`
    - Run tests to verify refactor didn't break anything
 
-2. **Install agent-browser and verify setup**
+- [x] 2. **Install agent-browser and verify setup**
    - Add to [pyproject.toml](pyproject.toml): `agent-browser = "^0.16.3"` (latest version)
    - Run `uv sync` to install
    - Test CLI: `agent-browser --version` and `agent-browser install` to download Chromium
    - Verify `agent-browser --json` outputs valid JSON
 
-3. **Create browser tools module**
+- [x] 3. **Create browser tools module**
    - Create [includes/tools/browser_tools.py](includes/tools/browser_tools.py)
    - Implement `browser()` tool using subprocess to call `agent-browser` CLI
    - Add error handling (timeouts, invalid commands, session management)
    - Tool docstring includes condensed workflow from agent-browser SKILL.md
    - Add helper function `create_browser_tools()` following user_profile pattern
 
-4. **Create browser agent**
+- [x] 4. **Create browser agent**
    - Create [includes/agents/browser_agent.py](includes/agents/browser_agent.py) extending `BaseSubAgent`
    - Override `get_tools(user_id)` to return browser tools
    - Override `get_system_prompt()` with browser-specific instructions (from agent-browser SKILL.md)
    - Implement browser session cleanup in agent lifecycle
    - Agent manages agent-browser session state (refs from snapshots, current URL, etc.)
 
-5. **Add browser agent prompts**
+- [x] 5. **Add browser agent prompts**
    - Update [includes/prompts.py](includes/prompts.py#L58-L85) `TOOL_INSTRUCTIONS` dict
    - Add `"use_browser_agent"` entry with concise delegation instructions (~50 tokens)
    - Add `AGENT_PROMPTS["browser_agent"]` with full browser workflow (~500 tokens, only used when browser agent active)
    - Modify `build_system_prompt()` to accept `available_tool_names` parameter (dynamic instructions)
 
-6. **Integrate browser agent into main graph (as tool for now)**
+- [x] 6. **Integrate browser agent into main graph (as tool for now)**
    - In [app.py](app.py#L77-L93) `call_model()`, create `use_browser_agent` delegation tool
    - Tool invokes browser agent sub-graph and returns results
    - Main agent sees one tool: `use_browser_agent(task: str) -> str`
    - Browser agent handles all agent-browser CLI complexity internally
 
-**Phase 2: Testing & Validation (Week 2)**
+**Phase 2: Testing & Validation (Week 2) - COMPLETED**
 
-7. **Create browser agent tests**
+- [x] 7. **Create browser agent tests**
    - Create [tests/agents/](tests/agents/) directory structure
    - Create [tests/agents/test_browser_agent.py](tests/agents/test_browser_agent.py)
    - Test: Browser agent initialization and tool loading
@@ -56,14 +56,14 @@
    - Test: Error handling (timeouts, invalid commands)
    - Test: Session cleanup
 
-8. **Create integration tests**
+- [x] 8. **Create integration tests**
    - In [tests/test_integration.py](tests/test_integration.py), add browser agent scenarios
    - Test: Main agent delegates browse request to browser agent
    - Test: Browser agent returns results to main agent
    - Test: Multi-turn browser tasks (search, then click, then extract)
    - Use mocked agent-browser responses (no actual browser needed in tests)
 
-9. **Update documentation**
+- [x] 9. **Update documentation**
    - Create [includes/agents/README.md](includes/agents/README.md) explaining sub-agent pattern
    - Document base agent abstraction and how to add new agents
    - Update main [README.md](README.md) with browser capabilities

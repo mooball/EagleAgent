@@ -12,7 +12,8 @@ This guide covers deploying EagleAgent to Google Cloud Run with persistent SQLit
 │  ┌─────────────────────────────────────────┐   │
 │  │  EagleAgent Container                   │   │
 │  │  - Python 3.12 + uv                     │   │
-│  │  - Node.js 20 (MCP servers)             │   │
+│  │  - Node.js 20 (MCP servers & Browser)   │   │
+│  │  - Playwright Chromium Dependencies     │   │
 │  │  - Chainlit Web UI                      │   │
 │  │  - Environment variables (from GitHub)  │   │
 │  └─────────────────────────────────────────┘   │
