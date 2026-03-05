@@ -117,15 +117,16 @@ async def browser(command: str) -> str:
                     command = f"{command} {custom_path}"
                     break
         
-        # Build the full command
-        full_command = f"agent-browser {command}"
+        # Build the command arguments using shlex to prevent shell injection
+        import shlex
+        args = ["agent-browser"] + shlex.split(command)
         
-        logger.info(f"Executing browser command: {command}")
+        logger.info(f"Executing browser command: {args}")
         
         # Execute the command asynchronously to not block the event loop
         import asyncio
-        process = await asyncio.create_subprocess_shell(
-            full_command,
+        process = await asyncio.create_subprocess_exec(
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )

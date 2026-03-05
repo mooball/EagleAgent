@@ -21,7 +21,7 @@ class TestBrowserTools:
         assert "browser automation" in browser.description.lower()
     
     @pytest.mark.asyncio
-    @patch('asyncio.create_subprocess_shell')
+    @patch('asyncio.create_subprocess_exec')
     async def test_browser_open_command(self, mock_create):
         """Test browser open command execution."""
         # Mock successful command execution
@@ -34,14 +34,16 @@ class TestBrowserTools:
         
         # Verify subprocess was called correctly
         mock_create.assert_called_once()
-        call_args = mock_create.call_args
-        assert "agent-browser open https://example.com" in call_args[0][0]
+        call_args = mock_create.call_args[0]
+        assert "agent-browser" in call_args
+        assert "open" in call_args
+        assert "https://example.com" in call_args
         
         # Verify result
         assert "example.com" in result.lower() or "navigated" in result.lower()
     
     @pytest.mark.asyncio
-    @patch('asyncio.create_subprocess_shell')
+    @patch('asyncio.create_subprocess_exec')
     async def test_browser_snapshot_command(self, mock_create):
         """Test browser snapshot --json command."""
         # Mock snapshot JSON output
@@ -54,13 +56,16 @@ class TestBrowserTools:
         
         # Verify the command
         mock_create.assert_called_once()
-        assert "snapshot --json" in mock_create.call_args[0][0]
+        call_args = mock_create.call_args[0]
+        assert "agent-browser" in call_args
+        assert "snapshot" in call_args
+        assert "--json" in call_args
         
         # Verify JSON output returned
         assert "@e1" in result
     
     @pytest.mark.asyncio
-    @patch('asyncio.create_subprocess_shell')
+    @patch('asyncio.create_subprocess_exec')
     async def test_browser_error_handling(self, mock_create):
         """Test browser tool error handling."""
         # Mock failed command
@@ -76,7 +81,7 @@ class TestBrowserTools:
         assert "element not found" in result.lower()
     
     @pytest.mark.asyncio
-    @patch('asyncio.create_subprocess_shell')
+    @patch('asyncio.create_subprocess_exec')
     async def test_browser_timeout_handling(self, mock_create):
         """Test browser tool timeout handling."""
         import asyncio
