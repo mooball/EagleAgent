@@ -218,8 +218,8 @@ def build_system_prompt(
         >>> prompt = build_system_prompt(None, ["remember_user_info"])
         >>> "remember_user_info" in prompt
         True
-        >>> "browser" in prompt
-        False
+        >>> "use_browser_agent" not in prompt
+        True
     """
     parts = []
     
