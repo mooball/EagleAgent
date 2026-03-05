@@ -17,13 +17,6 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
-# Browser session state (persists across commands)
-_browser_session = {
-    "active": False,
-    "current_url": None,
-    "refs": {},  # Store element references from snapshots
-}
-
 
 @tool
 async def browser(command: str) -> str:
@@ -142,11 +135,21 @@ async def browser(command: str) -> str:
             output_str = stdout.decode('utf-8').strip()
             error_str = stderr.decode('utf-8').strip()
         except asyncio.TimeoutError:
-            process.kill()
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
             logger.error(f"Browser command timed out: {command}")
             return "Error: Command timed out after 30 seconds"
         except Exception as e:
-            process.kill()
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
             raise e
             
         # Check for errors
@@ -194,32 +197,6 @@ async def browser(command: str) -> str:
                         # If UI injection fails (e.g. no Chainlit context), let the LLM know where it is
                         output = f"{output}\n\n[System Note: The screenshot was saved to {screenshot_path}, but could not be automatically displayed to the UI.]"
             
-        # Update session state if this was an 'open' command
-        if command.startswith("open "):
-            _browser_session["active"] = True
-            url = command.split("open ", 1)[1].strip()
-            _browser_session["current_url"] = url
-        
-        # Parse and store refs if this was a snapshot command
-        if "--json" in command and "snapshot" in command:
-            try:
-                snapshot_data = json.loads(output)
-                if "elements" in snapshot_data:
-                    _browser_session["refs"] = {
-                        elem.get("ref"): elem 
-                        for elem in snapshot_data.get("elements", [])
-                        if "ref" in elem
-                    }
-                    logger.debug(f"Stored {len(_browser_session['refs'])} element refs")
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse snapshot JSON")
-        
-        # Clear session if closed
-        if command == "close":
-            _browser_session["active"] = False
-            _browser_session["current_url"] = None
-            _browser_session["refs"] = {}
-        
         logger.info(f"Browser command succeeded: {len(output)} chars output")
         return output
         
@@ -230,19 +207,6 @@ async def browser(command: str) -> str:
     except Exception as e:
         logger.error(f"Browser command error: {e}")
         return f"Error: {str(e)}"
-
-
-def get_browser_session_state() -> dict:
-    """Get current browser session state (for debugging/monitoring)."""
-    return _browser_session.copy()
-
-
-def reset_browser_session():
-    """Reset browser session state."""
-    _browser_session["active"] = False
-    _browser_session["current_url"] = None
-    _browser_session["refs"] = {}
-    logger.info("Browser session reset")
 
 
 def create_browser_tools() -> List:

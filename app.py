@@ -69,20 +69,8 @@ class AgentState(TypedDict):
     user_id: str  # User email for cross-thread memory lookup
     file_attachments: NotRequired[list[Dict[str, Any]]]  # Optional: uploaded file metadata
 
-# Define the node function that calls the model
-async def call_model(
-    state: AgentState
-):
-    """
-    Call the LLM with user profile context from cross-thread memory.
-    
-    Args:
-        state: Current conversation state
-    """
-    messages = state["messages"]
-    user_id = state.get("user_id")
-    
-    # Create browser agent delegation tool
+def make_use_browser_agent_tool(user_id: str | None):
+    """Factory to create a browser agent delegation tool with the right user context."""
     @tool
     async def use_browser_agent(task: str, config: RunnableConfig) -> str:
         """
@@ -132,6 +120,21 @@ async def call_model(
         except Exception as e:
             logging.error(f"Browser agent error: {e}")
             return f"Browser agent error: {str(e)}"
+            
+    return use_browser_agent
+
+# Define the node function that calls the model
+async def call_model(
+    state: AgentState
+):
+    """
+    Call the LLM with user profile context from cross-thread memory.
+    
+    Args:
+        state: Current conversation state
+    """
+    messages = state["messages"]
+    user_id = state.get("user_id")
     
     # Create user-specific tools and add MCP tools
     tools = []
@@ -139,7 +142,7 @@ async def call_model(
         tools.extend(create_profile_tools(store, user_id))
     
     # Add browser agent delegation tool
-    tools.append(use_browser_agent)
+    tools.append(make_use_browser_agent_tool(user_id))
     
     # Add MCP tools if available
     if mcp_client:
@@ -194,32 +197,13 @@ async def call_tools(
     messages = state["messages"]
     last_message = messages[-1]
     
-    # Create browser agent delegation tool (same as in call_model)
-    @tool
-    async def use_browser_agent(task: str, config: RunnableConfig) -> str:
-        """Delegate web browsing tasks to browser agent."""
-        try:
-            browser_state = {
-                "messages": [HumanMessage(content=task)],
-                "user_id": user_id
-            }
-            logging.info(f"Delegating to browser agent: {task[:100]}...")
-            result = await browser_agent(browser_state, config)
-            response_message = result["messages"][-1]
-            response_text = response_message.content if hasattr(response_message, "content") else str(response_message)
-            logging.info(f"Browser agent completed: {len(response_text)} chars")
-            return response_text
-        except Exception as e:
-            logging.error(f"Browser agent error: {e}")
-            return f"Browser agent error: {str(e)}"
-    
     # Create tools for this user
     tools = []
     if user_id and store:
         tools.extend(create_profile_tools(store, user_id))
     
     # Add browser agent delegation tool
-    tools.append(use_browser_agent)
+    tools.append(make_use_browser_agent_tool(user_id))
     
     # Add MCP tools if available
     if mcp_client:

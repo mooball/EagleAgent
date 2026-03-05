@@ -153,7 +153,7 @@ class BaseSubAgent(ABC):
         
         # Invoke model
         logger.info(f"{self.name} invoking model")
-        if config:
+        if config is not None:
             response = await model_with_tools.ainvoke(enhanced_messages, config=config)
         else:
             response = await model_with_tools.ainvoke(enhanced_messages)

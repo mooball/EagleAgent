@@ -11,7 +11,7 @@ from langgraph.store.base import BaseStore
 import logging
 
 from .base import BaseSubAgent
-from includes.tools.browser_tools import create_browser_tools, reset_browser_session
+from includes.tools.browser_tools import create_browser_tools
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +145,5 @@ Focus on completing the browsing task efficiently and returning accurate results
     async def cleanup(self):
         """
         Clean up browser session when done.
-        
-        Resets the browser session state and closes any open browsers.
         """
-        logger.info(f"{self.name} cleanup: resetting browser session")
-        reset_browser_session()
+        logger.info(f"{self.name} cleanup: Agent cleanup completed")

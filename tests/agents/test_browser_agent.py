@@ -8,7 +8,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage
 
 from includes.agents.browser_agent import BrowserAgent
-from includes.tools.browser_tools import browser, get_browser_session_state, reset_browser_session
+from includes.tools.browser_tools import browser
 
 
 class TestBrowserTools:
@@ -91,32 +91,6 @@ class TestBrowserTools:
         # Verify timeout error is returned
         assert "error" in result.lower()
         assert "timed out" in result.lower()
-    
-    def test_browser_session_state(self):
-        """Test browser session state management."""
-        # Reset session first
-        reset_browser_session()
-        
-        state = get_browser_session_state()
-        assert state["active"] == False
-        assert state["current_url"] is None
-        assert len(state["refs"]) == 0
-    
-    @pytest.mark.asyncio
-    @patch('asyncio.create_subprocess_shell')
-    async def test_browser_session_tracking(self, mock_create):
-        """Test that session state is updated after open command."""
-        mock_process = AsyncMock()
-        mock_process.communicate.return_value = (b"Opened https://test.com\n", b"")
-        mock_process.returncode = 0
-        mock_create.return_value = mock_process
-        
-        reset_browser_session()
-        await browser.ainvoke("open https://test.com")
-        
-        state = get_browser_session_state()
-        assert state["active"] == True
-        assert "test.com" in state["current_url"]
 
 
 @pytest.mark.asyncio
@@ -182,10 +156,6 @@ class TestBrowserAgent:
         """Test browser agent cleanup."""
         # Should not raise any errors
         await self.agent.cleanup()
-        
-        # Verify session is reset
-        state = get_browser_session_state()
-        assert state["active"] == False
 
 
 @pytest.mark.integration
