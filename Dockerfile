@@ -4,7 +4,8 @@ FROM python:3.12-slim
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    UV_SYSTEM_PYTHON=1
+    UV_SYSTEM_PYTHON=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -14,9 +15,12 @@ RUN apt-get update && apt-get install -y \
     sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 20.x LTS for MCP servers (npx)
+# Install Node.js 20.x LTS for MCP servers (npx) and agent-browser
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \
+    npm install -g agent-browser@0.16.3 && \
+    npx -y playwright install-deps && \
+    agent-browser install && \
     rm -rf /var/lib/apt/lists/*
 
 # Install uv package manager
@@ -43,7 +47,7 @@ RUN mkdir -p /tmp/files /data
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app /tmp/files /data
+    chown -R appuser:appuser /app /tmp/files /data /ms-playwright
 
 # Switch to non-root user
 USER appuser

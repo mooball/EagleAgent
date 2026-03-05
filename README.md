@@ -6,6 +6,7 @@ AI-powered assistant using Google Gemini and LangGraph, with Google OAuth authen
 ## Features
 
 - 🤖 **Google Gemini Integration**: Powered by gemini-3-flash-preview with multimodal support
+- 🌐 **Browser Automation**: Includes a dedicated `BrowserAgent` capable of autonomous web browsing, interacting with pages, and taking screenshots (powered by `agent-browser` + Playwright).
 - 🔐 **Google OAuth Authentication**: Secure login with Google accounts
 - 💬 **Chat History**: Browse and resume past conversations
 - 📎 **File Attachments**: Upload images, PDFs, text files, and audio with automatic processing
