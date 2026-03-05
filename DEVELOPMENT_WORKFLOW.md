@@ -66,6 +66,7 @@ gcloud run deploy eagleagent \
   --execution-environment gen2 \
   --memory 2Gi \
   --cpu 2 \
+  --concurrency 1 \
   --add-volume name=gcs-data,type=cloud-storage,bucket=eagleagent-data \
   --add-volume-mount volume=gcs-data,mount-path=/data
 ```

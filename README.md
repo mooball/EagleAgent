@@ -343,6 +343,7 @@ gcloud run deploy eagleagent \
   --region australia-southeast1 \
   --execution-environment gen2 \
   --memory 2Gi \
+  --concurrency 1 \
   --add-volume name=gcs-data,type=cloud-storage,bucket=eagleagent-data \
   --add-volume-mount volume=gcs-data,mount-path=/data
 ```
