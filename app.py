@@ -197,6 +197,16 @@ async def call_model(
     ]
     
     return {"messages": messages_to_remove + [response]}
+
+# Tool execution node
+def should_continue(state: AgentState) -> Literal["tools", END]:
+    """Determine if we should continue to tools or end."""
+    messages = state["messages"]
+    last_message = messages[-1]
+    
+    # If the LLM makes a tool call, route to tools node
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "tools"
     
     # Otherwise, end
     return END
