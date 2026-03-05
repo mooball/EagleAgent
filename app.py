@@ -1,7 +1,7 @@
 import chainlit as cl
 from chainlit.types import ThreadDict
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, trim_messages, RemoveMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, trim_messages, RemoveMessage, BaseMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -66,7 +66,7 @@ browser_agent = BrowserAgent(model=base_model, store=store)
 
 # Define the state
 class AgentState(TypedDict):
-    messages: Annotated[Sequence[HumanMessage | AIMessage | SystemMessage], add_messages]
+    messages: Annotated[Sequence[BaseMessage], add_messages]
     user_id: str  # User email for cross-thread memory lookup
     file_attachments: NotRequired[list[Dict[str, Any]]]  # Optional: uploaded file metadata
 
