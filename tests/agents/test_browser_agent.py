@@ -181,8 +181,9 @@ class TestBrowserAgentIntegration:
             pytest.skip("GOOGLE_API_KEY not set")
         
         # Create real model
+        from config import config
         self.model = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-exp",
+            model=config.DEFAULT_MODEL,
             google_api_key=os.getenv("GOOGLE_API_KEY")
         )
         
@@ -205,5 +206,9 @@ class TestBrowserAgentIntegration:
         
         # Response should mention the page
         response_text = result["messages"][-1].content
+        if isinstance(response_text, list):
+            # Handle structured response from Gemini
+            response_text = "".join(part.get("text", "") for part in response_text if isinstance(part, dict) and part.get("type") == "text")
+        
         assert isinstance(response_text, str)
         assert len(response_text) > 0
