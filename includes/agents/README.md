@@ -13,8 +13,8 @@ Currently, we are moving towards a **Supervisor Pattern** with isolated sub-agen
 #### 1. `BrowserAgent` (`browser_agent.py`)
 A specialized AI agent that natively runs `agent-browser` (a Playwright-backed web automation tool).
 - Can open URLs, extract accessibility trees, click buttons, type, and take screenshots.
-- Handled asynchronously via `asyncio.create_subprocess_shell` passing `cl.context`.
-- Falls back gracefully via text mapping when Chainsit UX limits out nested graphing context.
+- Executes browser operations asynchronously via the underlying `agent-browser` tooling.
+- Error and timeout behavior is handled by the standard tool execution layer (no special, agent-specific fallback UX is implemented).
 
 ## Creating a New Sub-Agent
 
