@@ -208,7 +208,16 @@ class TestBrowserAgentIntegration:
         response_text = result["messages"][-1].content
         if isinstance(response_text, list):
             # Handle structured response from Gemini
-            response_text = "".join(part.get("text", "") for part in response_text if isinstance(part, dict) and part.get("type") == "text")
+            text_parts = []
+            for part in response_text:
+                if isinstance(part, str):
+                    text_parts.append(part)
+                elif isinstance(part, dict):
+                    # Prefer explicit text field if present
+                    text_value = part.get("text")
+                    if isinstance(text_value, str):
+                        text_parts.append(text_value)
+            response_text = "".join(text_parts)
         
         assert isinstance(response_text, str)
         assert len(response_text) > 0
