@@ -5,6 +5,7 @@ __pycache__/
 .env
 .env.docker
 .DS_Store
+.vscode/
 .chainlit/
 .files/
 # Ignore any custom temp files folder
