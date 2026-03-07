@@ -25,7 +25,7 @@ The simplest way to run tests is using the automated test runner:
 
 ```bash
 # One command - handles everything automatically
-./run_tests.sh
+uv run pytest
 ```
 
 That's it! The script will:
@@ -37,9 +37,9 @@ That's it! The script will:
 You can also pass pytest options:
 
 ```bash
-./run_tests.sh --maxfail=1        # Stop after first failure
-./run_tests.sh -k test_profile    # Run only matching tests
-./run_tests.sh -v --tb=short      # Verbose with short tracebacks
+uv run pytest --maxfail=1        # Stop after first failure
+uv run pytest -k test_profile    # Run only matching tests
+uv run pytest -v --tb=short      # Verbose with short tracebacks
 ```
 
 ### Manual Setup (Alternative)
@@ -134,7 +134,7 @@ EagleAgent/
 ├── app.py                        # Main application
 ├── run.sh                        # Start the app
 ├── kill.sh                       # Stop the app
-├── run_tests.sh                  # Run tests (automated)
+├── pytest                  # Run tests (automated)
 ├── includes/                     # Core modules
 │   ├── firestore_store.py       # PostgreSQL store implementation
 │   ├── timestamped_firestore_saver.py  # Checkpoint saver
@@ -173,19 +173,19 @@ EagleAgent/
 
 ### Using the Test Runner (Recommended)
 
-The `run_tests.sh` script handles all setup automatically:
+The `pytest` script handles all setup automatically:
 
 ```bash
 # Run all tests
-./run_tests.sh
+uv run pytest
 
 # Run with pytest options
-./run_tests.sh -x                 # Stop on first failure
-./run_tests.sh -v --tb=short      # Verbose with short tracebacks
-./run_tests.sh -k test_firestore  # Run only matching tests
-./run_tests.sh --maxfail=3        # Stop after 3 failures
-./run_tests.sh -m integration     # Run only integration tests
-./run_tests.sh -m "not slow"      # Skip slow tests
+uv run pytest -x                 # Stop on first failure
+uv run pytest -v --tb=short      # Verbose with short tracebacks
+uv run pytest -k test_firestore  # Run only matching tests
+uv run pytest --maxfail=3        # Stop after 3 failures
+uv run pytest -m integration     # Run only integration tests
+uv run pytest -m "not slow"      # Skip slow tests
 ```
 
 **What the script does:**
@@ -328,7 +328,7 @@ async def test_example(test_checkpointer):
 **Quick Fix**: Use the automated test runner which handles this automatically:
 
 ```bash
-./run_tests.sh
+uv run pytest
 ```
 
 **Manual Fix**: Make sure the emulator is running and the environment variable is set:
@@ -488,10 +488,10 @@ jobs:
         run: gcloud components install cloud-firestore-emulator --quiet
       
       - name: Run Tests
-        run: ./run_tests.sh
+        run: uv run pytest
 ```
 
-**Note**: The `run_tests.sh` script handles starting the emulator and setting environment variables automatically, simplifying your CI/CD pipeline.
+**Note**: The `pytest` script handles starting the emulator and setting environment variables automatically, simplifying your CI/CD pipeline.
 
 ### Manual CI/CD Setup (Alternative)
 
@@ -564,16 +564,16 @@ uv run pytest tests/ --durations=10
 ## FAQ
 
 **Q: What's the easiest way to run tests?**  
-A: Use `./run_tests.sh` - it handles everything automatically including starting the PostgreSQL emulator if needed.
+A: Use `uv run pytest` - it handles everything automatically including starting the PostgreSQL emulator if needed.
 
 **Q: Do I need to restart the emulator between test runs?**  
-A: No, the test fixtures handle cleanup automatically. The `run_tests.sh` script will reuse an existing emulator instance.
+A: No, the test fixtures handle cleanup automatically. The `pytest` script will reuse an existing emulator instance.
 
 **Q: Can I run tests without the emulator?**  
 A: No, PostgreSQL tests require the emulator. PostgreSQL tests will still run.
 
 **Q: How do I debug a failing test?**  
-A: Use `./run_tests.sh -v -s` to see print statements, or add `pytest.set_trace()` for breakpoints.
+A: Use `uv run pytest -v -s` to see print statements, or add `pytest.set_trace()` for breakpoints.
 
 **Q: Can I use the same emulator for development and testing?**  
 A: Yes, but be careful - tests clean up all data after running.
@@ -585,7 +585,7 @@ A: Don't. Use the emulator for tests. For E2E testing, use a separate staging en
 A: Each test gets a unique thread ID (via `test_thread_id` fixture) to ensure complete isolation. This prevents data contamination between tests running in the same session.
 
 **Q: Can I pass pytest options to the test runner?**  
-A: Yes! Use `./run_tests.sh <pytest-options>`. Examples: `./run_tests.sh -x`, `./run_tests.sh -k test_name`, `./run_tests.sh -m integration`.
+A: Yes! Use `uv run pytest <pytest-options>`. Examples: `uv run pytest -x`, `uv run pytest -k test_name`, `uv run pytest -m integration`.
 
 ---
 

@@ -21,7 +21,7 @@ Quick reference for the recommended development workflow for EagleAgent.
 
 ```bash
 # Run test suite
-./run_tests.sh
+uv run pytest
 ```
 
 ## Database Schema Changes

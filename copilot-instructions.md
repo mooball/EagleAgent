@@ -139,13 +139,13 @@ model = ChatGoogleGenerativeAI(
 - When adding tests, use `pytest` and keep tests in a top-level `tests/` folder.
 
 ## Testing
-- **Always use `./run_tests.sh`** to run tests, not direct `pytest` commands.
-- The `run_tests.sh` script:
+- **Always use `uv run pytest`** to run tests, not direct `pytest` commands.
+- The `pytest` script:
   - Automatically checks if PostgreSQL emulator is running.
   - Starts the emulator if needed (on `localhost:8686`).
   - Sets the `FIRESTORE_EMULATOR_HOST` environment variable.
   - Runs `pytest` with proper environment setup.
-  - Accepts additional pytest arguments: `./run_tests.sh -k test_name` or `./run_tests.sh -v`.
+  - Accepts additional pytest arguments: `uv run pytest -k test_name` or `uv run pytest -v`.
 - Tests require PostgreSQL emulator for:
   - Checkpoint persistence tests (`test_checkpoint_saver.py`)
   - PostgreSQL store tests (`test_firestore_store.py`)
