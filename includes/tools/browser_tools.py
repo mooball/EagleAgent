@@ -176,7 +176,7 @@ async def browser(command: str) -> str:
                     logger.info("Screenshot path exists, proceeding to UI injection.")
                     
                     try:
-                        # We send it directly to the UI! Chainlit handles the GCS upload
+                        # We send it directly to the UI! Chainlit handles the file upload
                         image_element = cl.Image(
                             path=screenshot_path,
                             name="Browser Screenshot",

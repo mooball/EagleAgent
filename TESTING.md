@@ -6,8 +6,8 @@ This guide explains how to run tests for EagleAgent using isolated test environm
 
 EagleAgent uses a **dual-database testing strategy**:
 
-1. **SQLite**: In-memory databases (automatic, no setup needed)
-2. **Firestore**: Local emulator (requires one-time setup)
+1. **PostgreSQL**: In-memory databases (automatic, no setup needed)
+2. **PostgreSQL**: Local emulator (requires one-time setup)
 
 This approach ensures:
 - ✅ **Zero production impact** - Tests never touch live data
@@ -29,7 +29,7 @@ The simplest way to run tests is using the automated test runner:
 ```
 
 That's it! The script will:
-- ✅ Check if Firestore emulator is running
+- ✅ Check if PostgreSQL emulator is running
 - ✅ Start it automatically if needed
 - ✅ Set required environment variables
 - ✅ Run all tests with proper configuration
@@ -57,7 +57,7 @@ This installs:
 - `pytest-asyncio` (1.3.0) - Async test support
 - `pytest-timeout` (2.4.0) - Prevent hanging tests
 
-#### 2. Install Firestore Emulator
+#### 2. Install PostgreSQL Emulator
 
 **Option A: Via gcloud CLI (Recommended)**
 
@@ -73,7 +73,7 @@ gcloud components install cloud-firestore-emulator
 
 Download from: https://firebase.google.com/docs/emulator-suite/install_and_configure
 
-#### 3. Start the Firestore Emulator
+#### 3. Start the PostgreSQL Emulator
 
 ```bash
 # Start emulator (leave this running in a terminal)
@@ -118,7 +118,7 @@ tests/
 ├── conftest.py                    # Shared fixtures
 ├── test_smoke.py                  # Basic sanity test
 ├── test_graph_wiring.py          # LangGraph wiring with stub
-├── test_sqlite_data_layer.py     # SQLite CRUD operations
+├── test_sqlite_data_layer.py     # PostgreSQL CRUD operations
 ├── test_firestore_store.py       # User profile storage
 ├── test_checkpoint_saver.py      # Conversation checkpoints
 ├── test_user_profile_tools.py    # Agent tools for memory
@@ -136,11 +136,11 @@ EagleAgent/
 ├── kill.sh                       # Stop the app
 ├── run_tests.sh                  # Run tests (automated)
 ├── includes/                     # Core modules
-│   ├── firestore_store.py       # Firestore store implementation
+│   ├── firestore_store.py       # PostgreSQL store implementation
 │   ├── timestamped_firestore_saver.py  # Checkpoint saver
 │   └── user_profile_tools.py    # User profile tools
 ├── scripts/                      # Utility scripts
-│   ├── init_sqlite_db.py        # Initialize SQLite database
+│   ├── init_sqlite_db.py        # Initialize PostgreSQL database
 │   ├── clear_checkpoints.py     # Clear checkpoints
 │   ├── list_checkpoints.py      # List checkpoints
 │   ├── manage_user_profile.py   # Manage user profiles
@@ -154,8 +154,8 @@ EagleAgent/
 ### Test Categories
 
 **Unit Tests** (fast, isolated):
-- `test_firestore_store.py` - FirestoreStore operations
-- `test_sqlite_data_layer.py` - SQLite schema and CRUD
+- `test_firestore_store.py` - PostgreSQLStore operations
+- `test_sqlite_data_layer.py` - PostgreSQL schema and CRUD
 - `test_checkpoint_saver.py` - Checkpoint save/load
 - `test_user_profile_tools.py` - Tool behavior
 
@@ -189,7 +189,7 @@ The `run_tests.sh` script handles all setup automatically:
 ```
 
 **What the script does:**
-1. Checks if Firestore emulator is running
+1. Checks if PostgreSQL emulator is running
 2. Starts it automatically if not found
 3. Waits for emulator to be ready
 4. Sets `FIRESTORE_EMULATOR_HOST` environment variable
@@ -216,13 +216,13 @@ uv run pytest tests/test_firestore_store.py -v
 ### Run Specific Test Class
 
 ```bash
-uv run pytest tests/test_firestore_store.py::TestFirestoreStoreBasics -v
+uv run pytest tests/test_firestore_store.py::TestPostgreSQLStoreBasics -v
 ```
 
 ### Run Specific Test Function
 
 ```bash
-uv run pytest tests/test_firestore_store.py::TestFirestoreStoreBasics::test_put_and_get_simple_value -v
+uv run pytest tests/test_firestore_store.py::TestPostgreSQLStoreBasics::test_put_and_get_simple_value -v
 ```
 
 ### Skip Slow Tests
@@ -264,7 +264,7 @@ uv run pytest tests/ -v -s
 Located in `tests/conftest.py`:
 
 #### `temp_sqlite_db`
-- Creates a temporary SQLite database
+- Creates a temporary PostgreSQL database
 - Automatically initializes schema
 - Auto-cleanup after test
 
@@ -275,7 +275,7 @@ async def test_example(temp_sqlite_db):
 ```
 
 #### `test_firestore_client`
-- Connects to Firestore emulator
+- Connects to PostgreSQL emulator
 - Auto-cleanup all collections after test
 
 ```python
@@ -285,7 +285,7 @@ def test_example(test_firestore_client):
 ```
 
 #### `test_store`
-- Pre-configured FirestoreStore instance
+- Pre-configured PostgreSQLStore instance
 - Uses test collection (`test_user_memory`)
 
 ```python
@@ -294,7 +294,7 @@ async def test_example(test_store):
 ```
 
 #### `test_checkpointer`
-- Pre-configured TimestampedFirestoreSaver
+- Pre-configured TimestampedPostgreSQLSaver
 - Uses test collection (`test_checkpoints`)
 
 ```python
@@ -323,7 +323,7 @@ async def test_example(test_checkpointer):
 
 ## Troubleshooting
 
-### Error: "Firestore emulator not detected"
+### Error: "PostgreSQL emulator not detected"
 
 **Quick Fix**: Use the automated test runner which handles this automatically:
 
@@ -388,7 +388,7 @@ gcloud emulators firestore start --host-port=localhost:8686
 
 ## Writing New Tests
 
-### Test a Firestore Component
+### Test a PostgreSQL Component
 
 ```python
 async def test_my_feature(test_store, test_user_id):
@@ -404,7 +404,7 @@ async def test_my_feature(test_store, test_user_id):
     assert result.value == data
 ```
 
-### Test a SQLite Component
+### Test a PostgreSQL Component
 
 ```python
 async def test_my_sqlite_feature(temp_sqlite_db):
@@ -484,7 +484,7 @@ jobs:
       - name: Install gcloud SDK
         uses: google-github-actions/setup-gcloud@v1
       
-      - name: Install Firestore Emulator
+      - name: Install PostgreSQL Emulator
         run: gcloud components install cloud-firestore-emulator --quiet
       
       - name: Run Tests
@@ -498,7 +498,7 @@ jobs:
 If you prefer manual control in CI/CD:
 
 ```yaml
-      - name: Start Firestore Emulator
+      - name: Start PostgreSQL Emulator
         run: |
           gcloud emulators firestore start --host-port=localhost:8686 > /tmp/emulator.log 2>&1 &
           sleep 5
@@ -564,13 +564,13 @@ uv run pytest tests/ --durations=10
 ## FAQ
 
 **Q: What's the easiest way to run tests?**  
-A: Use `./run_tests.sh` - it handles everything automatically including starting the Firestore emulator if needed.
+A: Use `./run_tests.sh` - it handles everything automatically including starting the PostgreSQL emulator if needed.
 
 **Q: Do I need to restart the emulator between test runs?**  
 A: No, the test fixtures handle cleanup automatically. The `run_tests.sh` script will reuse an existing emulator instance.
 
 **Q: Can I run tests without the emulator?**  
-A: No, Firestore tests require the emulator. SQLite tests will still run.
+A: No, PostgreSQL tests require the emulator. PostgreSQL tests will still run.
 
 **Q: How do I debug a failing test?**  
 A: Use `./run_tests.sh -v -s` to see print statements, or add `pytest.set_trace()` for breakpoints.
@@ -578,7 +578,7 @@ A: Use `./run_tests.sh -v -s` to see print statements, or add `pytest.set_trace(
 **Q: Can I use the same emulator for development and testing?**  
 A: Yes, but be careful - tests clean up all data after running.
 
-**Q: How do I test against real Firestore?**  
+**Q: How do I test against real PostgreSQL?**  
 A: Don't. Use the emulator for tests. For E2E testing, use a separate staging environment.
 
 **Q: Why do tests use unique thread IDs?**  
@@ -592,6 +592,6 @@ A: Yes! Use `./run_tests.sh <pytest-options>`. Examples: `./run_tests.sh -x`, `.
 ## Additional Resources
 
 - [pytest Documentation](https://docs.pytest.org/)
-- [Firestore Emulator Guide](https://firebase.google.com/docs/emulator-suite/connect_firestore)
+- [PostgreSQL Emulator Guide](https://firebase.google.com/docs/emulator-suite/connect_firestore)
 - [pytest-asyncio](https://pytest-asyncio.readthedocs.io/)
 - [LangGraph Testing](https://langchain-ai.github.io/langgraph/how-tos/testing/)

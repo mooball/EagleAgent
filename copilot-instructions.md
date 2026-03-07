@@ -69,7 +69,7 @@ from config import config
 
 # Use configuration settings
 project_id = config.GCP_PROJECT_ID
-bucket_name = config.GCS_BUCKET_NAME
+bucket_name = config.Local File Storage_BUCKET_NAME
 model = config.DEFAULT_MODEL
 ```
 
@@ -103,7 +103,7 @@ model = ChatGoogleGenerativeAI(
 ### GitHub Secrets & Cloud Deployment
 - **GitHub Secrets** should only contain actual secrets (API keys, OAuth credentials, service account keys).
 - **Non-secret configuration** is now in `config/settings.py`, not in GitHub Secrets.
-- When deploying to Cloud Run:
+- When deploying to Railway:
   - Secrets are passed as environment variables via `--set-env-vars` in deployment commands.
   - Configuration values come from `config/settings.py` (baked into the Docker image).
   - Cloud-specific overrides can still use environment variables if needed.
@@ -141,14 +141,14 @@ model = ChatGoogleGenerativeAI(
 ## Testing
 - **Always use `./run_tests.sh`** to run tests, not direct `pytest` commands.
 - The `run_tests.sh` script:
-  - Automatically checks if Firestore emulator is running.
+  - Automatically checks if PostgreSQL emulator is running.
   - Starts the emulator if needed (on `localhost:8686`).
   - Sets the `FIRESTORE_EMULATOR_HOST` environment variable.
   - Runs `pytest` with proper environment setup.
   - Accepts additional pytest arguments: `./run_tests.sh -k test_name` or `./run_tests.sh -v`.
-- Tests require Firestore emulator for:
+- Tests require PostgreSQL emulator for:
   - Checkpoint persistence tests (`test_checkpoint_saver.py`)
-  - Firestore store tests (`test_firestore_store.py`)
+  - PostgreSQL store tests (`test_firestore_store.py`)
   - Integration tests that use checkpointer/store
 - To manually start/stop the emulator:
   - Start: `gcloud emulators firestore start --host-port=localhost:8686`
