@@ -14,22 +14,42 @@ import os
 import logging
 from dotenv import load_dotenv
 from config import config
-from includes.timestamped_firestore_saver import TimestampedFirestoreSaver
-from includes.firestore_store import FirestoreStore
+from psycopg_pool import AsyncConnectionPool
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.store.postgres import AsyncPostgresStore
 from includes.tools.user_profile import create_profile_tools
 from includes.prompts import build_system_prompt
 from includes.storage_utils import (
-    upload_file_to_gcs,
+    upload_file_locally,
     generate_object_key,
-    get_storage_client,
     generate_signed_url
 )
 from includes.document_processing import process_file, create_multimodal_content
-from includes.gcs_storage_client import GCSStorageClient
+from includes.local_storage_client import LocalStorageClient
 from includes.mcp_config import load_mcp_config
 from includes.agents.browser_agent import BrowserAgent
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_core.tools import tool
+
+# Set up Chainlit static file serving for local file attachments
+import chainlit.server as cl_server
+from fastapi.staticfiles import StaticFiles
+
+# Create the data directory if it doesn't exist
+os.makedirs(os.path.join(config.DATA_DIR, "attachments"), exist_ok=True)
+# Mount the local data directory to the /files route so Chainlit UI can load images
+# Notice we mount DATA_DIR/attachments explicitly because Chainlit's data layer saves files inside an "attachments" subfolder
+cl_server.app.mount("/files", StaticFiles(directory=os.path.join(config.DATA_DIR, "attachments")), name="files")
+
+# FIX: Chainlit has a catch-all route `/{full_path:path}` that intercepts `/files` if our mount is at the end.
+# We must move our newly added mount BEFORE the catch-all route.
+routes = cl_server.app.router.routes
+# The mount we just added is at the very end of the list
+files_mount = routes.pop()
+# Find the catch-all index
+catch_all_idx = next((i for i, r in enumerate(routes) if getattr(r, 'path', '') == '/{full_path:path}'), len(routes))
+# Insert our mount just before the catch-all
+routes.insert(catch_all_idx, files_mount)
 
 # Load environment variables (still needed for secrets like GOOGLE_API_KEY)
 load_dotenv()
@@ -37,23 +57,23 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
+# Initialize PostgreSQL connection pool
+# Using the CHECKPOINT_DATABASE_URL which defaults to psycopg style dsns
+pg_pool = AsyncConnectionPool(
+    config.CHECKPOINT_DATABASE_URL,
+    min_size=1,
+    max_size=10,
+    kwargs={"autocommit": True},
+    open=False, # We will open this explicitly in an async context or lazily
+)
+
 # Add cross-thread persistent store for user profiles and long-term memory
 # Initialize this early so we can use it to create tools
-store = FirestoreStore(project_id=config.GCP_PROJECT_ID, collection="user_memory")
+store = None  # Will be initialized in start()
 
 # Initialize MCP client for external tool integration
 # Loads MCP server configurations from config/mcp_servers.yaml
 mcp_client = None
-try:
-    mcp_config = load_mcp_config("config/mcp_servers.yaml")
-    if mcp_config:
-        mcp_client = MultiServerMCPClient(mcp_config)
-        logging.info(f"MCP client initialized with {len(mcp_config)} server(s)")
-    else:
-        logging.info("No MCP servers configured")
-except Exception as e:
-    logging.warning(f"Failed to initialize MCP client: {e}. Agent will work without MCP tools.")
-    mcp_client = None
 
 
 # Initialize the model
@@ -62,7 +82,7 @@ except Exception as e:
 base_model = ChatGoogleGenerativeAI(model=config.DEFAULT_MODEL, google_api_key=os.getenv("GOOGLE_API_KEY"))
 
 # Initialize browser agent for web automation
-browser_agent = BrowserAgent(model=base_model, store=store)
+browser_agent = None
 
 # Define the state
 class AgentState(TypedDict):
@@ -174,7 +194,7 @@ async def call_model(
         system_content = build_system_prompt(profile_data, available_tool_names=tool_names)
         enhanced_messages = [SystemMessage(content=system_content)] + enhanced_messages
     
-    # Trim history to ~30 messages to prevent hitting Firestore 1MiB checkpoint limit
+    # Trim history to ~30 messages to prevent hitting PostgreSQL 1MiB checkpoint limit
     trimmed_messages = trim_messages(
         enhanced_messages,
         max_tokens=30, # Max number of messages to retain
@@ -251,12 +271,54 @@ builder.add_edge(START, "model")
 builder.add_conditional_edges("model", should_continue, ["tools", END])
 builder.add_edge("tools", "model")
 
-# Add Firestore-based memory to persist state across interactions and restarts
-# TimestampedFirestoreSaver adds `created_at` field to each checkpoint for TTL policies
-checkpointer = TimestampedFirestoreSaver(project_id=config.GCP_PROJECT_ID, checkpoints_collection="checkpoints")
+# Add PostgreSQL-based memory to persist state across interactions and restarts
+checkpointer = None
 
 # Compile graph with both checkpointer (thread state) and store (cross-thread memory)
-graph = builder.compile(checkpointer=checkpointer, store=store)
+graph = None
+
+globals_initialized = False
+
+async def setup_globals():
+    """Initialize async-dependent global variables."""
+    global store, mcp_client, browser_agent, checkpointer, graph, globals_initialized
+    
+    if globals_initialized:
+        return
+        
+    # Open pg_pool
+    try:
+        await pg_pool.open()
+    except Exception:
+        pass
+        
+    # Set up store
+    store = AsyncPostgresStore(pg_pool)
+    await store.setup()
+    
+    # Set up checkpointer
+    checkpointer = AsyncPostgresSaver(pg_pool)
+    await checkpointer.setup()
+    
+    # Set up MCP
+    try:
+        mcp_config = load_mcp_config("config/mcp_servers.yaml")
+        if mcp_config:
+            mcp_client = MultiServerMCPClient(mcp_config)
+            logging.info(f"MCP client initialized with {len(mcp_config)} server(s)")
+        else:
+            logging.info("No MCP servers configured")
+    except Exception as e:
+        logging.warning(f"Failed to initialize MCP client: {e}. Agent will work without MCP tools.")
+        mcp_client = None
+        
+    # Initialize browser agent
+    browser_agent = BrowserAgent(model=base_model, store=store)
+    
+    # Compile graph
+    graph = builder.compile(checkpointer=checkpointer, store=store)
+    
+    globals_initialized = True
 
 @cl.oauth_callback
 def oauth_callback(
@@ -314,21 +376,28 @@ def oauth_callback(
 @cl.data_layer
 def get_data_layer():
     """
-    Configure SQLite-based data layer for conversation history persistence.
+    Configure PostgreSQL-based data layer for conversation history persistence.
     This enables the chat history sidebar in the Chainlit UI.
-    Includes GCS storage client for persistent file attachments.
+    Includes local storage client for persistent file attachments.
     """
-    # Initialize GCS storage client for file attachments
-    storage_client = GCSStorageClient(bucket_name=config.GCS_BUCKET_NAME)
+    # Initialize Local storage client for file attachments
+    import os
+    attachments_dir = os.path.join(config.DATA_DIR, "attachments")
+    storage_client = LocalStorageClient(base_dir=attachments_dir)
     
     return SQLAlchemyDataLayer(
         conninfo=config.DATABASE_URL,
-        storage_provider=storage_client
+        storage_provider=storage_client,
+        show_logger=True,
     )
 
 @cl.on_chat_start
 async def start():
     import uuid
+    
+    # Initialize the pg pool and database schemas if not already done securely
+    # AsyncConnectionPool open can be safely called multiple times if we just open it.
+    await setup_globals()
     
     # Get authenticated user
     user = cl.user_session.get("user")
@@ -374,11 +443,14 @@ async def start():
 async def on_chat_resume(thread: ThreadDict):
     """
     Called when a user resumes a previous conversation.
-    Restores the thread_id so LangGraph can load the conversation state from Firestore.
+    Restores the thread_id so LangGraph can load the conversation state from PostgreSQL.
     
     Args:
         thread: The persisted conversation thread containing id, steps, and metadata
     """
+    # Ensure our async dependencies are initialized
+    await setup_globals()
+    
     # Extract the thread_id from the persisted conversation
     thread_id = thread["id"]
     
@@ -430,7 +502,10 @@ async def main(message: cl.Message):
     # Use the session ID as the thread ID to maintain conversation history
     thread_id = cl.user_session.get("thread_id")
     user_id = cl.user_session.get("user_id", "")
-    graph_config = {"configurable": {"thread_id": thread_id}}
+    graph_config = {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": config.GRAPH_RECURSION_LIMIT
+    }
     
     # Process file attachments if present
     # Re-attach elements to response message to trigger persistence

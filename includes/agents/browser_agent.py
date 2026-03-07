@@ -104,10 +104,12 @@ Help users navigate websites, extract information, and interact with web pages e
 - Close browser when task complete: browser("close")
 
 ❌ DON'T:
+- Use search engines (like Google) if the user provides a direct exact URL. Just go to the URL directly! If it fails, report that it failed.
 - Use CSS selectors when you have @refs available
 - Assume elements have same refs after navigation
 - Click links without getting fresh snapshot first
 - Forget to extract/return the information to the user
+- Wander endlessly. Try to accomplish the task in 4 commands or fewer.
 
 **Error Handling:**
 - If element not found, re-snapshot and try again

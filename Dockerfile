@@ -41,6 +41,8 @@ COPY chainlit.md ./
 COPY includes/ ./includes/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
+COPY alembic/ ./alembic/
+COPY alembic.ini ./
 
 # Create directories
 RUN mkdir -p /tmp/files /data
@@ -52,12 +54,12 @@ RUN useradd -m -u 1000 appuser && \
 # Switch to non-root user
 USER appuser
 
-# Expose port 8080 (Cloud Run standard)
+# Expose port 8080 (Railway default)
 EXPOSE 8080
 
 # Copy and set startup script
-COPY --chown=appuser:appuser start-cloudrun.sh ./
-RUN chmod +x start-cloudrun.sh
+COPY --chown=appuser:appuser start.sh ./
+RUN chmod +x start.sh
 
 # Run startup script
-CMD ["./start-cloudrun.sh"]
+CMD ["./start.sh"]

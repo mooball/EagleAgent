@@ -15,13 +15,22 @@ import os
 class Config:
     """Application configuration settings"""
     
-    # ==================== Google Cloud Settings ====================
+    # ==================== Data Storage Settings ====================
     
-    # Google Cloud Project ID
-    GCP_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", "mooballai")
+    # Root directory for persistent data (attachments, uploads etc)
+    DATA_DIR = os.getenv("DATA_DIR", "./data")
     
-    # Google Cloud Storage Bucket for file attachments
-    GCS_BUCKET_NAME = os.getenv("GCP_BUCKET_NAME", "eagleagent")
+    # Database URL
+    DATABASE_URL = os.getenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/eagleagent"  # Local dev default
+    )
+    
+    # Checkpoint Database URL (LangGraph doesn't use the asyncpg standard style natively by default in the same way, but let's provide a raw DB URL just in case)
+    CHECKPOINT_DATABASE_URL = os.getenv(
+        "CHECKPOINT_DATABASE_URL",
+        "postgres://postgres:postgres@localhost:5432/eagleagent"  # Local dev default for psycopg pooling
+    )
     
     
     # ==================== OAuth Settings ====================
@@ -45,17 +54,14 @@ class Config:
     # Max tokens for model responses
     DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "8192"))
     
+    # LangGraph Execution Recursion Limit (max steps before loop aborts)
+    GRAPH_RECURSION_LIMIT = int(os.getenv("GRAPH_RECURSION_LIMIT", "50"))
+    
     
     # ==================== Application Settings ====================
     
     # Temporary files upload folder
     TEMP_FILES_FOLDER = os.getenv("TEMP_FILES_FOLDER", ".files")
-    
-    # Database URL (environment-specific, uses sensible defaults)
-    DATABASE_URL = os.getenv(
-        "DATABASE_URL",
-        "sqlite+aiosqlite:///./chainlit_datalayer.db"  # Local dev default
-    )
     
     # Chainlit URL (set after deployment, or localhost for dev)
     CHAINLIT_URL = os.getenv("CHAINLIT_URL", "http://localhost:8000")
@@ -63,21 +69,8 @@ class Config:
     
     # ==================== File Storage Settings ====================
     
-    # File retention period in days (for GCS lifecycle)
-    FILE_RETENTION_DAYS = int(os.getenv("FILE_RETENTION_DAYS", "30"))
-    
     # Max file upload size in MB
     MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
-    
-    
-    # ==================== Firestore Settings ====================
-    
-    # Firestore collection names
-    THREADS_COLLECTION = os.getenv("THREADS_COLLECTION", "threads")
-    USER_PROFILES_COLLECTION = os.getenv("USER_PROFILES_COLLECTION", "user_profiles")
-    
-    # Thread TTL in days (auto-cleanup old threads)
-    THREAD_TTL_DAYS = int(os.getenv("THREAD_TTL_DAYS", "90"))
     
     
     # ==================== Development Settings ====================
@@ -126,8 +119,8 @@ class Config:
         Raises ValueError if required config is missing
         """
         required = {
-            'GCP_PROJECT_ID': cls.GCP_PROJECT_ID,
-            'GCS_BUCKET_NAME': cls.GCS_BUCKET_NAME,
+            'DATABASE_URL': cls.DATABASE_URL,
+            'DATA_DIR': cls.DATA_DIR,
         }
         
         missing = [key for key, value in required.items() if not value]
