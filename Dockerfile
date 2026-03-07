@@ -47,18 +47,11 @@ COPY alembic.ini ./
 # Create directories
 RUN mkdir -p /tmp/files /app/data
 
-# Create non-root user for security
-RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app /tmp/files /app/data /ms-playwright
-
-# Switch to non-root user
-USER appuser
-
 # Expose port 8080 (Railway default)
 EXPOSE 8080
 
 # Copy and set startup script
-COPY --chown=appuser:appuser start.sh ./
+COPY start.sh ./
 RUN chmod +x start.sh
 
 # Run startup script
