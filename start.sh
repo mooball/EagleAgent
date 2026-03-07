@@ -22,7 +22,7 @@ done
 echo "✅ All required environment variables are set"
 
 # Ensure Data directory exists
-DATA_DIR=${DATA_DIR:-/data}
+DATA_DIR=${DATA_DIR:-/app/data}
 mkdir -p "$DATA_DIR/attachments"
 echo "✅ Ensured $DATA_DIR directory exists"
 

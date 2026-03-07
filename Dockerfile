@@ -45,11 +45,11 @@ COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
 # Create directories
-RUN mkdir -p /tmp/files /data
+RUN mkdir -p /tmp/files /app/data
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app /tmp/files /data /ms-playwright
+    chown -R appuser:appuser /app /tmp/files /app/data /ms-playwright
 
 # Switch to non-root user
 USER appuser

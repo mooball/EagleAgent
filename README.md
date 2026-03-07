@@ -21,7 +21,7 @@ The current architecture exclusively uses PostgreSQL for both application state 
 2. **LangGraph (Back-end Orchestration)**: Manages the node state and sub-agent workflows. Includes `BrowserAgent` for deep-domain web processing.
 3. **Storage & Databases** (PostgreSQL & Native File Mount):
    - **PostgreSQL Database**: Holds Chainlit user sessions (`users`, `threads`, `steps`, `elements` tables) as well as the LangGraph checkpointing states directly.
-   - **Local File Storage**: Uses `/data/attachments` (or local equivalent) for fast read/writes without the overhead of external providers.
+   - **Local File Storage**: Uses `/app/data/attachments` (or local equivalent) for fast read/writes without the overhead of external providers.
 
 ## Getting Started
 
@@ -102,7 +102,7 @@ Deploying EagleAgent on Railway simply involves binding a PostgreSQL database to
 1. Create a **PostgreSQL Database** within your Railway Project.
 2. Import the `EagleAgent` Repository.
 3. Add the `.env` configuration securely into the Railway Dashboard (making sure `DATABASE_URL` uses the supplied Private Network URL provided by Railway's Postgres schema `postgresql+asyncpg://`).
-4. During Railway setup, add a volume mount mapped to `/data` so `DATA_DIR` resolves attachments correctly.
+4. During Railway setup, add a volume mount mapped to `/app/data` so `DATA_DIR` resolves attachments correctly.
 5. The supplied `Dockerfile` builds Python and Node.js resources side-by-side. The app spins up executing `start.sh` where Alembic database migrations trigger automatically preceding node execution.
 
 ## Documentation
