@@ -110,6 +110,12 @@ def make_use_browser_agent_tool(user_id: str | None):
         - Extract text and data
         - Take screenshots
         
+        CRITICAL RULE FOR SCREENSHOTS:
+        When the user asks for a screenshot, instruct the browser agent to capture it. 
+        The system will AUTOMATICALLY display the actual image in the user's interface out-of-band.
+        You MUST NOT attempt to output markdown image links, JSON placeholders, or hallucinated URLs for the screenshot. 
+        Simply tell the user "The screenshot has been captured and displayed."
+        
         Args:
             task: Clear description of the browsing task to perform.
                   Examples:
@@ -586,5 +592,24 @@ async def main(message: cl.Message):
                 # Handle single string content
                 elif isinstance(content, str):
                     await msg.stream_token(content)
+        elif kind == "on_tool_end":
+            data = event.get("data", {})
+            output = data.get("output")
+            
+            # Extract string content from tool output robustly
+            output_str = ""
+            if isinstance(output, str):
+                output_str = output
+            elif hasattr(output, "content"):
+                output_str = str(output.content)
+            elif hasattr(output, "get") and "output" in output:
+                output_str = str(output["output"])
+            else:
+                output_str = str(output)
+            
+            if "Screenshot saved to" in output_str:
+                # Intercept logic moved back to the tool itself for context stability
+                pass
                 
+    
     await msg.update()

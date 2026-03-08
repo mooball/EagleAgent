@@ -45,7 +45,7 @@ async def browser(command: str) -> str:
        browser("extract")          # Main text content
     
     5. **Take screenshots:**
-       browser("screenshot --annotate")  # Screenshot with element annotations
+       browser("screenshot")  # Screenshot of the page
     
     **Common commands:**
     - open <url> - Navigate to URL
@@ -55,7 +55,7 @@ async def browser(command: str) -> str:
     - press <key> - Press keyboard key (Enter, Tab, etc.)
     - snapshot [--interactive|-i] [--json] - Get page structure
     - extract - Extract main text content
-    - screenshot [--annotate|-a] - Take screenshot
+    - screenshot - Take screenshot
     - back - Go back in history
     - forward - Go forward in history
     - refresh - Reload page
@@ -99,8 +99,8 @@ async def browser(command: str) -> str:
         
         # Rewrite screenshot command to force saving into the correct directory
         if "screenshot" in command and not ".png" in command and not "path" in command:
-            # Create a dedicated directory for browser temp files inside TEMP_FILES_FOLDER
-            screenshots_dir = os.path.join(config.TEMP_FILES_FOLDER, "browser_screenshots")
+            # Create a dedicated directory for browser temp files inside DATA_DIR
+            screenshots_dir = os.path.join(config.DATA_DIR, "browser_downloads")
             os.makedirs(screenshots_dir, exist_ok=True)
             
             # Generate a distinct filepath with absolute path to avoid CSS selector confusion in CLI
@@ -108,7 +108,7 @@ async def browser(command: str) -> str:
             custom_path = os.path.abspath(os.path.join(screenshots_dir, f"screenshot_{timestamp}.png"))
             
             # Inject the custom path into the command
-            # This handles things like "screenshot --annotate" -> "screenshot --annotate .files/browser_screenshots/screenshot_123.png"
+            # This handles things like "screenshot" -> "screenshot .files/browser_screenshots/screenshot_123.png"
             parts = command.split()
             # Find insertion point (after 'screenshot' and any flags)
             for i, part in enumerate(parts):
@@ -176,27 +176,24 @@ async def browser(command: str) -> str:
                     logger.info("Screenshot path exists, proceeding to UI injection.")
                     
                     try:
-                        # We send it directly to the UI! Chainlit handles the file upload
+                        # Send it directly to the UI
                         image_element = cl.Image(
                             path=screenshot_path,
                             name="Browser Screenshot",
                             display="inline"
                         )
                         
-                        # We are now natively async, so we can await cl.Message directly!
+                        # Wait, we can natively await cl.Message from within the tool context!
                         await cl.Message(
-                            content="📸 Here is the screenshot from the browser:",
+                            content="📸", # Minimal text to ensure rendering
                             elements=[image_element]
                         ).send()
                         
                         logger.info(f"Screenshot sent to UI from {screenshot_path}")
-                        
-                        # Return an updated output so the LLM knows it was shown to user
-                        output = f"{output}\n\n[System Note: This screenshot has been directly displayed to the user in the chat UI. You should inform the user that you have successfully taken and displayed it. NEVER say you cannot display images.]"
+                        output = f"{output}\n\n[System Note: The screenshot has been automatically shown in the chat UI as a standalone message. Acknowledge this, but strictly DO NOT attempt to display or link the image yourself using Markdown.]"
                     except Exception as e:
                         logger.error(f"Failed to display screenshot in UI: {e}")
-                        # If UI injection fails (e.g. no Chainlit context), let the LLM know where it is
-                        output = f"{output}\n\n[System Note: The screenshot was saved to {screenshot_path}, but could not be automatically displayed to the UI.]"
+                        output = f"{output}\n\n[System Note: The screenshot was successfully captured to disk but failed to auto-display: {e}]"
             
         logger.info(f"Browser command succeeded: {len(output)} chars output")
         return output
@@ -210,11 +207,22 @@ async def browser(command: str) -> str:
         return f"Error: {str(e)}"
 
 
+@tool
+async def take_screenshot() -> str:
+    """
+    Takes a screenshot of the current browser page.
+    Automatically handles saving the file and triggers the UI to display it to the user.
+    """
+    # Use proper dict payload for StructuredTool ainvoke
+    return await browser.ainvoke({"command": "screenshot"})
+
+
 def create_browser_tools() -> List:
     """
     Create list of browser tools.
     
     Returns:
-        List of browser tools (currently just one tool, but structured for future expansion)
+        List of browser tools
     """
-    return [browser]
+    return [browser, take_screenshot]
+
