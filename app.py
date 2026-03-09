@@ -610,6 +610,38 @@ async def main(message: cl.Message):
             if "Screenshot saved to" in output_str:
                 # Intercept logic moved back to the tool itself for context stability
                 pass
+
+        elif kind == "on_chat_model_end":
+            output = event.get("data", {}).get("output")
+            
+            # Extract usage_metadata depending on whether output is a dict or an object
+            usage = None
+            if hasattr(output, "usage_metadata") and output.usage_metadata:
+                usage = output.usage_metadata
+            elif isinstance(output, dict):
+                if "usage_metadata" in output:
+                    usage = output["usage_metadata"]
+                elif "generations" in output and output["generations"] and len(output["generations"]) > 0 and len(output["generations"][0]) > 0:
+                    gen = output["generations"][0][0]
+                    if isinstance(gen, dict) and "message" in gen:
+                        msg_obj = gen["message"]
+                        if hasattr(msg_obj, "usage_metadata") and msg_obj.usage_metadata:
+                            usage = msg_obj.usage_metadata
+            if not usage and hasattr(output, "response_metadata") and output.response_metadata:
+                usage = output.response_metadata.get("usage_metadata") or output.response_metadata.get("token_usage")
+
+            if usage:
+                prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
+                completion_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
+                total_tokens = usage.get("total_tokens", 0)
+                
+                # HTML enabled in chainlit config so we can inject exact precision styles!
+                token_info = f"<div style='margin-top:20px; border-top:1px solid #444; padding-top:5px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Tokens: {total_tokens:,} (Context: {prompt_tokens:,}, Generated: {completion_tokens:,})</div>"
+                await msg.stream_token(token_info)
+                
+                # Track cumulative tokens in session
+                current_total = cl.user_session.get("total_tokens_used", 0)
+                cl.user_session.set("total_tokens_used", current_total + total_tokens)
                 
     
     await msg.update()
