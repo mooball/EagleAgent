@@ -38,6 +38,7 @@ RUN uv sync --frozen --no-dev
 # Copy application code
 COPY app.py ./
 COPY chainlit.md ./
+COPY .chainlit/ ./.chainlit/
 COPY includes/ ./includes/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
