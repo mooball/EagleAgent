@@ -227,8 +227,8 @@ def build_system_prompt(
     
     # Inject current date and time
     current_time = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=10))).strftime("%A, %Y-%m-%d %H:%M:%S")
-    parts.append(f"The current date and time is: {current_time} AEST.")
-    parts.append("Generally all times should be presented in AEST (GMT+10) time.")
+    parts.append(f"The current date and time in AEST (UTC+10) is: {current_time}.")
+    parts.append("Unless the user specifies a different time zone, present all times in AEST (UTC+10).")
     parts.append("")  # Blank line
     
     # Always add agent identity at the start
