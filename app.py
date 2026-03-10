@@ -1,4 +1,5 @@
 import chainlit as cl
+import uuid
 from chainlit.types import ThreadDict
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, trim_messages, RemoveMessage, BaseMessage
@@ -19,6 +20,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres import AsyncPostgresStore
 from includes.tools.user_profile import create_profile_tools
 from includes.prompts import build_system_prompt
+from includes.commands import handle_deleteall_command
 from includes.storage_utils import (
     upload_file_locally,
     generate_object_key,
@@ -508,6 +510,42 @@ async def main(message: cl.Message):
     # Use the session ID as the thread ID to maintain conversation history
     thread_id = cl.user_session.get("thread_id")
     user_id = cl.user_session.get("user_id", "")
+    
+    # === COMMAND HANDLING ===
+    content = message.content.strip()
+    
+    # Check if we're waiting for /deleteall confirmation
+    if cl.user_session.get("awaiting_delete_confirmation"):
+        cl.user_session.set("awaiting_delete_confirmation", False)
+        if content.lower() in ["y", "yes"]:
+            if user_id:
+                await handle_deleteall_command(user_id, store, pg_pool)
+
+            # Reset current thread to start fresh in LangGraph
+            new_thread = str(uuid.uuid4())
+            cl.user_session.set("thread_id", new_thread)
+            await cl.Message(content="🗑️ All stored knowledge, files, and conversation history about you has been completely erased from all databases.\n\n*Note: Please refresh your browser window now to clear this chat log.*", author="system").send()
+        else:
+            await cl.Message(content="Deletion cancelled. Resuming normal conversation.", author="system").send()
+        return
+
+    # Check for slash commands
+    if content.startswith("/"):
+        command = content.split()[0].lower()
+        if command == "/new":
+            new_thread = str(uuid.uuid4())
+            cl.user_session.set("thread_id", new_thread)
+            await cl.Message(content="🔄 Started a new conversation thread.", author="system").send()
+            return
+        elif command == "/deleteall":
+            cl.user_session.set("awaiting_delete_confirmation", True)
+            await cl.Message(content="⚠️ **Warning:** This will permanently delete all preferences, settings, and memories associated with your profile, and start a new blank conversation.\n\n**Do you really want me to delete all your data?** (Reply with **Yes** or **No**)", author="system").send()
+            return
+        else:
+            await cl.Message(content=f"Unknown command: {command}", author="system").send()
+            return
+    # === END COMMAND HANDLING ===
+
     graph_config = {
         "configurable": {"thread_id": thread_id},
         "recursion_limit": config.GRAPH_RECURSION_LIMIT
