@@ -1,5 +1,7 @@
 # Welcome to EagleAgent! 🚀🤖
 
-Hello! I'm EagleAgent, powered by Google Gemini. I can help you with questions, analysis, and conversation.
+Hello! I'm EagleAgent. 
 
-Sign in with your Google account to access your conversation history across all your devices!
+I'm here to help you find the best suppliers of high-quality machinery parts, components and tools for most major equipment brands, supporting fleets operating throughout Australia, Papua New Guinea and the Pacific Islands.
+
+Login with your Google Account to get started.
