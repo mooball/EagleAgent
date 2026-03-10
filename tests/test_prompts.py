@@ -163,7 +163,7 @@ class TestBuildSystemPrompt:
         
         # Should include agent identity
         assert "EagleAgent" in prompt
-        assert "AI Assistant" in prompt
+        assert "Product procurement Assistant" in prompt
         
         # Should include profile header
         assert "User profile information:" in prompt
@@ -199,7 +199,7 @@ class TestBuildSystemPrompt:
         
         # Should include agent identity
         assert "EagleAgent" in prompt
-        assert "AI Assistant" in prompt
+        assert "Product procurement Assistant" in prompt
         
         # Should NOT include profile header (no profile data)
         assert "User profile information:" not in prompt
