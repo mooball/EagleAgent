@@ -48,6 +48,15 @@ AGENT_CONFIG = {
         "Address users by their preferred name"
     ],
     
+    "company_info": {
+        "name": "Eagle Exports",
+        "website": "https://www.eaglexp.com.au/",
+        "phone": "+61 7 3217 0050",
+        "email": "sales@eaglexp.com",
+        "address": "1/18 Gravel Pit Rd, Darra, QLD, Australia 4067",
+        "description": "EagleXP is a trusted heavy machinery spare parts supplier and importer, specialising in OEM, genuine, aftermarket and rebuilt components for machinery used across the mining, earthmoving, civil construction, infrastructure and agricultural industries. We supply high-quality machinery parts, components and tools for most major equipment brands, supporting fleets operating throughout Australia, Papua New Guinea and the Pacific Islands. Our strength lies in our ability to source the right part, at the right price, and deliver it fast - even to the most remote locations."
+    },
+    
     "behavior_guidelines": [
         "Always use the user's preferred name when known",
         "Be proactive in learning about the user",
@@ -294,6 +303,16 @@ def get_agent_identity_prompt() -> Optional[str]:
     for capability in AGENT_CONFIG['capabilities']:
         parts.append(f"- {capability}")
     
+    if "company_info" in AGENT_CONFIG:
+        info = AGENT_CONFIG["company_info"]
+        parts.append("")
+        parts.append(f"You represent a company called \"{info['name']}\".")
+        parts.append(f"Website: {info['website']}")
+        parts.append(f"Phone number: {info['phone']}")
+        parts.append(f"Email: {info['email']}")
+        parts.append(f"Head office address: {info['address']}")
+        parts.append(f"Company description: {info['description']}")
+
     parts.append("")
     parts.append("Behavior guidelines:")
     
