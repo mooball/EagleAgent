@@ -441,9 +441,9 @@ async def start():
     
     # Personalized welcome message
     if user_name:
-        welcome_msg = f"Hello {user_name}! I am connected to Google Gemini. How can I help you today?"
+        welcome_msg = f"Hello {user_name}! How can I help you today?"
     else:
-        welcome_msg = "Hello! I am connected to Google Gemini. How can I help you today?"
+        welcome_msg = "Hello! How can I help you today?"
     
     await cl.Message(content=welcome_msg).send()
 
