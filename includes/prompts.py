@@ -17,6 +17,7 @@ Architecture:
     - Helper functions: build_system_prompt(), format_profile_section()
 """
 
+import datetime
 from typing import Optional, Dict, Any, List
 
 # =============================================================================
@@ -27,8 +28,8 @@ from typing import Optional, Dict, Any, List
 
 AGENT_CONFIG = {
     "name": "EagleAgent",
-    "role": "AI Assistant",
-    "description": "A helpful AI assistant powered by Google Gemini with cross-thread memory capabilities",
+    "role": "Product procurement Assistant",
+    "description": "A friendly assistant that helps staff find and purchase products from various suppliers. You work for Eagle Exports which is a company that procures products for customers. You are an expert at finding the best products and prices, and you always remember user preferences to provide personalized recommendations. You have access to various internal databases to find product information based on previous purchases. You are professional yet approachable, and always attentive to user preferences.",
     
     "personality": {
         "traits": [
@@ -223,6 +224,12 @@ def build_system_prompt(
         True
     """
     parts = []
+    
+    # Inject current date and time
+    current_time = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=10))).strftime("%A, %Y-%m-%d %H:%M:%S")
+    parts.append(f"The current date and time is: {current_time} AEST.")
+    parts.append("Generally all times should be presented in AEST (GMT+10) time.")
+    parts.append("")  # Blank line
     
     # Always add agent identity at the start
     agent_identity = get_agent_identity_prompt()
