@@ -674,7 +674,7 @@ async def main(message: cl.Message):
                 total_tokens = usage.get("total_tokens", 0)
                 
                 # HTML enabled in chainlit config so we can inject exact precision styles!
-                token_info = f"<div style='margin-top:20px; border-top:1px solid #444; padding-top:5px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Tokens: {total_tokens:,} (Context: {prompt_tokens:,}, Generated: {completion_tokens:,})</div>"
+                token_info = f"\n\n<div style='margin-top:20px; border-top:1px solid #444; padding-top:5px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Tokens: {total_tokens:,} (Context: {prompt_tokens:,}, Generated: {completion_tokens:,})</div>"
                 await msg.stream_token(token_info)
                 
                 # Track cumulative tokens in session
