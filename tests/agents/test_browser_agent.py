@@ -120,8 +120,10 @@ class TestBrowserAgent:
         """Test browser agent provides correct tools."""
         tools = self.agent.get_tools(user_id="test@example.com")
         
-        assert len(tools) == 1
-        assert tools[0].name == "browser"
+        assert len(tools) == 2
+        tool_names = [t.name for t in tools]
+        assert "browser" in tool_names
+        assert "take_screenshot" in tool_names
     
     def test_agent_system_prompt(self):
         """Test browser agent system prompt."""
