@@ -239,7 +239,7 @@ Run the test suite:
 # Simple integration test
 uv run python test_mcp_simple.py
 
-# Full test suite (requires Firestore emulator)
+# Full test suite (requires PostgreSQL emulator)
 uv run pytest tests/test_mcp_integration.py -v
 ```
 

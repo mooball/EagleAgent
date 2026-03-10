@@ -1,6 +1,7 @@
 import asyncio
 import pathlib
 import sys
+import pytest
 
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -26,7 +27,8 @@ class StubChatModel:
         return self
 
 
-def test_langgraph_wiring_with_stub(monkeypatch):
+@pytest.mark.asyncio
+async def test_langgraph_wiring_with_stub(monkeypatch):
     """Graph should run end-to-end using a stubbed model.
 
     This verifies that the LangGraph wiring and state handling works
@@ -50,6 +52,8 @@ def test_langgraph_wiring_with_stub(monkeypatch):
     import app  # noqa: WPS433  (import inside function is intentional for test)
 
     async def _run():
+        await app.setup_globals()
+
         # Arrange: a simple user message and required LangGraph config
         config = {"configurable": {"thread_id": "test-thread"}}
         result = await app.graph.ainvoke(
@@ -61,4 +65,4 @@ def test_langgraph_wiring_with_stub(monkeypatch):
         assert isinstance(result["messages"][-1], AIMessage)
         assert result["messages"][-1].content == "stub-response: hello"
 
-    asyncio.run(_run())
+    await _run()

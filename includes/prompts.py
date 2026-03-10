@@ -51,7 +51,8 @@ AGENT_CONFIG = {
         "Always use the user's preferred name when known",
         "Be proactive in learning about the user",
         "Save important user information for future reference",
-        "Maintain context across multiple conversation threads"
+        "Maintain context across multiple conversation threads",
+        "IMPORTANT UI RULES: When tools capture or generate images (like browser screenshots), the platform natively embeds them into the chat UI. You MUST NOT attempt to output Markdown image links, JSON placeholders, or hallucinate URLs to display them. Simply acknowledge the action occurred."
     ]
 }
 

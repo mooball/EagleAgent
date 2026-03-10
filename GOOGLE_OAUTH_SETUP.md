@@ -103,24 +103,23 @@ OAUTH_ALLOWED_DOMAINS=mooball.com,eagle-exports.com,partner.com
 - `OAUTH_ALLOWED_DOMAINS=` (empty) - All Google users allowed (including Gmail)
 - Commented out or not set - All Google users allowed
 
-## Cloud Run Production Setup
+## Railway Production Setup
 
-When deploying to Google Cloud Run, you need to update the OAuth redirect URIs to include your Cloud Run service URL.
+When deploying to Railway, you need to update the OAuth redirect URIs to include your Railway service URL.
 
 ### Initial Setup
 
-1. During initial deployment, the Cloud Run URL is dynamically generated
+1. During initial deployment, the Railway URL is dynamically generated
 2. Add a temporary redirect URI for local development first
-3. Deploy to Cloud Run and get the service URL
-4. Update Google Console with the Cloud Run redirect URI
+3. Deploy to Railway and get the service URL
+4. Update Google Console with the Railway redirect URI
 
-### Getting Your Cloud Run URL
+### Getting Your Railway URL
 
 After deploying (see [CLOUD_RUN_DEPLOYMENT.md](CLOUD_RUN_DEPLOYMENT.md)):
 
 ```bash
-# Get your Cloud Run service URL
-gcloud run services describe eagleagent \
+# Get your Railway service URL
   --region=australia-southeast1 \
   --format='value(status.url)'
 
@@ -135,21 +134,20 @@ gcloud run services describe eagleagent \
    ```
    https://eagleagent-abc123xyz-ts.a.run.app/auth/oauth/google/callback
    ```
-   Replace with your actual Cloud Run URL
+   Replace with your actual Railway URL
 
 4. **Important**: 
-   - Cloud Run URLs are **permanent** and don't change between deployments
-   - Each Cloud Run region/service has a unique URL
+   - Railway URLs are **permanent** and don't change between deployments
+   - Each Railway region/service has a unique URL
    - Wildcard URIs (e.g., `https://*.run.app/...`) are **not supported** by Google OAuth
    - You must add the exact full URL
 
 ### Custom Domain (Optional)
 
-If you map a custom domain to Cloud Run:
+If you map a custom domain to Railway:
 
 ```bash
 # Map custom domain
-gcloud run domain-mappings create \
   --service eagleagent \
   --domain app.yourdomain.com \
   --region australia-southeast1
@@ -160,9 +158,9 @@ Add the custom domain redirect URI:
 https://app.yourdomain.com/auth/oauth/google/callback
 ```
 
-### Environment Variables for Cloud Run
+### Environment Variables for Railway
 
-Ensure these are set in Cloud Run:
+Ensure these are set in Railway:
 
 ```bash
 CHAINLIT_URL=https://eagleagent-abc123xyz-ts.a.run.app
@@ -198,6 +196,6 @@ See [CLOUD_RUN_DEPLOYMENT.md](CLOUD_RUN_DEPLOYMENT.md) for complete deployment i
 ## Next Steps
 
 Once authentication is working, you can:
-1. Set up a data layer (PostgreSQL or custom Firestore) for conversation persistence
+1. Set up a data layer (PostgreSQL or custom PostgreSQL) for conversation persistence
 2. Implement `@cl.on_chat_resume` to restore conversation state
 3. Deploy to production with proper CHAINLIT_URL configuration

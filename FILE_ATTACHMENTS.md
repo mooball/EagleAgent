@@ -4,7 +4,7 @@ This document describes the file attachment system for EagleAgent, which allows 
 
 ## Overview
 
-The system stores files in Google Cloud Storage (GCS) with a 30-day retention policy and processes them for use by the AI agent:
+The system stores files in Local File Storage (Local File Storage) with a 30-day retention policy and processes them for use by the AI agent:
 
 - **Images**: Analyzed using Gemini's vision capabilities
 - **PDFs**: Text extracted and added to conversation context
@@ -14,21 +14,19 @@ The system stores files in Google Cloud Storage (GCS) with a 30-day retention po
 ## Architecture
 
 ```
-User Upload → Chainlit UI → app.py → GCS Upload → Document Processing → Agent Context
+User Upload → Chainlit UI → app.py → Local File Storage Upload → Document Processing → Agent Context
                                    ↓
-                              SQLite Metadata
+                              PostgreSQL Metadata
 ```
 
 ## Setup Instructions
 
-### 1. Create GCS Bucket in Sydney Region
+### 1. Create Local File Storage Bucket in Sydney Region
 
 ```bash
 # Create bucket in australia-southeast1 (Sydney)
-gcloud storage buckets create gs://eagleagent --location=australia-southeast1
 
 # Verify bucket created
-gcloud storage buckets describe gs://eagleagent
 ```
 
 **Why Sydney?**
@@ -40,7 +38,6 @@ gcloud storage buckets describe gs://eagleagent
 
 ```bash
 # Grant storage admin permissions to the service account
-gcloud storage buckets add-iam-policy-binding gs://eagleagent \
   --member=serviceAccount:eagleagent-svc-account@mooballai.iam.gserviceaccount.com \
   --role=roles/storage.objectAdmin
 ```
@@ -50,7 +47,7 @@ gcloud storage buckets add-iam-policy-binding gs://eagleagent \
 Ensure your `.env` file has:
 
 ```bash
-GCP_BUCKET_NAME=eagleagent
+
 GOOGLE_APPLICATION_CREDENTIALS=./service-account-key.json
 GOOGLE_PROJECT_ID=mooballai
 
@@ -68,7 +65,7 @@ poetry install
 ```
 
 This installs:
-- `google-cloud-storage` - GCS client
+- `google-cloud-storage` - Local File Storage client
 - `pdfplumber` - PDF text extraction
 - `Pillow` - Image processing
 
@@ -102,13 +99,13 @@ max_size_mb = 50
 
 1. **User uploads file** via paperclip icon in chat UI
 2. **File validation** - type and size checked by Chainlit
-3. **GCS upload** - file stored in `gs://eagleagent/uploads/{user_id}/{session_id}/{filename}`
+3. **Local File Storage upload** - file stored in `gs://eagleagent/uploads/{user_id}/{session_id}/{filename}`
 4. **Document processing**:
    - Images → Base64 encoded for Gemini vision
    - PDFs → Text extracted from all pages
    - Text files → Content read and decoded
    - Audio → Metadata stored (transcription pending)
-5. **Metadata saved** - File info stored in SQLite `elements` table
+5. **Metadata saved** - File info stored in PostgreSQL `elements` table
 6. **Multimodal message** - Created with text + file content
 7. **Agent processes** - AI can analyze images or reference document content
 
@@ -126,7 +123,7 @@ gs://eagleagent/
 
 ### Database Schema
 
-Files are tracked in the SQLite `elements` table:
+Files are tracked in the PostgreSQL `elements` table:
 
 ```sql
 CREATE TABLE elements (
@@ -134,8 +131,8 @@ CREATE TABLE elements (
     threadId UUID,
     type TEXT,
     name TEXT,
-    url TEXT,           -- GCS signed URL
-    objectKey TEXT,     -- GCS path
+    url TEXT,           -- Local File Storage signed URL
+    objectKey TEXT,     -- Local File Storage path
     mime TEXT,
     createdAt TIMESTAMP
 );
@@ -145,11 +142,11 @@ CREATE TABLE elements (
 
 ### storage_utils.py
 
-Functions for GCS operations:
+Functions for Local File Storage operations:
 
-- `upload_file_to_gcs(file_path, bucket_name, object_key)` → Returns GCS URL
-- `download_file_from_gcs(bucket_name, object_key)` → Returns file bytes
-- `delete_file_from_gcs(bucket_name, object_key)` → Removes file
+- `upload_file_to_local(file_path)` -> Writes file to DATA_DIR/attachments
+- `download_file_from_local` -> Reads file from local dir
+- `delete_file_from_local` -> Removes file locally
 - `generate_object_key(user_id, session_id, filename)` → Creates unique path
 
 ### document_processing.py
@@ -214,14 +211,13 @@ crontab -e
 
 ## Monitoring & Debugging
 
-### Check GCS Bucket Contents
+### Check Local File Storage Bucket Contents
 
 ```bash
 # List all files
 gsutil ls -r gs://eagleagent
 
 # Check bucket location
-gcloud storage buckets describe gs://eagleagent
 
 # View bucket size
 gsutil du -sh gs://eagleagent
@@ -232,7 +228,7 @@ gsutil du -sh gs://eagleagent
 Logs are written to console during file uploads:
 
 ```
-INFO - includes.storage_utils - Uploaded file to GCS: uploads/user@example.com/session-123/image.jpg
+INFO - includes.storage_utils - Uploaded file to Local File Storage: uploads/user@example.com/session-123/image.jpg
 INFO - includes.document_processing - Extracted text from PDF: 1234 characters
 ```
 
@@ -240,10 +236,10 @@ INFO - includes.document_processing - Extracted text from PDF: 1234 characters
 
 ```bash
 # View all uploaded files
-sqlite3 chainlit_datalayer.db "SELECT name, mime, createdAt FROM elements ORDER BY createdAt DESC LIMIT 10;"
+psql $DATABASE_URL "SELECT name, mime, createdAt FROM elements ORDER BY createdAt DESC LIMIT 10;"
 
 # Count files by type
-sqlite3 chainlit_datalayer.db "SELECT mime, COUNT(*) FROM elements GROUP BY mime;"
+psql $DATABASE_URL "SELECT mime, COUNT(*) FROM elements GROUP BY mime;"
 ```
 
 ## Troubleshooting
@@ -252,20 +248,16 @@ sqlite3 chainlit_datalayer.db "SELECT mime, COUNT(*) FROM elements GROUP BY mime
 
 ```bash
 # Verify bucket exists
-gcloud storage buckets describe gs://eagleagent
 
 # If not, create it
-gcloud storage buckets create gs://eagleagent --location=australia-southeast1
 ```
 
 ### "Permission denied" Error
 
 ```bash
 # Check service account has permissions
-gcloud storage buckets get-iam-policy gs://eagleagent
 
 # Re-grant permissions if needed
-gcloud storage buckets add-iam-policy-binding gs://eagleagent \
   --member=serviceAccount:eagleagent-svc-account@mooballai.iam.gserviceaccount.com \
   --role=roles/storage.objectAdmin
 ```
@@ -285,7 +277,7 @@ gcloud storage buckets add-iam-policy-binding gs://eagleagent \
 
 ## Cost Considerations
 
-### GCS Pricing (Sydney Region)
+### Local File Storage Pricing (Sydney Region)
 
 - **Storage**: ~$0.023 per GB/month (Standard class)
 - **Operations**: Minimal (few uploads/downloads per day)
@@ -327,7 +319,7 @@ gcloud storage buckets add-iam-policy-binding gs://eagleagent \
 - [ ] Compressed archives (ZIP) support
 - [ ] Real-time file upload progress
 - [ ] User file management UI (view/delete uploaded files)
-- [ ] Lifecycle policies in GCS (automatic archival)
+- [ ] Lifecycle policies in Local File Storage (automatic archival)
 
 ## Testing
 
@@ -342,11 +334,11 @@ Tests cover:
 - PDF text extraction
 - Text file reading
 - Multimodal content creation
-- Storage utilities (mocked GCS)
+- Storage utilities (mocked Local File Storage)
 
 ## References
 
-- [Google Cloud Storage Documentation](https://cloud.google.com/storage/docs)
+- [Local File Storage Documentation](https://cloud.google.com/storage/docs)
 - [Chainlit File Upload](https://docs.chainlit.io/advanced-features/multi-modal)
 - [LangChain Multimodal](https://python.langchain.com/docs/how_to/multimodal_inputs/)
 - [Gemini Vision API](https://ai.google.dev/gemini-api/docs/vision)

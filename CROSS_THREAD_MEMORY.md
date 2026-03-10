@@ -1,6 +1,6 @@
 # Cross-Thread User Memory
 
-EagleAgent now supports **persistent cross-thread memory** using LangGraph's Store system with Firestore backend.
+EagleAgent now supports **persistent cross-thread memory** using LangGraph's Store system with PostgreSQL backend.
 
 ## What is Cross-Thread Memory?
 
@@ -20,13 +20,13 @@ EagleAgent now supports **persistent cross-thread memory** using LangGraph's Sto
 
 | Layer | Technology | Scope | Lifespan | Purpose |
 |-------|-----------|-------|----------|---------|
-| **Conversation State** | Firestore Checkpoints | Single thread | 7 days | Current conversation context |
-| **User Profile** | Firestore Store | All threads | Permanent | Long-term facts about the user |
+| **Conversation State** | PostgreSQL Checkpoints | Single thread | 7 days | Current conversation context |
+| **User Profile** | PostgreSQL Store | All threads | Permanent | Long-term facts about the user |
 
 ### Architecture
 
 ```
-Firestore Database (mooballai)
+PostgreSQL Database (mooballai)
 ├── checkpoints/              ← Thread-specific conversation state
 │   ├── thread-uuid-1_...    (expires in 7 days)
 │   └── thread-uuid-2_...    (expires in 7 days)
@@ -45,7 +45,7 @@ Firestore Database (mooballai)
 
 ### ✅ What's Working Now
 
-1. **Profile Storage**: User profiles stored in Firestore `user_memory` collection
+1. **Profile Storage**: User profiles stored in PostgreSQL `user_memory` collection
 2. **Auto-Loading**: Agent automatically loads user profile at conversation start
 3. **Context Injection**: Profile data injected as system message context
 4. **Cross-Thread Access**: Same profile accessible from any conversation thread
@@ -211,7 +211,7 @@ User profiles are stored as JSON with flexible schema:
 ## Files Created
 
 ### Core Implementation
-- **`firestore_store.py`** - LangGraph BaseStore implementation for Firestore
+- **`native Postgres PostgresStore`** - LangGraph BaseStore implementation for PostgreSQL
   - Handles get/put/delete/search operations
   - Namespace-based document organization
   - Async-compatible interface
@@ -231,7 +231,7 @@ User profiles are stored as JSON with flexible schema:
 ### Updated Files
 - **`app.py`**:
   - Added `user_id` to `AgentState`
-  - Integrated `FirestoreStore` with graph compilation
+  - Integrated `AsyncPostgresStore` with graph compilation
   - Updated `call_model()` to load and inject user profile
   - Set `user_id` in `on_chat_start` and `on_chat_resume`
 
@@ -245,7 +245,7 @@ User profiles are stored as JSON with flexible schema:
 | **Scope** | Single thread | Cross-thread |
 | **Lifespan** | 7 days (TTL) | Permanent |
 | **Key Format** | `thread_id` | `(namespace, key)` |
-| **Implementation** | `TimestampedFirestoreSaver` | `FirestoreStore` |
+| **Implementation** | `AsyncPostgresSaver` | `AsyncPostgresStore` |
 | **Collection** | `checkpoints` | `user_memory` |
 
 ### Namespace Convention
@@ -293,4 +293,4 @@ Examples:
 ## Learn More
 
 - **LangGraph Store Documentation**: https://langchain-ai.github.io/langgraph/reference/store/
-- **Firestore Documentation**: https://cloud.google.com/firestore/docs
+

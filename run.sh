@@ -1,8 +1,12 @@
 #!/bin/bash
 
+# Ensure local PostgreSQL is running
+echo "🐘 Checking local PostgreSQL container..."
+./start_postgres.sh
+
 # Load environment variables
 source .env 2>/dev/null || true
 
 # Run Chainlit with watch mode
-# TEMP_FILES_FOLDER is configured via environment variable (loaded from .env)
+echo "🚀 Starting Chainlit locally..."
 uv run chainlit run app.py -w

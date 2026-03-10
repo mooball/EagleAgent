@@ -10,6 +10,7 @@ __pycache__/
 .files/
 # Ignore any custom temp files folder
 temp_files/
+data/
 service-account-key.json
 chainlit_datalayer.db
 chainlit.db

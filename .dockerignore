@@ -13,7 +13,7 @@ service-account-key.json
 config/mcp_servers.yaml
 
 # Local runtime data
-.chainlit/
+# NOTE: .chainlit/ is required to configure unsafe_allow_html
 .files/
 temp_files/
 chainlit_datalayer.db

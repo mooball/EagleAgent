@@ -38,26 +38,22 @@ RUN uv sync --frozen --no-dev
 # Copy application code
 COPY app.py ./
 COPY chainlit.md ./
+COPY .chainlit/ ./.chainlit/
 COPY includes/ ./includes/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
+COPY alembic/ ./alembic/
+COPY alembic.ini ./
 
 # Create directories
-RUN mkdir -p /tmp/files /data
+RUN mkdir -p /tmp/files /app/data
 
-# Create non-root user for security
-RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app /tmp/files /data /ms-playwright
-
-# Switch to non-root user
-USER appuser
-
-# Expose port 8080 (Cloud Run standard)
+# Expose port 8080 (Railway default)
 EXPOSE 8080
 
 # Copy and set startup script
-COPY --chown=appuser:appuser start-cloudrun.sh ./
-RUN chmod +x start-cloudrun.sh
+COPY start.sh ./
+RUN chmod +x start.sh
 
 # Run startup script
-CMD ["./start-cloudrun.sh"]
+CMD ["./start.sh"]

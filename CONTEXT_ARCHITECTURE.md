@@ -19,8 +19,8 @@ This document explains how context and messages flow through the EagleAgent syst
 
 EagleAgent uses **LangGraph** for orchestration and **LangChain message types** for conversation structure. The agent maintains **two types of memory**:
 
-1. **Thread-scoped memory** (conversation history) - Firestore checkpointer
-2. **Cross-thread memory** (user profiles) - Firestore store
+1. **Thread-scoped memory** (conversation history) - PostgreSQL checkpointer
+2. **Cross-thread memory** (user profiles) - PostgreSQL store
 
 The complete context sent to the LLM on each turn consists of:
 - **SystemMessage**: Agent instructions + user profile context
@@ -196,8 +196,8 @@ EagleAgent uses a sophisticated dual-memory system:
 
 ### Thread-Scoped Memory (Checkpointer)
 
-**Implementation**: [`TimestampedFirestoreSaver`](includes/timestamped_firestore_saver.py)  
-**Storage**: Firestore collection `checkpoints`  
+**Implementation**: [`AsyncPostgresSaver`](langgraph.checkpoint.postgres)  
+**Storage**: PostgreSQL collection `checkpoints`  
 **Scope**: Per conversation thread  
 **Key**: `thread_id` (UUID generated per conversation)  
 **Contents**: Complete conversation state including all messages  
@@ -229,8 +229,8 @@ EagleAgent uses a sophisticated dual-memory system:
 
 ### Cross-Thread Memory (Store)
 
-**Implementation**: [`FirestoreStore`](includes/firestore_store.py)  
-**Storage**: Firestore collection `user_memory`  
+**Implementation**: [`AsyncPostgresStore`](langgraph.store.postgres)  
+**Storage**: PostgreSQL collection `user_memory`  
 **Scope**: Per user across ALL conversation threads  
 **Key**: `user_id` (user's email from OAuth)  
 **Contents**: User profile, preferences, facts  
@@ -409,8 +409,8 @@ Understanding where different types of configuration live:
 **File**: `.env`  
 **Contents**:
 - `GOOGLE_API_KEY` - LLM access
-- `GOOGLE_PROJECT_ID` - Firestore/GCP
-- `DATABASE_URL` - Chainlit data layer (SQLite)
+
+- `DATABASE_URL` - Chainlit data layer (PostgreSQL)
 - `OAUTH_*` - Authentication settings
 
 **When to modify**: Changing deployment environment, credentials, OAuth providers
@@ -534,7 +534,7 @@ When ready to migrate prompts to YAML:
 ### Profile information not persisting
 
 **Check**:
-1. Is Firestore emulator running? (production) or emulator host set?
+1. Is PostgreSQL emulator running? (production) or emulator host set?
 2. Is `user_id` being set in `@cl.on_chat_start` and `@cl.on_chat_resume`?
 3. Is store initialized correctly? Check [`app.py`](app.py) line 22
 4. Are tool calls executing successfully? Check tool message content
@@ -544,14 +544,14 @@ When ready to migrate prompts to YAML:
 **Check**:
 - System prompt is constructed fresh on each `call_model()` invocation
 - If profile changed but prompt didn't update → check store.aget() is returning updated data
-- Clear Firestore cache if using emulator (restart emulator)
+- Clear PostgreSQL cache if using emulator (restart emulator)
 
 ### Conversation history not loading on resume
 
 **Check**:
 1. Is thread_id being restored in `@cl.on_chat_resume`?
 2. Is checkpointer configured correctly? Check [`app.py`](app.py) line 142
-3. Are messages being saved? Check Firestore `checkpoints` collection
+3. Are messages being saved? Check PostgreSQL `checkpoints` collection
 4. Is `config={"configurable": {"thread_id": ...}}` being passed to graph?
 
 ---
@@ -561,7 +561,7 @@ When ready to migrate prompts to YAML:
 - [Cross-Thread Memory Architecture](CROSS_THREAD_MEMORY.md) - Detailed explanation of the Store pattern
 - [Testing Guide](TESTING.md) - How to test different components
 - [Google OAuth Setup](GOOGLE_OAUTH_SETUP.md) - User authentication flow
-- [Firestore TTL](FIRESTORE_TTL.md) - Checkpoint cleanup strategy
+
 
 ---
 

@@ -141,22 +141,27 @@ class BaseSubAgent(ABC):
         tools = self.get_tools(user_id)
         logger.debug(f"{self.name} loaded {len(tools)} tools")
         
-        # Bind tools to model
-        if tools:
-            model_with_tools = self.model.bind_tools(tools)
-        else:
-            model_with_tools = self.model
-        
         # Build messages with agent-specific system prompt
         system_prompt = self.get_system_prompt()
         enhanced_messages = [SystemMessage(content=system_prompt)] + list(messages)
         
         # Invoke model
         logger.info(f"{self.name} invoking model")
-        if config is not None:
-            response = await model_with_tools.ainvoke(enhanced_messages, config=config)
+        if tools:
+            from langgraph.prebuilt import create_react_agent
+            sub_agent_graph = create_react_agent(self.model, tools)
+            if config is not None:
+                result = await sub_agent_graph.ainvoke({"messages": enhanced_messages}, config=config)
+            else:
+                result = await sub_agent_graph.ainvoke({"messages": enhanced_messages})
+            
+            response = result["messages"][-1]
         else:
-            response = await model_with_tools.ainvoke(enhanced_messages)
+            if config is not None:
+                response = await self.model.ainvoke(enhanced_messages, config=config)
+            else:
+                response = await self.model.ainvoke(enhanced_messages)
+                
         logger.info(f"{self.name} completed successfully")
         
         return {"messages": [response]}
