@@ -416,6 +416,7 @@ async def start():
     
     # Get user's name for personalized greeting
     user_name = None
+    is_first_visit = False
     
     if user:
         # Store user_id for cross-thread memory
@@ -428,6 +429,22 @@ async def start():
         
         # Try to get preferred_name from user profile store
         user_profile = await store.aget(("users",), user.identifier)
+        
+        if not user_profile or not user_profile.value:
+            is_first_visit = True
+            
+            # This is their first time! Save their Google Auth data permanently
+            profile_data = {
+                "first_name": user.metadata.get("given_name", "") if user.metadata else "",
+                "last_name": user.metadata.get("family_name", "") if user.metadata else "",
+                "full_name": user.metadata.get("name", "") if user.metadata else "",
+                "email": user.metadata.get("email", user.identifier) if user.metadata else user.identifier
+            }
+            await store.aput(("users",), user.identifier, profile_data)
+            
+            # Re-fetch the newly created profile
+            user_profile = await store.aget(("users",), user.identifier)
+
         if user_profile and user_profile.value and "preferred_name" in user_profile.value:
             user_name = user_profile.value["preferred_name"]
         
@@ -440,10 +457,14 @@ async def start():
             user_name = user.identifier
     
     # Personalized welcome message
-    if user_name:
-        welcome_msg = f"Hello {user_name}! I am connected to Google Gemini. How can I help you today?"
+    if is_first_visit and user_name:
+        welcome_msg = f"Welcome to EagleAgent, {user_name}! I don't think we've met before. Is it OK to call you {user_name} or do you have a preferred name?"
+    elif is_first_visit:
+        welcome_msg = "Welcome to EagleAgent! I don't think we've met before. What is your preferred name?"
+    elif user_name:
+        welcome_msg = f"Hello {user_name}! How can I help you today?"
     else:
-        welcome_msg = "Hello! I am connected to Google Gemini. How can I help you today?"
+        welcome_msg = "Hello! How can I help you today?"
     
     await cl.Message(content=welcome_msg).send()
 
@@ -487,6 +508,18 @@ async def on_chat_resume(thread: ThreadDict):
         
         # Try to get preferred_name from user profile store
         user_profile = await store.aget(("users",), user.identifier)
+        
+        if not user_profile or not user_profile.value:
+            # Initialize if somehow missing
+            profile_data = {
+                "first_name": user.metadata.get("given_name", "") if user.metadata else "",
+                "last_name": user.metadata.get("family_name", "") if user.metadata else "",
+                "full_name": user.metadata.get("name", "") if user.metadata else "",
+                "email": user.metadata.get("email", user.identifier) if user.metadata else user.identifier
+            }
+            await store.aput(("users",), user.identifier, profile_data)
+            user_profile = await store.aget(("users",), user.identifier)
+
         if user_profile and user_profile.value and "preferred_name" in user_profile.value:
             user_name = user_profile.value["preferred_name"]
         
@@ -502,7 +535,7 @@ async def on_chat_resume(thread: ThreadDict):
     if user_name:
         await cl.Message(
             content=f"Welcome back, {user_name}! Continuing our previous conversation.",
-            author="system"
+            author="EagleAgent"
         ).send()
 
 @cl.on_message
@@ -524,9 +557,9 @@ async def main(message: cl.Message):
             # Reset current thread to start fresh in LangGraph
             new_thread = str(uuid.uuid4())
             cl.user_session.set("thread_id", new_thread)
-            await cl.Message(content="🗑️ All stored knowledge, files, and conversation history about you has been completely erased from all databases.\n\n*Note: Please refresh your browser window now to clear this chat log.*", author="system").send()
+            await cl.Message(content="🗑️ All stored knowledge, files, and conversation history about you has been completely erased from all databases.\n\n*Note: Please refresh your browser window now to clear this chat log.*", author="EagleAgent").send()
         else:
-            await cl.Message(content="Deletion cancelled. Resuming normal conversation.", author="system").send()
+            await cl.Message(content="Deletion cancelled. Resuming normal conversation.", author="EagleAgent").send()
         return
 
     # Check for slash commands
@@ -535,14 +568,14 @@ async def main(message: cl.Message):
         if command == "/new":
             new_thread = str(uuid.uuid4())
             cl.user_session.set("thread_id", new_thread)
-            await cl.Message(content="🔄 Started a new conversation thread.", author="system").send()
+            await cl.Message(content="🔄 Started a new conversation thread.", author="EagleAgent").send()
             return
         elif command == "/deleteall":
             cl.user_session.set("awaiting_delete_confirmation", True)
-            await cl.Message(content="⚠️ **Warning:** This will permanently delete all preferences, settings, and memories associated with your profile, and start a new blank conversation.\n\n**Do you really want me to delete all your data?** (Reply with **Yes** or **No**)", author="system").send()
+            await cl.Message(content="⚠️ **Warning:** This will permanently delete all preferences, settings, and memories associated with your profile, and start a new blank conversation.\n\n**Do you really want me to delete all your data?** (Reply with **Yes** or **No**)", author="EagleAgent").send()
             return
         else:
-            await cl.Message(content=f"Unknown command: {command}", author="system").send()
+            await cl.Message(content=f"Unknown command: {command}", author="EagleAgent").send()
             return
     # === END COMMAND HANDLING ===
 
@@ -587,7 +620,7 @@ async def main(message: cl.Message):
                 logging.error(f"Error processing file {element.name}: {e}")
                 await cl.Message(
                     content=f"⚠️ Error processing {element.name}: {str(e)}",
-                    author="system"
+                    author="EagleAgent"
                 ).send()
         
         # Re-attach elements to a confirmation message to trigger persistence
