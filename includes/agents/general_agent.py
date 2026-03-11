@@ -60,10 +60,6 @@ class GeneralAgent(BaseSubAgent):
     def get_system_prompt(self) -> str:
         """Not used directly, as we use build_system_prompt dynamically in __call__"""
         return "" 
-        
-    def get_system_prompt(self) -> str:
-        """Not used directly, as we use build_system_prompt dynamically in __call__"""
-        return "" 
 
     async def __call__(self, state: Dict[str, Any], config_runnable=None) -> Dict[str, Any]:
         """Execute the general agent, managing its own system prompt and trimming."""

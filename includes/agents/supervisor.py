@@ -76,7 +76,13 @@ Given the conversation, which agent should act next?
         logger.debug("Supervisor LLM-based routing")
         try:
             # Provide tags so event stream can filter it out if needed, or simply let the default behavior work
-            decision = await model_with_structured_output.ainvoke(eval_messages, config={"tags": ["supervisor_routing"]})
+            merged_config = dict(config) if config else {}
+            tags = merged_config.get("tags", [])
+            if "supervisor_routing" not in tags:
+                tags.append("supervisor_routing")
+            merged_config["tags"] = tags
+            
+            decision = await model_with_structured_output.ainvoke(eval_messages, config=merged_config)
             logger.info(f"Supervisor LLM chose: {decision.next_agent}")
             return {"next_agent": decision.next_agent}
         except Exception as e:
