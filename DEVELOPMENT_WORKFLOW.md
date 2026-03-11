@@ -42,7 +42,7 @@ Deployment is automated via Railway's GitHub integration. When code is pushed to
 ```bash
 git add .
 git commit -m "Update feature X"
-git push origin railway  # Triggers Railway deployment
+git push origin main  # Triggers Railway deployment
 ```
 
 Ensure your Railway project variables reflect the correct `DATABASE_URL` format.

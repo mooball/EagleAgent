@@ -69,22 +69,22 @@
    - Update main [README.md](README.md) with browser capabilities
    - Add agent-browser setup instructions to deployment docs
 
-**Phase 3: Supervisor Refactor (Week 3-4)**
+**Phase 3: Supervisor Refactor (Week 3-4) - COMPLETED**
 
-10. **Extract current agent as GeneralAgent**
+- [x] 10. **Extract current agent as GeneralAgent**
     - Create [includes/agents/general_agent.py](includes/agents/general_agent.py)
     - Move `call_model()` logic from [app.py](app.py#L68-L112) into GeneralAgent class
     - GeneralAgent gets profile tools + MCP tools (not browser tools)
     - Verify existing functionality still works
 
-11. **Create supervisor node**
+- [x] 11. **Create supervisor node**
     - Create [includes/agents/supervisor.py](includes/agents/supervisor.py)
     - Implement `route_to_agent()` function with hybrid routing:
       - Rule-based: Check keywords (search/browse → browser, code/implement → future code agent)
       - LLM fallback: Use fast model to classify intent for ambiguous cases
     - Supervisor has minimal system prompt (just routing instructions)
 
-12. **Rebuild graph with supervisor pattern**
+- [x] 12. **Rebuild graph with supervisor pattern**
     - In [app.py](app.py#L152-L162), change from simple loop to supervisor pattern:
       ```
       START → supervisor → [general_agent | browser_agent] → supervisor → END
@@ -93,20 +93,20 @@
     - Add conditional edges based on routing decision
     - Each agent returns to supervisor (allows chaining: browse, then summarize)
 
-13. **Migration & backward compatibility**
+- [x] 13. **Migration & backward compatibility**
     - Ensure existing thread_ids still work (state format unchanged)
     - Test with existing conversation history in Firestore
     - Verify user profiles still load correctly
     - Check file attachments flow through supervisor
 
-**Phase 4: Polish & Future Agents (Week 4+)**
+**Phase 4: Polish & Future Agents (Week 4+) - COMPLETED**
 
-14. **Optimize context management**
+- [x] 14. **Optimize context management**
     - Implement dynamic tool instructions in [includes/prompts.py](includes/prompts.py#L177-L230)
     - Only include instructions for agents/tools actually available in current context
     - Measure token usage before/after (expect ~40% reduction for non-browser conversations)
 
-15. **Prepare for future agents**
+- [x] 15. **Prepare for future agents**
     - Document agent creation template in [includes/agents/README.md](includes/agents/README.md)
     - Create [config/agents.yaml.example](config/agents.yaml.example) for agent routing rules
     - Add metrics/logging for agent usage (which agents invoked, success rates)
@@ -114,7 +114,7 @@
       - [includes/agents/code_agent.py](includes/agents/code_agent.py) (code generation/debugging)
       - [includes/agents/data_agent.py](includes/agents/data_agent.py) (data analysis/visualization)
 
-16. **Testing & monitoring**
+- [x] 16. **Testing & monitoring**
     - Add supervisor routing tests in [tests/agents/test_supervisor.py](tests/agents/test_supervisor.py)
     - Test rule-based routing (keywords trigger correct agent)
     - Test LLM fallback routing (ambiguous requests)
