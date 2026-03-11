@@ -10,7 +10,10 @@ and GitHub Secrets, NOT in this file.
 Configuration can be overridden by environment variables if needed.
 """
 import os
+from dotenv import load_dotenv
 
+# Load environment variables early so class-level os.getenv calls work
+load_dotenv()
 
 class Config:
     """Application configuration settings"""
@@ -60,6 +63,9 @@ class Config:
     
     # ==================== Application Settings ====================
     
+    # Comma-separated list of admin email addresses
+    ADMIN_EMAILS = os.getenv("ADMIN_EMAILS", "tom@mooball.net")
+    
     # Temporary files upload folder
     TEMP_FILES_FOLDER = os.getenv("TEMP_FILES_FOLDER", ".files")
     
@@ -84,6 +90,11 @@ class Config:
     
     # ==================== Helper Methods ====================
     
+    @classmethod
+    def get_admin_emails(cls) -> list[str]:
+        """Return admin emails as a list"""
+        return [email.strip().lower() for email in cls.ADMIN_EMAILS.split(",") if email.strip()]
+
     @classmethod
     def to_dict(cls) -> dict:
         """Return all configuration values as a dictionary"""

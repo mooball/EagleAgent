@@ -108,6 +108,7 @@ PROFILE_TEMPLATES = {
     "header": "User profile information:",
     
     "sections": {
+        "role": "- Role: {role}",
         "preferred_name": "- Preferred name: {preferred_name} (use this to address the user)",
         "name": "- Name: {name}",
         "preferences": "- Preferences: {preferences}",
@@ -180,6 +181,10 @@ def build_profile_context(profile_data: Dict[str, Any]) -> List[str]:
     """
     sections = []
     
+    # priority info like role
+    if "role" in profile_data:
+        sections.append(format_profile_section("role", profile_data["role"]))
+
     # Priority order for profile fields
     # preferred_name takes precedence over name
     if "preferred_name" in profile_data:
