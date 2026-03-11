@@ -54,58 +54,67 @@ class TestPromptsRoles:
         
         role_index = sections.index("- Role: Admin")
         pref_name_index = sections.index("- Preferred name: Tom (use this to address the user)")
-        assert role_index != -1
+        # Role should have priority and appear before preferred name in the context
+        assert role_index < pref_name_index
 
 
 @pytest.mark.asyncio
 class TestAppRoles:
     @patch('app.config')
     @patch('app.store')
-    @patch('app.mcp_client')
-    async def test_get_user_tools_admin(self, mock_mcp, mock_store, mock_config):
+    @patch('app.mcp_client', new=None)
+    async def test_get_user_tools_admin(self, mock_store, mock_config):
         # Setup mock admin list
         mock_config.get_admin_emails.return_value = ["admin@example.com"]
         
+        original_admin_tools = app.ADMIN_ONLY_TOOLS
         app.ADMIN_ONLY_TOOLS = ["test_admin_tool"]
         
-        # Mock create_profile_tools to return generic tools + an admin tool
-        mock_profile_tool = MagicMock()
-        mock_profile_tool.name = "normal_tool"
-        
-        mock_admin_tool = MagicMock()
-        mock_admin_tool.name = "test_admin_tool"
-        
-        with patch('app.create_profile_tools', return_value=[mock_profile_tool, mock_admin_tool]):
-            # Test Admin user
-            tools, role = await app.get_user_tools("admin@example.com")
+        try:
+            # Mock create_profile_tools to return generic tools + an admin tool
+            mock_profile_tool = MagicMock()
+            mock_profile_tool.name = "normal_tool"
             
-            assert role == "Admin"
-            tool_names = [getattr(t, "name", "") for t in tools if hasattr(t, "name")]
-            assert "normal_tool" in tool_names
-            assert "test_admin_tool" in tool_names
+            mock_admin_tool = MagicMock()
+            mock_admin_tool.name = "test_admin_tool"
+            
+            with patch('app.create_profile_tools', return_value=[mock_profile_tool, mock_admin_tool]):
+                # Test Admin user
+                tools, role = await app.get_user_tools("admin@example.com")
+                
+                assert role == "Admin"
+                tool_names = [getattr(t, "name", "") for t in tools if hasattr(t, "name")]
+                assert "normal_tool" in tool_names
+                assert "test_admin_tool" in tool_names
+        finally:
+            app.ADMIN_ONLY_TOOLS = original_admin_tools
 
     @patch('app.config')
     @patch('app.store')
-    @patch('app.mcp_client')
-    async def test_get_user_tools_staff(self, mock_mcp, mock_store, mock_config):
+    @patch('app.mcp_client', new=None)
+    async def test_get_user_tools_staff(self, mock_store, mock_config):
         # Setup mock admin list
         mock_config.get_admin_emails.return_value = ["admin@example.com"]
         
+        original_admin_tools = app.ADMIN_ONLY_TOOLS
         app.ADMIN_ONLY_TOOLS = ["test_admin_tool"]
         
-        # Mock create_profile_tools to return generic tools + an admin tool
-        mock_profile_tool = MagicMock()
-        mock_profile_tool.name = "normal_tool"
-        
-        mock_admin_tool = MagicMock()
-        mock_admin_tool.name = "test_admin_tool"
-        
-        with patch('app.create_profile_tools', return_value=[mock_profile_tool, mock_admin_tool]):
-            # Test Staff user
-            tools, role = await app.get_user_tools("staff@example.com")
+        try:
+            # Mock create_profile_tools to return generic tools + an admin tool
+            mock_profile_tool = MagicMock()
+            mock_profile_tool.name = "normal_tool"
             
-            assert role == "Staff"
-            tool_names = [getattr(t, "name", "") for t in tools if hasattr(t, "name")]
+            mock_admin_tool = MagicMock()
+            mock_admin_tool.name = "test_admin_tool"
             
-            assert "normal_tool" in tool_names
-            assert "test_admin_tool" not in tool_names  # Filtered out
+            with patch('app.create_profile_tools', return_value=[mock_profile_tool, mock_admin_tool]):
+                # Test Staff user
+                tools, role = await app.get_user_tools("staff@example.com")
+                
+                assert role == "Staff"
+                tool_names = [getattr(t, "name", "") for t in tools if hasattr(t, "name")]
+                
+                assert "normal_tool" in tool_names
+                assert "test_admin_tool" not in tool_names  # Filtered out
+        finally:
+            app.ADMIN_ONLY_TOOLS = original_admin_tools

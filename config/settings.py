@@ -64,7 +64,7 @@ class Config:
     # ==================== Application Settings ====================
     
     # Comma-separated list of admin email addresses
-    ADMIN_EMAILS = os.getenv("ADMIN_EMAILS", "tom@mooball.net")
+    ADMIN_EMAILS = os.getenv("ADMIN_EMAILS", "")
     
     # Temporary files upload folder
     TEMP_FILES_FOLDER = os.getenv("TEMP_FILES_FOLDER", ".files")
