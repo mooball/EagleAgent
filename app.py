@@ -59,6 +59,9 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
+# Define which tools require Admin privileges
+ADMIN_ONLY_TOOLS = [] 
+
 # Initialize PostgreSQL connection pool
 # Using the CHECKPOINT_DATABASE_URL which defaults to psycopg style dsns
 pg_pool = AsyncConnectionPool(
@@ -152,20 +155,11 @@ def make_use_browser_agent_tool(user_id: str | None):
             
     return use_browser_agent
 
-# Define the node function that calls the model
-async def call_model(
-    state: AgentState
-):
-    """
-    Call the LLM with user profile context from cross-thread memory.
+async def get_user_tools(user_id: str | None) -> tuple[list, str]:
+    """Retrieve the available tools and role for a user."""
+    # Determine user role
+    user_role = "Admin" if user_id and user_id.lower() in config.get_admin_emails() else "Staff"
     
-    Args:
-        state: Current conversation state
-    """
-    messages = state["messages"]
-    user_id = state.get("user_id")
-    
-    # Create user-specific tools and add MCP tools
     tools = []
     if user_id and store:
         tools.extend(create_profile_tools(store, user_id))
@@ -181,6 +175,28 @@ async def call_model(
             logging.debug(f"Added {len(mcp_tools)} MCP tools")
         except Exception as e:
             logging.error(f"Failed to get MCP tools: {e}")
+            
+    # Filter tools based on role
+    if user_role != "Admin":
+        tools = [t for t in tools if getattr(t, "name", "") not in ADMIN_ONLY_TOOLS]
+        
+    return tools, user_role
+
+# Define the node function that calls the model
+async def call_model(
+    state: AgentState
+):
+    """
+    Call the LLM with user profile context from cross-thread memory.
+    
+    Args:
+        state: Current conversation state
+    """
+    messages = state["messages"]
+    user_id = state.get("user_id")
+    
+    # Get user role and appropriate tools
+    tools, user_role = await get_user_tools(user_id)
     
     if tools:
         model_with_tools = base_model.bind_tools(tools)
@@ -197,7 +213,9 @@ async def call_model(
     enhanced_messages = list(messages)
     if not any(isinstance(m, SystemMessage) for m in enhanced_messages):
         # Construct system prompt with user profile (if available) and available tool names
-        profile_data = user_profile.value if (user_profile and user_profile.value) else None
+        profile_data = dict(user_profile.value) if (user_profile and user_profile.value) else {}
+        profile_data["role"] = user_role  # Inject the role dynamically
+        
         tool_names = [tool.name for tool in tools] if tools else None
         system_content = build_system_prompt(profile_data, available_tool_names=tool_names)
         enhanced_messages = [SystemMessage(content=system_content)] + enhanced_messages
@@ -247,21 +265,8 @@ async def call_tools(
     messages = state["messages"]
     last_message = messages[-1]
     
-    # Create tools for this user
-    tools = []
-    if user_id and store:
-        tools.extend(create_profile_tools(store, user_id))
-    
-    # Add browser agent delegation tool
-    tools.append(make_use_browser_agent_tool(user_id))
-    
-    # Add MCP tools if available
-    if mcp_client:
-        try:
-            mcp_tools = await mcp_client.get_tools()
-            tools.extend(mcp_tools)
-        except Exception as e:
-            logging.error(f"Failed to get MCP tools during execution: {e}")
+    # Get user role and appropriate tools
+    tools, user_role = await get_user_tools(user_id)
     
     # Create a tool node and invoke it
     tool_node = ToolNode(tools)
