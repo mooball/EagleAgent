@@ -1,0 +1,30 @@
+# Agent definitions and routing rules
+
+agents:
+  # The GeneralAgent is the fallback for general conversation
+  general_agent:
+    name: "GeneralAgent"
+    description: "Use for general conversation, memory retrieval, task planning, document summarization."
+    tools: ["user_profile", "mcp_tools"]
+    fallback: true
+  
+  # BrowserAgent specialized for web tasks
+  browser_agent:
+    name: "BrowserAgent"
+    description: "Use for web search, web automation, opening URLs, finding live information online."
+    tools: ["browser_tools"]
+    keywords: ["search", "browse", "website", "url", "http", "google", "find online"]
+
+  # Future Code Agent
+  # code_agent:
+  #   name: "CodeAgent"
+  #   description: "Use for code generation, debugging, refactoring, and exploring the codebase."
+  #   tools: ["file_tools", "ast_tools", "terminal"]
+  #   keywords: ["code", "debug", "refactor", "repo", "test"]
+
+  # Future Data Agent
+  # data_agent:
+  #   name: "DataAgent"
+  #   description: "Use for data analysis, queries on datasets, and generating visualizations."
+  #   tools: ["pandas_tools", "sql_tools", "plot_tools"]
+  #   keywords: ["analyze", "data", "plot", "chart", "dataset"]

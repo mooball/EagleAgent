@@ -17,8 +17,11 @@ The current architecture exclusively uses PostgreSQL for both application state 
 
 ![Architecture Diagram](https://img.shields.io/badge/Architecture-Component_Overview-blue.svg)
 
-1. **Chainlit UI (Front-end)**: The user interface where users interact with the agents.
-2. **LangGraph (Back-end Orchestration)**: Manages the node state and sub-agent workflows. Includes `BrowserAgent` for deep-domain web processing.
+1. **Chainlit UI (Front-end)**: The user interface where users interact with the agents. Features real-time token tracking and agent-state routing visibility.
+2. **LangGraph Supervisor Pattern (Back-end Orchestration)**: A scalable multi-agent architecture where a central `Supervisor` node evaluates user requests and dynamically routes them to specialized modular sub-agents:
+   - **GeneralAgent**: Handles general conversation, context aggregation, memory retrieval, task planning, and document summarization.
+   - **BrowserAgent**: Specialized for web search, web automation, opening URLs, taking headless Playwright screenshots, and scraping live data.
+   - *(Extensible design prepared for future sub-agents like CodeAgent, DataAgent, etc.)*
 3. **Storage & Databases** (PostgreSQL & Native File Mount):
    - **PostgreSQL Database**: Holds Chainlit user sessions (`users`, `threads`, `steps`, `elements` tables) as well as the LangGraph checkpointing states directly.
    - **Local File Storage**: Uses `/app/data/attachments` (or local equivalent) for fast read/writes without the overhead of external providers.
