@@ -30,6 +30,8 @@ from includes.document_processing import process_file, create_multimodal_content
 from includes.local_storage_client import LocalStorageClient
 from includes.mcp_config import load_mcp_config
 from includes.agents.browser_agent import BrowserAgent
+from includes.agents.general_agent import GeneralAgent
+from includes.agents.supervisor import Supervisor
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_core.tools import tool
 
@@ -86,203 +88,19 @@ mcp_client = None
 # API key is loaded from environment variable (secret)
 base_model = ChatGoogleGenerativeAI(model=config.DEFAULT_MODEL, google_api_key=os.getenv("GOOGLE_API_KEY"))
 
-# Initialize browser agent for web automation
+# Initialize agents
 browser_agent = None
+general_agent = None
+supervisor_node = None
 
-# Define the state
-class AgentState(TypedDict):
+# Define the state with supervisor pattern
+class SupervisorState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     user_id: str  # User email for cross-thread memory lookup
     file_attachments: NotRequired[list[Dict[str, Any]]]  # Optional: uploaded file metadata
+    next_agent: NotRequired[str]  # Which agent to route to
 
-def make_use_browser_agent_tool(user_id: str | None):
-    """Factory to create a browser agent delegation tool with the right user context."""
-    @tool
-    async def use_browser_agent(task: str, config: RunnableConfig) -> str:
-        """
-        Delegate web browsing and automation tasks to specialized browser agent.
-        
-        Use this tool when you need to:
-        - Search for information online
-        - Navigate to and extract data from websites  
-        - Interact with web pages (click, fill forms, etc.)
-        - Get current/real-time information from the web
-        
-        The browser agent has access to a headless Chromium browser and can:
-        - Open web pages
-        - Click buttons and links
-        - Fill out forms
-        - Extract text and data
-        - Take screenshots
-        
-        CRITICAL RULE FOR SCREENSHOTS:
-        When the user asks for a screenshot, instruct the browser agent to capture it. 
-        The system will AUTOMATICALLY display the actual image in the user's interface out-of-band.
-        You MUST NOT attempt to output markdown image links, JSON placeholders, or hallucinated URLs for the screenshot. 
-        Simply tell the user "The screenshot has been captured and displayed."
-        
-        Args:
-            task: Clear description of the browsing task to perform.
-                  Examples:
-                  - "Search Google for Python 3.12 release date"
-                  - "Go to python.org and find the latest version"
-                  - "Search for weather in Sydney and extract the forecast"
-        
-        Returns:
-            Results from the browser agent as a string
-        """
-        try:
-            # Create a sub-state for the browser agent
-            browser_state = {
-                "messages": [HumanMessage(content=task)],
-                "user_id": user_id
-            }
-            
-            # Invoke the browser agent
-            logging.info(f"Delegating to browser agent: {task[:100]}...")
-            result = await browser_agent(browser_state, config)
-            
-            # Extract the response message
-            response_message = result["messages"][-1]
-            response_text = response_message.content if hasattr(response_message, "content") else str(response_message)
-            
-            logging.info(f"Browser agent completed: {len(response_text)} chars")
-            return response_text
-            
-        except Exception as e:
-            logging.error(f"Browser agent error: {e}")
-            return f"Browser agent error: {str(e)}"
-            
-    return use_browser_agent
 
-async def get_user_tools(user_id: str | None) -> tuple[list, str]:
-    """Retrieve the available tools and role for a user."""
-    # Determine user role
-    user_role = "Admin" if user_id and user_id.lower() in config.get_admin_emails() else "Staff"
-    
-    tools = []
-    if user_id and store:
-        tools.extend(create_profile_tools(store, user_id))
-    
-    # Add browser agent delegation tool
-    tools.append(make_use_browser_agent_tool(user_id))
-    
-    # Add MCP tools if available
-    if mcp_client:
-        try:
-            mcp_tools = await mcp_client.get_tools()
-            tools.extend(mcp_tools)
-            logging.debug(f"Added {len(mcp_tools)} MCP tools")
-        except Exception as e:
-            logging.error(f"Failed to get MCP tools: {e}")
-            
-    # Filter tools based on role
-    if user_role != "Admin":
-        tools = [t for t in tools if getattr(t, "name", "") not in ADMIN_ONLY_TOOLS]
-        
-    return tools, user_role
-
-# Define the node function that calls the model
-async def call_model(
-    state: AgentState
-):
-    """
-    Call the LLM with user profile context from cross-thread memory.
-    
-    Args:
-        state: Current conversation state
-    """
-    messages = state["messages"]
-    user_id = state.get("user_id")
-    
-    # Get user role and appropriate tools
-    tools, user_role = await get_user_tools(user_id)
-    
-    if tools:
-        model_with_tools = base_model.bind_tools(tools)
-    else:
-        model_with_tools = base_model
-    
-    # Load user profile from store (cross-thread memory)
-    user_profile = None
-    if user_id and store:
-        user_profile = await store.aget(("users",), user_id)
-    
-    # Build system prompt using centralized configuration from includes/prompts.py
-    # Include only relevant tool instructions based on available tools
-    enhanced_messages = list(messages)
-    if not any(isinstance(m, SystemMessage) for m in enhanced_messages):
-        # Construct system prompt with user profile (if available) and available tool names
-        profile_data = dict(user_profile.value) if (user_profile and user_profile.value) else {}
-        profile_data["role"] = user_role  # Inject the role dynamically
-        
-        tool_names = [tool.name for tool in tools] if tools else None
-        system_content = build_system_prompt(profile_data, available_tool_names=tool_names)
-        enhanced_messages = [SystemMessage(content=system_content)] + enhanced_messages
-    
-    # Trim history to ~30 messages to prevent hitting PostgreSQL 1MiB checkpoint limit
-    trimmed_messages = trim_messages(
-        enhanced_messages,
-        max_tokens=30, # Max number of messages to retain
-        strategy="last",
-        token_counter=len, # Count each message as 1
-        include_system=True,
-        allow_partial=False
-    )
-    
-    response = await model_with_tools.ainvoke(trimmed_messages)
-    
-    # Explicitly remove pruned messages from state so they don't bloat the checkpointer
-    retained_ids = {m.id for m in trimmed_messages if getattr(m, "id", None)}
-    
-    # Exclude system message when figuring out what to remove, as we dynamically add it and it's not in State
-    messages_to_remove = [
-        RemoveMessage(id=m.id) 
-        for m in messages 
-        if getattr(m, "id", None) and m.id not in retained_ids
-    ]
-    
-    return {"messages": messages_to_remove + [response]}
-
-# Tool execution node
-def should_continue(state: AgentState) -> Literal["tools", END]:
-    """Determine if we should continue to tools or end."""
-    messages = state["messages"]
-    last_message = messages[-1]
-    
-    # If the LLM makes a tool call, route to tools node
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "tools"
-    
-    # Otherwise, end
-    return END
-
-async def call_tools(
-    state: AgentState
-):
-    """Execute tool calls."""
-    user_id = state.get("user_id")
-    messages = state["messages"]
-    last_message = messages[-1]
-    
-    # Get user role and appropriate tools
-    tools, user_role = await get_user_tools(user_id)
-    
-    # Create a tool node and invoke it
-    tool_node = ToolNode(tools)
-    result = await tool_node.ainvoke(state)
-    
-    return result
-
-# Build the graph
-builder = StateGraph(AgentState)
-builder.add_node("model", call_model)
-builder.add_node("tools", call_tools)
-
-# Add edges
-builder.add_edge(START, "model")
-builder.add_conditional_edges("model", should_continue, ["tools", END])
-builder.add_edge("tools", "model")
 
 # Add PostgreSQL-based memory to persist state across interactions and restarts
 checkpointer = None
@@ -294,7 +112,7 @@ globals_initialized = False
 
 async def setup_globals():
     """Initialize async-dependent global variables."""
-    global store, mcp_client, browser_agent, checkpointer, graph, globals_initialized
+    global store, mcp_client, browser_agent, general_agent, supervisor_node, checkpointer, graph, globals_initialized
     
     if globals_initialized:
         return
@@ -325,9 +143,47 @@ async def setup_globals():
         logging.warning(f"Failed to initialize MCP client: {e}. Agent will work without MCP tools.")
         mcp_client = None
         
-    # Initialize browser agent
+    # Initialize agents
     browser_agent = BrowserAgent(model=base_model, store=store)
+    general_agent = GeneralAgent(model=base_model, store=store, mcp_client=mcp_client, admin_only_tools=ADMIN_ONLY_TOOLS)
+    supervisor_node = Supervisor(model=base_model)
     
+    # Build the graph inside setup_globals where agents are initialized
+    builder = StateGraph(SupervisorState)
+
+    async def run_supervisor(state, config):
+        return await supervisor_node(state, config)
+    
+    async def run_general(state, config):
+        return await general_agent(state, config)
+        
+    async def run_browser(state, config):
+        return await browser_agent(state, config)
+
+    # Add nodes
+    builder.add_node("Supervisor", run_supervisor)
+    builder.add_node("GeneralAgent", run_general)
+    builder.add_node("BrowserAgent", run_browser)
+
+    # Add edges
+    builder.add_edge(START, "Supervisor")
+
+    # Conditional routing from Supervisor
+    def router(state: SupervisorState) -> Literal["GeneralAgent", "BrowserAgent", "__end__"]:
+        next_agent = state.get("next_agent", "FINISH")
+        if next_agent == "GeneralAgent":
+            return "GeneralAgent"
+        elif next_agent == "BrowserAgent":
+            return "BrowserAgent"
+        else:
+            return END
+
+    builder.add_conditional_edges("Supervisor", router)
+
+    # Agents always route back to Supervisor
+    builder.add_edge("GeneralAgent", "Supervisor")
+    builder.add_edge("BrowserAgent", "Supervisor")
+
     # Compile graph
     graph = builder.compile(checkpointer=checkpointer, store=store)
     
@@ -651,8 +507,20 @@ async def main(message: cl.Message):
     msg = cl.Message(content="")
     await msg.send()
     
+    active_agent = "GeneralAgent"
+    
     async for event in graph.astream_events(inputs, config=graph_config, version="v1"):
         kind = event["event"]
+        name = event.get("name", "")
+        tags = event.get("tags", [])
+        
+        if kind == "on_chain_start" and name in ["GeneralAgent", "BrowserAgent"]:
+            active_agent = name
+            
+        # Skip streaming internal routing decisions
+        if "supervisor_routing" in tags:
+            continue
+            
         if kind == "on_chat_model_stream":
             content = event["data"]["chunk"].content
             if content:
@@ -712,7 +580,7 @@ async def main(message: cl.Message):
                 total_tokens = usage.get("total_tokens", 0)
                 
                 # HTML enabled in chainlit config so we can inject exact precision styles!
-                token_info = f"\n\n<div style='margin-top:20px; border-top:1px solid #444; padding-top:5px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Tokens: {total_tokens:,} (Context: {prompt_tokens:,}, Generated: {completion_tokens:,})</div>"
+                token_info = f"\n\n<div style='margin-top:20px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Agent: {active_agent} | Tokens: {total_tokens:,} (Context: {prompt_tokens:,}, Generated: {completion_tokens:,})</div>"
                 await msg.stream_token(token_info)
                 
                 # Track cumulative tokens in session

@@ -91,7 +91,7 @@ class TestCheckpointAndStore:
         
         # Save a checkpoint with conversation state
         config = {"configurable": {"thread_id": test_thread_id, "checkpoint_ns": ""}}
-        await app.graph.aupdate_state(config, {"messages": [HumanMessage(content="Hello, remember me?")]}, as_node="model")
+        await app.graph.aupdate_state(config, {"messages": [HumanMessage(content="Hello, remember me?")]}, as_node="Supervisor")
         
         state = await app.graph.aget_state(config)
         assert len(state.values["messages"]) == 1
@@ -132,7 +132,7 @@ class TestEndToEndConversation:
                 HumanMessage(content="Hi, I'm Bob"),
                 AIMessage(content="Nice to meet you, Bob!"),
             ]
-        }, as_node="model")
+        }, as_node="Supervisor")
         
         # Turn 2: User shares preferences
         await remember_tool.ainvoke({"category": "preferences", "information": "Python"})
@@ -142,7 +142,7 @@ class TestEndToEndConversation:
                 HumanMessage(content="I love Python"),
                 AIMessage(content="Great! I've noted that."),
             ]
-        }, as_node="model")
+        }, as_node="Supervisor")
         
         # Verify profile was built
         profile = await test_store.aget(("users",), test_user_id)
@@ -180,7 +180,7 @@ class TestEndToEndConversation:
                 HumanMessage(content="Call me Chuck"),
                 AIMessage(content="Got it, Chuck!"),
             ]
-        }, as_node="model")
+        }, as_node="Supervisor")
         
         # Resume: Load profile and conversation
         profile = await test_store.aget(("users",), test_user_id)
