@@ -51,7 +51,7 @@ class Supervisor:
             user_text = str(content).lower()
         
         # Rule-based fast routing
-        browser_keywords = ["search", "browse", "website", "url", "http", "google", "find online"]
+        browser_keywords = ["browse", "website", "url", "http", "google", "find online"]
         if any(keyword in user_text for keyword in browser_keywords):
             logger.info("Supervisor rule-based routing: BrowserAgent")
             return {"next_agent": "BrowserAgent"}
