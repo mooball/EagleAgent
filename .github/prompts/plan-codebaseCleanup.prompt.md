@@ -33,8 +33,9 @@
 ### ~~6. Message trimming is inconsistent~~ DONE
 - Centralized in `BaseSubAgent.__call__()` as part of #1 refactor
 
-### 7. Duplicate profile initialization logic
-- `start()` and `on_chat_resume()` in `app.py` have nearly identical user profile loading/creation blocks. Should be extracted to a shared helper.
+### ~~7. Duplicate profile initialization logic~~ DONE
+- Extracted `_ensure_user_profile()` helper in `app.py`
+- Both `start()` and `on_chat_resume()` now call the shared helper
 
 ### 8. No tests for GeneralAgent
 - BrowserAgent, Supervisor, and user profile tools all have tests. GeneralAgent has **zero test coverage** — and it's the most complex agent.

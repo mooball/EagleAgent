@@ -253,6 +253,38 @@ def get_data_layer():
         show_logger=True,
     )
 
+async def _ensure_user_profile(user: cl.User) -> tuple:
+    """Load or create a user profile and resolve their display name.
+    
+    Returns:
+        (user_name, is_new_user) where user_name may be None if no user is provided.
+    """
+    user_profile = await store.aget(("users",), user.identifier)
+    is_new_user = False
+    
+    if not user_profile or not user_profile.value:
+        is_new_user = True
+        profile_data = {
+            "first_name": user.metadata.get("given_name", "") if user.metadata else "",
+            "last_name": user.metadata.get("family_name", "") if user.metadata else "",
+            "full_name": user.metadata.get("name", "") if user.metadata else "",
+            "email": user.metadata.get("email", user.identifier) if user.metadata else user.identifier
+        }
+        await store.aput(("users",), user.identifier, profile_data)
+        user_profile = await store.aget(("users",), user.identifier)
+
+    # Resolve display name: preferred_name > given_name from OAuth > email
+    user_name = None
+    if user_profile and user_profile.value and "preferred_name" in user_profile.value:
+        user_name = user_profile.value["preferred_name"]
+    if not user_name and user.metadata and "given_name" in user.metadata:
+        user_name = user.metadata["given_name"]
+    if not user_name:
+        user_name = user.identifier
+    
+    return user_name, is_new_user
+
+
 @cl.on_chat_start
 async def start():
     import uuid
@@ -268,47 +300,13 @@ async def start():
     thread_id = str(uuid.uuid4())
     cl.user_session.set("thread_id", thread_id)
     
-    # Get user's name for personalized greeting
+    # Load/create user profile and resolve display name
     user_name = None
     is_first_visit = False
     
     if user:
-        # Store user_id for cross-thread memory
         cl.user_session.set("user_id", user.identifier)
-        
-        # Priority order:
-        # 1. Preferred name from user profile store
-        # 2. Given name from Google OAuth
-        # 3. Email as fallback
-        
-        # Try to get preferred_name from user profile store
-        user_profile = await store.aget(("users",), user.identifier)
-        
-        if not user_profile or not user_profile.value:
-            is_first_visit = True
-            
-            # This is their first time! Save their Google Auth data permanently
-            profile_data = {
-                "first_name": user.metadata.get("given_name", "") if user.metadata else "",
-                "last_name": user.metadata.get("family_name", "") if user.metadata else "",
-                "full_name": user.metadata.get("name", "") if user.metadata else "",
-                "email": user.metadata.get("email", user.identifier) if user.metadata else user.identifier
-            }
-            await store.aput(("users",), user.identifier, profile_data)
-            
-            # Re-fetch the newly created profile
-            user_profile = await store.aget(("users",), user.identifier)
-
-        if user_profile and user_profile.value and "preferred_name" in user_profile.value:
-            user_name = user_profile.value["preferred_name"]
-        
-        # Fall back to given_name from Google OAuth
-        if not user_name and user.metadata and "given_name" in user.metadata:
-            user_name = user.metadata["given_name"]
-        
-        # Fall back to email if name not available
-        if not user_name:
-            user_name = user.identifier
+        user_name, is_first_visit = await _ensure_user_profile(user)
     
     # Personalized welcome message
     if is_first_visit and user_name:
@@ -348,42 +346,10 @@ async def on_chat_resume(thread: ThreadDict):
     # Log for debugging
     print(f"Resuming conversation with thread_id: {thread_id}")
     
-    # Note: Chainlit automatically restores messages to the UI
-    # LangGraph's checkpointer will automatically load the state when we use this thread_id
-    
-    # Get user's name for personalized greeting
+    # Load/create user profile and resolve display name
     user_name = None
-    
     if user:
-        # Priority order:
-        # 1. Preferred name from user profile store
-        # 2. Given name from Google OAuth
-        # 3. Email as fallback
-        
-        # Try to get preferred_name from user profile store
-        user_profile = await store.aget(("users",), user.identifier)
-        
-        if not user_profile or not user_profile.value:
-            # Initialize if somehow missing
-            profile_data = {
-                "first_name": user.metadata.get("given_name", "") if user.metadata else "",
-                "last_name": user.metadata.get("family_name", "") if user.metadata else "",
-                "full_name": user.metadata.get("name", "") if user.metadata else "",
-                "email": user.metadata.get("email", user.identifier) if user.metadata else user.identifier
-            }
-            await store.aput(("users",), user.identifier, profile_data)
-            user_profile = await store.aget(("users",), user.identifier)
-
-        if user_profile and user_profile.value and "preferred_name" in user_profile.value:
-            user_name = user_profile.value["preferred_name"]
-        
-        # Fall back to given_name from Google OAuth
-        if not user_name and user.metadata and "given_name" in user.metadata:
-            user_name = user.metadata["given_name"]
-        
-        # Fall back to email if name not available
-        if not user_name:
-            user_name = user.identifier
+        user_name, _ = await _ensure_user_profile(user)
     
     # Optional: Send a welcome back message
     if user_name:
