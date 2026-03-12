@@ -27,12 +27,11 @@
 
 ## ORANGE - Important Improvements
 
-### 5. Unused imports in app.py
-- `AIMessage`, `BaseStore`, and `operator` are imported but never used in `app.py`.
+### ~~5. Unused imports in app.py~~ DONE
+- Removed `AIMessage`, `BaseStore`, and `operator`
 
-### 6. Message trimming is inconsistent
-- GeneralAgent trims to 30 messages. BrowserAgent does **not** trim at all — unbounded memory growth risk.
-- This should be centralized in `BaseSubAgent.__call__()` so all agents get it automatically.
+### ~~6. Message trimming is inconsistent~~ DONE
+- Centralized in `BaseSubAgent.__call__()` as part of #1 refactor
 
 ### 7. Duplicate profile initialization logic
 - `start()` and `on_chat_resume()` in `app.py` have nearly identical user profile loading/creation blocks. Should be extracted to a shared helper.

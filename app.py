@@ -2,13 +2,11 @@ import chainlit as cl
 import uuid
 from chainlit.types import ThreadDict
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from langchain_core.messages import HumanMessage, BaseMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.store.base import BaseStore
 from langchain_google_genai import ChatGoogleGenerativeAI
 from typing import TypedDict, Sequence, Annotated, Dict, Optional, Any, Literal, NotRequired
-import operator
 import os
 import logging
 from dotenv import load_dotenv
