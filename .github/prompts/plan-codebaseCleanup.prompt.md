@@ -41,8 +41,10 @@
 - Added 22 tests in `tests/agents/test_general_agent.py`
 - Covers: init, sync/async tool retrieval, MCP integration, role filtering, system prompts, agent execution, message trimming, edge cases
 
-### 9. TESTING.md references Firestore
-- `TESTING.md` mentions "Firestore" in several places but the entire system uses PostgreSQL. Confusing for new devs.
+### ~~9. TESTING.md references Firestore~~ DONE
+- Rewrote `TESTING.md` to reflect the actual PostgreSQL-based system
+- Removed all Firestore emulator references, gcloud instructions, and non-existent test files
+- Updated test file listing, fixtures, examples, CI/CD config, and FAQ
 
 ### ~~10. Missing Dockerfile health check~~ DONE
 - Added via #4 Dockerfile fix
