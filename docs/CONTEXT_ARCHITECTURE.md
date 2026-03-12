@@ -426,7 +426,7 @@ Understanding where different types of configuration live:
 **When to modify**: Changing agent behavior, tool instructions, profile context
 
 ### UI Configuration
-**File**: [`chainlit.md`](chainlit.md)  
+**File**: [`chainlit.md`](../chainlit.md)  
 **Contents**: Welcome message shown in Chainlit UI  
 **Scope**: User-facing only, NOT sent to LLM
 

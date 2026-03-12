@@ -181,7 +181,7 @@ def test_my_feature():
 ### Test an Agent
 
 ```python
-from includes.agents.general_agent import GeneralAgent
+from includes.agents import GeneralAgent
 
 @pytest.mark.asyncio
 async def test_agent_behavior():

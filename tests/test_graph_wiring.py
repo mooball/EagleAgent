@@ -4,7 +4,7 @@ import sys
 import pytest
 
 from langchain_core.messages import HumanMessage, AIMessage
-from includes.agents.supervisor import RouteDecision
+from includes.agents import RouteDecision
 
 
 class StubChatModel:

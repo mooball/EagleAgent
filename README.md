@@ -110,10 +110,10 @@ Deploying EagleAgent on Railway simply involves binding a PostgreSQL database to
 
 ## Documentation
 
-- [File Attachments](./FILE_ATTACHMENTS.md): Overview on how files, metadata, and images route seamlessly.
-- [Cross-Thread Memory](./CROSS_THREAD_MEMORY.md): Dive into persisting long-term profiling parameters.
-- [Testing Guide](./TESTING.md): Run Python tests and manage graph verification nodes.
-- [External Storage](./CONTEXT_ARCHITECTURE.md): Structural information about component binding logic.
+- [File Attachments](./docs/FILE_ATTACHMENTS.md): Overview on how files, metadata, and images route seamlessly.
+- [Cross-Thread Memory](./docs/CROSS_THREAD_MEMORY.md): Dive into persisting long-term profiling parameters.
+- [Testing Guide](./docs/TESTING.md): Run Python tests and manage graph verification nodes.
+- [Context Architecture](./docs/CONTEXT_ARCHITECTURE.md): Structural information about component binding logic.
 
 ## License
 MIT

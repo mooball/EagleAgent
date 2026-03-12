@@ -59,11 +59,14 @@
 - Removed unused `storage_utils` imports from `app.py`
 - Cleaned up GCS/bucket references in `FILE_ATTACHMENTS.md`
 
-### 12. Empty `__init__.py` in agents module
-- `includes/agents/__init__.py` doesn't export anything, requiring full import paths everywhere.
+### ~~12. Empty `__init__.py` in agents module~~ DONE
+- Added convenience exports (`BaseSubAgent`, `BrowserAgent`, `GeneralAgent`, `Supervisor`, `RouteDecision`) to `includes/agents/__init__.py`
+- Updated all external import sites (app.py, tests) to use `from includes.agents import ...`
+- Intra-package imports (general_agent, browser_agent, code_agent, data_agent) still use direct `from includes.agents.base` to avoid circular imports
 
-### 13. Shell scripts inconsistent
-- `start.sh` has proper `set -e` and env validation. `run.sh` and `kill.sh` have no error handling, no feedback, and `kill.sh` could kill unrelated processes.
+### ~~13. Shell scripts inconsistent~~ DONE
+- Renamed `kill.sh` → `kill-8000.sh` to make its purpose explicit (clears port 8000 when stuck)
+- `run.sh` and `kill-8000.sh` are simple local-dev convenience scripts — no further changes needed
 
 ### 14. CodeAgent/DataAgent stubs
 - Both are non-functional placeholder files. Either complete them or remove them from the tree to reduce confusion. README.md mentions them as if they exist.

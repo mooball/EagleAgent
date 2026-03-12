@@ -4,7 +4,7 @@ This document describes the file attachment system for EagleAgent, which allows 
 
 ## Overview
 
-The system stores files in Local File Storage (Local File Storage) with a 30-day retention policy and processes them for use by the AI agent:
+The system stores files on **local disk** via `LocalStorageClient` and processes them for use by the AI agent:
 
 - **Images**: Analyzed using Gemini's vision capabilities
 - **PDFs**: Text extracted and added to conversation context
@@ -14,42 +14,22 @@ The system stores files in Local File Storage (Local File Storage) with a 30-day
 ## Architecture
 
 ```
-User Upload → Chainlit UI → app.py → Local File Storage Upload → Document Processing → Agent Context
+User Upload → Chainlit UI → app.py → LocalStorageClient → Document Processing → Agent Context
                                    ↓
                               PostgreSQL Metadata
 ```
 
+Files are saved to `DATA_DIR/attachments/` (default `./data/attachments/`) and served back to the browser via a Starlette `StaticFiles` mount at `/files`.
+
 ## Setup Instructions
 
-### 1. Create Local File Storage Bucket in Sydney Region
-
-```bash
-# Create bucket in australia-southeast1 (Sydney)
-
-# Verify bucket created
-```
-
-**Why Sydney?**
-- Lowest latency for Australian users (Eagle Exports + Mooball)
-- Data sovereignty - files stay in Australia
-- Lower egress costs for local access
-
-### 2. Grant Service Account Permissions
-
-```bash
-# Grant storage admin permissions to the service account
-  --member=serviceAccount:eagleagent-svc-account@mooballai.iam.gserviceaccount.com \
-  --role=roles/storage.objectAdmin
-```
-
-### 3. Configure Environment
+### 1. Configure Environment
 
 Ensure your `.env` file has:
 
 ```bash
-
-GOOGLE_APPLICATION_CREDENTIALS=./service-account-key.json
-GOOGLE_PROJECT_ID=mooballai
+# Root directory for persistent data (default: ./data)
+DATA_DIR=./data
 
 # Temporary files upload folder (default: .files)
 # This is where Chainlit stores uploaded files before processing
@@ -58,22 +38,24 @@ TEMP_FILES_FOLDER=.files
 
 **Note**: The `TEMP_FILES_FOLDER` directory stores temporary files during upload. This folder should be added to `.gitignore` to prevent versioning temporary files. You can change this location if needed (e.g., `TEMP_FILES_FOLDER=temp_uploads`).
 
-### 4. Install Dependencies
+### 2. Install Dependencies
 
 ```bash
-poetry install
+uv sync
 ```
 
-This installs:
-- `google-cloud-storage` - Local File Storage client
+Key dependencies for file processing:
 - `pdfplumber` - PDF text extraction
 - `Pillow` - Image processing
+- `aiofiles` - Async file I/O for `LocalStorageClient`
 
-### 5. Run the Application
+### 3. Run the Application
 
 ```bash
 ./run.sh
 ```
+
+The `data/attachments/` directory is created automatically on startup.
 
 ## File Upload Configuration
 
@@ -99,7 +81,7 @@ max_size_mb = 50
 
 1. **User uploads file** via paperclip icon in chat UI
 2. **File validation** - type and size checked by Chainlit
-3. **Local File Storage upload** - file stored in `gs://eagleagent/uploads/{user_id}/{session_id}/{filename}`
+3. **Local storage** - file saved to `data/attachments/{thread_id}/{element_id}/{filename}`
 4. **Document processing**:
    - Images → Base64 encoded for Gemini vision
    - PDFs → Text extracted from all pages
@@ -112,14 +94,15 @@ max_size_mb = 50
 ### Storage Structure
 
 ```
-gs://eagleagent/
-└── uploads/
-    └── {user_email}/
-        └── {session_id}/
-            ├── image1.jpg
-            ├── document.pdf
-            └── notes.txt
+data/attachments/
+└── {thread_id}/
+    └── {element_id}/
+        ├── image1.jpg
+        ├── document.pdf
+        └── notes.txt
 ```
+
+Files are served to the browser at `/files/{thread_id}/{element_id}/{filename}` via the Starlette `StaticFiles` mount configured in `app.py`.
 
 ### Database Schema
 
@@ -131,8 +114,8 @@ CREATE TABLE elements (
     threadId UUID,
     type TEXT,
     name TEXT,
-    url TEXT,           -- Local File Storage signed URL
-    objectKey TEXT,     -- Local File Storage path
+    url TEXT,           -- Relative URL path (e.g. /files/{thread_id}/{element_id}/name)
+    objectKey TEXT,     -- Storage path relative to attachments dir
     mime TEXT,
     createdAt TIMESTAMP
 );
@@ -195,10 +178,10 @@ psql $DATABASE_URL -c "SELECT mime, COUNT(*) FROM elements GROUP BY mime;"
 
 ### Files Not Processing
 
-1. Check file type is in `accept` list (.chainlit/config.toml)
+1. Check file type is in `accept` list (`.chainlit/config.toml`)
 2. Verify file size under 50MB
 3. Check logs for processing errors
-4. Ensure dependencies installed: `poetry install`
+4. Ensure dependencies installed: `uv sync`
 
 ### Vision Not Working for Images
 
@@ -211,7 +194,7 @@ psql $DATABASE_URL -c "SELECT mime, COUNT(*) FROM elements GROUP BY mime;"
 ### Access Control
 
 - Files stored on **local disk** under `DATA_DIR/attachments/`
-- Served via Chainlit's mounted `/files` route
+- Served via Starlette `StaticFiles` mounted at `/files`
 - Non-root container user (uid 1000) in production
 
 ### File Validation
@@ -219,12 +202,13 @@ psql $DATABASE_URL -c "SELECT mime, COUNT(*) FROM elements GROUP BY mime;"
 - File type restrictions in Chainlit config
 - Size limits (50MB max)
 - MIME type verification during processing
+- Path traversal prevention in `LocalStorageClient._get_full_path()`
 
 ### Data Privacy
 
-- Files stored in **Australian region** (data sovereignty)
-- Automatic deletion after **30 days**
-- User-specific folders (`uploads/{user_email}/`)
+- Files stored on the **Railway application volume** (Singapore region)
+- User/thread-specific folders prevent cross-tenant access
+- No external cloud storage — files never leave the application host
 
 ## Future Enhancements
 
@@ -234,14 +218,14 @@ psql $DATABASE_URL -c "SELECT mime, COUNT(*) FROM elements GROUP BY mime;"
 - [ ] Compressed archives (ZIP) support
 - [ ] Real-time file upload progress
 - [ ] User file management UI (view/delete uploaded files)
-- [ ] Lifecycle policies in Local File Storage (automatic archival)
+- [ ] Automatic cleanup of old attachments (retention policy)
 
 ## Testing
 
 Run the file attachment tests:
 
 ```bash
-poetry run pytest tests/test_file_attachments.py -v
+uv run pytest tests/test_file_attachments.py -v
 ```
 
 Tests cover:
@@ -249,11 +233,9 @@ Tests cover:
 - PDF text extraction
 - Text file reading
 - Multimodal content creation
-- Storage utilities (mocked Local File Storage)
 
 ## References
 
-- [Local File Storage Documentation](https://cloud.google.com/storage/docs)
 - [Chainlit File Upload](https://docs.chainlit.io/advanced-features/multi-modal)
 - [LangChain Multimodal](https://python.langchain.com/docs/how_to/multimodal_inputs/)
 - [Gemini Vision API](https://ai.google.dev/gemini-api/docs/vision)

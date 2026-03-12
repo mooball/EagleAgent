@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock, AsyncMock, Mock
 from config.settings import Config
 from includes.prompts import build_profile_context, format_profile_section
 from langchain_core.tools import BaseTool
-from includes.agents.general_agent import GeneralAgent
+from includes.agents import GeneralAgent
 
 class TestConfigRoles:
     def test_get_admin_emails_parsing(self):

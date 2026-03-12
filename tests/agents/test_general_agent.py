@@ -16,7 +16,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.store.base import BaseStore
 
-from includes.agents.general_agent import GeneralAgent
+from includes.agents import GeneralAgent
 
 
 @pytest.fixture

@@ -18,9 +18,7 @@ from includes.commands import handle_deleteall_command
 from includes.document_processing import process_file, create_multimodal_content
 from includes.local_storage_client import LocalStorageClient
 from includes.mcp_config import load_mcp_config
-from includes.agents.browser_agent import BrowserAgent
-from includes.agents.general_agent import GeneralAgent
-from includes.agents.supervisor import Supervisor
+from includes.agents import BrowserAgent, GeneralAgent, Supervisor
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 # Set up Chainlit static file serving for local file attachments
