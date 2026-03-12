@@ -4,6 +4,7 @@ import sys
 import pytest
 
 from langchain_core.messages import HumanMessage, AIMessage
+from includes.agents.supervisor import RouteDecision
 
 
 class StubChatModel:
@@ -16,7 +17,7 @@ class StubChatModel:
     def __init__(self, *args, **kwargs) -> None:  # signature-compatible
         pass
 
-    async def ainvoke(self, messages):
+    async def ainvoke(self, messages, **kwargs):
         # Find the last human message content (if any)
         last = messages[-1]
         content = getattr(last, "content", "")
@@ -25,6 +26,16 @@ class StubChatModel:
     def bind_tools(self, tools):
         """Support tool binding for compatibility."""
         return self
+
+    def with_structured_output(self, schema):
+        """Return a stub that produces a RouteDecision for supervisor routing."""
+        parent = self
+
+        class _StructuredStub:
+            async def ainvoke(self, messages, **kwargs):
+                return RouteDecision(next_agent="GeneralAgent")
+
+        return _StructuredStub()
 
 
 @pytest.mark.asyncio
