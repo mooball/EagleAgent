@@ -16,8 +16,11 @@ load_dotenv()
 # Override url with environment variable
 # If not present in env, default to local docker-compose default since `os.getenv` might be empty
 db_url = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/eagleagent")
+# Normalize to use psycopg (v3) driver — psycopg2 is not installed
 if db_url.startswith("postgresql+asyncpg://"):
-    db_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+    db_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
+elif db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 config.set_main_option("sqlalchemy.url", db_url)
 
 # Interpret the config file for Python logging.
