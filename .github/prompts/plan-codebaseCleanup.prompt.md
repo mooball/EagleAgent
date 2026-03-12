@@ -37,8 +37,9 @@
 - Extracted `_ensure_user_profile()` helper in `app.py`
 - Both `start()` and `on_chat_resume()` now call the shared helper
 
-### 8. No tests for GeneralAgent
-- BrowserAgent, Supervisor, and user profile tools all have tests. GeneralAgent has **zero test coverage** — and it's the most complex agent.
+### ~~8. No tests for GeneralAgent~~ DONE
+- Added 22 tests in `tests/agents/test_general_agent.py`
+- Covers: init, sync/async tool retrieval, MCP integration, role filtering, system prompts, agent execution, message trimming, edge cases
 
 ### 9. TESTING.md references Firestore
 - `TESTING.md` mentions "Firestore" in several places but the entire system uses PostgreSQL. Confusing for new devs.
