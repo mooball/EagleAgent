@@ -1,8 +1,9 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock, Mock
 from config.settings import Config
 from includes.prompts import build_profile_context, format_profile_section
-import app
+from langchain_core.tools import BaseTool
+from includes.agents import GeneralAgent
 
 class TestConfigRoles:
     def test_get_admin_emails_parsing(self):
@@ -60,61 +61,49 @@ class TestPromptsRoles:
 
 @pytest.mark.asyncio
 class TestAppRoles:
-    @patch('app.config')
-    @patch('app.store')
-    @patch('app.mcp_client', new=None)
-    async def test_get_user_tools_admin(self, mock_store, mock_config):
-        # Setup mock admin list
-        mock_config.get_admin_emails.return_value = ["admin@example.com"]
-        
-        original_admin_tools = app.ADMIN_ONLY_TOOLS
-        app.ADMIN_ONLY_TOOLS = ["test_admin_tool"]
-        
-        try:
-            # Mock create_profile_tools to return generic tools + an admin tool
-            mock_profile_tool = MagicMock()
-            mock_profile_tool.name = "normal_tool"
-            
-            mock_admin_tool = MagicMock()
-            mock_admin_tool.name = "test_admin_tool"
-            
-            with patch('app.create_profile_tools', return_value=[mock_profile_tool, mock_admin_tool]):
-                # Test Admin user
-                tools, role = await app.get_user_tools("admin@example.com")
-                
-                assert role == "Admin"
-                tool_names = [getattr(t, "name", "") for t in tools if hasattr(t, "name")]
-                assert "normal_tool" in tool_names
-                assert "test_admin_tool" in tool_names
-        finally:
-            app.ADMIN_ONLY_TOOLS = original_admin_tools
+    """Test role-based tool filtering in GeneralAgent.get_tools_async()."""
 
-    @patch('app.config')
-    @patch('app.store')
-    @patch('app.mcp_client', new=None)
-    async def test_get_user_tools_staff(self, mock_store, mock_config):
-        # Setup mock admin list
+    def _make_agent(self, admin_only_tools=None):
+        mock_model = Mock()
+        mock_store = AsyncMock()
+        return GeneralAgent(
+            model=mock_model,
+            store=mock_store,
+            mcp_client=None,
+            admin_only_tools=admin_only_tools or ["test_admin_tool"],
+        )
+
+    @patch('includes.agents.general_agent.config')
+    async def test_get_user_tools_admin(self, mock_config):
         mock_config.get_admin_emails.return_value = ["admin@example.com"]
-        
-        original_admin_tools = app.ADMIN_ONLY_TOOLS
-        app.ADMIN_ONLY_TOOLS = ["test_admin_tool"]
-        
-        try:
-            # Mock create_profile_tools to return generic tools + an admin tool
-            mock_profile_tool = MagicMock()
-            mock_profile_tool.name = "normal_tool"
-            
-            mock_admin_tool = MagicMock()
-            mock_admin_tool.name = "test_admin_tool"
-            
-            with patch('app.create_profile_tools', return_value=[mock_profile_tool, mock_admin_tool]):
-                # Test Staff user
-                tools, role = await app.get_user_tools("staff@example.com")
-                
-                assert role == "Staff"
-                tool_names = [getattr(t, "name", "") for t in tools if hasattr(t, "name")]
-                
-                assert "normal_tool" in tool_names
-                assert "test_admin_tool" not in tool_names  # Filtered out
-        finally:
-            app.ADMIN_ONLY_TOOLS = original_admin_tools
+        agent = self._make_agent()
+
+        tools = await agent.get_tools_async("admin@example.com")
+        tool_names = [t.name for t in tools]
+
+        # Admin should keep all tools (no filtering applied)
+        assert agent._last_user_role == "Admin"
+        # Profile tools are always included
+        assert "remember_user_info" in tool_names
+
+    @patch('includes.agents.general_agent.config')
+    async def test_get_user_tools_staff(self, mock_config):
+        mock_config.get_admin_emails.return_value = ["admin@example.com"]
+
+        # Add a mock MCP tool named "test_admin_tool" so we can verify it's filtered out
+        mock_mcp = AsyncMock()
+        admin_tool = Mock(spec=BaseTool)
+        admin_tool.name = "test_admin_tool"
+        normal_mcp_tool = Mock(spec=BaseTool)
+        normal_mcp_tool.name = "normal_tool"
+        mock_mcp.get_tools = AsyncMock(return_value=[admin_tool, normal_mcp_tool])
+
+        agent = self._make_agent()
+        agent.mcp_client = mock_mcp
+
+        tools = await agent.get_tools_async("staff@example.com")
+        tool_names = [t.name for t in tools]
+
+        assert agent._last_user_role == "Staff"
+        assert "normal_tool" in tool_names
+        assert "test_admin_tool" not in tool_names  # Filtered out for staff

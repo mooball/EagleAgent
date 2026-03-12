@@ -30,9 +30,10 @@ tests/
 run_tests.sh
 # Note: scripts/ is needed for database initialization in Cloud Run
 
-# Documentation (except chainlit.md)
+# Documentation (except chainlit.md which Chainlit needs at runtime)
 *.md
 !chainlit.md
+docs/
 
 # macOS
 .DS_Store

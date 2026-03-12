@@ -49,12 +49,23 @@ COPY alembic.ini ./
 # Create directories
 RUN mkdir -p /tmp/files /app/data
 
+# Create non-root user for security
+RUN useradd -m -u 1000 eagleagent && \
+    chown -R eagleagent:eagleagent /app /tmp/files
+
 # Expose port 8080 (Railway default)
 EXPOSE 8080
+
+# Health check for orchestrators (Railway, Kubernetes, etc.)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8080/ || exit 1
 
 # Copy and set startup script
 COPY start.sh ./
 RUN chmod +x start.sh
+
+# Switch to non-root user
+USER eagleagent
 
 # Run startup script
 CMD ["./start.sh"]

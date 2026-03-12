@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch, AsyncMock
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage
 
-from includes.agents.browser_agent import BrowserAgent
+from includes.agents import BrowserAgent
 from includes.tools.browser_tools import browser
 
 

@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from langchain_core.messages import HumanMessage, AIMessage
-from includes.agents.supervisor import Supervisor, RouteDecision
+from includes.agents import Supervisor, RouteDecision
 
 @pytest.fixture
 def mock_model():

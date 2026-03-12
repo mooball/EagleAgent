@@ -1,166 +1,142 @@
 # Copilot Instructions for EagleAgent
 
 ## Language & Tooling
-- Default language: Python 3.12.
-- Dependency & environment manager: `uv` (no `pip` or `venv` commands unless explicitly requested).
+- Python 3.12, managed with `uv` (no `pip` or `venv` commands).
+- Use `~=` (compatible-release) pinning for all dependencies in `pyproject.toml`.
+- Use type hints on functions, class attributes, and public APIs.
 - Prefer standard library over extra deps when reasonable.
-- Use type hints everywhere (functions, class attributes, public APIs).
 
 ## Project Structure
-- Keep application code in the repo root for now (`app.py`, small modules).
-- As the project grows, prefer a `src/` layout:
-  - `src/eagleagent/` for core code.
-  - `src/eagleagent/agents/` for LangGraph graphs and nodes.
-  - `src/eagleagent/ui/` for Chainlit-specific glue code.
-- Avoid deeply nested packages unless clearly justified.
 
-## Model & Agent Design
-- Default orchestration library: **LangGraph**.
-- Default UI: **Chainlit**.
-- For any model-facing feature:
-  - Prefer implementing it as a LangGraph graph (with `StateGraph` or `MessageGraph`) instead of ad-hoc function chains.
-  - Use explicit state types (TypedDict / Pydantic models) for graph state.
-  - If in doubt, centralize model clients in a dedicated module (e.g. `models.py` or `src/eagleagent/models.py`).
-- Use streaming where supported and expose it through Chainlit for better UX.
+```
+app.py                    # Chainlit entry point — graph construction, handlers, streaming
+config/
+  settings.py             # Non-secret configuration (Config class, env overrides)
+  mcp_servers.yaml        # MCP server definitions
+includes/
+  agents/                 # Multi-agent system
+    __init__.py            # Convenience exports (BaseSubAgent, GeneralAgent, BrowserAgent, Supervisor, RouteDecision)
+    base.py                # BaseSubAgent ABC — contract all sub-agents must follow
+    supervisor.py          # Supervisor node — hybrid rule-based + LLM routing
+    general_agent.py       # GeneralAgent — general conversation, tools, MCP
+    browser_agent.py       # BrowserAgent — web automation via agent-browser CLI
+    code_agent.py          # (stub — future)
+    data_agent.py          # (stub — future)
+  tools/                   # Tool definitions (browser_tools.py, user_profile.py)
+  prompts.py               # System prompt builder — dynamic, role-aware, profile-aware
+  commands.py              # Slash-command handling
+  document_processing.py   # PDF/image/text/audio processing for file attachments
+  local_storage_client.py  # LocalStorageClient — file attachments on local disk
+  mcp_config.py            # MCP server configuration loader
+docs/                      # All documentation except README.md and chainlit.md
+tests/                     # All tests (pytest, pytest-asyncio)
+  agents/                  # Agent-specific tests
+  tools/                   # Tool-specific tests
+```
+
+**Conventions:**
+- Import agents via the package: `from includes.agents import GeneralAgent, Supervisor`
+- Intra-package imports use direct paths to avoid circular imports: `from includes.agents.base import BaseSubAgent`
+- `chainlit.md` must stay in the project root (Chainlit expects it there).
+
+## Multi-Agent Architecture
+
+### Supervisor Pattern
+The system uses a **LangGraph StateGraph** with a Supervisor that routes to sub-agents:
+
+```
+User → Supervisor → [GeneralAgent | BrowserAgent] → Supervisor → ... → FINISH
+```
+
+- **Supervisor** (`includes/agents/supervisor.py`): Hybrid routing — rule-based keyword matching first, LLM structured output (`RouteDecision`) as fallback.
+- **Sub-agents** extend `BaseSubAgent` and are called as graph nodes.
+- The graph loops: Supervisor → agent → Supervisor, until `next_agent == "FINISH"`.
+
+### BaseSubAgent Contract
+All sub-agents must extend `BaseSubAgent` (`includes/agents/base.py`). The base class handles:
+- Message trimming (max 30 messages, configurable via `max_messages`)
+- System prompt injection
+- Model invocation via `create_react_agent`
+- Checkpoint cleanup (`RemoveMessage`)
+
+**To add a new agent:**
+1. Create `includes/agents/my_agent.py`, extending `BaseSubAgent`.
+2. Implement sync hooks (`get_tools`, `get_system_prompt`) or async hooks (`get_tools_async`, `get_system_prompt_async`) — async takes priority if both exist.
+3. Add the agent to `includes/agents/__init__.py` exports.
+4. Register it as a node in `app.py`'s `setup_globals()` function.
+5. Add it to the `RouteDecision` literal type in `supervisor.py`.
+6. Add routing logic in the Supervisor (keyword rules and/or LLM prompt).
+
+### MCP Integration
+- MCP servers are defined in `config/mcp_servers.yaml`.
+- `GeneralAgent.get_tools_async()` loads MCP tools dynamically via `langchain-mcp-adapters`.
+- MCP tool loading is graceful — failures log warnings but don't crash the agent.
 
 ## Environment & Configuration
 
 ### Configuration Module (`config/settings.py`)
-- **Non-secret configuration** (project IDs, bucket names, model names, etc.) lives in `config/settings.py`.
-- This file is **version-controlled** and provides defaults for all configuration values.
-- Configuration values can be overridden by environment variables if needed.
-- To add a new configuration setting:
-  1. Add it to the `Config` class in `config/settings.py` with a sensible default.
-  2. Use `os.getenv("VAR_NAME", "default_value")` to allow environment override.
-  3. Document the setting with a comment.
-  4. Import and use: `from config import config` then `config.YOUR_SETTING`.
+- **Non-secret configuration** (model names, data dirs, database URLs, OAuth domains, admin emails) lives in `config/settings.py`.
+- Version-controlled with sensible defaults; overridable via environment variables.
+- Import: `from config import config` then `config.YOUR_SETTING`.
+- To add a setting: add to the `Config` class with `os.getenv("VAR_NAME", "default")`.
 
-### Secrets & Environment Variables
-- **Secrets** (API keys, OAuth secrets, auth tokens) must **never** be in version control.
-- Store secrets in `.env` file locally (ignored by git).
-- Read secrets using `os.getenv("SECRET_NAME")` directly in code, **not** via config module.
-- Keep `.env.example` updated whenever new secrets are added (with placeholder values).
+### Secrets
+- **Secrets** (API keys, OAuth secrets) go in `.env` (git-ignored), read via `os.getenv()`.
+- Keep `.env.example` updated with placeholder values for new secrets.
+- Never put secrets in `config/settings.py`.
 
-### Configuration Hierarchy
-1. **Defaults**: Defined in `config/settings.py` (version-controlled)
-2. **Environment Variables**: Override defaults when present (`.env` locally, GitHub Secrets in CI/CD)
-3. **Runtime**: Application uses values from `config` module or `os.getenv()` for secrets
+### Deployment
+- **Railway** (Singapore region) via Docker.
+- Dockerfile uses non-root `eagleagent` user (uid 1000) with `HEALTHCHECK`.
+- Secrets are Railway environment variables; non-secret config is baked into the image via `config/settings.py`.
 
-### When to Use Each Approach
-- **Use `config/settings.py`** for:
-  - Non-secret settings (project IDs, bucket names, model names)
-  - Settings that should be visible and auditable
-  - Settings that are the same across dev/prod (or have sensible defaults)
-  
-- **Use `.env` / environment variables** for:
-  - API keys, passwords, OAuth secrets
-  - Environment-specific secrets (different keys for dev/prod)
-  - Local development overrides
+## Persistence
 
-### Validation
-- Validate required configuration early at startup using `config.validate()` if needed.
-- Fail fast with clear error messages when required config is missing.
+### PostgreSQL
+- **Checkpointer**: `AsyncPostgresSaver` (LangGraph checkpoint persistence across turns).
+- **Store**: `AsyncPostgresStore` (cross-thread memory — user profiles, preferences).
+- **Data layer**: `SQLAlchemyDataLayer` (Chainlit conversation history).
+- **Migrations**: Alembic (`alembic/versions/`).
+- Connection URLs configured in `config/settings.py` (`DATABASE_URL`, `CHECKPOINT_DATABASE_URL`).
 
-### Code Examples
+### File Attachments
+- Stored on local disk via `LocalStorageClient` at `DATA_DIR/attachments/`.
+- Served to browser via Starlette `StaticFiles` mount at `/files`.
+- No cloud storage — files stay on the application host.
 
-**Using configuration values:**
-```python
-from config import config
+## Chainlit (`app.py`)
 
-# Use configuration settings
-project_id = config.GCP_PROJECT_ID
-bucket_name = config.Local File Storage_BUCKET_NAME
-model = config.DEFAULT_MODEL
-```
+- `@cl.on_chat_start` / `@cl.on_chat_resume`: Set up thread ID, ensure user profile via `_ensure_user_profile()`.
+- `@cl.on_message` (`main()`): Process file attachments, invoke graph with streaming, send tokens back to UI.
+- `setup_globals()`: Builds the LangGraph `StateGraph` (Supervisor + agent nodes), initializes PostgreSQL connections.
+- Keep handlers thin — delegate to agents, prompts module, and document processing.
 
-**Using secrets:**
-```python
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Secrets are read directly from environment
-api_key = os.getenv("GOOGLE_API_KEY")
-oauth_secret = os.getenv("OAUTH_GOOGLE_CLIENT_SECRET")
-```
-
-**Mixed approach (typical in application code):**
-```python
-import os
-from dotenv import load_dotenv
-from config import config
-
-load_dotenv()
-
-# Configuration from config module
-model = ChatGoogleGenerativeAI(
-    model=config.DEFAULT_MODEL,  # From config/settings.py
-    google_api_key=os.getenv("GOOGLE_API_KEY")  # Secret from .env
-)
-```
-
-### GitHub Secrets & Cloud Deployment
-- **GitHub Secrets** should only contain actual secrets (API keys, OAuth credentials, service account keys).
-- **Non-secret configuration** is now in `config/settings.py`, not in GitHub Secrets.
-- When deploying to Railway:
-  - Secrets are passed as environment variables via `--set-env-vars` in deployment commands.
-  - Configuration values come from `config/settings.py` (baked into the Docker image).
-  - Cloud-specific overrides can still use environment variables if needed.
-- See `CLOUD_RUN_DEPLOYMENT.md` for deployment documentation.
-
-## Chainlit
-- Use `chainlit` handlers as the boundary between UI and core logic:
-  - `@cl.on_chat_start` should set up any per-session IDs / LangGraph thread IDs.
-  - `@cl.on_message` should:
-    - Construct the LangGraph input state from the incoming message.
-    - Call the graph (`ainvoke` or streaming APIs).
-    - Stream tokens or final responses back to the UI.
-- Keep Chainlit handlers thin by delegating logic to separate modules.
-
-## LangGraph
-- Use `MemorySaver` (or another checkpointer) when conversation state must persist across turns.
-- Prefer named nodes with single, clear responsibilities.
-- When adding tools / branches later:
-  - Keep node functions small and pure where possible.
-  - Encapsulate external I/O (APIs, DB, filesystem) in dedicated helper modules.
-
-## Error Handling & Logging
-- Fail fast on configuration issues (missing env vars, invalid model names).
-- For user-facing errors:
-  - Capture exceptions in LangGraph/Chainlit handlers.
-  - Send a friendly error message back through Chainlit, and log the technical details.
-- Prefer Python `logging` over `print` for non-debug output.
-
-## Style & Quality
-- Follow PEP 8 style and PEP 484 type hints.
-- Use descriptive variable and function names (avoid single-letter names except for very short scopes).
-- Prefer small, composable functions over large monoliths.
-- When adding tests, use `pytest` and keep tests in a top-level `tests/` folder.
+## Prompts (`includes/prompts.py`)
+- `build_system_prompt()` is the primary prompt builder — dynamic, role-aware, profile-aware.
+- Prompts include user profile context, available tools, current date/time.
+- Role-based access: admin users get additional tools; staff get a filtered set.
+- Admin emails configured in `config/settings.py` (`ADMIN_EMAILS`).
 
 ## Testing
-- **Always use `uv run pytest`** to run tests, not direct `pytest` commands.
-- The `pytest` script:
-  - Automatically checks if PostgreSQL emulator is running.
-  - Starts the emulator if needed (on `localhost:8686`).
-  - Sets the `FIRESTORE_EMULATOR_HOST` environment variable.
-  - Runs `pytest` with proper environment setup.
-  - Accepts additional pytest arguments: `uv run pytest -k test_name` or `uv run pytest -v`.
-- Tests require PostgreSQL emulator for:
-  - Checkpoint persistence tests (`test_checkpoint_saver.py`)
-  - PostgreSQL store tests (`test_firestore_store.py`)
-  - Integration tests that use checkpointer/store
-- To manually start/stop the emulator:
-  - Start: `gcloud emulators firestore start --host-port=localhost:8686`
-  - Stop: `pkill -f "firestore"`
-  - Check status: `ps aux | grep cloud-firestore-emulator`
+- Run tests: `uv run pytest tests/ -v`
+- Tests use **mocks and in-memory stores** — no database required.
+- `pytest-asyncio` with `asyncio_mode = "auto"` (no manual `@pytest.mark.asyncio` needed for async tests).
+- 30-second timeout per test.
+- Test structure mirrors source: `tests/agents/`, `tests/tools/`.
+- When patching config in tests, use `@patch('includes.agents.general_agent.config')` (patch where it's imported).
+- See `docs/TESTING.md` for full guide.
+
+## Error Handling & Logging
+- Use Python `logging` (not `print`).
+- Fail fast on config issues at startup.
+- User-facing errors: catch in Chainlit handlers, send friendly message, log technical details.
+
+## Style & Quality
+- PEP 8 style, PEP 484 type hints.
+- Small composable functions over large monoliths.
+- Descriptive names (no single-letter variables except trivial loops).
 
 ## Git & Repository
-- Do not commit `.env`, `.venv`, or other secrets / local artifacts.
-- Keep `pyproject.toml` as the single source of truth for dependencies and project metadata.
-- When adding scripts, prefer small shell wrappers (`run.sh`, `kill.sh`, etc.) that call `uv` rather than direct `python`.
-
-## When Unsure
-- Prefer LangGraph-based designs for new model workflows.
-- Prefer adding small, well-named modules over growing a single large file.
-- Keep config, secrets, and infra concerns separate from core business logic.
+- Do not commit `.env`, `.venv`, secrets, or `__pycache__/`.
+- `pyproject.toml` is the single source of truth for dependencies.
+- Shell scripts: `run.sh` (start dev server), `kill-8000.sh` (clear stuck port), `start.sh` (production entry).

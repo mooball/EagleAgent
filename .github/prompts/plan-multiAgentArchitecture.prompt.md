@@ -108,7 +108,6 @@
 
 - [x] 15. **Prepare for future agents**
     - Document agent creation template in [includes/agents/README.md](includes/agents/README.md)
-    - Create [config/agents.yaml.example](config/agents.yaml.example) for agent routing rules
     - Add metrics/logging for agent usage (which agents invoked, success rates)
     - Create placeholder files with TODOs:
       - [includes/agents/code_agent.py](includes/agents/code_agent.py) (code generation/debugging)
@@ -193,8 +192,7 @@ uv run pytest tests/ --cov=includes/agents --cov-report=html
 ├── config/
 │   ├── settings.py            # Keep: Non-secret config
 │   ├── prompts.yaml.example   # Keep: Future YAML prompts
-│   ├── mcp_servers.yaml       # Keep: MCP servers
-│   └── agents.yaml.example    # 🆕 Sub-agent routing rules
+│   └── mcp_servers.yaml       # Keep: MCP servers
 │
 └── tests/
     ├── conftest.py            # Keep: Shared fixtures
