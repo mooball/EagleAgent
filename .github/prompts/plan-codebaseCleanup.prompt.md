@@ -19,9 +19,9 @@
 ### ~~3. `agents.yaml.example` is misleading~~ DONE
 - Removed `config/agents.yaml.example` — routing is handled by `includes/agents/supervisor.py`
 
-### 4. Dockerfile runs as root
-- `Dockerfile` never creates a non-root user. This is a container security issue on Railway.
-- **Fix:** Add `RUN useradd -m -u 1000 eagleagent && chown -R eagleagent /app` and `USER eagleagent` before CMD.
+### ~~4. Dockerfile runs as root~~ DONE
+- Added non-root `eagleagent` user (uid 1000) with proper ownership
+- Added `HEALTHCHECK` for orchestrator liveness detection (also covers #10)
 
 ---
 
@@ -43,8 +43,8 @@
 ### 9. TESTING.md references Firestore
 - `TESTING.md` mentions "Firestore" in several places but the entire system uses PostgreSQL. Confusing for new devs.
 
-### 10. Missing Dockerfile health check
-- No `HEALTHCHECK` instruction means Railway/orchestrators can't detect hung processes.
+### ~~10. Missing Dockerfile health check~~ DONE
+- Added via #4 Dockerfile fix
 
 ---
 
