@@ -140,15 +140,6 @@ CREATE TABLE elements (
 
 ## Processing Modules
 
-### storage_utils.py
-
-Functions for Local File Storage operations:
-
-- `upload_file_to_local(file_path)` -> Writes file to DATA_DIR/attachments
-- `download_file_from_local` -> Reads file from local dir
-- `delete_file_from_local` -> Removes file locally
-- `generate_object_key(user_id, session_id, filename)` → Creates unique path
-
 ### document_processing.py
 
 Document processing utilities:
@@ -158,35 +149,6 @@ Document processing utilities:
 - `extract_text_from_file(file_bytes, mime_type)` → Generic text extraction
 - `process_audio(file_path, mime_type)` → Metadata (transcription TBD)
 - `create_multimodal_content(text, images)` → LangChain message format
-
-## File Retention & Cleanup
-
-Files are automatically deleted after 30 days.
-
-### Manual Cleanup
-
-```bash
-# Dry run - see what would be deleted
-./scripts/cleanup_old_files.py --dry-run
-
-# Delete files older than 30 days
-./scripts/cleanup_old_files.py
-
-# Custom retention period (e.g., 7 days)
-./scripts/cleanup_old_files.py --days 7
-```
-
-### Automated Cleanup (Production)
-
-Schedule the cleanup script via cron:
-
-```bash
-# Edit crontab
-crontab -e
-
-# Run daily at 2 AM
-0 2 * * * cd /path/to/EagleAgent && poetry run python scripts/cleanup_old_files.py
-```
 
 ## Usage Examples
 
@@ -211,24 +173,11 @@ crontab -e
 
 ## Monitoring & Debugging
 
-### Check Local File Storage Bucket Contents
-
-```bash
-# List all files
-gsutil ls -r gs://eagleagent
-
-# Check bucket location
-
-# View bucket size
-gsutil du -sh gs://eagleagent
-```
-
 ### View Upload Logs
 
 Logs are written to console during file uploads:
 
 ```
-INFO - includes.storage_utils - Uploaded file to Local File Storage: uploads/user@example.com/session-123/image.jpg
 INFO - includes.document_processing - Extracted text from PDF: 1234 characters
 ```
 
@@ -236,31 +185,13 @@ INFO - includes.document_processing - Extracted text from PDF: 1234 characters
 
 ```bash
 # View all uploaded files
-psql $DATABASE_URL "SELECT name, mime, createdAt FROM elements ORDER BY createdAt DESC LIMIT 10;"
+psql $DATABASE_URL -c "SELECT name, mime, createdAt FROM elements ORDER BY createdAt DESC LIMIT 10;"
 
 # Count files by type
-psql $DATABASE_URL "SELECT mime, COUNT(*) FROM elements GROUP BY mime;"
+psql $DATABASE_URL -c "SELECT mime, COUNT(*) FROM elements GROUP BY mime;"
 ```
 
 ## Troubleshooting
-
-### "Bucket does not exist" Error
-
-```bash
-# Verify bucket exists
-
-# If not, create it
-```
-
-### "Permission denied" Error
-
-```bash
-# Check service account has permissions
-
-# Re-grant permissions if needed
-  --member=serviceAccount:eagleagent-svc-account@mooballai.iam.gserviceaccount.com \
-  --role=roles/storage.objectAdmin
-```
 
 ### Files Not Processing
 
@@ -275,29 +206,13 @@ psql $DATABASE_URL "SELECT mime, COUNT(*) FROM elements GROUP BY mime;"
 2. Check image format is supported (PNG, JPEG, GIF, WebP)
 3. Review logs for base64 encoding errors
 
-## Cost Considerations
-
-### Local File Storage Pricing (Sydney Region)
-
-- **Storage**: ~$0.023 per GB/month (Standard class)
-- **Operations**: Minimal (few uploads/downloads per day)
-- **Network**: Free for australia-southeast1 → australia-southeast1
-
-**Example**: 1000 files × 1MB each = 1GB = ~$0.023/month
-
-### Optimization Tips
-
-1. **30-day retention** - Reduces long-term storage costs
-2. **Sydney region** - Lower egress costs for Australian users
-3. **Standard storage class** - Best for frequent access (vs Nearline/Coldline)
-
 ## Security
 
 ### Access Control
 
-- Files stored in **private bucket** (not publicly accessible)
-- Service account has **least-privilege permissions** (objectAdmin only)
-- Signed URLs used for **temporary access** (if needed)
+- Files stored on **local disk** under `DATA_DIR/attachments/`
+- Served via Chainlit's mounted `/files` route
+- Non-root container user (uid 1000) in production
 
 ### File Validation
 

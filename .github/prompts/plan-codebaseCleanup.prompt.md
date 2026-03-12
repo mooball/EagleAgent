@@ -53,8 +53,11 @@
 
 ## YELLOW - Nice to Have
 
-### 11. Storage module boundary unclear
-- `includes/storage_utils.py` and `includes/local_storage_client.py` overlap in functionality. Neither has a module docstring explaining when to use which.
+### ~~11. Storage module boundary unclear~~ DONE
+- Deleted `includes/storage_utils.py` (dead code — never called, fully replaced by `LocalStorageClient`)
+- Deleted `scripts/cleanup_old_files.py` (broken GCS references, never worked with local storage)
+- Removed unused `storage_utils` imports from `app.py`
+- Cleaned up GCS/bucket references in `FILE_ATTACHMENTS.md`
 
 ### 12. Empty `__init__.py` in agents module
 - `includes/agents/__init__.py` doesn't export anything, requiring full import paths everywhere.
