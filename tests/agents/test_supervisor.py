@@ -56,3 +56,22 @@ async def test_supervisor_llm_routing_fallback(supervisor, mock_model):
     result = await supervisor(state)
     
     assert result == {"next_agent": "GeneralAgent"}
+
+@pytest.mark.asyncio
+async def test_supervisor_rule_based_procurement(supervisor):
+    state = {"messages": [HumanMessage(content="Find me a water pump with part number 123")]}
+    result = await supervisor(state)
+    assert result == {"next_agent": "ProcurementAgent"}
+
+@pytest.mark.asyncio
+async def test_supervisor_llm_routing_procurement(supervisor, mock_model):
+    # Use a string without keywords to trigger LLM routing into procurement
+    state = {"messages": [HumanMessage(content="I need replacement bearing components for the warehouse")]}
+    
+    # Mock LLM decision
+    mock_model.with_structured_output.return_value.ainvoke.return_value = RouteDecision(next_agent="ProcurementAgent")
+    
+    result = await supervisor(state)
+    
+    assert result == {"next_agent": "ProcurementAgent"}
+    mock_model.with_structured_output.return_value.ainvoke.assert_called_once()

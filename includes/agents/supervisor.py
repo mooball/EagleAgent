@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 class RouteDecision(BaseModel):
-    next_agent: Literal["GeneralAgent", "BrowserAgent", "FINISH"] = Field(
+    next_agent: Literal["GeneralAgent", "BrowserAgent", "ProcurementAgent", "FINISH"] = Field(
         description="The agent to route the task to, or FINISH if the user request has been fully answered."
     )
 
@@ -52,9 +52,15 @@ class Supervisor:
         
         # Rule-based fast routing
         browser_keywords = ["browse", "website", "url", "http", "google", "find online"]
+        procurement_keywords = ["product", "part number", "supplier", "supplier code", "catalog", "search inventory", "search product", "find part"]
+        
         if any(keyword in user_text for keyword in browser_keywords):
             logger.info("Supervisor rule-based routing: BrowserAgent")
             return {"next_agent": "BrowserAgent"}
+            
+        if any(keyword in user_text for keyword in procurement_keywords):
+            logger.info("Supervisor rule-based routing: ProcurementAgent")
+            return {"next_agent": "ProcurementAgent"}
             
         # LLM fallback routing
         system_prompt = """You are a supervisor managing a team of expert agents.
@@ -63,6 +69,7 @@ Your job is to route the user's request to the correct agent.
 Available agents:
 - BrowserAgent: Use for web search, web automation, opening URLs, finding live information online.
 - GeneralAgent: Use for general conversation, memory retrieval, task planning, document summarization.
+- ProcurementAgent: Use for searching the internal product catalog, finding part numbers, brands, product descriptions, or supplier details.
 - FINISH: Use if the conversation is over or the request is fully fulfilled.
 
 Given the conversation, which agent should act next?

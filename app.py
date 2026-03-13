@@ -18,7 +18,7 @@ from includes.commands import handle_deleteall_command
 from includes.document_processing import process_file, create_multimodal_content
 from includes.local_storage_client import LocalStorageClient
 from includes.mcp_config import load_mcp_config
-from includes.agents import BrowserAgent, GeneralAgent, Supervisor
+from includes.agents import BrowserAgent, GeneralAgent, ProcurementAgent, Supervisor
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 # Set up Chainlit static file serving for local file attachments
@@ -131,6 +131,7 @@ async def setup_globals():
         
     # Initialize agents
     browser_agent = BrowserAgent(model=base_model, store=store)
+    procurement_agent = ProcurementAgent(model=base_model, store=store)
     general_agent = GeneralAgent(model=base_model, store=store, mcp_client=mcp_client, admin_only_tools=ADMIN_ONLY_TOOLS)
     supervisor_node = Supervisor(model=base_model)
     
@@ -146,21 +147,27 @@ async def setup_globals():
     async def run_browser(state, config):
         return await browser_agent(state, config)
 
+    async def run_procurement(state, config):
+        return await procurement_agent(state, config)
+
     # Add nodes
     builder.add_node("Supervisor", run_supervisor)
     builder.add_node("GeneralAgent", run_general)
     builder.add_node("BrowserAgent", run_browser)
+    builder.add_node("ProcurementAgent", run_procurement)
 
     # Add edges
     builder.add_edge(START, "Supervisor")
 
     # Conditional routing from Supervisor
-    def router(state: SupervisorState) -> Literal["GeneralAgent", "BrowserAgent", "__end__"]:
+    def router(state: SupervisorState) -> Literal["GeneralAgent", "BrowserAgent", "ProcurementAgent", "__end__"]:
         next_agent = state.get("next_agent", "FINISH")
         if next_agent == "GeneralAgent":
             return "GeneralAgent"
         elif next_agent == "BrowserAgent":
             return "BrowserAgent"
+        elif next_agent == "ProcurementAgent":
+            return "ProcurementAgent"
         else:
             return END
 
@@ -169,6 +176,7 @@ async def setup_globals():
     # Agents always route back to Supervisor
     builder.add_edge("GeneralAgent", "Supervisor")
     builder.add_edge("BrowserAgent", "Supervisor")
+    builder.add_edge("ProcurementAgent", "Supervisor")
 
     # Compile graph
     graph = builder.compile(checkpointer=checkpointer, store=store)
@@ -466,7 +474,7 @@ async def main(message: cl.Message):
         name = event.get("name", "")
         tags = event.get("tags", [])
         
-        if kind == "on_chain_start" and name in ["GeneralAgent", "BrowserAgent"]:
+        if kind == "on_chain_start" and name in ["GeneralAgent", "BrowserAgent", "ProcurementAgent"]:
             active_agent = name
             
         # Skip streaming internal routing decisions
