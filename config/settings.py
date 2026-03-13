@@ -23,6 +23,9 @@ class Config:
     # Root directory for persistent data (attachments, uploads etc)
     DATA_DIR = os.getenv("DATA_DIR", "./data")
     
+    # Directory for importing CSVs
+    IMPORT_DIR = os.getenv("IMPORT_DIR", "./data/import")
+    
     # Database URL
     DATABASE_URL = os.getenv(
         "DATABASE_URL",
@@ -34,6 +37,9 @@ class Config:
         "CHECKPOINT_DATABASE_URL",
         "postgres://postgres:postgres@localhost:5432/eagleagent"  # Local dev default for psycopg pooling
     )
+    
+    # Production Database URL (Optional, for running local scripts against Railway)
+    PROD_DATABASE_URL = os.getenv("PROD_DATABASE_URL", "")
     
     
     # ==================== OAuth Settings ====================
@@ -47,6 +53,8 @@ class Config:
     
     
     # ==================== Model Configuration ====================
+    # Set the Gemini Embeddings model string.
+    EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "models/gemini-embedding-001")
     
     # Default LLM model to use
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini-3-flash-preview")

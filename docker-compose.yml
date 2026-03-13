@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:0.8.0-pg17
     container_name: eagleagent-postgres
     environment:
       POSTGRES_USER: postgres

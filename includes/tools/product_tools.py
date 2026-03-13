@@ -1,0 +1,147 @@
+"""
+Product and Procurement tools.
+
+Provides simple interfaces for querying the products catalog, performing exact matches,
+and running vector similarity searches using pgvector and Gemini.
+"""
+
+import logging
+from typing import Optional, List, Dict, Any
+from langchain_core.tools import tool
+from sqlalchemy import create_engine, select, or_
+from sqlalchemy.orm import sessionmaker
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import asyncio
+
+from config.settings import Config
+from includes.db_models import Product
+
+logger = logging.getLogger(__name__)
+
+def get_engine():
+    db_url = Config.DATABASE_URL
+    if db_url.startswith("postgresql+asyncpg://"):
+        db_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
+    elif db_url.startswith("postgresql://"):
+        db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return create_engine(db_url)
+
+# Module-level singletons to avoid recreating on every call
+_engine = None
+_SessionLocal = None
+_embeddings_model = None
+
+def get_session():
+    global _engine, _SessionLocal
+    if _engine is None:
+        _engine = get_engine()
+        _SessionLocal = sessionmaker(bind=_engine)
+    return _SessionLocal()
+
+def get_embeddings_model():
+    global _embeddings_model
+    if _embeddings_model is None:
+        embed_model_name = Config.EMBEDDINGS_MODEL
+        _embeddings_model = GoogleGenerativeAIEmbeddings(model=embed_model_name, output_dimensionality=256)
+    return _embeddings_model
+
+def _do_product_search(part_number: Optional[str] = None, 
+                       brand: Optional[str] = None, 
+                       supplier_code: Optional[str] = None,
+                       description: Optional[str] = None, 
+                       limit: int = 5) -> str:
+    """Executes the actual sqlalchemy queries synchronously"""
+    session = get_session()
+    try:
+        base_query = session.query(Product)
+        
+        # Exact or partial match for part_number
+        if part_number:
+            base_query = base_query.filter(Product.part_number.ilike(f"%{part_number}%"))
+            
+        # Exact or partial match for brand
+        if brand:
+            base_query = base_query.filter(Product.brand.ilike(f"%{brand}%"))
+            
+        # Exact or partial match for supplier_code
+        if supplier_code:
+            base_query = base_query.filter(Product.supplier_code.ilike(f"%{supplier_code}%"))
+            
+        results = []
+        seen_ids = set()
+        
+        # First attempt: traditional string match on description (AND search)
+        if description:
+            words = [word.strip() for word in description.split() if word.strip()]
+            string_query = base_query
+            for word in words:
+                string_query = string_query.filter(Product.description.ilike(f"%{word}%"))
+                
+            string_results = string_query.limit(limit).all()
+            for r in string_results:
+                if r.id not in seen_ids:
+                    results.append(r)
+                    seen_ids.add(r.id)
+        else:
+            # If no description provided, just execute base query
+            results = base_query.limit(limit).all()
+            for r in results:
+                seen_ids.add(r.id)
+
+        # Second attempt: fallback to vector proximity if we need more results and have a description
+        if description and len(results) < limit:
+            try:
+                emb_model = get_embeddings_model()
+                query_vector = emb_model.embed_query(description)
+                vector_query = base_query.order_by(Product.embedding.cosine_distance(query_vector))
+                
+                v_results = vector_query.limit(limit * 2).all()
+                for r in v_results:
+                    if r.id not in seen_ids:
+                        results.append(r)
+                        seen_ids.add(r.id)
+                        if len(results) >= limit:
+                            break
+            except Exception as e:
+                logger.error(f"Failed to compute embedding for description search: {e}")
+                
+        # Trim final results just in case
+        results = results[:limit]
+        
+        if not results:
+            return "No products found matching those criteria."
+            
+        output_parts = [f"Found {len(results)} matching products (limit {limit}):"]
+        for p in results:
+            item = f"- Part Number: {p.part_number} | Brand: {p.brand} | Desc: {p.description or 'N/A'}"
+            if p.supplier_code:
+                item += f" | Supplier Code: {p.supplier_code}"
+            output_parts.append(item)
+            
+        return "\n".join(output_parts)
+    except Exception as e:
+        logger.error(f"Error executing product search: {e}")
+        return f"An error occurred while searching the database: {str(e)}"
+    finally:
+        session.close()
+
+@tool
+async def search_products(part_number: Optional[str] = None, 
+                         brand: Optional[str] = None, 
+                         supplier_code: Optional[str] = None,
+                         description: Optional[str] = None, 
+                         limit: int = 5) -> str:
+    """
+    Search the procurement products catalog.
+    
+    You can search by:
+    - part_number: string match on the part number (e.g., '123-ABC')
+    - brand: string match on the brand name (e.g., 'Caterpillar')
+    - supplier_code: string match on the supplier's internal part code
+    - description: semantic vector search to find similar capabilities or types of products
+    
+    Provide as many arguments as necessary. Specifying part_number, brand, or supplier_code will filter the search,
+    while specifying description will semantically sort the results.
+    """
+    # Run synchronous database work via asyncio to prevent blocking the async graph
+    return await asyncio.to_thread(_do_product_search, part_number, brand, supplier_code, description, limit)
