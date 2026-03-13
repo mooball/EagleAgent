@@ -20,10 +20,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # Drop the non-unique index and create a unique one or add a unique constraint
-    op.drop_index('ix_products_part_number', table_name='products')
-    op.create_index('ix_products_part_number', 'products', ['part_number'], unique=True)
+    op.drop_index(op.f('ix_products_part_number'), table_name='products')
+    op.create_index(op.f('ix_products_part_number'), 'products', ['part_number'], unique=True)
 
 
 def downgrade() -> None:
-    op.drop_index('ix_products_part_number', table_name='products')
-    op.create_index('ix_products_part_number', 'products', ['part_number'], unique=False)
+    op.drop_index(op.f('ix_products_part_number'), table_name='products')
+    op.create_index(op.f('ix_products_part_number'), 'products', ['part_number'], unique=False)

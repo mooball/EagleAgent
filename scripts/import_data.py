@@ -65,11 +65,16 @@ def import_products(session, df: pd.DataFrame):
         
         records = []
         for _, row in batch_df.iterrows():
-            nid = row.get('netsuite_id')
-            pn = row.get('part_number')
+            nid = str(row.get('netsuite_id')).strip() if pd.notna(row.get('netsuite_id')) else ""
+            pn = str(row.get('part_number')).strip() if pd.notna(row.get('part_number')) else ""
+            
+            # Skip rows missing both primary identifiers
+            if not nid and not pn:
+                continue
+                
             records.append({
-                'netsuite_id': str(int(nid)) if pd.notna(nid) and isinstance(nid, float) else str(nid) if pd.notna(nid) else None,
-                'part_number': str(int(pn)) if pd.notna(pn) and isinstance(pn, float) else str(pn) if pd.notna(pn) else None,
+                'netsuite_id': nid if nid else None,
+                'part_number': pn if pn else None,
                 'supplier_code': str(row.get('supplier_code')) if pd.notna(row.get('supplier_code')) else None,
                 'description': str(row.get('description')) if pd.notna(row.get('description')) else None,
                 'brand': str(row.get('brand')) if pd.notna(row.get('brand')) else None,
@@ -125,10 +130,15 @@ def import_suppliers(session, df: pd.DataFrame):
     
     records = []
     for _, row in df.iterrows():
-        nid = row.get('netsuite_id')
+        nid = str(row.get('netsuite_id')).strip() if pd.notna(row.get('netsuite_id')) else ""
+        name = str(row.get('name')).strip() if pd.notna(row.get('name')) else ""
+        
+        if not nid or not name:
+            continue
+            
         records.append({
-            'netsuite_id': str(int(nid)) if pd.notna(nid) and isinstance(nid, float) else str(nid) if pd.notna(nid) else None,
-            'name': str(row.get('name')) if pd.notna(row.get('name')) else None
+            'netsuite_id': nid,
+            'name': name
         })
         
     stmt = insert(Supplier).values(records)
@@ -150,7 +160,13 @@ def process_csv(filepath: str, session):
     print(f"\nProcessing file: {filename}")
     try:
         # Load CSV handling quoted fields properly
-        df = pd.read_csv(filepath, quotechar='"', skipinitialspace=True)
+        # Enforce string dtype on identifiers to prevent pandas from dropping leading zeroes (e.g. '0034' -> 34.0)
+        df = pd.read_csv(
+            filepath, 
+            quotechar='"', 
+            skipinitialspace=True,
+            dtype={'part_number': str, 'netsuite_id': str, 'supplier_code': str}
+        )
     except Exception as e:
         print(f"Error reading CSV: {e}")
         return

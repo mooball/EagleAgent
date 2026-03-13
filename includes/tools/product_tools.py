@@ -6,9 +6,9 @@ and running vector similarity searches using pgvector and Gemini.
 """
 
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional
 from langchain_core.tools import tool
-from sqlalchemy import create_engine, select, or_
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import asyncio
@@ -24,6 +24,8 @@ def get_engine():
         db_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
     elif db_url.startswith("postgresql://"):
         db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    elif db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
     return create_engine(db_url)
 
 # Module-level singletons to avoid recreating on every call
@@ -49,7 +51,7 @@ def _do_product_search(part_number: Optional[str] = None,
                        brand: Optional[str] = None, 
                        supplier_code: Optional[str] = None,
                        description: Optional[str] = None, 
-                       limit: int = 5) -> str:
+                       limit: int = 10) -> str:
     """Executes the actual sqlalchemy queries synchronously"""
     session = get_session()
     try:
@@ -77,6 +79,7 @@ def _do_product_search(part_number: Optional[str] = None,
             for word in words:
                 string_query = string_query.filter(Product.description.ilike(f"%{word}%"))
                 
+            total_matches_count = string_query.count()
             string_results = string_query.limit(limit).all()
             for r in string_results:
                 if r.id not in seen_ids:
@@ -84,6 +87,7 @@ def _do_product_search(part_number: Optional[str] = None,
                     seen_ids.add(r.id)
         else:
             # If no description provided, just execute base query
+            total_matches_count = base_query.count()
             results = base_query.limit(limit).all()
             for r in results:
                 seen_ids.add(r.id)
@@ -111,12 +115,15 @@ def _do_product_search(part_number: Optional[str] = None,
         if not results:
             return "No products found matching those criteria."
             
-        output_parts = [f"Found {len(results)} matching products (limit {limit}):"]
+        output_parts = [f"Found {total_matches_count} matching products. Displaying {len(results)} matches:"]
         for p in results:
             item = f"- Part Number: {p.part_number} | Brand: {p.brand} | Desc: {p.description or 'N/A'}"
             if p.supplier_code:
                 item += f" | Supplier Code: {p.supplier_code}"
             output_parts.append(item)
+            
+        if total_matches_count > limit:
+            output_parts.append(f"\nNote: There are {total_matches_count - limit} more unshown results. Ask the user if they'd like to list more or refine the search.")
             
         return "\n".join(output_parts)
     except Exception as e:
@@ -130,7 +137,7 @@ async def search_products(part_number: Optional[str] = None,
                          brand: Optional[str] = None, 
                          supplier_code: Optional[str] = None,
                          description: Optional[str] = None, 
-                         limit: int = 5) -> str:
+                         limit: int = 10) -> str:
     """
     Search the procurement products catalog.
     

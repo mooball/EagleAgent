@@ -85,6 +85,7 @@ def main():
 
             # Exponential backoff for rate limits
             retries = 0
+            max_retries = 10
             while True:
                 try:
                     batch_embeddings = embeddings_model.embed_documents(texts_to_embed)
@@ -93,12 +94,15 @@ def main():
                     err_str = str(e).lower()
                     if "429" in err_str or "quota" in err_str or "exhausted" in err_str:
                         retries += 1
+                        if retries > max_retries:
+                            print(f"Max retries ({max_retries}) exceeded for rate limiting. Aborting script to prevent infinite hang.")
+                            raise
                         sleep_time = 15 * retries
                         print(f"[{retries}] Hit rate limit. Sleeping for {sleep_time} seconds before retrying...")
                         time.sleep(sleep_time)
                     else:
-                        print(f"Error generating embeddings for batch starting at {i}: {e}")
-                        raise e
+                        print(f"Error generating embeddings: {e}")
+                        raise
             
             # Apply embeddings back to objects
             for idx, emb_vector in enumerate(batch_embeddings):
