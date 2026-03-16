@@ -83,7 +83,7 @@ def main():
                 
                 texts_to_embed.append(embed_text)
 
-            # Exponential backoff for rate limits
+            # Exponential backoff for rate limits and transient connection drops
             retries = 0
             max_retries = 10
             while True:
@@ -92,16 +92,17 @@ def main():
                     break  # Success
                 except Exception as e:
                     err_str = str(e).lower()
-                    if "429" in err_str or "quota" in err_str or "exhausted" in err_str:
+                    transient_errors = ["429", "quota", "exhausted", "disconnected", "protocol", "503", "502", "500", "504", "timeout"]
+                    if any(te in err_str for te in transient_errors):
                         retries += 1
                         if retries > max_retries:
-                            print(f"Max retries ({max_retries}) exceeded for rate limiting. Aborting script to prevent infinite hang.")
+                            print(f"Max retries ({max_retries}) exceeded for transient error. Aborting script to prevent infinite hang.")
                             raise
                         sleep_time = 15 * retries
-                        print(f"[{retries}] Hit rate limit. Sleeping for {sleep_time} seconds before retrying...")
+                        print(f"[{retries}] Hit API or connection issue: '{e}'. Sleeping for {sleep_time} seconds before retrying...")
                         time.sleep(sleep_time)
                     else:
-                        print(f"Error generating embeddings: {e}")
+                        print(f"Non-transient error generating embeddings: {e}")
                         raise
             
             # Apply embeddings back to objects
