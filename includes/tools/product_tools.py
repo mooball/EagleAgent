@@ -14,7 +14,7 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import asyncio
 
 from config.settings import Config
-from includes.db_models import Product
+from includes.db_models import Product, Brand
 
 logger = logging.getLogger(__name__)
 
@@ -152,3 +152,64 @@ async def search_products(part_number: Optional[str] = None,
     """
     # Run synchronous database work via asyncio to prevent blocking the async graph
     return await asyncio.to_thread(_do_product_search, part_number, brand, supplier_code, description, limit)
+
+
+def _do_brand_search(query: str, limit: int = 20) -> str:
+    """Executes the brand search synchronously."""
+    session = get_session()
+    try:
+        # Search ALL brands (including duplicates) by name
+        matches = (
+            session.query(Brand)
+            .filter(Brand.name.ilike(f"%{query}%"))
+            .all()
+        )
+
+        if not matches:
+            return f"No brands found matching '{query}'."
+
+        # Resolve duplicates to their canonical brand
+        canonical_map = {}  # canonical_id -> Brand
+        for brand in matches:
+            if brand.duplicate_of is not None:
+                # This is a duplicate — look up the canonical brand
+                canonical = session.query(Brand).filter(Brand.id == brand.duplicate_of).first()
+                if canonical and canonical.id not in canonical_map:
+                    canonical_map[canonical.id] = canonical
+            else:
+                # This is already canonical
+                if brand.id not in canonical_map:
+                    canonical_map[brand.id] = brand
+
+        results = sorted(canonical_map.values(), key=lambda b: b.name.lower())
+        total = len(results)
+        results = results[:limit]
+
+        output_parts = [f"Found {total} matching brand(s). Displaying {len(results)}:"]
+        for b in results:
+            output_parts.append(f"- {b.name} (netsuite_id: {b.netsuite_id})")
+
+        if total > limit:
+            output_parts.append(f"\nNote: There are {total - limit} more unshown results.")
+
+        return "\n".join(output_parts)
+    except Exception as e:
+        logger.error(f"Error executing brand search: {e}")
+        return f"An error occurred while searching brands: {str(e)}"
+    finally:
+        session.close()
+
+
+@tool
+async def search_brands(query: str, limit: int = 20) -> str:
+    """
+    Search the brands database.
+
+    Search by brand name (partial, case-insensitive match).
+    If a match is a known duplicate, the canonical brand is returned instead.
+
+    Args:
+        query: The brand name to search for (e.g. 'Hilti', 'Cat')
+        limit: Maximum number of results to return (default: 20)
+    """
+    return await asyncio.to_thread(_do_brand_search, query, limit)

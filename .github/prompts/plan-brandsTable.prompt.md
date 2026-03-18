@@ -68,7 +68,21 @@ Follow the same patterns as `scripts/import_products.py`:
 
 ---
 
-### Phase 4: Link Products to Brands (future, out of scope)
+### Phase 4: Brand Search Tool for ProcurementAgent
+
+1. Add a `search_brands` tool to `includes/tools/product_tools.py` (alongside the existing `search_products` tool):
+   - Accept a `query` string parameter.
+   - Search by `name` using case-insensitive `ilike` matching across **all** brands (including duplicates).
+   - If a match is a duplicate, resolve it to the canonical brand (follow `duplicate_of`).
+   - Deduplicate results so the same canonical brand isn't listed twice.
+   - Return results as a formatted list with `name` and `netsuite_id`.
+   - Limit results (e.g. top 20) with a count of total matches.
+2. Register the `search_brands` tool on the `ProcurementAgent` in `includes/agents/procurement_agent.py`.
+3. Update the ProcurementAgent system prompt to mention brand search capability.
+
+---
+
+### Phase 5: Link Products to Brands (future, out of scope)
 
 _Not part of this plan, but the logical next step:_
 - Add `brand_id` FK on `products` table pointing to `brands.id`.
@@ -99,6 +113,8 @@ Self-referential relationship: `duplicate_of` points to the canonical brand reco
 | `alembic/versions/xxx_add_brands_table.py` | New migration |
 | `scripts/import_brands.py` | New import script |
 | `scripts/deduplicate_brands.py` | New interactive dedup tool |
+| `includes/tools/product_tools.py` | Add `search_brands` tool |
+| `includes/agents/procurement_agent.py` | Register brand search tool |
 | `pyproject.toml` | Add `rapidfuzz` dependency |
 | `data/brands_import*.csv` | Input CSV file(s) |
 

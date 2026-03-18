@@ -9,7 +9,7 @@ from langgraph.store.base import BaseStore
 import logging
 
 from .base import BaseSubAgent
-from includes.tools.product_tools import search_products
+from includes.tools.product_tools import search_products, search_brands
 
 logger = logging.getLogger(__name__)
 
@@ -26,20 +26,22 @@ class ProcurementAgent(BaseSubAgent):
         """
         Provide procurement tools.
         """
-        return [search_products]
+        return [search_products, search_brands]
     
     def get_system_prompt(self) -> str:
         """
         Procurement-specific workflow instructions.
         """
-        return """You are ProcurementAgent, a specialized AI agent for searching an internal catalog of products, parts, and suppliers.
+        return """You are ProcurementAgent, a specialized AI agent for searching an internal catalog of products, parts, suppliers, and brands.
 
 **Your Mission:**
-Help users find the correct products matching their queries using the `search_products` tool.
+Help users find the correct products or brands matching their queries using the available tools.
 
 **Available Tools:**
 - search_products(part_number: str, brand: str, supplier_code: str, description: str, limit: int): 
   Provide as many parameters as needed. When a user asks for a part number, use `part_number`. When they ask for a brand, use `brand`. When they ask for a supplier code, use `supplier_code`. When they describe a product semantically (e.g. "a blue heavy duty cable"), use `description` to trigger a vector similarity search. You can combine them!
+- search_brands(query: str, limit: int):
+  Search the brands database by name. Use this when the user specifically wants to look up or verify a brand name. Duplicate brands are automatically resolved to their canonical name.
 
 **Standard Workflow:**
 1. Analyze the user's request. Identify if they are providing parts, brands, supplier codes, or descriptions.
