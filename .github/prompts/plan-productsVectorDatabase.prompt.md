@@ -24,7 +24,7 @@ Railway is already on PG17 with pgvector available — no changes needed there. 
 *depends on Phase 0, steps 2 and 3*
 
 ✓ **Phase 2: Data Processing & Import Scripts**
-5. ✓ Create a standalone python script `scripts/import_data.py` to handle CSV merging and data cleansing.
+5. ✓ Create a standalone python script `scripts/import_products.py` to handle CSV merging and data cleansing.
 6. ✓ Define an `IMPORT_DIR` inside `.env` configuration (defaulting to `./data/import/`).
 7. ✓ Expect formatted CSV files like `products_import_01.csv` and `suppliers_import_A.csv`.
 8. ✓ Have Pandas automatically clean trailing spaces, empty strings, and quoted fields.

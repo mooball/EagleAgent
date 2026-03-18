@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Text, Float
+from sqlalchemy import Column, String, Text, Float, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base
 from pgvector.sqlalchemy import Vector
@@ -15,6 +15,18 @@ class Supplier(Base):
 
     def __repr__(self):
         return f"<Supplier(name='{self.name}', netsuite_id='{self.netsuite_id}')>"
+
+
+class Brand(Base):
+    __tablename__ = 'brands'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    netsuite_id = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    duplicate_of = Column(UUID(as_uuid=True), ForeignKey('brands.id'), nullable=True, index=True)
+
+    def __repr__(self):
+        return f"<Brand(name='{self.name}', netsuite_id='{self.netsuite_id}')>"
 
 
 class Product(Base):

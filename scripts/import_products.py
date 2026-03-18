@@ -1,15 +1,15 @@
 """
-import_data.py
+import_products.py
 
 Imports product and supplier CSV data from the designated IMPORT_DIR into the database.
 Handles upserts dynamically to prevent overwriting existing valid data with blanks.
 
 Usage:
   Local database import:
-    uv run python -m scripts.import_data
+    uv run python -m scripts.import_products
     
   Production database import:
-    uv run python -m scripts.import_data --production
+    uv run python -m scripts.import_products --production
     (Requires PROD_DATABASE_URL to be set in your .env file)
 """
 
