@@ -310,7 +310,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Show duplicate groups without making changes.")
     parser.add_argument("--auto", action="store_true", help="Auto-pick canonical brand (shortest name, or accept AI suggestion).")
     parser.add_argument("--ai", action="store_true", help="Use AI (Gemini) to split fuzzy groups into true duplicate sub-groups.")
-    parser.add_argument("--threshold", type=int, default=85, help="Fuzzy match threshold (0-100, default: 85).")
+    parser.add_argument("--case-only", action="store_true", help="Only merge exact case-insensitive matches, skip everything else.")
+    parser.add_argument("--threshold", type=int, default=92, help="Fuzzy match threshold (0-100, default: 92).")
     args = parser.parse_args()
 
     env_label = "PRODUCTION" if args.production else "LOCAL"
@@ -342,6 +343,23 @@ def main():
         brands_marked = 0
 
         for idx, group in enumerate(groups, 1):
+            # --- Auto-merge case-only duplicates silently ---
+            # If all names in the group are identical case-insensitively, merge without asking
+            lower_names = {b.name.lower() for b in group}
+            if len(lower_names) == 1 and not args.dry_run:
+                canonical = group[0]
+                for brand in group[1:]:
+                    brand.duplicate_of = canonical.id
+                    brands_marked += 1
+                session.commit()
+                groups_resolved += 1
+                print(f"  Auto-merged (case-only): {len(group)} → \"{canonical.name}\"")
+                continue
+
+            # In --case-only mode, skip groups that aren't pure case matches
+            if args.case_only:
+                continue
+
             display_group(group, idx, len(groups))
 
             if args.dry_run and not args.ai:
