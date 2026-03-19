@@ -1,6 +1,6 @@
 import uuid
-from sqlalchemy import Column, String, Text, Float, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, String, Text, Float, ForeignKey, UniqueConstraint
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base
 from pgvector.sqlalchemy import Vector
 
@@ -12,9 +12,29 @@ class Supplier(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     netsuite_id = Column(String, unique=True, nullable=True)
     name = Column(String, nullable=False)
+    url = Column(String, nullable=True)
+    address_1 = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    country = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+    contacts = Column(JSONB, nullable=True)
 
     def __repr__(self):
         return f"<Supplier(name='{self.name}', netsuite_id='{self.netsuite_id}')>"
+
+
+class SupplierBrand(Base):
+    __tablename__ = 'supplier_brands'
+    __table_args__ = (
+        UniqueConstraint('supplier_id', 'brand_id', name='uq_supplier_brand'),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    supplier_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id'), nullable=False, index=True)
+    brand_id = Column(UUID(as_uuid=True), ForeignKey('brands.id'), nullable=False, index=True)
+
+    def __repr__(self):
+        return f"<SupplierBrand(supplier_id='{self.supplier_id}', brand_id='{self.brand_id}')>"
 
 
 class Brand(Base):
