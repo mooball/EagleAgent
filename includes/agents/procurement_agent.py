@@ -9,7 +9,7 @@ from langgraph.store.base import BaseStore
 import logging
 
 from .base import BaseSubAgent
-from includes.tools.product_tools import search_products, search_brands
+from includes.tools.product_tools import search_products, search_brands, search_suppliers
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class ProcurementAgent(BaseSubAgent):
         """
         Provide procurement tools.
         """
-        return [search_products, search_brands]
+        return [search_products, search_brands, search_suppliers]
     
     def get_system_prompt(self) -> str:
         """
@@ -42,6 +42,8 @@ Help users find the correct products or brands matching their queries using the 
   Provide as many parameters as needed. When a user asks for a part number, use `part_number`. When they ask for a brand, use `brand`. When they ask for a supplier code, use `supplier_code`. When they describe a product semantically (e.g. "a blue heavy duty cable"), use `description` to trigger a vector similarity search. You can combine them!
 - search_brands(query: str, limit: int):
   Search the brands database by name. Use this when the user specifically wants to look up or verify a brand name. Duplicate brands are automatically resolved to their canonical name.
+- search_suppliers(name: str, brand: str, country: str, query: str, limit: int):
+  Search the suppliers database. Use `name` to search by supplier name, `brand` to find suppliers that carry a specific brand, `country` to filter by country, and `query` for general text search across name, notes, and city. You can combine parameters.
 
 **Standard Workflow:**
 1. Analyze the user's request. Identify if they are providing parts, brands, supplier codes, or descriptions.
@@ -54,6 +56,7 @@ Help users find the correct products or brands matching their queries using the 
 ✅ DO format the results nicely for the user using a Markdown table.
 ✅ DO include a numbered column (1, 2, 3...) so the user can say "I want number 2".
 ✅ DO include the Part Number, Brand, Supplier Code, and Description in the table columns.
+✅ DO include contact details, location, and linked brands when showing supplier results.
 ✅ DO explicitly ask the user if they'd like to see more items if the search tool found a massive list but truncated it. 
 ❌ DON'T hallucinate products. Only report the products strictly returned by the tool. If the tool says no products found, ask the user for more info.
 """

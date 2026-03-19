@@ -8,13 +8,13 @@ and running vector similarity searches using pgvector and Gemini.
 import logging
 from typing import Optional
 from langchain_core.tools import tool
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, or_
+from sqlalchemy.orm import sessionmaker, aliased
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import asyncio
 
 from config.settings import Config
-from includes.db_models import Product, Brand
+from includes.db_models import Product, Brand, Supplier, SupplierBrand
 
 logger = logging.getLogger(__name__)
 
@@ -213,3 +213,120 @@ async def search_brands(query: str, limit: int = 20) -> str:
         limit: Maximum number of results to return (default: 20)
     """
     return await asyncio.to_thread(_do_brand_search, query, limit)
+
+
+def _do_supplier_search(name: Optional[str] = None,
+                        brand: Optional[str] = None,
+                        country: Optional[str] = None,
+                        query: Optional[str] = None,
+                        limit: int = 20) -> str:
+    """Executes the supplier search synchronously."""
+    session = get_session()
+    try:
+        base_query = session.query(Supplier)
+
+        if name:
+            base_query = base_query.filter(Supplier.name.ilike(f"%{name}%"))
+
+        if country:
+            base_query = base_query.filter(Supplier.country.ilike(f"%{country}%"))
+
+        if brand:
+            # Join through supplier_brands to brands, including duplicate resolution
+            base_query = (
+                base_query
+                .join(SupplierBrand, Supplier.id == SupplierBrand.supplier_id)
+                .join(Brand, SupplierBrand.brand_id == Brand.id)
+                .filter(Brand.name.ilike(f"%{brand}%"))
+            )
+
+        if query:
+            base_query = base_query.filter(
+                or_(
+                    Supplier.name.ilike(f"%{query}%"),
+                    Supplier.notes.ilike(f"%{query}%"),
+                    Supplier.city.ilike(f"%{query}%"),
+                )
+            )
+
+        total = base_query.distinct().count()
+        results = base_query.distinct().limit(limit).all()
+
+        if not results:
+            return "No suppliers found matching those criteria."
+
+        # Fetch linked brand names for each supplier
+        supplier_ids = [s.id for s in results]
+        brand_links = (
+            session.query(SupplierBrand.supplier_id, Brand.name)
+            .join(Brand, SupplierBrand.brand_id == Brand.id)
+            .filter(SupplierBrand.supplier_id.in_(supplier_ids))
+            .all()
+        )
+        supplier_brands = {}
+        for sid, bname in brand_links:
+            supplier_brands.setdefault(sid, []).append(bname)
+
+        output_parts = [f"Found {total} matching supplier(s). Displaying {len(results)}:"]
+        for s in results:
+            item = f"- {s.name}"
+            if s.city or s.country:
+                location = ", ".join(filter(None, [s.city, s.country]))
+                item += f" | Location: {location}"
+            if s.url:
+                item += f" | URL: {s.url}"
+            # Contacts summary
+            if s.contacts:
+                for contact in s.contacts:
+                    label = contact.get("label", "")
+                    c_parts = []
+                    if contact.get("name"):
+                        c_parts.append(contact["name"])
+                    if contact.get("email"):
+                        c_parts.append(contact["email"])
+                    if contact.get("phone"):
+                        c_parts.append(contact["phone"])
+                    if c_parts:
+                        item += f" | {label} Contact: {', '.join(c_parts)}"
+            # Brands
+            brands = supplier_brands.get(s.id, [])
+            if brands:
+                item += f" | Brands: {', '.join(sorted(brands))}"
+            output_parts.append(item)
+
+        if total > limit:
+            output_parts.append(f"\nNote: There are {total - limit} more unshown results. Ask the user if they'd like to see more or refine the search.")
+
+        return "\n".join(output_parts)
+    except Exception as e:
+        logger.error(f"Error executing supplier search: {e}")
+        return f"An error occurred while searching suppliers: {str(e)}"
+    finally:
+        session.close()
+
+
+@tool
+async def search_suppliers(name: Optional[str] = None,
+                           brand: Optional[str] = None,
+                           country: Optional[str] = None,
+                           query: Optional[str] = None,
+                           limit: int = 20) -> str:
+    """
+    Search the suppliers database.
+
+    You can search by:
+    - name: partial match on the supplier name
+    - brand: find suppliers that carry a specific brand
+    - country: filter by country
+    - query: general text search across supplier name, notes, and city
+
+    Provide as many arguments as needed to narrow results.
+
+    Args:
+        name: Supplier name to search for (e.g. 'Acme')
+        brand: Brand name to filter by (e.g. 'Hilti') — finds suppliers linked to that brand
+        country: Country to filter by (e.g. 'Australia')
+        query: General text search across name, notes, and city
+        limit: Maximum number of results to return (default: 20)
+    """
+    return await asyncio.to_thread(_do_supplier_search, name, brand, country, query, limit)

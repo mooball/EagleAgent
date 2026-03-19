@@ -1,8 +1,10 @@
 """
 import_products.py
 
-Imports product and supplier CSV data from the designated IMPORT_DIR into the database.
+Imports product CSV data from the designated IMPORT_DIR into the database.
 Handles upserts dynamically to prevent overwriting existing valid data with blanks.
+
+For supplier imports, use scripts/import_suppliers.py instead.
 
 Usage:
   Local database import:
@@ -20,13 +22,11 @@ import pandas as pd
 import argparse
 from typing import Dict, Any
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, or_
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import or_
-from sqlalchemy.dialects.postgresql import insert
 
 from config.settings import Config
-from includes.db_models import Base, Product, Supplier
+from includes.db_models import Base, Product
 
 def get_engine(is_prod: bool = False):
     db_url = Config.PROD_DATABASE_URL if is_prod else Config.DATABASE_URL
@@ -124,35 +124,6 @@ def import_products(session, df: pd.DataFrame):
         
     print("Database insert/update complete.")
 
-def import_suppliers(session, df: pd.DataFrame):
-    """Processes properly formatted Suppliers CSV dataframe into the database."""
-    print(f"Importing {len(df)} suppliers...")
-    
-    records = []
-    for _, row in df.iterrows():
-        nid = str(row.get('netsuite_id')).strip() if pd.notna(row.get('netsuite_id')) else ""
-        name = str(row.get('name')).strip() if pd.notna(row.get('name')) else ""
-        
-        if not nid or not name:
-            continue
-            
-        records.append({
-            'netsuite_id': nid,
-            'name': name
-        })
-        
-    stmt = insert(Supplier).values(records)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=['netsuite_id'], 
-        set_={
-            'name': stmt.excluded.name
-        }
-    )
-    
-    session.execute(stmt)
-    session.commit()
-    print("Database insert complete.")
-
 def process_csv(filepath: str, session):
     """Reads a CSV, cleans it, and routes it to the right importer based on filename."""
     filename = os.path.basename(filepath).lower()
@@ -182,11 +153,8 @@ def process_csv(filepath: str, session):
             return
         import_products(session, df)
     elif filename.startswith('suppliers_import'):
-        # Ensure we have required fields
-        if 'name' not in df.columns:
-            print("Error: `name` column is required in the CSV.")
-            return
-        import_suppliers(session, df)
+        print(f"Skipping '{filename}' — use `python -m scripts.import_suppliers` instead.")
+        return
     else:
         print(f"Unrecognized filename pattern '{filename}'. Skipping.")
         return
@@ -195,7 +163,7 @@ def process_csv(filepath: str, session):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Import Product and Supplier data into the database.")
+    parser = argparse.ArgumentParser(description="Import Product data into the database.")
     parser.add_argument("--production", action="store_true", help="Import data into the PRODUCTION database.")
     args = parser.parse_args()
 
