@@ -137,16 +137,29 @@ def import_suppliers(session, df: pd.DataFrame, brand_lookup: dict):
     batch_size = 200
     for i in range(0, len(df), batch_size):
         batch_df = df.iloc[i : i + batch_size]
-        print(f"  Batch {i // batch_size + 1}/{(len(df) + batch_size - 1) // batch_size}...")
+        batch_num = i // batch_size + 1
+        total_batches = (len(df) + batch_size - 1) // batch_size
+        print(f"  Batch {batch_num}/{total_batches}...")
 
+        # Pre-parse all rows in this batch
+        batch_rows = []
         for _, row in batch_df.iterrows():
             nid = clean_string(row.get("netsuite_id"))
             name = clean_string(row.get("name"))
-
             if not nid or not name:
                 skipped += 1
                 continue
+            batch_rows.append((nid, name, row))
 
+        if not batch_rows:
+            continue
+
+        # Pre-fetch all existing suppliers for this batch in ONE query
+        batch_nids = [nid for nid, _, _ in batch_rows]
+        existing_suppliers = session.query(Supplier).filter(Supplier.netsuite_id.in_(batch_nids)).all()
+        existing_map = {s.netsuite_id: s for s in existing_suppliers}
+
+        for nid, name, row in batch_rows:
             contacts = build_contacts(row)
 
             record = {
@@ -160,10 +173,8 @@ def import_suppliers(session, df: pd.DataFrame, brand_lookup: dict):
                 "contacts": contacts,
             }
 
-            # Check if supplier exists
-            existing = session.query(Supplier).filter(Supplier.netsuite_id == nid).first()
+            existing = existing_map.get(nid)
             if existing:
-                # Update non-empty fields only
                 for k, v in record.items():
                     if v is not None:
                         setattr(existing, k, v)
@@ -173,7 +184,7 @@ def import_suppliers(session, df: pd.DataFrame, brand_lookup: dict):
                 clean_rec = {k: v for k, v in record.items() if v is not None}
                 new_supplier = Supplier(**clean_rec)
                 session.add(new_supplier)
-                session.flush()  # get the ID
+                session.flush()
                 supplier_id = new_supplier.id
                 inserted += 1
 
