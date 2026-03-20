@@ -240,17 +240,49 @@ def _do_supplier_search(name: Optional[str] = None,
                 .filter(Brand.name.ilike(f"%{brand}%"))
             )
 
+        results = []
+        seen_ids = set()
+
+        # Stage 1: string match on query (ilike across name, notes, city)
         if query:
-            base_query = base_query.filter(
+            string_query = base_query.filter(
                 or_(
                     Supplier.name.ilike(f"%{query}%"),
                     Supplier.notes.ilike(f"%{query}%"),
                     Supplier.city.ilike(f"%{query}%"),
                 )
             )
+            total = string_query.distinct().count()
+            string_results = string_query.distinct().limit(limit).all()
+            for r in string_results:
+                if r.id not in seen_ids:
+                    results.append(r)
+                    seen_ids.add(r.id)
+        else:
+            total = base_query.distinct().count()
+            results = base_query.distinct().limit(limit).all()
+            for r in results:
+                seen_ids.add(r.id)
 
-        total = base_query.distinct().count()
-        results = base_query.distinct().limit(limit).all()
+        # Stage 2: vector fallback if query provided and we need more results
+        if query and len(results) < limit:
+            try:
+                emb_model = get_embeddings_model()
+                query_vector = emb_model.embed_query(query)
+                vector_query = base_query.filter(
+                    Supplier.embedding.isnot(None)
+                ).order_by(
+                    Supplier.embedding.cosine_distance(query_vector)
+                )
+                v_results = vector_query.limit(limit * 2).all()
+                for r in v_results:
+                    if r.id not in seen_ids:
+                        results.append(r)
+                        seen_ids.add(r.id)
+                        if len(results) >= limit:
+                            break
+            except Exception as e:
+                logger.error(f"Failed to compute embedding for supplier search: {e}")
 
         if not results:
             return "No suppliers found matching those criteria."
@@ -318,7 +350,10 @@ async def search_suppliers(name: Optional[str] = None,
     - name: partial match on the supplier name
     - brand: find suppliers that carry a specific brand
     - country: filter by country
-    - query: general text search across supplier name, notes, and city
+    - query: text + semantic search across supplier name, notes, and city.
+      Supports natural language descriptions (e.g. 'heavy-duty conveyor components',
+      'industrial adhesives manufacturer'). String matches are tried first,
+      then vector similarity on supplier notes fills remaining results.
 
     Provide as many arguments as needed to narrow results.
 
@@ -326,7 +361,7 @@ async def search_suppliers(name: Optional[str] = None,
         name: Supplier name to search for (e.g. 'Acme')
         brand: Brand name to filter by (e.g. 'Hilti') — finds suppliers linked to that brand
         country: Country to filter by (e.g. 'Australia')
-        query: General text search across name, notes, and city
+        query: Text and semantic search across name, notes, and city. Accepts natural language descriptions.
         limit: Maximum number of results to return (default: 20)
     """
     return await asyncio.to_thread(_do_supplier_search, name, brand, country, query, limit)

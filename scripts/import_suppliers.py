@@ -2,8 +2,13 @@
 import_suppliers.py
 
 Imports supplier CSV data from the designated IMPORT_DIR into the database.
-Handles upserts on netsuite_id, builds contacts JSON from CSV contact columns,
-and links suppliers to canonical brands via the supplier_brands join table.
+Split into two phases for stability over remote/production connections:
+
+  Phase 1 – Upsert supplier core fields (name, contacts, address, etc.)
+  Phase 2 – Link suppliers to canonical brands via the supplier_brands join table
+
+A local JSON cache (<import_dir>/.supplier_cache.json) stores netsuite_id → supplier UUID
+and brand_name → brand_id mappings to minimise database round-trips.
 
 Usage:
   Local database import:
@@ -12,6 +17,10 @@ Usage:
   Production database import:
     uv run python -m scripts.import_suppliers --production
     (Requires PROD_DATABASE_URL to be set in your .env file)
+
+  Run only phase 1 (suppliers) or phase 2 (brand links):
+    uv run python -m scripts.import_suppliers --production --phase 1
+    uv run python -m scripts.import_suppliers --production --phase 2
 """
 
 import os
@@ -23,7 +32,7 @@ import numpy as np
 import pandas as pd
 import argparse
 
-from sqlalchemy import create_engine, func
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.dialects.postgresql import insert
 
@@ -32,6 +41,13 @@ from includes.db_models import Supplier, Brand, SupplierBrand
 
 logger = logging.getLogger(__name__)
 
+CACHE_FILENAME = ".supplier_cache.json"
+BATCH_SIZE = 50  # small batches to limit connection time
+
+
+# ---------------------------------------------------------------------------
+# Engine / session helpers
+# ---------------------------------------------------------------------------
 
 def get_engine(is_prod: bool = False):
     db_url = Config.PROD_DATABASE_URL if is_prod else Config.DATABASE_URL
@@ -43,8 +59,49 @@ def get_engine(is_prod: bool = False):
     elif db_url.startswith("postgresql://"):
         db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
-    return create_engine(db_url)
+    return create_engine(
+        db_url,
+        pool_size=2,
+        max_overflow=0,
+        pool_pre_ping=True,
+        pool_recycle=120,
+    )
 
+
+def make_session(engine):
+    """Create a new short-lived session."""
+    return sessionmaker(bind=engine)()
+
+
+# ---------------------------------------------------------------------------
+# Local cache helpers
+# ---------------------------------------------------------------------------
+
+def cache_path(import_dir: str) -> str:
+    return os.path.join(import_dir, CACHE_FILENAME)
+
+
+def load_cache(import_dir: str, env_label: str) -> dict:
+    """Load cache, invalidating if the target environment changed."""
+    path = cache_path(import_dir)
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            data = json.load(f)
+        if data.get("env") == env_label:
+            return data
+        print(f"  Cache was for '{data.get('env')}' but target is '{env_label}' — rebuilding.")
+    return {"env": env_label, "suppliers": {}, "brands": {}}
+
+
+def save_cache(import_dir: str, cache: dict):
+    path = cache_path(import_dir)
+    with open(path, "w") as f:
+        json.dump(cache, f, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
 def clean_string(val):
     """Strip whitespace and collapse multiple spaces. Returns None for empty values."""
@@ -82,120 +139,210 @@ def build_contacts(row) -> list:
     return contacts if contacts else None
 
 
-def build_brand_lookup(session) -> dict:
+# ---------------------------------------------------------------------------
+# Phase 1 – upsert supplier core fields
+# ---------------------------------------------------------------------------
+
+def phase1_import_suppliers(engine, df: pd.DataFrame, cache: dict):
+    """Upsert supplier rows (no brand linking). Updates the cache in-place."""
+    inserted = 0
+    updated = 0
+    skipped = 0
+
+    supplier_cache = cache.setdefault("suppliers", {})
+
+    total_batches = (len(df) + BATCH_SIZE - 1) // BATCH_SIZE
+    for i in range(0, len(df), BATCH_SIZE):
+        batch_df = df.iloc[i : i + BATCH_SIZE]
+        batch_num = i // BATCH_SIZE + 1
+        print(f"  Phase 1 – batch {batch_num}/{total_batches}...")
+
+        # Pre-parse rows
+        batch_rows = []
+        for _, row in batch_df.iterrows():
+            nid = clean_string(row.get("netsuite_id"))
+            name = clean_string(row.get("name"))
+            if not nid or not name:
+                skipped += 1
+                continue
+            batch_rows.append((nid, name, row))
+
+        if not batch_rows:
+            continue
+
+        # Short-lived session per batch
+        session = make_session(engine)
+        try:
+            batch_nids = [nid for nid, _, _ in batch_rows]
+            existing_suppliers = session.query(Supplier).filter(Supplier.netsuite_id.in_(batch_nids)).all()
+            existing_map = {s.netsuite_id: s for s in existing_suppliers}
+
+            for nid, name, row in batch_rows:
+                contacts = build_contacts(row)
+                record = {
+                    "netsuite_id": nid,
+                    "name": name,
+                    "url": clean_string(row.get("url")),
+                    "address_1": clean_string(row.get("address_1")),
+                    "city": clean_string(row.get("city")),
+                    "country": clean_string(row.get("country")),
+                    "notes": clean_string(row.get("notes")),
+                    "contacts": contacts,
+                }
+
+                existing = existing_map.get(nid)
+                if existing:
+                    for k, v in record.items():
+                        if v is not None:
+                            setattr(existing, k, v)
+                    supplier_cache[nid] = str(existing.id)
+                    updated += 1
+                else:
+                    clean_rec = {k: v for k, v in record.items() if v is not None}
+                    new_supplier = Supplier(**clean_rec)
+                    session.add(new_supplier)
+                    session.flush()
+                    supplier_cache[nid] = str(new_supplier.id)
+                    inserted += 1
+
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    print(f"\n  Phase 1 summary: {inserted} inserted, {updated} updated, {skipped} skipped.")
+    return inserted, updated, skipped
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 – link suppliers → brands
+# ---------------------------------------------------------------------------
+
+def build_brand_lookup(engine, cache: dict) -> dict:
     """
     Build a case-insensitive brand name → canonical Brand ID lookup.
-    Includes both canonical and duplicate brand names, all resolving to the canonical ID.
+    Stores results in the cache for subsequent runs.
     """
-    all_brands = session.query(Brand).all()
+    session = make_session(engine)
+    try:
+        all_brands = session.query(Brand).all()
+    finally:
+        session.close()
+
     lookup = {}
     canonical_map = {b.id: b for b in all_brands if b.duplicate_of is None}
 
+    brand_cache = cache.setdefault("brands", {})
     for brand in all_brands:
         canonical_id = brand.duplicate_of if brand.duplicate_of else brand.id
-        # Only map to canonical brands that exist
         if canonical_id in canonical_map:
-            lookup[brand.name.lower()] = canonical_id
+            key = brand.name.lower()
+            lookup[key] = str(canonical_id)
+            brand_cache[key] = str(canonical_id)
 
     return lookup
 
 
-def link_supplier_brands(session, supplier_id, brands_csv: str, brand_lookup: dict, unmatched_brands: set):
-    """Parse comma-separated brands and link to supplier via join table."""
-    if not brands_csv:
-        return 0
+def phase2_link_brands(engine, df: pd.DataFrame, cache: dict, skip_batches: int = 0):
+    """Link suppliers to brands using the CSV 'brands' column and cached IDs."""
+    supplier_cache = cache.get("suppliers", {})
+    brand_lookup = cache.get("brands", {})
 
-    linked = 0
-    brand_names = [b.strip() for b in brands_csv.split(",") if b.strip()]
+    # If the brand cache is empty, populate it now
+    if not brand_lookup:
+        print("  Brand cache is empty – loading from database...")
+        brand_lookup = build_brand_lookup(engine, cache)
 
-    for brand_name in brand_names:
-        canonical_id = brand_lookup.get(brand_name.lower())
-        if canonical_id is None:
-            unmatched_brands.add(brand_name)
-            continue
+    # If the supplier cache is empty, populate from DB
+    if not supplier_cache:
+        print("  Supplier cache is empty – loading from database...")
+        session = make_session(engine)
+        try:
+            for s in session.query(Supplier).all():
+                supplier_cache[s.netsuite_id] = str(s.id)
+        finally:
+            session.close()
+        cache["suppliers"] = supplier_cache
 
-        # Insert if not already linked
-        stmt = insert(SupplierBrand).values(
-            supplier_id=supplier_id,
-            brand_id=canonical_id,
-        )
-        stmt = stmt.on_conflict_do_nothing(constraint="uq_supplier_brand")
-        session.execute(stmt)
-        linked += 1
+    print(f"  Using {len(supplier_cache)} cached supplier IDs and {len(brand_lookup)} brand mappings.")
 
-    return linked
-
-
-def import_suppliers(session, df: pd.DataFrame, brand_lookup: dict):
-    """Import suppliers from a cleaned DataFrame."""
-    inserted = 0
-    updated = 0
-    skipped = 0
     brand_links = 0
     unmatched_brands = set()
+    skipped_suppliers = 0
 
-    batch_size = 200
-    for i in range(0, len(df), batch_size):
-        batch_df = df.iloc[i : i + batch_size]
-        print(f"  Batch {i // batch_size + 1}/{(len(df) + batch_size - 1) // batch_size}...")
+    # Build list of (supplier_id, [brand_names]) from CSV
+    link_rows = []
+    for _, row in df.iterrows():
+        nid = clean_string(row.get("netsuite_id"))
+        brands_csv = clean_string(row.get("brands"))
+        if not nid or not brands_csv:
+            continue
+        supplier_id = supplier_cache.get(nid)
+        if not supplier_id:
+            skipped_suppliers += 1
+            continue
+        brand_names = [b.strip() for b in brands_csv.split(",") if b.strip()]
+        if brand_names:
+            link_rows.append((supplier_id, brand_names))
 
-        for _, row in batch_df.iterrows():
-            nid = clean_string(row.get("netsuite_id"))
-            name = clean_string(row.get("name"))
+    total_batches = (len(link_rows) + BATCH_SIZE - 1) // BATCH_SIZE
+    for i in range(0, len(link_rows), BATCH_SIZE):
+        batch = link_rows[i : i + BATCH_SIZE]
+        batch_num = i // BATCH_SIZE + 1
 
-            if not nid or not name:
-                skipped += 1
-                continue
+        if batch_num <= skip_batches:
+            continue
 
-            contacts = build_contacts(row)
+        print(f"  Phase 2 – batch {batch_num}/{total_batches}...")
 
-            record = {
-                "netsuite_id": nid,
-                "name": name,
-                "url": clean_string(row.get("url")),
-                "address_1": clean_string(row.get("address_1")),
-                "city": clean_string(row.get("city")),
-                "country": clean_string(row.get("country")),
-                "notes": clean_string(row.get("notes")),
-                "contacts": contacts,
-            }
+        session = make_session(engine)
+        try:
+            for supplier_id, brand_names in batch:
+                for brand_name in brand_names:
+                    canonical_id = brand_lookup.get(brand_name.lower())
+                    if canonical_id is None:
+                        unmatched_brands.add(brand_name)
+                        continue
 
-            # Check if supplier exists
-            existing = session.query(Supplier).filter(Supplier.netsuite_id == nid).first()
-            if existing:
-                # Update non-empty fields only
-                for k, v in record.items():
-                    if v is not None:
-                        setattr(existing, k, v)
-                supplier_id = existing.id
-                updated += 1
-            else:
-                clean_rec = {k: v for k, v in record.items() if v is not None}
-                new_supplier = Supplier(**clean_rec)
-                session.add(new_supplier)
-                session.flush()  # get the ID
-                supplier_id = new_supplier.id
-                inserted += 1
+                    stmt = insert(SupplierBrand).values(
+                        supplier_id=supplier_id,
+                        brand_id=canonical_id,
+                    )
+                    stmt = stmt.on_conflict_do_nothing(constraint="uq_supplier_brand")
+                    session.execute(stmt)
+                    brand_links += 1
 
-            # Link brands
-            brands_csv = clean_string(row.get("brands"))
-            brand_links += link_supplier_brands(session, supplier_id, brands_csv, brand_lookup, unmatched_brands)
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
-        session.commit()
-
-    print(f"\nSupplier summary: {inserted} inserted, {updated} updated, {skipped} skipped.")
-    print(f"Brand links created: {brand_links}")
+    print(f"\n  Phase 2 summary: {brand_links} brand links created.")
+    if skipped_suppliers:
+        print(f"  {skipped_suppliers} suppliers skipped (not in cache – run phase 1 first).")
 
     if unmatched_brands:
         sorted_unmatched = sorted(unmatched_brands)
-        print(f"\nUnmatched brands ({len(sorted_unmatched)}):")
+        print(f"\n  Unmatched brands ({len(sorted_unmatched)}):")
         for name in sorted_unmatched:
-            print(f"  - {name}")
+            print(f"    - {name}")
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Import Supplier data into the database.")
     parser.add_argument("--production", action="store_true", help="Import data into the PRODUCTION database.")
+    parser.add_argument("--phase", type=int, choices=[1, 2], default=None,
+                        help="Run only phase 1 (suppliers) or phase 2 (brand links). Default: both.")
+    parser.add_argument("--skip-batches", type=int, default=0,
+                        help="Skip this many batches (resume from batch N+1). Useful for resuming interrupted phase 2 runs.")
     args = parser.parse_args()
 
     import_dir = Config.IMPORT_DIR
@@ -209,37 +356,54 @@ def main():
         print(f"No files matching 'suppliers_import*.csv' found in {import_dir}.")
         return
 
+    run_phase1 = args.phase in (None, 1)
+    run_phase2 = args.phase in (None, 2)
+
     env_label = "PRODUCTION" if args.production else "LOCAL"
     print(f"[{env_label}] Connecting to database...")
     engine = get_engine(is_prod=args.production)
-    Session = sessionmaker(bind=engine)
 
-    with Session() as session:
-        # Build brand lookup once
-        brand_lookup = build_brand_lookup(session)
-        print(f"Loaded {len(brand_lookup)} brand name mappings.")
+    # Load or create local cache (tagged by environment)
+    cache = load_cache(import_dir, env_label)
+    print(f"Cache loaded: {len(cache.get('suppliers', {}))} suppliers, {len(cache.get('brands', {}))} brands.")
 
-        for filepath in csv_files:
-            filename = os.path.basename(filepath)
-            print(f"\nProcessing file: {filename}")
+    for filepath in csv_files:
+        filename = os.path.basename(filepath)
+        print(f"\nProcessing file: {filename}")
 
-            df = pd.read_csv(
-                filepath,
-                quotechar='"',
-                skipinitialspace=True,
-                dtype=str,  # Read all columns as strings to preserve data
-            )
+        df = pd.read_csv(
+            filepath,
+            quotechar='"',
+            skipinitialspace=True,
+            dtype=str,
+        )
+        df = df.replace({np.nan: None})
 
-            # Replace pandas NaN with None
-            df = df.replace({np.nan: None})
+        if "netsuite_id" not in df.columns or "name" not in df.columns:
+            print("Error: CSV must have 'netsuite_id' and 'name' columns.")
+            continue
 
-            if "netsuite_id" not in df.columns or "name" not in df.columns:
-                print("Error: CSV must have 'netsuite_id' and 'name' columns.")
-                continue
+        print(f"Found {len(df)} rows.")
 
-            print(f"Found {len(df)} rows.")
-            import_suppliers(session, df, brand_lookup)
-            print(f"Finished processing {filename}.")
+        if run_phase1:
+            print("\n--- Phase 1: Upsert suppliers ---")
+            phase1_import_suppliers(engine, df, cache)
+            save_cache(import_dir, cache)
+            print(f"  Cache saved ({len(cache['suppliers'])} suppliers).")
+
+        if run_phase2:
+            # Always refresh brand lookup from the target database
+            print("\n  Refreshing brand lookup from database...")
+            build_brand_lookup(engine, cache)
+            save_cache(import_dir, cache)
+            print("--- Phase 2: Link brands ---")
+            phase2_link_brands(engine, df, cache, skip_batches=args.skip_batches)
+            save_cache(import_dir, cache)
+
+        print(f"\nFinished processing {filename}.")
+
+    engine.dispose()
+    print("\nDone.")
 
 
 if __name__ == "__main__":

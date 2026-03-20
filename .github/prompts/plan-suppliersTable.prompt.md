@@ -32,6 +32,13 @@ Expand the existing `suppliers` table from a minimal stub (id, netsuite_id, name
 
 ### Phase 2: Import Script — `scripts/import_suppliers.py` ✅
 
+> **🐛 Known issue — production import hangs**
+> The script freezes on the first batch when running against the remote Railway production database (`--production`). The per-row SELECT was replaced with a batch `IN()` pre-fetch, but it still hangs. Likely causes to investigate:
+> - `link_supplier_brands()` still does one `INSERT ... ON CONFLICT` per brand per supplier — high round-trip cost over the network. Consider batching all brand-link inserts into a single `executemany` or bulk `INSERT ... ON CONFLICT DO NOTHING` per batch.
+> - `session.flush()` after every new supplier insert — consider deferring flushes until after the full batch (use `session.bulk_save_objects` or collect new suppliers, flush once, then link brands).
+> - Connection timeout / pool settings — Railway may have aggressive idle timeouts. Try adding `pool_pre_ping=True` and `connect_args={"connect_timeout": 10}` to `create_engine`.
+> - Add progress logging *inside* the row loop (e.g. every 50 rows) to pinpoint where the hang occurs.
+
 Replace the basic supplier import in `import_products.py` with a dedicated script following established patterns:
 
 1. Accept `--production` flag via argparse.
@@ -89,7 +96,7 @@ Replace the basic supplier import in `import_products.py` with a dedicated scrip
 
 ---
 
-### Phase 5: Vector Search on Supplier Notes
+### Phase 5: Vector Search on Supplier Notes ✅
 
 Add semantic search to `search_suppliers` so users can describe what kind of supplier they need and get the best matches, following the same pattern used for product embeddings.
 
@@ -106,12 +113,10 @@ Create a new script following the same pattern as `scripts/update_product_embedd
 
 1. Accept `--production` flag via argparse.
 2. Query all suppliers where `embedding IS NULL` and `notes IS NOT NULL` (no text = nothing to embed).
-3. **Build embedding text** for each supplier by combining relevant fields:
-   - `Name: {name}` (always present)
-   - `Notes: {notes}` (the primary content for semantic search)
-   - `City: {city}` / `Country: {country}` (if present — helps with location-aware searches)
-   - `Brands: {comma-separated brand names}` (fetch from `supplier_brands` join — helps match by product type)
-   - Join parts with ` | ` separator.
+3. **Build embedding text** — use only the `notes` field:
+   - `embed_text = supplier.notes`
+   - **Do NOT include** name, city, country, or brand names in the embedding text.
+   - **Rationale**: name, city, country, and brands are categorical/exact-match fields that are already handled by `ilike` filters in `search_suppliers`. Mixing them into the embedding dilutes the semantic signal from the notes (the actual descriptive content about what a supplier does/sells). Keeping the vector space clean means queries like "heavy-duty conveyor components" match on meaning rather than being skewed by brand tokens or city names.
 4. Generate embeddings in batches of 100 using `GoogleGenerativeAIEmbeddings(model=Config.EMBEDDINGS_MODEL, output_dimensionality=256)`.
 5. Save vectors back to the `suppliers.embedding` column.
 6. Summary output: total suppliers processed, embeddings generated, skipped (no notes).
