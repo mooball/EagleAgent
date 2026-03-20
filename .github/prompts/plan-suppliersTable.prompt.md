@@ -32,13 +32,6 @@ Expand the existing `suppliers` table from a minimal stub (id, netsuite_id, name
 
 ### Phase 2: Import Script — `scripts/import_suppliers.py` ✅
 
-> **🐛 Known issue — production import hangs**
-> The script freezes on the first batch when running against the remote Railway production database (`--production`). The per-row SELECT was replaced with a batch `IN()` pre-fetch, but it still hangs. Likely causes to investigate:
-> - `link_supplier_brands()` still does one `INSERT ... ON CONFLICT` per brand per supplier — high round-trip cost over the network. Consider batching all brand-link inserts into a single `executemany` or bulk `INSERT ... ON CONFLICT DO NOTHING` per batch.
-> - `session.flush()` after every new supplier insert — consider deferring flushes until after the full batch (use `session.bulk_save_objects` or collect new suppliers, flush once, then link brands).
-> - Connection timeout / pool settings — Railway may have aggressive idle timeouts. Try adding `pool_pre_ping=True` and `connect_args={"connect_timeout": 10}` to `create_engine`.
-> - Add progress logging *inside* the row loop (e.g. every 50 rows) to pinpoint where the hang occurs.
-
 Replace the basic supplier import in `import_products.py` with a dedicated script following established patterns:
 
 1. Accept `--production` flag via argparse.
