@@ -154,36 +154,19 @@ async def search_products(part_number: Optional[str] = None,
     return await asyncio.to_thread(_do_product_search, part_number, brand, supplier_code, description, limit)
 
 
-def _do_brand_search(query: str, limit: int = 20) -> str:
+def _do_brand_search(query: Optional[str] = None, limit: int = 20) -> str:
     """Executes the brand search synchronously."""
     session = get_session()
     try:
-        # Search ALL brands (including duplicates) by name
-        matches = (
-            session.query(Brand)
-            .filter(Brand.name.ilike(f"%{query}%"))
-            .all()
-        )
+        base_query = session.query(Brand).filter(Brand.duplicate_of.is_(None))
+        if query:
+            base_query = base_query.filter(Brand.name.ilike(f"%{query}%"))
 
-        if not matches:
-            return f"No brands found matching '{query}'."
+        total = base_query.count()
+        if total == 0:
+            return f"No brands found matching '{query}'." if query else "No brands found in the database."
 
-        # Resolve duplicates to their canonical brand
-        canonical_map = {}  # canonical_id -> Brand
-        for brand in matches:
-            if brand.duplicate_of is not None:
-                # This is a duplicate — look up the canonical brand
-                canonical = session.query(Brand).filter(Brand.id == brand.duplicate_of).first()
-                if canonical and canonical.id not in canonical_map:
-                    canonical_map[canonical.id] = canonical
-            else:
-                # This is already canonical
-                if brand.id not in canonical_map:
-                    canonical_map[brand.id] = brand
-
-        results = sorted(canonical_map.values(), key=lambda b: b.name.lower())
-        total = len(results)
-        results = results[:limit]
+        results = base_query.order_by(Brand.name).limit(limit).all()
 
         output_parts = [f"Found {total} matching brand(s). Displaying {len(results)}:"]
         for b in results:
@@ -201,15 +184,16 @@ def _do_brand_search(query: str, limit: int = 20) -> str:
 
 
 @tool
-async def search_brands(query: str, limit: int = 20) -> str:
+async def search_brands(query: Optional[str] = None, limit: int = 20) -> str:
     """
     Search the brands database.
 
     Search by brand name (partial, case-insensitive match).
     If a match is a known duplicate, the canonical brand is returned instead.
+    Call with no arguments to get a total count of all brands.
 
     Args:
-        query: The brand name to search for (e.g. 'Hilti', 'Cat')
+        query: The brand name to search for (e.g. 'Hilti', 'Cat'). Omit to count all brands.
         limit: Maximum number of results to return (default: 20)
     """
     return await asyncio.to_thread(_do_brand_search, query, limit)
