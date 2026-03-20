@@ -113,12 +113,10 @@ Create a new script following the same pattern as `scripts/update_product_embedd
 
 1. Accept `--production` flag via argparse.
 2. Query all suppliers where `embedding IS NULL` and `notes IS NOT NULL` (no text = nothing to embed).
-3. **Build embedding text** for each supplier by combining relevant fields:
-   - `Name: {name}` (always present)
-   - `Notes: {notes}` (the primary content for semantic search)
-   - `City: {city}` / `Country: {country}` (if present — helps with location-aware searches)
-   - `Brands: {comma-separated brand names}` (fetch from `supplier_brands` join — helps match by product type)
-   - Join parts with ` | ` separator.
+3. **Build embedding text** — use only the `notes` field:
+   - `embed_text = supplier.notes`
+   - **Do NOT include** name, city, country, or brand names in the embedding text.
+   - **Rationale**: name, city, country, and brands are categorical/exact-match fields that are already handled by `ilike` filters in `search_suppliers`. Mixing them into the embedding dilutes the semantic signal from the notes (the actual descriptive content about what a supplier does/sells). Keeping the vector space clean means queries like "heavy-duty conveyor components" match on meaning rather than being skewed by brand tokens or city names.
 4. Generate embeddings in batches of 100 using `GoogleGenerativeAIEmbeddings(model=Config.EMBEDDINGS_MODEL, output_dimensionality=256)`.
 5. Save vectors back to the `suppliers.embedding` column.
 6. Summary output: total suppliers processed, embeddings generated, skipped (no notes).

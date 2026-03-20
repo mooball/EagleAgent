@@ -1,0 +1,19 @@
+ cat app.py | head -n 1
+ exit
+ ^C
+ ENDFILE
+ cat update_app.py | tail -n 15
+ cat app.py | grep -C 10 "config_runnable="
+ cat app.py | grep -C 30 "token_info ="
+ cat test_events.py && uv run python test_events.py > output.txt && grep -B 2 -A 2 "on_chain_start\|on_chat_model_end" output.txt
+ grep -B 2 -A 2 "on_chain_start\|on_chat_model_end" output.txt
+ grep -E "on_chain_start|on_chain_end" output.txt
+ cat << 'EOF' > event_printer.py
+import re
+
+print("Done")
+EOF
+ clear
+ tput rmcup
+ reset
+
