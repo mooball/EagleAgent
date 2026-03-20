@@ -189,10 +189,10 @@ class BaseSubAgent(ABC):
         if tools:
             from langgraph.prebuilt import create_react_agent
             sub_agent_graph = create_react_agent(self.model, tools)
+            invoke_config = {"recursion_limit": 25}
             if config is not None:
-                result = await sub_agent_graph.ainvoke({"messages": trimmed_messages}, config=config)
-            else:
-                result = await sub_agent_graph.ainvoke({"messages": trimmed_messages})
+                invoke_config.update(config)
+            result = await sub_agent_graph.ainvoke({"messages": trimmed_messages}, config=invoke_config)
             
             response = result["messages"][-1]
         else:
