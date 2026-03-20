@@ -96,7 +96,7 @@ Replace the basic supplier import in `import_products.py` with a dedicated scrip
 
 ---
 
-### Phase 5: Vector Search on Supplier Notes
+### Phase 5: Vector Search on Supplier Notes ✅
 
 Add semantic search to `search_suppliers` so users can describe what kind of supplier they need and get the best matches, following the same pattern used for product embeddings.
 

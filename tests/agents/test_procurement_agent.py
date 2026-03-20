@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock, Mock, patch
 from langchain_google_genai import ChatGoogleGenerativeAI
 from includes.agents.procurement_agent import ProcurementAgent
-from includes.tools.product_tools import search_products
+from includes.tools.product_tools import search_products, search_brands, search_suppliers
 
 class TestProcurementAgentInit:
     def setup_method(self):
@@ -19,10 +19,11 @@ class TestGetTools:
 
     @pytest.mark.asyncio
     async def test_returns_search_products_tool(self):
-        # Ensure that it correctly wires the search_products tool
+        # Ensure that it correctly wires all procurement tools
         tools = await self.agent.get_tools_async(user_id="test_user") if hasattr(self.agent, "get_tools_async") else self.agent.get_tools(user_id="test_user")
-        assert len(tools) == 1
-        assert tools[0].name == "search_products"
+        assert len(tools) == 3
+        tool_names = {t.name for t in tools}
+        assert tool_names == {"search_products", "search_brands", "search_suppliers"}
 
 class TestSystemPrompt:
     def setup_method(self):

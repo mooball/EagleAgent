@@ -19,6 +19,9 @@ class Supplier(Base):
     notes = Column(Text, nullable=True)
     contacts = Column(JSONB, nullable=True)
 
+    # 256 dimensions for Gemini embedding-2-preview (notes only)
+    embedding = Column(Vector(256), nullable=True)
+
     def __repr__(self):
         return f"<Supplier(name='{self.name}', netsuite_id='{self.netsuite_id}')>"
 
