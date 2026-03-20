@@ -245,7 +245,7 @@ def build_brand_lookup(engine, cache: dict) -> dict:
     return lookup
 
 
-def phase2_link_brands(engine, df: pd.DataFrame, cache: dict):
+def phase2_link_brands(engine, df: pd.DataFrame, cache: dict, skip_batches: int = 0):
     """Link suppliers to brands using the CSV 'brands' column and cached IDs."""
     supplier_cache = cache.get("suppliers", {})
     brand_lookup = cache.get("brands", {})
@@ -291,6 +291,10 @@ def phase2_link_brands(engine, df: pd.DataFrame, cache: dict):
     for i in range(0, len(link_rows), BATCH_SIZE):
         batch = link_rows[i : i + BATCH_SIZE]
         batch_num = i // BATCH_SIZE + 1
+
+        if batch_num <= skip_batches:
+            continue
+
         print(f"  Phase 2 – batch {batch_num}/{total_batches}...")
 
         session = make_session(engine)
@@ -337,6 +341,8 @@ def main():
     parser.add_argument("--production", action="store_true", help="Import data into the PRODUCTION database.")
     parser.add_argument("--phase", type=int, choices=[1, 2], default=None,
                         help="Run only phase 1 (suppliers) or phase 2 (brand links). Default: both.")
+    parser.add_argument("--skip-batches", type=int, default=0,
+                        help="Skip this many batches (resume from batch N+1). Useful for resuming interrupted phase 2 runs.")
     args = parser.parse_args()
 
     import_dir = Config.IMPORT_DIR
@@ -391,7 +397,7 @@ def main():
             build_brand_lookup(engine, cache)
             save_cache(import_dir, cache)
             print("--- Phase 2: Link brands ---")
-            phase2_link_brands(engine, df, cache)
+            phase2_link_brands(engine, df, cache, skip_batches=args.skip_batches)
             save_cache(import_dir, cache)
 
         print(f"\nFinished processing {filename}.")
