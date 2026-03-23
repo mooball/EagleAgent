@@ -97,15 +97,19 @@ def import_products(session, df: pd.DataFrame):
             # Query existing records in this batch
             existing_products = session.query(Product).filter(or_(*conditions)).all()
             for p in existing_products:
-                if p.part_number: existing_map[('part_number', p.part_number)] = p
-                if p.netsuite_id: existing_map[('netsuite', p.netsuite_id)] = p
+                if p.part_number and p.brand:
+                    existing_map[('part_brand', p.part_number, p.brand)] = p
+                if p.netsuite_id:
+                    existing_map[('netsuite', p.netsuite_id)] = p
 
         for record in records:
             existing = None
-            if record.get('netsuite_id'):
+            # Primary match: part_number + brand (composite unique key)
+            if record.get('part_number') and record.get('brand'):
+                existing = existing_map.get(('part_brand', record['part_number'], record['brand']))
+            # Fallback: netsuite_id
+            if not existing and record.get('netsuite_id'):
                 existing = existing_map.get(('netsuite', record['netsuite_id']))
-            if not existing and record.get('part_number'):
-                existing = existing_map.get(('part_number', record['part_number']))
                 
             if existing:
                 # Update existing record ONLY with non-empty values
@@ -117,8 +121,10 @@ def import_products(session, df: pd.DataFrame):
                 clean_rec = {k: v for k, v in record.items() if pd.notna(v) and v is not None and str(v).strip() != ''}
                 new_p = Product(**clean_rec)
                 session.add(new_p)
-                if new_p.part_number: existing_map[('part_number', new_p.part_number)] = new_p
-                if new_p.netsuite_id: existing_map[('netsuite', new_p.netsuite_id)] = new_p
+                if new_p.part_number and new_p.brand:
+                    existing_map[('part_brand', new_p.part_number, new_p.brand)] = new_p
+                if new_p.netsuite_id:
+                    existing_map[('netsuite', new_p.netsuite_id)] = new_p
         
         session.commit()
         
