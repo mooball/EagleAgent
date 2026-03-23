@@ -28,6 +28,15 @@ from sqlalchemy.orm import sessionmaker
 from config.settings import Config
 from includes.db_models import Base, Product
 
+def _safe_float(val) -> float | None:
+    """Convert to float, returning None for missing or unparseable values."""
+    if not pd.notna(val):
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
 def get_engine(is_prod: bool = False):
     db_url = Config.PROD_DATABASE_URL if is_prod else Config.DATABASE_URL
     if not db_url:
@@ -44,7 +53,7 @@ def get_engine(is_prod: bool = False):
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Strip whitespace and handle corrupt characters/NaNs safely."""
     # Strip whitespace from string columns
-    for col in df.select_dtypes(include=['object']).columns:
+    for col in df.select_dtypes(include=['object', 'string']).columns:
         df[col] = df[col].astype(str).str.strip()
         # Replace empty strings or pandas 'nan' / 'None' with actual None
         df[col] = df[col].replace({'nan': None, 'None': None, '': None})
@@ -78,8 +87,8 @@ def import_products(session, df: pd.DataFrame):
                 'supplier_code': str(row.get('supplier_code')) if pd.notna(row.get('supplier_code')) else None,
                 'description': str(row.get('description')) if pd.notna(row.get('description')) else None,
                 'brand': str(row.get('brand')) if pd.notna(row.get('brand')) else None,
-                'weight_kg': float(row.get('weight_kg')) if pd.notna(row.get('weight_kg')) else None,
-                'length_m': float(row.get('length_m')) if pd.notna(row.get('length_m')) else None,
+                'weight_kg': _safe_float(row.get('weight_kg')),
+                'length_m': _safe_float(row.get('length_m')),
                 'product_type': str(row.get('product_type')) if pd.notna(row.get('product_type')) else None
             })
 
