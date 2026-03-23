@@ -54,10 +54,13 @@ class Brand(Base):
 
 class Product(Base):
     __tablename__ = 'products'
+    __table_args__ = (
+        UniqueConstraint('part_number', 'brand', name='uq_product_part_brand'),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    netsuite_id = Column(String, unique=True, nullable=True)
-    part_number = Column(String, unique=True, index=True, nullable=False)
+    netsuite_id = Column(String, nullable=True)
+    part_number = Column(String, index=True, nullable=False)
     supplier_code = Column(String, nullable=True)
     description = Column(Text, nullable=True)
     brand = Column(String, nullable=True)
