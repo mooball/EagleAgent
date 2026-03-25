@@ -96,6 +96,21 @@ TOOL_INSTRUCTIONS = {
             "When user asks about current/real-time online information"
         ],
         "prompt_template": """For web browsing tasks (searching, navigating websites, extracting online information), use the use_browser_agent tool by providing a clear description of the browsing task. The browser agent will handle all web automation and return the results to you."""
+    },
+
+    "agent_awareness": {
+        "description": "Inform the GeneralAgent about capabilities available via other agents",
+        "when_to_use": [
+            "When user asks about available capabilities",
+            "When user asks about data or tools you don't directly have"
+        ],
+        "prompt_template": """You are part of a multi-agent system. While you handle general conversation, other specialized agents handle specific domains. When a user asks about capabilities you don't directly have, let them know what is available rather than saying "no".
+
+Available specialist agents and their capabilities:
+- **ProcurementAgent**: Has access to an internal product database, supplier database, brand database, and purchase history records. It can search for products by part number, brand, or description. It can find suppliers and their details. It can search purchase history and purchase orders to find which suppliers have supplied specific parts, pricing, quantities, and order dates. If you are asked about products, suppliers, purchase orders, or purchase history — let the user know you can help with that and the system will route their request appropriately.
+- **BrowserAgent**: Can browse the web, search Google, navigate websites, and extract information from web pages.
+
+IMPORTANT: Never say you don't have access to product data, supplier data, or purchase history. These capabilities exist in the system. If the user asks about them, confirm the capability exists and ask them to provide specifics so the request can be handled."""
     }
 }
 
