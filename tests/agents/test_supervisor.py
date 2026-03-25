@@ -64,6 +64,18 @@ async def test_supervisor_rule_based_procurement(supervisor):
     assert result == {"next_agent": "ProcurementAgent"}
 
 @pytest.mark.asyncio
+async def test_supervisor_rule_based_purchase_history(supervisor):
+    state = {"messages": [HumanMessage(content="Do you have purchase history records?")]}
+    result = await supervisor(state)
+    assert result == {"next_agent": "ProcurementAgent"}
+
+@pytest.mark.asyncio
+async def test_supervisor_rule_based_purchase_order(supervisor):
+    state = {"messages": [HumanMessage(content="How many purchase orders do we have?")]}
+    result = await supervisor(state)
+    assert result == {"next_agent": "ProcurementAgent"}
+
+@pytest.mark.asyncio
 async def test_supervisor_llm_routing_procurement(supervisor, mock_model):
     # Use a string without keywords to trigger LLM routing into procurement
     state = {"messages": [HumanMessage(content="I need replacement bearing components for the warehouse")]}

@@ -52,7 +52,7 @@ class Supervisor:
         
         # Rule-based fast routing
         browser_keywords = ["browse", "website", "url", "http", "google", "find online"]
-        procurement_keywords = ["product", "part number", "supplier", "supplier code", "catalog", "search inventory", "search product", "find part"]
+        procurement_keywords = ["product", "part number", "supplier", "supplier code", "catalog", "search inventory", "search product", "find part", "purchase history", "purchase order", "purchase record", "who supplies", "who can supply", "brand"]
         
         if any(keyword in user_text for keyword in browser_keywords):
             logger.info("Supervisor rule-based routing: BrowserAgent")
@@ -68,8 +68,8 @@ Your job is to route the user's request to the correct agent.
 
 Available agents:
 - BrowserAgent: Use for web search, web automation, opening URLs, finding live information online.
-- GeneralAgent: Use for general conversation, memory retrieval, task planning, document summarization.
-- ProcurementAgent: Use for searching the internal product catalog, finding part numbers, brands, product descriptions, or supplier details.
+- GeneralAgent: Use for general conversation, memory retrieval, task planning, document summarization, and questions that don't relate to products, suppliers, or purchasing.
+- ProcurementAgent: Use for searching the internal product catalog, finding part numbers, brands, product descriptions, supplier details, purchase history, purchase orders, and any questions about what products or suppliers exist in the database. Also use for questions like "how many products/suppliers/purchase orders do we have?" or "do you have purchase records?".
 - FINISH: Use if the conversation is over or the request is fully fulfilled.
 
 Given the conversation, which agent should act next?
