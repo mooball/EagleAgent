@@ -8,6 +8,7 @@ dependencies = [
     "alembic~=1.18.4",
     "asyncpg~=0.31.0",
     "chainlit~=2.9.6",
+    "google-genai>=1.68.0",
     "greenlet~=3.3.2",
     "langchain~=1.2.10",
     "langchain-google-genai~=4.2.1",

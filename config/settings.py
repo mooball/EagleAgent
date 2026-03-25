@@ -59,6 +59,12 @@ class Config:
     # Default LLM model to use
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini-3-flash-preview")
     
+    # Per-agent model overrides (fall back to DEFAULT_MODEL if not set)
+    BROWSER_AGENT_MODEL = os.getenv("BROWSER_AGENT_MODEL", "")
+    GENERAL_AGENT_MODEL = os.getenv("GENERAL_AGENT_MODEL", "")
+    PROCUREMENT_AGENT_MODEL = os.getenv("PROCUREMENT_AGENT_MODEL", "")
+    SUPERVISOR_MODEL = os.getenv("SUPERVISOR_MODEL", "")
+
     # Model temperature (0.0 - 1.0)
     DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
     
@@ -98,6 +104,18 @@ class Config:
     
     # ==================== Helper Methods ====================
     
+    @classmethod
+    def get_agent_model(cls, agent_name: str) -> str:
+        """Get the model for a specific agent, falling back to DEFAULT_MODEL."""
+        agent_model_map = {
+            "BrowserAgent": cls.BROWSER_AGENT_MODEL,
+            "GeneralAgent": cls.GENERAL_AGENT_MODEL,
+            "ProcurementAgent": cls.PROCUREMENT_AGENT_MODEL,
+            "Supervisor": cls.SUPERVISOR_MODEL,
+        }
+        model = agent_model_map.get(agent_name, "")
+        return model if model else cls.DEFAULT_MODEL
+
     @classmethod
     def get_admin_emails(cls) -> list[str]:
         """Return admin emails as a list"""

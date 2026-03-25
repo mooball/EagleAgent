@@ -8,6 +8,7 @@ from includes.agents.base import BaseSubAgent
 from includes.tools.user_profile import create_profile_tools
 from includes.prompts import build_system_prompt
 from config import config
+from google.genai import types as genai_types
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,10 @@ class GeneralAgent(BaseSubAgent):
             tools = [t for t in tools if getattr(t, "name", "") not in self.admin_only_tools]
             
         return tools
+
+    def get_native_tools(self) -> list:
+        """Return Gemini-native tools like Google Search grounding."""
+        return [genai_types.Tool(google_search=genai_types.GoogleSearch())]
 
     def get_system_prompt(self) -> str:
         """Fallback sync prompt (used if get_system_prompt_async is not called)."""

@@ -70,9 +70,14 @@ mcp_client = None
 
 
 # Initialize the model
-# Model configuration is in config/settings.py (DEFAULT_MODEL)
+# Model configuration is in config/settings.py (DEFAULT_MODEL + per-agent overrides)
 # API key is loaded from environment variable (secret)
-base_model = ChatGoogleGenerativeAI(model=config.DEFAULT_MODEL, google_api_key=os.getenv("GOOGLE_API_KEY"))
+def create_model(agent_name: str) -> ChatGoogleGenerativeAI:
+    """Create a model instance for a specific agent, using per-agent model overrides."""
+    return ChatGoogleGenerativeAI(
+        model=config.get_agent_model(agent_name),
+        google_api_key=os.getenv("GOOGLE_API_KEY")
+    )
 
 # Initialize agents
 browser_agent = None
@@ -130,10 +135,10 @@ async def setup_globals():
         mcp_client = None
         
     # Initialize agents
-    browser_agent = BrowserAgent(model=base_model, store=store)
-    procurement_agent = ProcurementAgent(model=base_model, store=store)
-    general_agent = GeneralAgent(model=base_model, store=store, mcp_client=mcp_client, admin_only_tools=ADMIN_ONLY_TOOLS)
-    supervisor_node = Supervisor(model=base_model)
+    browser_agent = BrowserAgent(model=create_model("BrowserAgent"), store=store)
+    procurement_agent = ProcurementAgent(model=create_model("ProcurementAgent"), store=store)
+    general_agent = GeneralAgent(model=create_model("GeneralAgent"), store=store, mcp_client=mcp_client, admin_only_tools=ADMIN_ONLY_TOOLS)
+    supervisor_node = Supervisor(model=create_model("Supervisor"))
     
     # Build the graph inside setup_globals where agents are initialized
     builder = StateGraph(SupervisorState)

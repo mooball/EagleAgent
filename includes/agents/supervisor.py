@@ -50,9 +50,10 @@ class Supervisor:
         else:
             user_text = str(content).lower()
         
-        # Rule-based fast routing
-        browser_keywords = ["browse", "website", "url", "http", "google", "find online"]
-        procurement_keywords = ["product", "part number", "supplier", "supplier code", "catalog", "search inventory", "search product", "find part", "purchase history", "purchase order", "purchase record", "who supplies", "who can supply", "brand"]
+        # Rule-based fast routing (kept as escape hatch for unambiguous cases)
+        # Empty for now — LLM routing handles all cases
+        browser_keywords = []
+        procurement_keywords = []
         
         if any(keyword in user_text for keyword in browser_keywords):
             logger.info("Supervisor rule-based routing: BrowserAgent")
@@ -62,23 +63,31 @@ class Supervisor:
             logger.info("Supervisor rule-based routing: ProcurementAgent")
             return {"next_agent": "ProcurementAgent"}
             
-        # LLM fallback routing
+        # LLM-based routing
         system_prompt = """You are a supervisor managing a team of expert agents.
 Your job is to route the user's request to the correct agent.
 
 Available agents:
-- BrowserAgent: Use for web search, web automation, opening URLs, finding live information online.
-- GeneralAgent: Use for general conversation, memory retrieval, task planning, document summarization, and questions that don't relate to products, suppliers, or purchasing.
-- ProcurementAgent: Use for searching the internal product catalog, finding part numbers, brands, product descriptions, supplier details, purchase history, purchase orders, and any questions about what products or suppliers exist in the database. Also use for questions like "how many products/suppliers/purchase orders do we have?" or "do you have purchase records?".
+- GeneralAgent: Use for general conversation, memory retrieval, task planning, document summarization. Also has built-in web search knowledge (Google Search grounding) so it can answer questions about products, companies, or topics using real-time web information — use it when the user wants external/public information about something, or wants to know more beyond what's in our internal database.
+- BrowserAgent: Use ONLY for tasks that require interacting with a specific website — opening a URL, navigating pages, filling forms, clicking buttons, taking screenshots. Do NOT use for general information questions.
+- ProcurementAgent: Use for searching the INTERNAL product catalog, finding part numbers, brands, product descriptions, supplier details, purchase history, purchase orders, and any questions about what products or suppliers exist in our database. Also use for questions like "how many products/suppliers/purchase orders do we have?" or "do you have purchase records?".
 - FINISH: Use if the conversation is over or the request is fully fulfilled.
+
+Routing guidelines:
+- If the user asks about a product/supplier and wants INTERNAL database info → ProcurementAgent
+- If the user wants MORE info, external details, web descriptions, or public knowledge about something → GeneralAgent
+- If the user wants to navigate to a specific website or interact with a web page → BrowserAgent
+- If unsure, prefer GeneralAgent
 
 Given the conversation, which agent should act next?
 """
         
         model_with_structured_output = self.model.with_structured_output(RouteDecision)
         
-        # We only need the latest human context for routing
-        eval_messages = [SystemMessage(content=system_prompt), last_message]
+        # Include recent conversation context so the supervisor can see what's
+        # already been discussed (e.g., internal data already fetched)
+        recent_messages = messages[-5:]  # Last few messages for context
+        eval_messages = [SystemMessage(content=system_prompt)] + list(recent_messages)
         
         logger.debug("Supervisor LLM-based routing")
         try:

@@ -8,7 +8,9 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage
 
 from includes.agents import BrowserAgent
+from includes.agents.base import BaseSubAgent
 from includes.tools.browser_tools import browser
+from google.genai import types as genai_types
 
 
 class TestBrowserTools:
@@ -223,3 +225,31 @@ class TestBrowserAgentIntegration:
         
         assert isinstance(response_text, str)
         assert len(response_text) > 0
+
+
+class TestGoogleSearchGrounding:
+    """Test Google Search grounding integration."""
+
+    def test_browser_agent_returns_google_search_native_tool(self):
+        """BrowserAgent.get_native_tools() returns a Google Search tool."""
+        mock_model = Mock(spec=ChatGoogleGenerativeAI)
+        agent = BrowserAgent(model=mock_model, store=None)
+        native_tools = agent.get_native_tools()
+
+        assert len(native_tools) == 1
+        assert isinstance(native_tools[0], genai_types.Tool)
+        assert native_tools[0].google_search is not None
+
+    def test_base_agent_returns_empty_native_tools(self):
+        """BaseSubAgent.get_native_tools() returns an empty list by default."""
+        mock_model = Mock(spec=ChatGoogleGenerativeAI)
+
+        class StubAgent(BaseSubAgent):
+            def get_tools(self, user_id):
+                return []
+
+            def get_system_prompt(self):
+                return "stub"
+
+        agent = StubAgent(name="Stub", model=mock_model)
+        assert agent.get_native_tools() == []

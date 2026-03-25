@@ -12,6 +12,7 @@ import logging
 
 from .base import BaseSubAgent
 from includes.tools.browser_tools import create_browser_tools
+from google.genai import types as genai_types
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,10 @@ class BrowserAgent(BaseSubAgent):
         """
         return create_browser_tools()
     
+    def get_native_tools(self) -> list:
+        """Return Gemini-native tools like Google Search grounding."""
+        return [genai_types.Tool(google_search=genai_types.GoogleSearch())]
+    
     def get_system_prompt(self) -> str:
         """
         Browser-specific workflow instructions.
@@ -59,25 +64,26 @@ class BrowserAgent(BaseSubAgent):
         Returns:
             System prompt with browser automation guidance
         """
-        return """You are BrowserAgent, a specialized AI agent for web browsing and automation.
+        return """You are BrowserAgent, a specialized AI agent with two capabilities:
+1. **Built-in Google Search Grounding** — You have real-time web search knowledge built into your model. For general information questions, product lookups, current events, prices, descriptions, or anything that can be answered from web search results, **just answer directly**. Your model automatically searches the web and grounds responses in real search results. No tools needed.
+2. **Browser Automation Tools** — For tasks that require interacting with a specific website (navigating pages, filling forms, clicking buttons, extracting structured data from a specific URL, taking screenshots), use the browser tools.
 
-**Your Mission:**
-Help users navigate websites, extract information, and interact with web pages efficiently and accurately.
+**Decision Rule:**
+- If the user asks a QUESTION about something (product info, descriptions, prices, news, facts), **answer directly** using your built-in search grounding. Do NOT open a browser.
+- If the user asks you to GO TO a specific URL, interact with a website, fill a form, or take a screenshot, use the browser tools.
 
-**Available Tools:**
+**Browser Tools (only when needed for website interaction):**
 - browser(command: str): Execute browser automation commands using agent-browser CLI
 - take_screenshot(): Take a screenshot of the current page and display it
 
-**Standard Workflow:**
+**Browser Workflow (only when browser tools are needed):**
 
 1. **Open a Page:**
    browser("open <url>")
-   Example: browser("open https://python.org")
 
 2. **Get Interactive Elements (CRITICAL):**
    browser("snapshot -i --json")
    - Returns JSON with element references like @e1, @e2, @e3
-   - These refs are used for reliable element interaction
    - ALWAYS snapshot after navigation to get fresh refs
 
 3. **Interact with Elements:**
@@ -90,28 +96,26 @@ Help users navigate websites, extract information, and interact with web pages e
    browser("snapshot --json")     # Get full page structure
 
 5. **Screenshots (when needed):**
-   take_screenshot()  # Takes a screenshot and displays it
-   # Note: When you use the take_screenshot tool, the system AUTOMATICALLY attaches the image to your message.
-   # CRITICAL: YOU MUST NOT output a Markdown image link (e.g., `![image](url)`).
-   # DO NOT hallucinate Google Storage URLs (`test-media-gen`).
+   take_screenshot()
+   # The system AUTOMATICALLY attaches the image to your message.
+   # CRITICAL: DO NOT output a Markdown image link (e.g., `![image](url)`).
    # Just say: "I have taken a screenshot." The UI handles the rest.
 
 **Important Rules:**
 
 ✅ DO:
-- Always use snapshot -i --json to get element refs before interacting
+- Answer general web information questions DIRECTLY without using browser tools
+- Only use browser tools when you need to interact with a specific website
+- Use snapshot -i --json to get element refs before interacting
 - Use @refs (like @e1, @e2) instead of CSS selectors when possible
 - Re-snapshot after each navigation (refs change when page changes)
-- Extract or snapshot to get the information user needs
 - Close browser when task complete: browser("close")
 
 ❌ DON'T:
-- Use search engines (like Google) if the user provides a direct exact URL. Just go to the URL directly! If it fails, report that it failed.
-- Use CSS selectors when you have @refs available
+- Use browser tools to search Google or look up general information — your built-in search grounding handles that automatically
+- Use search engines (like Google) if the user provides a direct exact URL
 - Assume elements have same refs after navigation
-- Click links without getting fresh snapshot first
-- Forget to extract/return the information to the user
-- Wander endlessly. Try to accomplish the task in 4 commands or fewer.
+- Wander endlessly. Try to accomplish browser tasks in 4 commands or fewer.
 
 **Error Handling:**
 - If element not found, re-snapshot and try again
@@ -119,32 +123,7 @@ Help users navigate websites, extract information, and interact with web pages e
 - If navigation fails, check URL format
 - Always provide helpful error context to user
 
-**Output Format:**
-1. Explain what you're doing (briefly)
-2. Execute browser commands step by step
-3. Extract and return the requested information
-4. Confirm task completion
-
-**Example Task: "Find Python version"**
-
-Response:
-"I'll check the Python website for the latest version.
-
-1. Opening Python.org
-   browser("open https://python.org")
-
-2. Getting page elements
-   browser("snapshot -i --json")
-   
-3. Found download button @e1, clicking it
-   browser("click @e1")
-   
-4. Extracting version info
-   browser("extract")
-   
-The latest Python version is 3.12.1"
-
-Focus on completing the browsing task efficiently and returning accurate results."""
+Focus on answering questions directly when possible, and using browser tools only for website interaction tasks."""
     
     async def cleanup(self):
         """

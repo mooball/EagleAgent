@@ -108,6 +108,21 @@ class BaseSubAgent(ABC):
         """
         return self.get_tools(user_id)
     
+    def get_native_tools(self) -> list:
+        """
+        Get Gemini-native tools (e.g. Google Search grounding).
+        
+        These are google.genai.types.Tool objects that are passed directly to the
+        Gemini API alongside LangChain tools. They are executed server-side by the
+        API, not by the LangChain tool execution loop.
+        
+        Override this method to provide native Gemini tools for this agent.
+        
+        Returns:
+            List of google.genai.types.Tool objects (default: empty list)
+        """
+        return []
+    
     @abstractmethod
     def get_system_prompt(self) -> str:
         """
@@ -188,7 +203,27 @@ class BaseSubAgent(ABC):
         logger.info(f"{self.name} invoking model")
         if tools:
             from langgraph.prebuilt import create_react_agent
-            sub_agent_graph = create_react_agent(self.model, tools)
+            
+            # Check for Gemini-native tools (e.g. Google Search grounding)
+            native_tools = self.get_native_tools()
+            
+            if native_tools:
+                # When mixing native Gemini tools with LangChain tools, we must:
+                # 1. Pre-bind tools + tool_config ourselves (create_react_agent's
+                #    validation doesn't handle Google-format tools properly)
+                # 2. Use a dynamic model function so create_react_agent skips
+                #    its own bind_tools call
+                native_tool_dicts = [t.model_dump() for t in native_tools]
+                bound_model = self.model.bind_tools(
+                    list(tools) + native_tool_dicts,
+                    tool_config={"include_server_side_tool_invocations": True}
+                )
+                # Dynamic model function bypasses _should_bind_tools validation
+                sub_agent_graph = create_react_agent(
+                    lambda state, config: bound_model, tools
+                )
+            else:
+                sub_agent_graph = create_react_agent(self.model, tools)
             invoke_config = {"recursion_limit": 25}
             if config is not None:
                 invoke_config.update(config)
