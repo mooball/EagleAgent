@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Text, Float, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, Text, Float, Date, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base
 from pgvector.sqlalchemy import Vector
@@ -73,3 +73,19 @@ class Product(Base):
 
     def __repr__(self):
         return f"<Product(part_number='{self.part_number}', brand='{self.brand}')>"
+
+
+class ProductSupplier(Base):
+    __tablename__ = 'product_suppliers'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    po_number = Column(String, nullable=False, index=True)
+    date = Column(Date, nullable=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey('products.id'), nullable=False, index=True)
+    supplier_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id'), nullable=False, index=True)
+    quantity = Column(Float, nullable=True)
+    price = Column(Float, nullable=True)
+    status = Column(String, nullable=True)
+
+    def __repr__(self):
+        return f"<ProductSupplier(po_number='{self.po_number}', product_id='{self.product_id}', supplier_id='{self.supplier_id}')>"

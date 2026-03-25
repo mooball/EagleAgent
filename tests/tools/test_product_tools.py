@@ -1,7 +1,8 @@
 import pytest
+from datetime import date
 from unittest.mock import MagicMock, patch
-from includes.tools.product_tools import _do_product_search, search_products
-from includes.db_models import Product
+from includes.tools.product_tools import _do_product_search, _do_part_purchase_history, _do_search_purchase_history, search_products, part_purchase_history, search_purchase_history
+from includes.db_models import Product, Supplier, ProductSupplier
 
 @pytest.fixture
 def mock_session():
@@ -95,3 +96,246 @@ async def test_async_search_products_tool(mock_session):
     
     result = await search_products.ainvoke({"part_number": "ABC"})
     assert "No products found" in result
+
+
+class TestPurchaseHistorySearch:
+
+    def test_no_matching_products(self, mock_session):
+        mock_session.query.return_value.filter.return_value.all.return_value = []
+
+        result = _do_part_purchase_history(part_number="NONEXISTENT")
+        assert "No products found matching part number" in result
+
+    def test_products_found_but_no_history(self, mock_session):
+        p1 = Product(id="uuid-1", part_number="ABC-123", brand="TestBrand")
+        mock_session.query.return_value.filter.return_value.all.return_value = [p1]
+
+        # Purchase history query returns empty
+        (mock_session.query.return_value
+         .join.return_value
+         .join.return_value
+         .filter.return_value
+         .group_by.return_value
+         .order_by.return_value
+         .limit.return_value
+         .all.return_value) = []
+
+        result = _do_part_purchase_history(part_number="ABC-123")
+        assert "no purchase history records exist" in result
+        assert "ABC-123" in result
+
+    def test_returns_markdown_table(self, mock_session):
+        p1 = Product(id="uuid-1", part_number="P-100", brand="BrandA")
+        mock_session.query.return_value.filter.return_value.all.return_value = [p1]
+
+        # Mock the aggregated result row
+        row = MagicMock()
+        row.supplier_name = "Acme Tools"
+        row.part_number = "P-100"
+        row.brand = "BrandA"
+        row.most_recent_date = date(2026, 1, 15)
+        row.total_quantity = 500.0
+        row.order_count = 12
+
+        (mock_session.query.return_value
+         .join.return_value
+         .join.return_value
+         .filter.return_value
+         .group_by.return_value
+         .order_by.return_value
+         .limit.return_value
+         .all.return_value) = [row]
+
+        # Mock the price subquery
+        (mock_session.query.return_value
+         .join.return_value
+         .join.return_value
+         .filter.return_value
+         .order_by.return_value
+         .first.return_value) = (42.50,)
+
+        result = _do_part_purchase_history(part_number="P-100")
+
+        assert "Purchase history for part number 'P-100'" in result
+        assert "| # | Supplier | Part Number | Brand | Last Price | Last Date | Total Qty | Orders |" in result
+        assert "Acme Tools" in result
+        assert "$42.50" in result
+        assert "15/01/2026" in result
+        assert "500" in result
+        assert "12" in result
+
+    def test_multiple_suppliers(self, mock_session):
+        p1 = Product(id="uuid-1", part_number="P-200", brand="BrandB")
+        mock_session.query.return_value.filter.return_value.all.return_value = [p1]
+
+        row1 = MagicMock()
+        row1.supplier_name = "Supplier One"
+        row1.part_number = "P-200"
+        row1.brand = "BrandB"
+        row1.most_recent_date = date(2026, 3, 1)
+        row1.total_quantity = 1000.0
+        row1.order_count = 20
+
+        row2 = MagicMock()
+        row2.supplier_name = "Supplier Two"
+        row2.part_number = "P-200"
+        row2.brand = "BrandB"
+        row2.most_recent_date = date(2025, 6, 15)
+        row2.total_quantity = 200.0
+        row2.order_count = 5
+
+        (mock_session.query.return_value
+         .join.return_value
+         .join.return_value
+         .filter.return_value
+         .group_by.return_value
+         .order_by.return_value
+         .limit.return_value
+         .all.return_value) = [row1, row2]
+
+        (mock_session.query.return_value
+         .join.return_value
+         .join.return_value
+         .filter.return_value
+         .order_by.return_value
+         .first.return_value) = (55.00,)
+
+        result = _do_part_purchase_history(part_number="P-200")
+
+        assert "Found 2 supplier(s)" in result
+        assert "Supplier One" in result
+        assert "Supplier Two" in result
+
+    def test_handles_null_price_and_date(self, mock_session):
+        p1 = Product(id="uuid-1", part_number="P-300", brand=None)
+        mock_session.query.return_value.filter.return_value.all.return_value = [p1]
+
+        row = MagicMock()
+        row.supplier_name = "NullSupplier"
+        row.part_number = "P-300"
+        row.brand = None
+        row.most_recent_date = None
+        row.total_quantity = None
+        row.order_count = 1
+
+        (mock_session.query.return_value
+         .join.return_value
+         .join.return_value
+         .filter.return_value
+         .group_by.return_value
+         .order_by.return_value
+         .limit.return_value
+         .all.return_value) = [row]
+
+        (mock_session.query.return_value
+         .join.return_value
+         .join.return_value
+         .filter.return_value
+         .order_by.return_value
+         .first.return_value) = None
+
+        result = _do_part_purchase_history(part_number="P-300")
+
+        assert "N/A" in result
+        assert "NullSupplier" in result
+
+
+@pytest.mark.asyncio
+async def test_async_part_purchase_history_tool(mock_session):
+    mock_session.query.return_value.filter.return_value.all.return_value = []
+
+    result = await part_purchase_history.ainvoke({"part_number": "XYZ"})
+    assert "No products found" in result
+
+
+class TestSearchPurchaseHistory:
+
+    def test_no_filters_returns_summary(self, mock_session):
+        stats = MagicMock()
+        stats.total_records = 102880
+        stats.total_pos = 5432
+        stats.total_products = 8900
+        stats.total_suppliers = 150
+        stats.earliest_date = date(2020, 1, 15)
+        stats.latest_date = date(2026, 3, 25)
+
+        # count() for initial query
+        (mock_session.query.return_value
+         .join.return_value
+         .join.return_value
+         .count.return_value) = 102880
+
+        # stats query
+        mock_session.query.return_value.first.return_value = stats
+
+        result = _do_search_purchase_history()
+
+        assert "Purchase history database summary" in result
+        assert "102,880" in result
+        assert "5,432" in result
+
+    def test_no_results_with_filter(self, mock_session):
+        (mock_session.query.return_value
+         .join.return_value
+         .join.return_value
+         .filter.return_value
+         .count.return_value) = 0
+
+        result = _do_search_purchase_history(supplier="NonExistent")
+        assert "No purchase history records found" in result
+        assert "NonExistent" in result
+
+    def test_invalid_date_format(self, mock_session):
+        result = _do_search_purchase_history(date_from="25/03/2026")
+        assert "Invalid date_from format" in result
+
+    def test_filtered_results_returns_table(self, mock_session):
+        mock_query = (mock_session.query.return_value
+         .join.return_value
+         .join.return_value
+         .filter.return_value)
+        mock_query.count.return_value = 1
+
+        row = MagicMock()
+        row.po_number = "P158740"
+        row.date = date(2026, 3, 10)
+        row.quantity = 16.0
+        row.price = 236.68
+        row.status = "Pending Receipt"
+        row.part_number = "ABC-123"
+        row.brand = "TestBrand"
+        row.supplier_name = "Acme Supplies"
+
+        (mock_query
+         .order_by.return_value
+         .limit.return_value
+         .all.return_value) = [row]
+
+        result = _do_search_purchase_history(supplier="Acme")
+
+        assert "Purchase history search" in result
+        assert "P158740" in result
+        assert "ABC-123" in result
+        assert "Acme Supplies" in result
+        assert "$236.68" in result
+
+
+@pytest.mark.asyncio
+async def test_async_search_purchase_history_tool(mock_session):
+    # No-filter call: mock the count and stats
+    (mock_session.query.return_value
+     .join.return_value
+     .join.return_value
+     .count.return_value) = 100
+
+    stats = MagicMock()
+    stats.total_records = 100
+    stats.total_pos = 10
+    stats.total_products = 50
+    stats.total_suppliers = 5
+    stats.earliest_date = date(2025, 1, 1)
+    stats.latest_date = date(2026, 3, 25)
+    mock_session.query.return_value.first.return_value = stats
+
+    result = await search_purchase_history.ainvoke({})
+    assert "Purchase history database summary" in result

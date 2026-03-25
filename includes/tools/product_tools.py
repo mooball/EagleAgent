@@ -14,7 +14,7 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import asyncio
 
 from config.settings import Config
-from includes.db_models import Product, Brand, Supplier, SupplierBrand
+from includes.db_models import Product, Brand, Supplier, SupplierBrand, ProductSupplier
 
 logger = logging.getLogger(__name__)
 
@@ -349,3 +349,264 @@ async def search_suppliers(name: Optional[str] = None,
         limit: Maximum number of results to return (default: 20)
     """
     return await asyncio.to_thread(_do_supplier_search, name, brand, country, query, limit)
+
+
+def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
+    """Executes the per-part purchase history search synchronously."""
+    session = get_session()
+    try:
+        # Find matching products by part number
+        products = session.query(Product).filter(
+            Product.part_number.ilike(f"%{part_number}%")
+        ).all()
+
+        if not products:
+            return f"No products found matching part number '{part_number}'."
+
+        product_ids = [p.id for p in products]
+        product_map = {p.id: p for p in products}
+
+        # Query purchase history grouped by supplier
+        from sqlalchemy import func, desc
+        results = (
+            session.query(
+                Supplier.name.label('supplier_name'),
+                Product.part_number.label('part_number'),
+                Product.brand.label('brand'),
+                func.max(ProductSupplier.date).label('most_recent_date'),
+                func.sum(ProductSupplier.quantity).label('total_quantity'),
+                func.count(ProductSupplier.id).label('order_count'),
+            )
+            .join(Product, ProductSupplier.product_id == Product.id)
+            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
+            .filter(ProductSupplier.product_id.in_(product_ids))
+            .group_by(Supplier.id, Supplier.name, Product.part_number, Product.brand)
+            .order_by(desc('total_quantity'))
+            .limit(limit)
+            .all()
+        )
+
+        if not results:
+            matched_parts = ', '.join(p.part_number for p in products)
+            return f"Found product(s) ({matched_parts}) but no purchase history records exist."
+
+        # Get most recent price per supplier+product via a separate query
+        from sqlalchemy import and_
+        price_subquery = {}
+        for row in results:
+            latest = (
+                session.query(ProductSupplier.price)
+                .join(Product, ProductSupplier.product_id == Product.id)
+                .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
+                .filter(
+                    and_(
+                        Supplier.name == row.supplier_name,
+                        Product.part_number == row.part_number,
+                    )
+                )
+                .order_by(ProductSupplier.date.desc().nulls_last())
+                .first()
+            )
+            price_subquery[(row.supplier_name, row.part_number)] = latest[0] if latest else None
+
+        # Format output as markdown table
+        output_parts = [f"Purchase history for part number '{part_number}':"]
+        output_parts.append(f"\nFound {len(results)} supplier(s), sorted by total quantity supplied:\n")
+        output_parts.append("| # | Supplier | Part Number | Brand | Last Price | Last Date | Total Qty | Orders |")
+        output_parts.append("|---|----------|-------------|-------|-----------|-----------|-----------|--------|")
+
+        for idx, row in enumerate(results, 1):
+            price = price_subquery.get((row.supplier_name, row.part_number))
+            price_str = f"${price:,.2f}" if price is not None else "N/A"
+            date_str = row.most_recent_date.strftime("%d/%m/%Y") if row.most_recent_date else "N/A"
+            qty_str = f"{row.total_quantity:,.0f}" if row.total_quantity else "0"
+            output_parts.append(
+                f"| {idx} | {row.supplier_name} | {row.part_number} | {row.brand or 'N/A'} | {price_str} | {date_str} | {qty_str} | {row.order_count} |"
+            )
+
+        return "\n".join(output_parts)
+    except Exception as e:
+        logger.error(f"Error executing purchase history search: {e}")
+        return f"An error occurred while searching purchase history: {str(e)}"
+    finally:
+        session.close()
+
+
+@tool
+async def part_purchase_history(part_number: str, limit: int = 20) -> str:
+    """
+    Search past purchase records to find which suppliers have supplied a given part.
+
+    Returns a per-supplier summary: supplier name, most recent price, most recent
+    supply date, total quantity ever purchased, and number of orders.
+    Sorted by total quantity descending.
+
+    Use when the user asks "who can supply part X?", "which suppliers have we
+    bought part X from?", "purchase history for part X", or similar.
+
+    Args:
+        part_number: The part number to search for (e.g. '123-ABC'). Partial matches supported.
+        limit: Maximum number of supplier results to return (default: 20)
+    """
+    return await asyncio.to_thread(_do_part_purchase_history, part_number, limit)
+
+
+def _do_search_purchase_history(
+    part_number: str = None,
+    supplier: str = None,
+    date_from: str = None,
+    date_to: str = None,
+    po_number: str = None,
+    limit: int = 50,
+) -> str:
+    """Executes generic purchase history search with flexible filters."""
+    from sqlalchemy import func, desc, and_
+    from datetime import datetime
+
+    session = get_session()
+    try:
+        query = (
+            session.query(
+                ProductSupplier.po_number,
+                ProductSupplier.date,
+                ProductSupplier.quantity,
+                ProductSupplier.price,
+                ProductSupplier.status,
+                Product.part_number.label('part_number'),
+                Product.brand.label('brand'),
+                Supplier.name.label('supplier_name'),
+            )
+            .join(Product, ProductSupplier.product_id == Product.id)
+            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
+        )
+
+        filters = []
+        filter_desc = []
+
+        if part_number:
+            query = query.filter(Product.part_number.ilike(f"%{part_number}%"))
+            filter_desc.append(f"part number matching '{part_number}'")
+
+        if supplier:
+            query = query.filter(Supplier.name.ilike(f"%{supplier}%"))
+            filter_desc.append(f"supplier matching '{supplier}'")
+
+        if po_number:
+            query = query.filter(ProductSupplier.po_number.ilike(f"%{po_number}%"))
+            filter_desc.append(f"PO number matching '{po_number}'")
+
+        if date_from:
+            try:
+                dt = datetime.strptime(date_from, "%Y-%m-%d").date()
+                query = query.filter(ProductSupplier.date >= dt)
+                filter_desc.append(f"from {date_from}")
+            except ValueError:
+                return f"Invalid date_from format '{date_from}'. Use YYYY-MM-DD."
+
+        if date_to:
+            try:
+                dt = datetime.strptime(date_to, "%Y-%m-%d").date()
+                query = query.filter(ProductSupplier.date <= dt)
+                filter_desc.append(f"to {date_to}")
+            except ValueError:
+                return f"Invalid date_to format '{date_to}'. Use YYYY-MM-DD."
+
+        # Get total count before limiting
+        total_count = query.count()
+
+        if total_count == 0:
+            desc_str = ", ".join(filter_desc) if filter_desc else "no filters"
+            return f"No purchase history records found ({desc_str})."
+
+        # If no specific filters, just return the count summary
+        if not any([part_number, supplier, po_number, date_from, date_to]):
+            # Provide aggregate stats
+            stats = session.query(
+                func.count(ProductSupplier.id).label('total_records'),
+                func.count(func.distinct(ProductSupplier.po_number)).label('total_pos'),
+                func.count(func.distinct(ProductSupplier.product_id)).label('total_products'),
+                func.count(func.distinct(ProductSupplier.supplier_id)).label('total_suppliers'),
+                func.min(ProductSupplier.date).label('earliest_date'),
+                func.max(ProductSupplier.date).label('latest_date'),
+            ).first()
+
+            earliest = stats.earliest_date.strftime("%d/%m/%Y") if stats.earliest_date else "N/A"
+            latest = stats.latest_date.strftime("%d/%m/%Y") if stats.latest_date else "N/A"
+
+            return (
+                f"Purchase history database summary:\n\n"
+                f"| Metric | Value |\n"
+                f"|--------|-------|\n"
+                f"| Total purchase records | {stats.total_records:,} |\n"
+                f"| Unique purchase orders | {stats.total_pos:,} |\n"
+                f"| Unique products | {stats.total_products:,} |\n"
+                f"| Unique suppliers | {stats.total_suppliers:,} |\n"
+                f"| Date range | {earliest} — {latest} |\n"
+            )
+
+        # Fetch rows
+        rows = (
+            query
+            .order_by(ProductSupplier.date.desc().nulls_last())
+            .limit(limit)
+            .all()
+        )
+
+        desc_str = ", ".join(filter_desc)
+        output = [f"Purchase history search ({desc_str}):"]
+        output.append(f"\nFound {total_count:,} records. Showing {'all' if total_count <= limit else f'first {limit}'}:\n")
+        output.append("| # | PO Number | Date | Part Number | Brand | Supplier | Qty | Price | Status |")
+        output.append("|---|-----------|------|-------------|-------|----------|-----|-------|--------|")
+
+        for idx, row in enumerate(rows, 1):
+            date_str = row.date.strftime("%d/%m/%Y") if row.date else "N/A"
+            price_str = f"${row.price:,.2f}" if row.price is not None else "N/A"
+            qty_str = f"{row.quantity:,.0f}" if row.quantity is not None else "N/A"
+            output.append(
+                f"| {idx} | {row.po_number or 'N/A'} | {date_str} | {row.part_number} | {row.brand or 'N/A'} | {row.supplier_name} | {qty_str} | {price_str} | {row.status or 'N/A'} |"
+            )
+
+        if total_count > limit:
+            output.append(f"\n*{total_count - limit:,} more records not shown. Narrow filters or increase limit.*")
+
+        return "\n".join(output)
+    except Exception as e:
+        logger.error(f"Error executing purchase history search: {e}")
+        return f"An error occurred while searching purchase history: {str(e)}"
+    finally:
+        session.close()
+
+
+@tool
+async def search_purchase_history(
+    part_number: str = None,
+    supplier: str = None,
+    date_from: str = None,
+    date_to: str = None,
+    po_number: str = None,
+    limit: int = 50,
+) -> str:
+    """
+    Search and filter purchase history records. Flexible general-purpose query tool.
+
+    Use with NO arguments to get a summary of the entire purchase history database
+    (total records, total POs, unique products, unique suppliers, date range).
+
+    Use with filters to find specific records. All filters are optional and combinable.
+
+    Use when the user asks "how many purchase orders do we have?", "show me purchases
+    from supplier X", "what did we buy in 2026?", "find PO number P12345", or similar.
+
+    For per-part supplier analysis ("who supplies part X?"), prefer part_purchase_history instead.
+
+    Args:
+        part_number: Filter by part number (partial match, e.g. '123-ABC')
+        supplier: Filter by supplier name (partial match, e.g. 'Acme')
+        date_from: Start date filter in YYYY-MM-DD format (e.g. '2026-01-01')
+        date_to: End date filter in YYYY-MM-DD format (e.g. '2026-12-31')
+        po_number: Filter by purchase order number (partial match, e.g. 'P158740')
+        limit: Maximum number of records to return (default: 50)
+    """
+    return await asyncio.to_thread(
+        _do_search_purchase_history, part_number, supplier, date_from, date_to, po_number, limit
+    )

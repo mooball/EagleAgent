@@ -9,7 +9,7 @@ from langgraph.store.base import BaseStore
 import logging
 
 from .base import BaseSubAgent
-from includes.tools.product_tools import search_products, search_brands, search_suppliers
+from includes.tools.product_tools import search_products, search_brands, search_suppliers, part_purchase_history, search_purchase_history
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class ProcurementAgent(BaseSubAgent):
         """
         Provide procurement tools.
         """
-        return [search_products, search_brands, search_suppliers]
+        return [search_products, search_brands, search_suppliers, part_purchase_history, search_purchase_history]
     
     def get_system_prompt(self) -> str:
         """
@@ -44,6 +44,10 @@ Help users find the correct products or brands matching their queries using the 
   Search the brands database by name. Use this when the user specifically wants to look up or verify a brand name. Duplicate brands are automatically resolved to their canonical name.
 - search_suppliers(name: str, brand: str, country: str, query: str, limit: int):
   Search the suppliers database. Use `name` to search by supplier name, `brand` to find suppliers that carry a specific brand, `country` to filter by country, and `query` for text + semantic search across name, notes, and city. The `query` parameter accepts natural language descriptions (e.g. 'heavy-duty conveyor components', 'industrial adhesives manufacturer') — it first does string matching, then falls back to vector similarity on supplier notes for semantically relevant results. You can combine parameters.
+- search_purchase_history(part_number: str, supplier: str, date_from: str, date_to: str, po_number: str, limit: int):
+  General-purpose purchase history search and filter tool. Call with NO arguments to get a database summary (total records, POs, products, suppliers, date range). Use filters to find specific records. All filters are optional and combinable. Use when the user asks "how many purchase orders?", "show purchases from supplier X", "what did we buy in 2026?", "find PO P12345", etc. Dates use YYYY-MM-DD format.
+- part_purchase_history(part_number: str, limit: int):
+  Search past purchase records to find which suppliers have supplied a given part. Returns a per-supplier summary: supplier name, most recent price, most recent supply date, total quantity, and order count. Use when the user asks "who can supply part X?" or "which suppliers have we bought part X from?".
 
 **Standard Workflow:**
 1. Analyze the user's request. Identify if they are providing parts, brands, supplier codes, or descriptions.
@@ -63,4 +67,5 @@ Help users find the correct products or brands matching their queries using the 
 
 **Getting total counts:**
 If a user asks "how many products/brands/suppliers do you have?", call the search tool with no filters (or minimal filters) — it returns the total count in its response (e.g. "Found 9593 matching supplier(s)"). Use that number to answer the question. You don't need to retrieve all records.
+If a user asks "how many purchase orders/records do we have?", call search_purchase_history with no arguments to get the database summary.
 """
