@@ -63,7 +63,9 @@ class Config:
     BROWSER_AGENT_MODEL = os.getenv("BROWSER_AGENT_MODEL", "")
     GENERAL_AGENT_MODEL = os.getenv("GENERAL_AGENT_MODEL", "")
     PROCUREMENT_AGENT_MODEL = os.getenv("PROCUREMENT_AGENT_MODEL", "")
-    SUPERVISOR_MODEL = os.getenv("SUPERVISOR_MODEL", "")
+    SYSADMIN_AGENT_MODEL = os.getenv("SYSADMIN_AGENT_MODEL", "")
+    # Supervisor only picks between agents — use a fast model by default
+    SUPERVISOR_MODEL = os.getenv("SUPERVISOR_MODEL", "gemini-2.0-flash")
 
     # Model temperature (0.0 - 1.0)
     DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
@@ -111,6 +113,7 @@ class Config:
             "BrowserAgent": cls.BROWSER_AGENT_MODEL,
             "GeneralAgent": cls.GENERAL_AGENT_MODEL,
             "ProcurementAgent": cls.PROCUREMENT_AGENT_MODEL,
+            "SysAdminAgent": cls.SYSADMIN_AGENT_MODEL,
             "Supervisor": cls.SUPERVISOR_MODEL,
         }
         model = agent_model_map.get(agent_name, "")
