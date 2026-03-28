@@ -764,7 +764,10 @@ async def main(message: cl.Message):
     msg = cl.Message(content="")
     await msg.send()
     
+    import time
+    request_start = time.monotonic()
     active_agent = "GeneralAgent"
+    supervisor_done_at = None
     
     active_graph = cl.user_session.get("active_graph", graph)
     async for event in active_graph.astream_events(inputs, config=graph_config, version="v1"):
@@ -774,6 +777,10 @@ async def main(message: cl.Message):
         
         if kind == "on_chain_start" and name in ["GeneralAgent", "BrowserAgent", "ProcurementAgent", "SysAdminAgent"]:
             active_agent = name
+            if supervisor_done_at is None:
+                supervisor_done_at = time.monotonic()
+                routing_time = supervisor_done_at - request_start
+                logger.info(f"Supervisor routing took {routing_time:.1f}s → {name}")
             
         # Skip streaming internal routing decisions
         if "supervisor_routing" in tags:
@@ -837,13 +844,19 @@ async def main(message: cl.Message):
                 completion_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
                 total_tokens = usage.get("total_tokens", 0)
                 
+                # Compute timing info
+                total_elapsed = time.monotonic() - request_start
+                routing_part = ""
+                if supervisor_done_at is not None:
+                    routing_s = supervisor_done_at - request_start
+                    routing_part = f" | Routing: {routing_s:.1f}s"
+                
                 # HTML enabled in chainlit config so we can inject exact precision styles!
-                token_info = f"\n\n<div style='margin-top:20px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Agent: {active_agent} | Tokens: {total_tokens:,} (Context: {prompt_tokens:,}, Generated: {completion_tokens:,})</div>\n\n"
+                token_info = f"\n\n<div style='margin-top:20px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Agent: {active_agent} | Tokens: {total_tokens:,} (Context: {prompt_tokens:,}, Generated: {completion_tokens:,}){routing_part} | Total: {total_elapsed:.1f}s</div>\n\n"
                 await msg.stream_token(token_info)
                 
                 # Track cumulative tokens in session
                 current_total = cl.user_session.get("total_tokens_used", 0)
                 cl.user_session.set("total_tokens_used", current_total + total_tokens)
-                
-    
+
     await msg.update()
