@@ -27,7 +27,7 @@ class GeneralAgent(BaseSubAgent):
         model: ChatGoogleGenerativeAI, 
         store: Optional[BaseStore] = None,
         mcp_client = None,
-        admin_only_tools: List[str] = None
+        admin_only_tools: List[str] = None,
     ):
         super().__init__("GeneralAgent", model, store)
         self.mcp_client = mcp_client
@@ -52,7 +52,7 @@ class GeneralAgent(BaseSubAgent):
 
         # Action tools (list actions, new conversation, delete data)
         tools.extend(create_action_tools(user_id))
-        
+
         # Add MCP tools if available
         if self.mcp_client:
             try:

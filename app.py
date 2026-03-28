@@ -20,7 +20,8 @@ from includes.actions import dispatch_action, get_actions_for_user, is_help_requ
 from includes.document_processing import process_file, create_multimodal_content
 from includes.local_storage_client import LocalStorageClient
 from includes.mcp_config import load_mcp_config
-from includes.agents import BrowserAgent, GeneralAgent, ProcurementAgent, Supervisor
+from includes.agents import BrowserAgent, GeneralAgent, ProcurementAgent, Supervisor, SysAdminAgent
+from includes.job_runner import JobRunner
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from starlette.responses import RedirectResponse
 
@@ -168,11 +169,17 @@ checkpointer = None
 # Compile graph with both checkpointer (thread state) and store (cross-thread memory)
 graph = None
 
+# System Admin graph — single-agent for admin script/job management
+sysadmin_graph = None
+
+# Background job runner for admin script execution
+job_runner = JobRunner()
+
 globals_initialized = False
 
 async def setup_globals():
     """Initialize async-dependent global variables."""
-    global store, mcp_client, browser_agent, general_agent, supervisor_node, checkpointer, graph, globals_initialized
+    global store, mcp_client, browser_agent, general_agent, supervisor_node, checkpointer, graph, sysadmin_graph, globals_initialized
     
     if globals_initialized:
         return
@@ -182,6 +189,9 @@ async def setup_globals():
         await pg_pool.open()
     except Exception:
         pass
+
+    # Start the background job runner
+    await job_runner.start()
         
     # Set up store
     store = AsyncPostgresStore(pg_pool)
@@ -254,7 +264,21 @@ async def setup_globals():
 
     # Compile graph
     graph = builder.compile(checkpointer=checkpointer, store=store)
-    
+
+    # Build System Admin graph — single-agent, no supervisor routing
+    sysadmin_agent = SysAdminAgent(
+        model=create_model("SysAdminAgent"), store=store, job_runner=job_runner
+    )
+
+    async def run_sysadmin(state, config):
+        return await sysadmin_agent(state, config)
+
+    sa_builder = StateGraph(SupervisorState)
+    sa_builder.add_node("SysAdminAgent", run_sysadmin)
+    sa_builder.add_edge(START, "SysAdminAgent")
+    sa_builder.add_edge("SysAdminAgent", END)
+    sysadmin_graph = sa_builder.compile(checkpointer=checkpointer, store=store)
+
     globals_initialized = True
 
 @cl.oauth_callback
@@ -360,6 +384,52 @@ async def _ensure_user_profile(user: cl.User) -> tuple:
     return user_name, is_new_user
 
 
+@cl.set_chat_profiles
+async def chat_profile(current_user: cl.User):
+    """Define available chat profiles. Admin users see the System Admin profile."""
+    is_admin = (
+        current_user
+        and current_user.identifier.lower() in config.get_admin_emails()
+    )
+
+    profiles = [
+        cl.ChatProfile(
+            name="EagleAgent",
+            markdown_description="General assistant for product procurement, supplier information, and web search.",
+            icon="/public/avatars/EagleAgent.png",
+            default=True,
+        ),
+    ]
+
+    if is_admin:
+        profiles.append(
+            cl.ChatProfile(
+                name="System Admin",
+                markdown_description="Server administration — run scripts, manage background jobs, and system maintenance.",
+                icon="/public/avatars/EagleAgent.png",
+                starters=[
+                    cl.Starter(
+                        label="List available scripts",
+                        message="What scripts are available?",
+                        icon="/public/avatars/EagleAgent.png",
+                    ),
+                    cl.Starter(
+                        label="Check running jobs",
+                        message="Are there any running jobs?",
+                        icon="/public/avatars/EagleAgent.png",
+                    ),
+                    cl.Starter(
+                        label="Update product embeddings",
+                        message="Please update the product embeddings",
+                        icon="/public/avatars/EagleAgent.png",
+                    ),
+                ],
+            )
+        )
+
+    return profiles
+
+
 @cl.set_starters
 async def set_starters():
     """Show suggested prompts when a new chat thread starts."""
@@ -367,17 +437,17 @@ async def set_starters():
         cl.Starter(
             label="What can you help me with?",
             message="What can you help me with?",
-            icon="/public/avatars/eagle.png",
+            icon="/public/avatars/EagleAgent.png",
         ),
         cl.Starter(
             label="Search for a product",
             message="I need to find a product",
-            icon="/public/avatars/eagle.png",
+            icon="/public/avatars/EagleAgent.png",
         ),
         cl.Starter(
             label="Show available actions",
             message="actions",
-            icon="/public/avatars/eagle.png",
+            icon="/public/avatars/EagleAgent.png",
         ),
     ]
 
@@ -405,25 +475,47 @@ async def start():
         cl.user_session.set("user_id", user.identifier)
         user_name, is_first_visit = await _ensure_user_profile(user)
     
-    # Personalized welcome message
-    if is_first_visit and user_name:
-        welcome_msg = f"Welcome to EagleAgent, {user_name}! I don't think we've met before. Is it OK to call you {user_name} or do you have a preferred name?"
-    elif is_first_visit:
-        welcome_msg = "Welcome to EagleAgent! I don't think we've met before. What is your preferred name?"
-    elif user_name:
-        welcome_msg = f"Hello {user_name}! How can I help you today?"
+    # Select graph based on chosen chat profile
+    chat_profile_name = cl.user_session.get("chat_profile")
+    if chat_profile_name == "System Admin":
+        cl.user_session.set("active_graph", sysadmin_graph)
     else:
-        welcome_msg = "Hello! How can I help you today?"
-    
-    # Build action buttons visible to this user
-    user_id = cl.user_session.get("user_id", "")
-    visible_actions = get_actions_for_user(user_id)
-    action_buttons = [
-        cl.Action(name=a.name, payload={}, label=a.label, description=a.description)
-        for a in visible_actions
-    ]
+        cl.user_session.set("active_graph", graph)
 
-    await cl.Message(content=welcome_msg, actions=action_buttons).send()
+    # Personalized welcome message
+    if chat_profile_name == "System Admin":
+        if user_name:
+            welcome_msg = f"Welcome to System Admin mode, {user_name}. I can run scripts, check background jobs, and manage system tasks. What would you like to do?"
+        else:
+            welcome_msg = "Welcome to System Admin mode. I can run scripts, check background jobs, and manage system tasks. What would you like to do?"
+
+        # Embedding update buttons for System Admin profile
+        action_buttons = [
+            cl.Action(
+                name="confirm_run_script",
+                payload={"script_name": "update_product_embeddings"},
+                label="Update Product Embeddings",
+                description="Regenerate missing product vector embeddings",
+            ),
+            cl.Action(
+                name="confirm_run_script",
+                payload={"script_name": "update_supplier_embeddings"},
+                label="Update Supplier Embeddings",
+                description="Regenerate missing supplier vector embeddings",
+            ),
+        ]
+        await cl.Message(content=welcome_msg, actions=action_buttons).send()
+    else:
+        if is_first_visit and user_name:
+            welcome_msg = f"Welcome to EagleAgent, {user_name}! I don't think we've met before. Is it OK to call you {user_name} or do you have a preferred name?"
+        elif is_first_visit:
+            welcome_msg = "Welcome to EagleAgent! I don't think we've met before. What is your preferred name?"
+        elif user_name:
+            welcome_msg = f"Hello {user_name}! How can I help you today?"
+        else:
+            welcome_msg = "Hello! How can I help you today?"
+
+        await cl.Message(content=welcome_msg).send()
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
@@ -447,6 +539,13 @@ async def on_chat_resume(thread: ThreadDict):
     user = cl.user_session.get("user")
     if user:
         cl.user_session.set("user_id", user.identifier)
+
+    # Select graph based on chat profile (persisted with thread)
+    chat_profile_name = cl.user_session.get("chat_profile")
+    if chat_profile_name == "System Admin":
+        cl.user_session.set("active_graph", sysadmin_graph)
+    else:
+        cl.user_session.set("active_graph", graph)
     
     # Log for debugging
     print(f"Resuming conversation with thread_id: {thread_id}")
@@ -458,17 +557,41 @@ async def on_chat_resume(thread: ThreadDict):
     
     # Optional: Send a welcome back message
     if user_name:
-        user_id = cl.user_session.get("user_id", "")
-        visible_actions = get_actions_for_user(user_id)
-        action_buttons = [
-            cl.Action(name=a.name, payload={}, label=a.label, description=a.description)
-            for a in visible_actions
-        ]
-        await cl.Message(
-            content=f"Welcome back, {user_name}! Continuing our previous conversation.",
-            author="EagleAgent",
-            actions=action_buttons,
-        ).send()
+        if chat_profile_name == "System Admin":
+            action_buttons = [
+                cl.Action(
+                    name="confirm_run_script",
+                    payload={"script_name": "update_product_embeddings"},
+                    label="Update Product Embeddings",
+                    description="Regenerate missing product vector embeddings",
+                ),
+                cl.Action(
+                    name="confirm_run_script",
+                    payload={"script_name": "update_supplier_embeddings"},
+                    label="Update Supplier Embeddings",
+                    description="Regenerate missing supplier vector embeddings",
+                ),
+            ]
+            await cl.Message(
+                content=f"Welcome back, {user_name}! Continuing System Admin session.",
+                author="EagleAgent",
+                actions=action_buttons,
+            ).send()
+        else:
+            await cl.Message(
+                content=f"Welcome back, {user_name}! Continuing our previous conversation.",
+                author="EagleAgent",
+            ).send()
+
+
+# ---------------------------------------------------------------------------
+# Shutdown hook — kill background jobs on app teardown
+# ---------------------------------------------------------------------------
+
+@cl.on_stop
+async def on_stop():
+    """Gracefully shut down the job runner when the app stops."""
+    await job_runner.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +636,54 @@ async def on_action_cancel_delete(action: cl.Action):
         content="Deletion cancelled. Resuming normal conversation.",
         author="EagleAgent",
     ).send()
+
+
+@cl.action_callback("confirm_run_script")
+async def on_action_confirm_run_script(action: cl.Action):
+    """Run button from the run_script confirmation prompt."""
+    from includes.job_progress import monitor_job
+
+    script_name = action.payload.get("script_name", "")
+    thread_id = cl.user_session.get("thread_id", "")
+
+    try:
+        job = await job_runner.run_script(script_name, [], thread_id=thread_id)
+    except ValueError as e:
+        await cl.Message(
+            content=f"Could not start `{script_name}`: {e}",
+            author="EagleAgent",
+        ).send()
+        return
+
+    import asyncio
+    asyncio.create_task(monitor_job(job_runner, job))
+
+
+@cl.action_callback("cancel_run_script")
+async def on_action_cancel_run_script(action: cl.Action):
+    """Cancel button from the run_script confirmation prompt."""
+    script_name = action.payload.get("script_name", "")
+    await cl.Message(
+        content=f"Cancelled — `{script_name}` was not started.",
+        author="EagleAgent",
+    ).send()
+
+
+@cl.action_callback("cancel_job")
+async def on_action_cancel_job(action: cl.Action):
+    """Cancel button attached to job start messages."""
+    job_id = action.payload.get("job_id", "")
+    try:
+        job = await job_runner.cancel(job_id)
+        await cl.Message(
+            content=f"Cancelled job `{job.id[:8]}` ({job.script_name}).",
+            author="EagleAgent",
+        ).send()
+    except ValueError as e:
+        await cl.Message(
+            content=f"Could not cancel: {e}",
+            author="EagleAgent",
+        ).send()
 
 
 @cl.on_message
@@ -595,12 +766,13 @@ async def main(message: cl.Message):
     
     active_agent = "GeneralAgent"
     
-    async for event in graph.astream_events(inputs, config=graph_config, version="v1"):
+    active_graph = cl.user_session.get("active_graph", graph)
+    async for event in active_graph.astream_events(inputs, config=graph_config, version="v1"):
         kind = event["event"]
         name = event.get("name", "")
         tags = event.get("tags", [])
         
-        if kind == "on_chain_start" and name in ["GeneralAgent", "BrowserAgent", "ProcurementAgent"]:
+        if kind == "on_chain_start" and name in ["GeneralAgent", "BrowserAgent", "ProcurementAgent", "SysAdminAgent"]:
             active_agent = name
             
         # Skip streaming internal routing decisions
