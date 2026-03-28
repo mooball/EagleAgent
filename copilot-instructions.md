@@ -22,9 +22,10 @@ includes/
     browser_agent.py       # BrowserAgent — web automation via agent-browser CLI
     code_agent.py          # (stub — future)
     data_agent.py          # (stub — future)
-  tools/                   # Tool definitions (browser_tools.py, user_profile.py)
+  tools/                   # Tool definitions (browser_tools.py, user_profile.py, action_tools.py)
   prompts.py               # System prompt builder — dynamic, role-aware, profile-aware
-  commands.py              # Slash-command handling
+  actions.py               # Action registry and dispatcher — replaces slash commands
+  commands.py              # Legacy command handlers (deleteall wipe logic)
   document_processing.py   # PDF/image/text/audio processing for file attachments
   local_storage_client.py  # LocalStorageClient — file attachments on local disk
   mcp_config.py            # MCP server configuration loader
@@ -106,10 +107,29 @@ All sub-agents must extend `BaseSubAgent` (`includes/agents/base.py`). The base 
 
 ## Chainlit (`app.py`)
 
-- `@cl.on_chat_start` / `@cl.on_chat_resume`: Set up thread ID, ensure user profile via `_ensure_user_profile()`.
-- `@cl.on_message` (`main()`): Process file attachments, invoke graph with streaming, send tokens back to UI.
+- `@cl.set_starters`: Suggested prompts shown when a new chat begins.
+- `@cl.on_chat_start` / `@cl.on_chat_resume`: Set up thread ID, ensure user profile via `_ensure_user_profile()`, attach action buttons to welcome message.
+- `@cl.action_callback`: Handles action button clicks (`new_conversation`, `delete_all_data`, `confirm_delete_all`, `cancel_delete_all`).
+- `@cl.on_message` (`main()`): Intercepts help keywords via `is_help_request()`, processes file attachments, invokes graph with streaming.
 - `setup_globals()`: Builds the LangGraph `StateGraph` (Supervisor + agent nodes), initializes PostgreSQL connections.
 - Keep handlers thin — delegate to agents, prompts module, and document processing.
+
+## Action Buttons (`includes/actions.py`)
+
+Actions replace the old `/` slash commands with Chainlit-native action buttons and LangGraph tools.
+
+- **Registry**: `@register_action(name, label, description, icon, admin_only)` decorator registers a handler.
+- **Dispatcher**: `dispatch_action(name)` checks the user's role before executing admin-only actions.
+- **Filtering**: `get_actions_for_user(user_id)` returns actions visible to the given user's role.
+- **Discovery**: Users can type `help`, `actions`, `menu`, `commands`, or `show actions` to see buttons mid-conversation.
+- **LangGraph tools**: `includes/tools/action_tools.py` exposes `list_available_actions`, `start_new_conversation`, and `delete_all_user_data` so the agent can invoke them via natural language.
+- **System prompt**: `build_system_prompt()` dynamically includes a list of available actions based on the user's role.
+
+**To add a new action:**
+1. In `includes/actions.py`, add a `@register_action(...)` decorated async handler.
+2. In `app.py`, add a `@cl.action_callback("your_action_name")` that calls `dispatch_action("your_action_name")`.
+3. Optionally add a LangGraph tool wrapper in `includes/tools/action_tools.py`.
+4. If admin-only, add the tool name to `ADMIN_ONLY_TOOLS` in `app.py`.
 
 ## Prompts (`includes/prompts.py`)
 - `build_system_prompt()` is the primary prompt builder — dynamic, role-aware, profile-aware.
@@ -136,7 +156,7 @@ All sub-agents must extend `BaseSubAgent` (`includes/agents/base.py`). The base 
 - Small composable functions over large monoliths.
 - Descriptive names (no single-letter variables except trivial loops).
 
-## Prompts & Plans
+## Development Prompts & Plans
 
 When asked to create a prompt, plan, or task list, always:
 
@@ -145,16 +165,41 @@ When asked to create a prompt, plan, or task list, always:
   - `#` heading with the plan title.
   - Grouped sections by phase (e.g. `## Phase 1 — Core Infrastructure`, `## Phase 2 — Integration`, `## Phase 3 — Polish`).
   - Numbered tasks as `###` subheadings within each phase. Numbering is sequential across phases (not reset per phase).
-  - Bullet points under each task describing what was/needs to be done.
-- **Mark completed tasks** by wrapping the heading text in strikethrough and appending `DONE`:
+  - Bullet points under each task describing what needs to be done.
+
+### Marking tasks as complete
+
+**CRITICAL: Never delete content from plan files.** All original bullet points, descriptions, and task details must be preserved. The plan is a living record of what was planned and what was done.
+
+- **Mark the task heading** with strikethrough and a ✅:
   ```
-  ### ~~1. Task description~~ DONE
+  ### ~~1. Task description~~ ✅
   ```
-- **Leave incomplete tasks** as plain numbered headings:
+- **Mark each original bullet point** with strikethrough:
+  ```
+  - ~~Define a registry of available actions with metadata.~~
+  - ~~Each action maps to an async handler function.~~
+  ```
+- **Add implementation notes** as new (non-struck-through) bullets below the original ones to record what was actually built:
+  ```
+  - ~~Original planned bullet point.~~
+  - ~~Another planned bullet point.~~
+  - Implementation note: what was actually done or any deviations from the plan.
+  ```
+- **Mark a phase heading** as complete when all its tasks are done:
+  ```
+  ## Phase 1 — Core Migration ✅
+  ```
+- **Leave incomplete tasks** as plain numbered headings with no strikethrough:
   ```
   ### 14. Task description
   ```
-- When updating an existing plan, mark each finished task individually using the strikethrough + DONE pattern — never delete completed tasks from the file.
+- **Discarded tasks** (decided not to implement) should be marked differently — strikethrough with `DISCARDED` and a brief reason:
+  ```
+  ### ~~12. Task description~~ DISCARDED
+  - ~~Original bullet points struck through.~~
+  - Reason: superseded by a simpler approach in task #5.
+  ```
 
 ## Git & Repository
 - Do not commit `.env`, `.venv`, secrets, or `__pycache__/`.

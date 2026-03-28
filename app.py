@@ -16,6 +16,7 @@ from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres import AsyncPostgresStore
 from includes.commands import handle_deleteall_command
+from includes.actions import dispatch_action, get_actions_for_user, is_help_request, send_action_buttons
 from includes.document_processing import process_file, create_multimodal_content
 from includes.local_storage_client import LocalStorageClient
 from includes.mcp_config import load_mcp_config
@@ -29,9 +30,6 @@ from fastapi.staticfiles import StaticFiles
 
 # Create the data directory if it doesn't exist
 os.makedirs(os.path.join(config.DATA_DIR, "attachments"), exist_ok=True)
-# Mount the local data directory to the /files route so Chainlit UI can load images
-# Notice we mount DATA_DIR/attachments explicitly because Chainlit's data layer saves files inside an "attachments" subfolder
-cl_server.app.mount("/files", StaticFiles(directory=os.path.join(config.DATA_DIR, "attachments")), name="files")
 
 
 class OAuthErrorRedirectMiddleware:
@@ -85,17 +83,31 @@ class OAuthErrorRedirectMiddleware:
         await self.app(scope, receive, send_wrapper)
 
 
-cl_server.app.add_middleware(OAuthErrorRedirectMiddleware)
+# Guard module-level ASGI app modifications so they only run once.
+# On hot-reload Chainlit re-executes this module; adding middleware or
+# mounting routes a second time would crash with "Cannot add middleware
+# after an application has started".
+if not getattr(cl_server.app, "_eagleagent_patched", False):
+    cl_server.app._eagleagent_patched = True
 
-# FIX: Chainlit has a catch-all route `/{full_path:path}` that intercepts `/files` if our mount is at the end.
-# We must move our newly added mount BEFORE the catch-all route.
-routes = cl_server.app.router.routes
-# The mount we just added is at the very end of the list
-files_mount = routes.pop()
-# Find the catch-all index
-catch_all_idx = next((i for i, r in enumerate(routes) if getattr(r, 'path', '') == '/{full_path:path}'), len(routes))
-# Insert our mount just before the catch-all
-routes.insert(catch_all_idx, files_mount)
+    # Mount the local data directory to the /files route so Chainlit UI can load images
+    cl_server.app.mount(
+        "/files",
+        StaticFiles(directory=os.path.join(config.DATA_DIR, "attachments")),
+        name="files",
+    )
+
+    cl_server.app.add_middleware(OAuthErrorRedirectMiddleware)
+
+    # FIX: Chainlit has a catch-all route `/{full_path:path}` that intercepts
+    # `/files` if our mount is at the end. Move our mount BEFORE the catch-all.
+    routes = cl_server.app.router.routes
+    files_mount = routes.pop()
+    catch_all_idx = next(
+        (i for i, r in enumerate(routes) if getattr(r, 'path', '') == '/{full_path:path}'),
+        len(routes),
+    )
+    routes.insert(catch_all_idx, files_mount)
 
 # Load environment variables (still needed for secrets like GOOGLE_API_KEY)
 load_dotenv()
@@ -105,7 +117,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Define which tools require Admin privileges
-ADMIN_ONLY_TOOLS = [] 
+ADMIN_ONLY_TOOLS = ["delete_all_user_data"]
 
 # Initialize PostgreSQL connection pool
 # Using the CHECKPOINT_DATABASE_URL which defaults to psycopg style dsns
@@ -348,6 +360,28 @@ async def _ensure_user_profile(user: cl.User) -> tuple:
     return user_name, is_new_user
 
 
+@cl.set_starters
+async def set_starters():
+    """Show suggested prompts when a new chat thread starts."""
+    return [
+        cl.Starter(
+            label="What can you help me with?",
+            message="What can you help me with?",
+            icon="/public/avatars/eagle.png",
+        ),
+        cl.Starter(
+            label="Search for a product",
+            message="I need to find a product",
+            icon="/public/avatars/eagle.png",
+        ),
+        cl.Starter(
+            label="Show available actions",
+            message="actions",
+            icon="/public/avatars/eagle.png",
+        ),
+    ]
+
+
 @cl.on_chat_start
 async def start():
     import uuid
@@ -381,7 +415,15 @@ async def start():
     else:
         welcome_msg = "Hello! How can I help you today?"
     
-    await cl.Message(content=welcome_msg).send()
+    # Build action buttons visible to this user
+    user_id = cl.user_session.get("user_id", "")
+    visible_actions = get_actions_for_user(user_id)
+    action_buttons = [
+        cl.Action(name=a.name, payload={}, label=a.label, description=a.description)
+        for a in visible_actions
+    ]
+
+    await cl.Message(content=welcome_msg, actions=action_buttons).send()
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
@@ -416,51 +458,73 @@ async def on_chat_resume(thread: ThreadDict):
     
     # Optional: Send a welcome back message
     if user_name:
+        user_id = cl.user_session.get("user_id", "")
+        visible_actions = get_actions_for_user(user_id)
+        action_buttons = [
+            cl.Action(name=a.name, payload={}, label=a.label, description=a.description)
+            for a in visible_actions
+        ]
         await cl.Message(
             content=f"Welcome back, {user_name}! Continuing our previous conversation.",
-            author="EagleAgent"
+            author="EagleAgent",
+            actions=action_buttons,
         ).send()
+
+
+# ---------------------------------------------------------------------------
+# Action button callbacks
+# ---------------------------------------------------------------------------
+
+@cl.action_callback("new_conversation")
+async def on_action_new_conversation(action: cl.Action):
+    """Handle the New Conversation action button."""
+    await dispatch_action("new_conversation")
+
+
+@cl.action_callback("delete_all_data")
+async def on_action_delete_all_data(action: cl.Action):
+    """Handle the Delete All Data action button (sends confirmation)."""
+    await dispatch_action("delete_all_data")
+
+
+@cl.action_callback("confirm_delete_all")
+async def on_action_confirm_delete(action: cl.Action):
+    """Handle the Yes/confirm button from the delete confirmation."""
+    user_id = cl.user_session.get("user_id", "")
+    if user_id:
+        await handle_deleteall_command(user_id, store, pg_pool)
+
+    new_thread = str(uuid.uuid4())
+    cl.user_session.set("thread_id", new_thread)
+    await cl.Message(
+        content=(
+            "🗑️ All stored knowledge, files, and conversation history about you "
+            "has been completely erased from all databases.\n\n"
+            "*Note: Please refresh your browser window now to clear this chat log.*"
+        ),
+        author="EagleAgent",
+    ).send()
+
+
+@cl.action_callback("cancel_delete_all")
+async def on_action_cancel_delete(action: cl.Action):
+    """Handle the Cancel button from the delete confirmation."""
+    await cl.Message(
+        content="Deletion cancelled. Resuming normal conversation.",
+        author="EagleAgent",
+    ).send()
+
 
 @cl.on_message
 async def main(message: cl.Message):
     # Use the session ID as the thread ID to maintain conversation history
     thread_id = cl.user_session.get("thread_id")
     user_id = cl.user_session.get("user_id", "")
-    
-    # === COMMAND HANDLING ===
-    content = message.content.strip()
-    
-    # Check if we're waiting for /deleteall confirmation
-    if cl.user_session.get("awaiting_delete_confirmation"):
-        cl.user_session.set("awaiting_delete_confirmation", False)
-        if content.lower() in ["y", "yes"]:
-            if user_id:
-                await handle_deleteall_command(user_id, store, pg_pool)
 
-            # Reset current thread to start fresh in LangGraph
-            new_thread = str(uuid.uuid4())
-            cl.user_session.set("thread_id", new_thread)
-            await cl.Message(content="🗑️ All stored knowledge, files, and conversation history about you has been completely erased from all databases.\n\n*Note: Please refresh your browser window now to clear this chat log.*", author="EagleAgent").send()
-        else:
-            await cl.Message(content="Deletion cancelled. Resuming normal conversation.", author="EagleAgent").send()
+    # Show action buttons when the user asks for help / actions
+    if is_help_request(message.content):
+        await send_action_buttons(user_id)
         return
-
-    # Check for slash commands
-    if content.startswith("/"):
-        command = content.split()[0].lower()
-        if command == "/new":
-            new_thread = str(uuid.uuid4())
-            cl.user_session.set("thread_id", new_thread)
-            await cl.Message(content="🔄 Started a new conversation thread.", author="EagleAgent").send()
-            return
-        elif command == "/deleteall":
-            cl.user_session.set("awaiting_delete_confirmation", True)
-            await cl.Message(content="⚠️ **Warning:** This will permanently delete all preferences, settings, and memories associated with your profile, and start a new blank conversation.\n\n**Do you really want me to delete all your data?** (Reply with **Yes** or **No**)", author="EagleAgent").send()
-            return
-        else:
-            await cl.Message(content=f"Unknown command: {command}", author="EagleAgent").send()
-            return
-    # === END COMMAND HANDLING ===
 
     graph_config = {
         "configurable": {"thread_id": thread_id},
