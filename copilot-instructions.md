@@ -136,6 +136,26 @@ All sub-agents must extend `BaseSubAgent` (`includes/agents/base.py`). The base 
 - Small composable functions over large monoliths.
 - Descriptive names (no single-letter variables except trivial loops).
 
+## Prompts & Plans
+
+When asked to create a prompt, plan, or task list, always:
+
+- **Store in** `.github/prompts/` using the naming convention `plan-<descriptiveName>.prompt.md` (camelCase for the descriptive part).
+- **Use the standard plan format:**
+  - `#` heading with the plan title.
+  - Grouped sections by priority/category (e.g. `## RED - Fix Before Proceeding`, `## ORANGE - Important Improvements`, `## YELLOW - Nice to Have`).
+  - Numbered tasks as `###` subheadings within each section.
+  - Bullet points under each task describing what was/needs to be done.
+- **Mark completed tasks** by wrapping the heading text in strikethrough and appending `DONE`:
+  ```
+  ### ~~1. Task description~~ DONE
+  ```
+- **Leave incomplete tasks** as plain numbered headings:
+  ```
+  ### 14. Task description
+  ```
+- When updating an existing plan, mark each finished task individually using the strikethrough + DONE pattern — never delete completed tasks from the file.
+
 ## Git & Repository
 - Do not commit `.env`, `.venv`, secrets, or `__pycache__/`.
 - `pyproject.toml` is the single source of truth for dependencies.
