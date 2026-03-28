@@ -143,8 +143,8 @@ When asked to create a prompt, plan, or task list, always:
 - **Store in** `.github/prompts/` using the naming convention `plan-<descriptiveName>.prompt.md` (camelCase for the descriptive part).
 - **Use the standard plan format:**
   - `#` heading with the plan title.
-  - Grouped sections by priority/category (e.g. `## RED - Fix Before Proceeding`, `## ORANGE - Important Improvements`, `## YELLOW - Nice to Have`).
-  - Numbered tasks as `###` subheadings within each section.
+  - Grouped sections by phase (e.g. `## Phase 1 — Core Infrastructure`, `## Phase 2 — Integration`, `## Phase 3 — Polish`).
+  - Numbered tasks as `###` subheadings within each phase. Numbering is sequential across phases (not reset per phase).
   - Bullet points under each task describing what was/needs to be done.
 - **Mark completed tasks** by wrapping the heading text in strikethrough and appending `DONE`:
   ```
