@@ -1,5 +1,6 @@
 import chainlit as cl
 import uuid
+import urllib.parse
 from chainlit.types import ThreadDict
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from langchain_core.messages import HumanMessage, BaseMessage
@@ -20,6 +21,7 @@ from includes.local_storage_client import LocalStorageClient
 from includes.mcp_config import load_mcp_config
 from includes.agents import BrowserAgent, GeneralAgent, ProcurementAgent, Supervisor
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from starlette.responses import RedirectResponse
 
 # Set up Chainlit static file serving for local file attachments
 import chainlit.server as cl_server
@@ -30,6 +32,60 @@ os.makedirs(os.path.join(config.DATA_DIR, "attachments"), exist_ok=True)
 # Mount the local data directory to the /files route so Chainlit UI can load images
 # Notice we mount DATA_DIR/attachments explicitly because Chainlit's data layer saves files inside an "attachments" subfolder
 cl_server.app.mount("/files", StaticFiles(directory=os.path.join(config.DATA_DIR, "attachments")), name="files")
+
+
+class OAuthErrorRedirectMiddleware:
+    """Pure ASGI middleware: redirects 401s on OAuth callback paths to the login page.
+
+    Uses raw ASGI to avoid the known issues that BaseHTTPMiddleware causes with
+    WebSocket connections and streaming responses in Starlette/Chainlit.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        # Only intercept HTTP requests on OAuth callback paths
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if not (path.startswith("/auth/oauth/") and path.endswith("/callback")):
+            await self.app(scope, receive, send)
+            return
+
+        status_code = None
+
+        async def send_wrapper(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+                if status_code == 401:
+                    params = urllib.parse.urlencode(
+                        {"error": "Access denied. Your account is not authorised to use this application."}
+                    )
+                    redirect_url = f"/login?{params}"
+                    await send({
+                        "type": "http.response.start",
+                        "status": 302,
+                        "headers": [
+                            [b"location", redirect_url.encode()],
+                            [b"content-length", b"0"],
+                        ],
+                    })
+                    return
+                await send(message)
+            elif message["type"] == "http.response.body":
+                if status_code == 401:
+                    await send({"type": "http.response.body", "body": b""})
+                    return
+                await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+cl_server.app.add_middleware(OAuthErrorRedirectMiddleware)
 
 # FIX: Chainlit has a catch-all route `/{full_path:path}` that intercepts `/files` if our mount is at the end.
 # We must move our newly added mount BEFORE the catch-all route.
@@ -46,6 +102,7 @@ load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Define which tools require Admin privileges
 ADMIN_ONLY_TOOLS = [] 
@@ -216,7 +273,7 @@ def oauth_callback(
             
             # Reject if no domain (personal Gmail) or domain not in allowed list
             if not user_domain or user_domain not in allowed_domains:
-                print(f"Authentication rejected: domain '{user_domain}' not in allowed list: {allowed_domains}")
+                logger.warning(f"Authentication rejected: domain '{user_domain}' not in allowed list: {allowed_domains}")
                 return None
         
         # Store all available user data from Google OAuth in metadata
