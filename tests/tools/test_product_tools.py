@@ -160,7 +160,7 @@ class TestPurchaseHistorySearch:
         assert "| # | Supplier | Part Number | Brand | Last Price | Last Date | Total Qty | Orders |" in result
         assert "Acme Tools" in result
         assert "$42.50" in result
-        assert "15/01/2026" in result
+        assert "15 Jan 2026" in result
         assert "500" in result
         assert "12" in result
 

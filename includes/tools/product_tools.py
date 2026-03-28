@@ -418,7 +418,7 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
         for idx, row in enumerate(results, 1):
             price = price_subquery.get((row.supplier_name, row.part_number))
             price_str = f"${price:,.2f}" if price is not None else "N/A"
-            date_str = row.most_recent_date.strftime("%d/%m/%Y") if row.most_recent_date else "N/A"
+            date_str = row.most_recent_date.strftime("%-d %b %Y") if row.most_recent_date else "N/A"
             qty_str = f"{row.total_quantity:,.0f}" if row.total_quantity else "0"
             output_parts.append(
                 f"| {idx} | {row.supplier_name} | {row.part_number} | {row.brand or 'N/A'} | {price_str} | {date_str} | {qty_str} | {row.order_count} |"
@@ -530,8 +530,8 @@ def _do_search_purchase_history(
                 func.max(ProductSupplier.date).label('latest_date'),
             ).first()
 
-            earliest = stats.earliest_date.strftime("%d/%m/%Y") if stats.earliest_date else "N/A"
-            latest = stats.latest_date.strftime("%d/%m/%Y") if stats.latest_date else "N/A"
+            earliest = stats.earliest_date.strftime("%-d %b %Y") if stats.earliest_date else "N/A"
+            latest = stats.latest_date.strftime("%-d %b %Y") if stats.latest_date else "N/A"
 
             return (
                 f"Purchase history database summary:\n\n"
@@ -559,7 +559,7 @@ def _do_search_purchase_history(
         output.append("|---|-----------|------|-------------|-------|----------|-----|-------|--------|")
 
         for idx, row in enumerate(rows, 1):
-            date_str = row.date.strftime("%d/%m/%Y") if row.date else "N/A"
+            date_str = row.date.strftime("%-d %b %Y") if row.date else "N/A"
             price_str = f"${row.price:,.2f}" if row.price is not None else "N/A"
             qty_str = f"{row.quantity:,.0f}" if row.quantity is not None else "N/A"
             output.append(
