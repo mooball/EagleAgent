@@ -215,6 +215,42 @@ def build_profile_context(profile_data: Dict[str, Any]) -> List[str]:
     return sections
 
 
+def _build_action_awareness(profile_data: Optional[Dict[str, Any]] = None) -> str:
+    """Build a prompt section listing available actions from the registry.
+
+    Imports the action registry lazily to avoid circular imports.
+    Filters actions based on the user's role in *profile_data*.
+    """
+    try:
+        from includes.actions import get_actions_for_user, _registry
+    except ImportError:
+        return ""
+
+    if not _registry:
+        return ""
+
+    # Determine a dummy user_id-like value for filtering.
+    # The role is already resolved by GeneralAgent; we just need to know
+    # whether to show admin-only items.
+    is_admin = (profile_data or {}).get("role", "Staff") == "Admin"
+
+    lines = [
+        "You have access to the following action tools that the user can trigger via "
+        "natural language or button clicks. When a user seems to be looking for "
+        "available commands, features, or actions, use the list_available_actions tool "
+        "or suggest the relevant action:",
+        "",
+    ]
+
+    for action in _registry.values():
+        if action.admin_only and not is_admin:
+            continue
+        admin_tag = " (admin only)" if action.admin_only else ""
+        lines.append(f"- **{action.label}**{admin_tag}: {action.description}")
+
+    return "\n".join(lines)
+
+
 def build_system_prompt(
     profile_data: Optional[Dict[str, Any]] = None,
     available_tool_names: Optional[List[str]] = None
@@ -289,6 +325,9 @@ def build_system_prompt(
             if tool_name in TOOL_INSTRUCTIONS:
                 parts.append(TOOL_INSTRUCTIONS[tool_name]["prompt_template"])
                 parts.append("")  # Spacing between instructions
+
+    # Dynamic action awareness section built from the action registry
+    parts.append(_build_action_awareness(profile_data))
     
     return "\n".join(parts).strip()
 

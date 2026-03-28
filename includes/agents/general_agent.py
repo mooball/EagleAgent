@@ -6,6 +6,7 @@ import logging
 
 from includes.agents.base import BaseSubAgent
 from includes.tools.user_profile import create_profile_tools
+from includes.tools.action_tools import create_action_tools
 from includes.prompts import build_system_prompt
 from config import config
 from google.genai import types as genai_types
@@ -48,6 +49,9 @@ class GeneralAgent(BaseSubAgent):
         tools = []
         if user_id and self.store:
             tools.extend(create_profile_tools(self.store, user_id))
+
+        # Action tools (list actions, new conversation, delete data)
+        tools.extend(create_action_tools(user_id))
         
         # Add MCP tools if available
         if self.mcp_client:
