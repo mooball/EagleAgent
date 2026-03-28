@@ -251,6 +251,91 @@ def _build_action_awareness(profile_data: Optional[Dict[str, Any]] = None) -> st
     return "\n".join(lines)
 
 
+def _build_script_awareness(profile_data: Optional[Dict[str, Any]] = None) -> str:
+    """Build a prompt section listing scripts an admin can run.
+
+    Only included for Admin users. Imports the script registry lazily.
+    """
+    is_admin = (profile_data or {}).get("role", "Staff") == "Admin"
+    if not is_admin:
+        return ""
+
+    try:
+        from config.scripts import list_scripts
+    except ImportError:
+        return ""
+
+    registry = list_scripts()
+    if not registry:
+        return ""
+
+    lines = [
+        "",
+        "You have server-side script tools for running background tasks.",
+        "",
+        "Workflow:",
+        "1. Use run_script to request a script run — this shows the user a confirmation button (Run/Cancel).",
+        "2. After the user clicks Run, the job starts in the background. You will NOT receive the job ID directly.",
+        "3. To check on a job, use list_jobs (shows all jobs with IDs and status) or get_job_status(script_name='...') to look it up by name.",
+        "4. Use cancel_job to stop a running job.",
+        "",
+        "IMPORTANT: When asked about a job's status, ALWAYS call list_jobs or get_job_status — never say you can't check. You DO have these tools.",
+        "",
+        "Registered scripts:",
+    ]
+
+    for name, info in registry.items():
+        lines.append(f"- **{name}**: {info['description']}")
+
+    return "\n".join(lines)
+
+
+def _build_admin_profile_hint(profile_data: Optional[Dict[str, Any]] = None) -> str:
+    """Build a hint directing admin users to the System Admin profile for script tasks."""
+    is_admin = (profile_data or {}).get("role", "Staff") == "Admin"
+    if not is_admin:
+        return ""
+
+    return (
+        "\nServer administration tasks such as running scripts, updating embeddings, "
+        "importing data, and checking background jobs are available in the **System Admin** "
+        "chat profile. If the user asks about these tasks, let them know they can switch to "
+        "that profile using the dropdown at the top of the chat."
+    )
+
+
+def build_sysadmin_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Build the system prompt for the System Admin agent.
+
+    Includes agent identity (in admin mode), user profile context,
+    and the full script/job awareness section.
+    """
+    parts = []
+
+    current_time = datetime.datetime.now(
+        datetime.timezone(datetime.timedelta(hours=10))
+    ).strftime("%A, %Y-%m-%d %H:%M:%S")
+    parts.append(f"The current date and time in AEST (UTC+10) is: {current_time}.")
+    parts.append("")
+
+    parts.append(f"You are {AGENT_CONFIG['name']} in System Admin mode.")
+    parts.append(
+        "You help administrators manage server-side scripts and background jobs."
+    )
+    parts.append("You are professional, concise, and focused on operational tasks.")
+    parts.append("")
+
+    if profile_data:
+        parts.append(PROFILE_TEMPLATES["header"])
+        parts.extend(build_profile_context(profile_data))
+        parts.append("")
+
+    parts.append(_build_script_awareness(profile_data or {"role": "Admin"}))
+
+    return "\n".join(parts).strip()
+
+
 def build_system_prompt(
     profile_data: Optional[Dict[str, Any]] = None,
     available_tool_names: Optional[List[str]] = None
@@ -328,6 +413,9 @@ def build_system_prompt(
 
     # Dynamic action awareness section built from the action registry
     parts.append(_build_action_awareness(profile_data))
+
+    # Redirect admin users to System Admin profile for script/job tasks
+    parts.append(_build_admin_profile_hint(profile_data))
     
     return "\n".join(parts).strip()
 

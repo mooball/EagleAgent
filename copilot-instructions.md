@@ -12,6 +12,7 @@
 app.py                    # Chainlit entry point — graph construction, handlers, streaming
 config/
   settings.py             # Non-secret configuration (Config class, env overrides)
+  scripts.py              # Script registry — allowlist of runnable server-side scripts
   mcp_servers.yaml        # MCP server definitions
 includes/
   agents/                 # Multi-agent system
@@ -22,9 +23,11 @@ includes/
     browser_agent.py       # BrowserAgent — web automation via agent-browser CLI
     code_agent.py          # (stub — future)
     data_agent.py          # (stub — future)
-  tools/                   # Tool definitions (browser_tools.py, user_profile.py, action_tools.py)
+  tools/                   # Tool definitions (browser_tools.py, user_profile.py, action_tools.py, job_tools.py)
   prompts.py               # System prompt builder — dynamic, role-aware, profile-aware
   actions.py               # Action registry and dispatcher — replaces slash commands
+  job_runner.py            # Async background job runner — subprocess management, reaper, signal handling
+  job_progress.py          # Chainlit progress messages for background jobs
   commands.py              # Legacy command handlers (deleteall wipe logic)
   document_processing.py   # PDF/image/text/audio processing for file attachments
   local_storage_client.py  # LocalStorageClient — file attachments on local disk
@@ -136,6 +139,19 @@ Actions replace the old `/` slash commands with Chainlit-native action buttons a
 - Prompts include user profile context, available tools, current date/time.
 - Role-based access: admin users get additional tools; staff get a filtered set.
 - Admin emails configured in `config/settings.py` (`ADMIN_EMAILS`).
+- `_build_script_awareness()` adds a section for admins listing registered scripts and job management workflow.
+
+## Server-Side Scripts (`config/scripts.py`, `includes/job_runner.py`)
+
+Admin users can run registered scripts from the chat. See `docs/SERVER_SCRIPTS.md` for full details.
+
+- **Script registry** (`config/scripts.py`): Allowlist of runnable scripts with command, description, and allowed args.
+- **JobRunner** (`includes/job_runner.py`): Spawns scripts as async subprocesses, tracks status in memory, captures output (200-line ring buffer), reaper polls every 2s, SIGTERM/SIGINT handlers for graceful shutdown.
+- **Progress** (`includes/job_progress.py`): Posts Chainlit messages on start (with Cancel button), every 30s, and on completion/failure.
+- **LangGraph tools** (`includes/tools/job_tools.py`): `run_script` (confirmation flow), `list_scripts`, `list_jobs`, `get_job_status` (by ID or script name), `cancel_job`. All admin-only.
+- **Confirmation flow**: `run_script` tool sends Run/Cancel buttons. Actual execution happens in `@cl.action_callback("confirm_run_script")` in `app.py`.
+
+**To add a new script:** Add an entry to `SCRIPT_REGISTRY` in `config/scripts.py`. That's it.
 
 ## Testing
 - Run tests: `uv run pytest tests/ -v`
