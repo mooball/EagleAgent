@@ -41,6 +41,7 @@ COPY chainlit.md ./
 COPY .chainlit/ ./.chainlit/
 COPY includes/ ./includes/
 COPY config/ ./config/
+COPY scripts/ ./scripts/
 COPY public/ ./public/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
