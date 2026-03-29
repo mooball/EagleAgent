@@ -218,6 +218,7 @@ class SupervisorState(TypedDict):
     user_id: str  # User email for cross-thread memory lookup
     file_attachments: NotRequired[list[Dict[str, Any]]]  # Optional: uploaded file metadata
     next_agent: NotRequired[str]  # Which agent to route to
+    intent_context: NotRequired[str]  # Procurement intent context from action buttons
 
 
 
@@ -498,13 +499,18 @@ async def set_starters():
             icon="/public/avatars/EagleAgent.png",
         ),
         cl.Starter(
-            label="Search for a product",
-            message="I need to find a product",
+            label="Find a product",
+            message="I need to find a product in the database",
             icon="/public/avatars/EagleAgent.png",
         ),
         cl.Starter(
-            label="Show available actions",
-            message="actions",
+            label="Find a supplier",
+            message="I need to find a supplier",
+            icon="/public/avatars/EagleAgent.png",
+        ),
+        cl.Starter(
+            label="Check purchase history",
+            message="I want to check purchase history",
             icon="/public/avatars/EagleAgent.png",
         ),
     ]
@@ -573,7 +579,18 @@ async def start():
         else:
             welcome_msg = "Hello! How can I help you today?"
 
-        await cl.Message(content=welcome_msg).send()
+        # Procurement intent buttons for EagleAgent profile
+        from includes.prompts import INTENTS
+        intent_buttons = [
+            cl.Action(
+                name=name,
+                payload={},
+                label=f"{intent['icon']} {intent['label']}",
+                description=intent["description"],
+            )
+            for name, intent in INTENTS.items()
+        ]
+        await cl.Message(content=welcome_msg, actions=intent_buttons).send()
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
@@ -636,9 +653,20 @@ async def on_chat_resume(thread: ThreadDict):
                 actions=action_buttons,
             ).send()
         else:
+            from includes.prompts import INTENTS
+            intent_buttons = [
+                cl.Action(
+                    name=name,
+                    payload={},
+                    label=f"{intent['icon']} {intent['label']}",
+                    description=intent["description"],
+                )
+                for name, intent in INTENTS.items()
+            ]
             await cl.Message(
                 content=f"Welcome back, {user_name}! Continuing our previous conversation.",
                 author="EagleAgent",
+                actions=intent_buttons,
             ).send()
 
 
@@ -666,6 +694,31 @@ async def on_action_new_conversation(action: cl.Action):
 async def on_action_delete_all_data(action: cl.Action):
     """Handle the Delete All Data action button (sends confirmation)."""
     await dispatch_action("delete_all_data")
+
+
+@cl.action_callback("find_product_supplier")
+async def on_action_find_product_supplier(action: cl.Action):
+    await dispatch_action("find_product_supplier")
+
+
+@cl.action_callback("find_product")
+async def on_action_find_product(action: cl.Action):
+    await dispatch_action("find_product")
+
+
+@cl.action_callback("find_supplier")
+async def on_action_find_supplier(action: cl.Action):
+    await dispatch_action("find_supplier")
+
+
+@cl.action_callback("find_brand_supplier")
+async def on_action_find_brand_supplier(action: cl.Action):
+    await dispatch_action("find_brand_supplier")
+
+
+@cl.action_callback("check_purchase_history")
+async def on_action_check_purchase_history(action: cl.Action):
+    await dispatch_action("check_purchase_history")
 
 
 @cl.action_callback("confirm_delete_all")
@@ -814,6 +867,11 @@ async def main(message: cl.Message):
         "messages": [HumanMessage(content=message_content)],
         "user_id": user_id
     }
+    
+    # Inject procurement intent context if set by an action button
+    intent_context = cl.user_session.get("intent_context")
+    if intent_context:
+        inputs["intent_context"] = intent_context
     
     if file_metadata:
         inputs["file_attachments"] = file_metadata

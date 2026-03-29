@@ -15,6 +15,7 @@ from typing import Any, Callable, Awaitable, Optional
 import chainlit as cl
 
 from config import config
+from includes.prompts import INTENTS
 
 logger = logging.getLogger(__name__)
 
@@ -198,3 +199,72 @@ async def handle_delete_all_data(**_kwargs: Any) -> None:
         author="EagleAgent",
         actions=actions,
     ).send()
+
+
+# ---------------------------------------------------------------------------
+# Procurement intent action handlers
+# ---------------------------------------------------------------------------
+
+async def _handle_intent(intent_name: str) -> None:
+    """Common handler for procurement intent buttons."""
+    intent = INTENTS[intent_name]
+    cl.user_session.set("intent_context", intent["context"])
+    await cl.Message(
+        content=f"{intent['icon']} {intent['follow_up']}",
+        author="EagleAgent",
+    ).send()
+
+
+@register_action(
+    name="find_product_supplier",
+    label=INTENTS["find_product_supplier"]["label"],
+    description=INTENTS["find_product_supplier"]["description"],
+    icon=INTENTS["find_product_supplier"]["icon"],
+    admin_only=False,
+)
+async def handle_find_product_supplier(**_kwargs: Any) -> None:
+    await _handle_intent("find_product_supplier")
+
+
+@register_action(
+    name="find_product",
+    label=INTENTS["find_product"]["label"],
+    description=INTENTS["find_product"]["description"],
+    icon=INTENTS["find_product"]["icon"],
+    admin_only=False,
+)
+async def handle_find_product(**_kwargs: Any) -> None:
+    await _handle_intent("find_product")
+
+
+@register_action(
+    name="find_supplier",
+    label=INTENTS["find_supplier"]["label"],
+    description=INTENTS["find_supplier"]["description"],
+    icon=INTENTS["find_supplier"]["icon"],
+    admin_only=False,
+)
+async def handle_find_supplier(**_kwargs: Any) -> None:
+    await _handle_intent("find_supplier")
+
+
+@register_action(
+    name="find_brand_supplier",
+    label=INTENTS["find_brand_supplier"]["label"],
+    description=INTENTS["find_brand_supplier"]["description"],
+    icon=INTENTS["find_brand_supplier"]["icon"],
+    admin_only=False,
+)
+async def handle_find_brand_supplier(**_kwargs: Any) -> None:
+    await _handle_intent("find_brand_supplier")
+
+
+@register_action(
+    name="check_purchase_history",
+    label=INTENTS["check_purchase_history"]["label"],
+    description=INTENTS["check_purchase_history"]["description"],
+    icon=INTENTS["check_purchase_history"]["icon"],
+    admin_only=False,
+)
+async def handle_check_purchase_history(**_kwargs: Any) -> None:
+    await _handle_intent("check_purchase_history")

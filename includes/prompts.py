@@ -134,6 +134,98 @@ PROFILE_TEMPLATES = {
 }
 
 # =============================================================================
+# PROCUREMENT INTENTS
+# =============================================================================
+# Intent definitions for procurement action buttons. Each intent stores
+# context that persists for the entire thread, guiding the LLM's behaviour.
+
+INTENTS = {
+    "find_product_supplier": {
+        "label": "Find a Product Supplier",
+        "icon": "🏭",
+        "description": "Find a supplier who can supply specific products",
+        "follow_up": (
+            "I understand you're looking to find a supplier for specific products. "
+            "Can you tell me the product part numbers, name, or a detailed description?"
+        ),
+        "context": (
+            "The user is specifically looking for a supplier from our current database "
+            "who can fulfil a product order. Use `part_purchase_history` to find suppliers "
+            "who have previously supplied the product, and `search_suppliers` to find "
+            "additional matches. Prioritise suppliers with recent purchase history."
+        ),
+    },
+    "find_product": {
+        "label": "Find a Product",
+        "icon": "📦",
+        "description": "Search for a product in the internal catalog",
+        "follow_up": (
+            "Sure — I can search our product database. Do you have a part number, "
+            "brand name, supplier code, or a description of what you're looking for?"
+        ),
+        "context": (
+            "The user wants to find a product in the internal product catalog. "
+            "Use `search_products` with whatever identifiers they provide. If they "
+            "give a vague description, use the semantic/vector search via the "
+            "`description` parameter."
+        ),
+    },
+    "find_supplier": {
+        "label": "Find a Supplier",
+        "icon": "🔍",
+        "description": "Search for a supplier in the database",
+        "follow_up": (
+            "I can search our supplier database. Are you looking for a specific "
+            "supplier by name, country, or do you have a description of what they "
+            "should supply?"
+        ),
+        "context": (
+            "The user wants to find a supplier in the internal supplier database. "
+            "Use `search_suppliers` with whatever criteria they provide. The `query` "
+            "parameter supports natural language and falls back to vector similarity "
+            "search on supplier notes."
+        ),
+    },
+    "find_brand_supplier": {
+        "label": "Find a Brand Supplier",
+        "icon": "🏷️",
+        "description": "Find a supplier who carries a specific brand",
+        "follow_up": (
+            "I can find suppliers who carry a specific brand. "
+            "What brand are you looking for?"
+        ),
+        "context": (
+            "The user wants to find suppliers who carry a specific brand. First use "
+            "`search_brands` to verify/resolve the brand name, then use "
+            "`search_suppliers` with the `brand` parameter to find suppliers linked "
+            "to that brand."
+        ),
+    },
+    "check_purchase_history": {
+        "label": "Check Purchase History",
+        "icon": "📋",
+        "description": "Look up past purchase records",
+        "follow_up": (
+            "I can look up purchase history. Are you looking for a specific "
+            "part number, supplier, PO number, or a date range?"
+        ),
+        "context": (
+            "The user wants to check past purchase history. Use "
+            "`search_purchase_history` to find records matching their criteria. "
+            "If they provide a specific part number, also use `part_purchase_history` "
+            "to get a per-supplier summary. Dates use YYYY-MM-DD format."
+        ),
+    },
+}
+
+
+def get_intent_context(intent_name: str) -> Optional[str]:
+    """Return the LLM context string for a given intent, or None if unknown."""
+    intent = INTENTS.get(intent_name)
+    return intent["context"] if intent else None
+
+
+# =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
 
