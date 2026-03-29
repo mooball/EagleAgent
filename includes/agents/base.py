@@ -184,6 +184,22 @@ class BaseSubAgent(ABC):
         # Build system prompt (async to support profile-based prompts)
         system_prompt = await self.get_system_prompt_async(user_id)
         
+        # Ensure all agents know the current date/time
+        import datetime
+        current_time = datetime.datetime.now(
+            datetime.timezone(datetime.timedelta(hours=10))
+        ).strftime("%A, %Y-%m-%d %H:%M:%S")
+        if current_time not in system_prompt:
+            system_prompt = (
+                f"The current date and time in AEST (UTC+10) is: {current_time}.\n\n"
+                + system_prompt
+            )
+        
+        # Append procurement intent context if present in state
+        intent_context = state.get("intent_context")
+        if intent_context:
+            system_prompt += f"\n\n**Current user intent:** {intent_context}"
+        
         # Prepend system prompt if not already present
         enhanced_messages = list(messages)
         if not any(isinstance(m, SystemMessage) for m in enhanced_messages):
