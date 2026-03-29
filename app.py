@@ -3,6 +3,8 @@ import uuid
 import urllib.parse
 from chainlit.types import ThreadDict
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+from chainlit.data.utils import queue_until_user_message
+from datetime import datetime, timezone
 from langchain_core.messages import HumanMessage, BaseMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -31,6 +33,62 @@ from fastapi.staticfiles import StaticFiles
 
 # Create the data directory if it doesn't exist
 os.makedirs(os.path.join(config.DATA_DIR, "attachments"), exist_ok=True)
+
+
+class FixedSQLAlchemyDataLayer(SQLAlchemyDataLayer):
+    """Fix two upstream Chainlit bugs in SQLAlchemyDataLayer:
+
+    1. get_current_timestamp() uses datetime.now() (local time) + "Z" suffix,
+       producing timestamps that claim to be UTC but are actually local time.
+    2. create_step() calls update_thread(thread_id) with no args, which causes
+       createdAt to be overwritten on every step — resetting the thread date.
+    """
+
+    async def get_current_timestamp(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @queue_until_user_message()
+    async def create_step(self, step_dict):
+        import json as _json
+
+        # Ensure thread row exists without overwriting createdAt on existing threads
+        thread_id = step_dict["threadId"]
+        await self.execute_sql(
+            query="""
+                INSERT INTO threads ("id", "createdAt")
+                VALUES (:id, :createdAt)
+                ON CONFLICT ("id") DO NOTHING;
+            """,
+            parameters={"id": thread_id, "createdAt": await self.get_current_timestamp()},
+        )
+
+        if self.show_logger:
+            logger.info(f"SQLAlchemy: create_step, step_id={step_dict.get('id')}")
+
+        step_dict["showInput"] = (
+            str(step_dict.get("showInput", "")).lower()
+            if "showInput" in step_dict
+            else None
+        )
+        parameters = {
+            key: value
+            for key, value in step_dict.items()
+            if value is not None and not (isinstance(value, dict) and not value)
+        }
+        parameters["metadata"] = _json.dumps(step_dict.get("metadata", {}))
+        parameters["generation"] = _json.dumps(step_dict.get("generation", {}))
+        columns = ", ".join(f'"{key}"' for key in parameters.keys())
+        values = ", ".join(f":{key}" for key in parameters.keys())
+        updates = ", ".join(
+            f'"{key}" = :{key}' for key in parameters.keys() if key != "id"
+        )
+        query = f"""
+            INSERT INTO steps ({columns})
+            VALUES ({values})
+            ON CONFLICT (id) DO UPDATE
+            SET {updates};
+        """
+        await self.execute_sql(query=query, parameters=parameters)
 
 
 class OAuthErrorRedirectMiddleware:
@@ -346,7 +404,7 @@ def get_data_layer():
     attachments_dir = os.path.join(config.DATA_DIR, "attachments")
     storage_client = LocalStorageClient(base_dir=attachments_dir)
     
-    return SQLAlchemyDataLayer(
+    return FixedSQLAlchemyDataLayer(
         conninfo=config.DATABASE_URL,
         storage_provider=storage_client,
         show_logger=True,
