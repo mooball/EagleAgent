@@ -419,7 +419,11 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
         from sqlalchemy import func, desc
         results = (
             session.query(
+                Supplier.id.label('supplier_id'),
                 Supplier.name.label('supplier_name'),
+                Supplier.city.label('supplier_city'),
+                Supplier.country.label('supplier_country'),
+                Supplier.contacts.label('supplier_contacts'),
                 Product.part_number.label('part_number'),
                 Product.brand.label('brand'),
                 func.max(ProductSupplier.date).label('most_recent_date'),
@@ -429,7 +433,7 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
             .join(Product, ProductSupplier.product_id == Product.id)
             .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
             .filter(ProductSupplier.product_id.in_(product_ids))
-            .group_by(Supplier.id, Supplier.name, Product.part_number, Product.brand)
+            .group_by(Supplier.id, Supplier.name, Supplier.city, Supplier.country, Supplier.contacts, Product.part_number, Product.brand)
             .order_by(desc('order_count'))
             .limit(limit)
             .all()
@@ -446,31 +450,41 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
             latest = (
                 session.query(ProductSupplier.price)
                 .join(Product, ProductSupplier.product_id == Product.id)
-                .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
                 .filter(
                     and_(
-                        Supplier.name == row.supplier_name,
+                        ProductSupplier.supplier_id == row.supplier_id,
                         Product.part_number == row.part_number,
                     )
                 )
                 .order_by(ProductSupplier.date.desc().nulls_last())
                 .first()
             )
-            price_subquery[(row.supplier_name, row.part_number)] = latest[0] if latest else None
+            price_subquery[(row.supplier_id, row.part_number)] = latest[0] if latest else None
 
         # Format output as markdown table
         output_parts = [f"Purchase history for part number '{part_number}':"]
         output_parts.append(f"\nFound {len(results)} supplier(s), sorted by number of purchases:\n")
-        output_parts.append("| # | Supplier | Part Number | Brand | Last Price | Last Date | Total Qty | Orders |")
-        output_parts.append("|---|----------|-------------|-------|-----------|-----------|-----------|--------|")
+        output_parts.append("| # | Supplier ID | Supplier | Location | Contact | Part Number | Brand | Last Price | Last Date | Total Qty | Orders |")
+        output_parts.append("|---|-------------|----------|----------|---------|-------------|-------|-----------|-----------|-----------|--------|")
 
         for idx, row in enumerate(results, 1):
-            price = price_subquery.get((row.supplier_name, row.part_number))
+            price = price_subquery.get((row.supplier_id, row.part_number))
             price_str = f"${price:,.2f}" if price is not None else "N/A"
             date_str = row.most_recent_date.strftime("%-d %b %Y") if row.most_recent_date else "N/A"
             qty_str = f"{row.total_quantity:,.0f}" if row.total_quantity else "0"
+            # Build location string
+            location_parts = [p for p in [row.supplier_city, row.supplier_country] if p]
+            location_str = ", ".join(location_parts) if location_parts else "N/A"
+            # Build contact string from JSONB contacts
+            contact_str = "N/A"
+            if row.supplier_contacts:
+                contacts = row.supplier_contacts if isinstance(row.supplier_contacts, list) else []
+                if contacts:
+                    c = contacts[0]  # Primary contact
+                    parts = [p for p in [c.get("name"), c.get("email"), c.get("phone")] if p]
+                    contact_str = " | ".join(parts) if parts else "N/A"
             output_parts.append(
-                f"| {idx} | {row.supplier_name} | {row.part_number} | {row.brand or 'N/A'} | {price_str} | {date_str} | {qty_str} | {row.order_count} |"
+                f"| {idx} | {row.supplier_id} | {row.supplier_name} | {location_str} | {contact_str} | {row.part_number} | {row.brand or 'N/A'} | {price_str} | {date_str} | {qty_str} | {row.order_count} |"
             )
 
         return "\n".join(output_parts)
