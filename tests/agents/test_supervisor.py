@@ -29,8 +29,9 @@ async def test_supervisor_ai_message(supervisor):
     assert result == {"next_agent": "FINISH"}
 
 @pytest.mark.asyncio
-async def test_supervisor_rule_based_browser(supervisor):
+async def test_supervisor_rule_based_browser(supervisor, mock_model):
     state = {"messages": [HumanMessage(content="Can you search Google for Python tutorials?")]}
+    mock_model.with_structured_output.return_value.ainvoke.return_value = RouteDecision(next_agent="BrowserAgent")
     result = await supervisor(state)
     assert result == {"next_agent": "BrowserAgent"}
 
@@ -58,22 +59,60 @@ async def test_supervisor_llm_routing_fallback(supervisor, mock_model):
     assert result == {"next_agent": "GeneralAgent"}
 
 @pytest.mark.asyncio
-async def test_supervisor_rule_based_procurement(supervisor):
+async def test_supervisor_llm_routing_procurement_supplier(supervisor, mock_model):
     state = {"messages": [HumanMessage(content="Find me a water pump with part number 123")]}
+    mock_model.with_structured_output.return_value.ainvoke.return_value = RouteDecision(next_agent="ProcurementAgent")
     result = await supervisor(state)
     assert result == {"next_agent": "ProcurementAgent"}
+    mock_model.with_structured_output.return_value.ainvoke.assert_called_once()
 
 @pytest.mark.asyncio
-async def test_supervisor_rule_based_purchase_history(supervisor):
+async def test_supervisor_llm_routing_purchase_history(supervisor, mock_model):
     state = {"messages": [HumanMessage(content="Do you have purchase history records?")]}
+    mock_model.with_structured_output.return_value.ainvoke.return_value = RouteDecision(next_agent="ProcurementAgent")
     result = await supervisor(state)
     assert result == {"next_agent": "ProcurementAgent"}
+    mock_model.with_structured_output.return_value.ainvoke.assert_called_once()
 
 @pytest.mark.asyncio
-async def test_supervisor_rule_based_purchase_order(supervisor):
+async def test_supervisor_llm_routing_purchase_order(supervisor, mock_model):
     state = {"messages": [HumanMessage(content="How many purchase orders do we have?")]}
+    mock_model.with_structured_output.return_value.ainvoke.return_value = RouteDecision(next_agent="ProcurementAgent")
     result = await supervisor(state)
     assert result == {"next_agent": "ProcurementAgent"}
+    mock_model.with_structured_output.return_value.ainvoke.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_supervisor_intent_routes_to_procurement(supervisor):
+    """When intent_context contains procurement tool names, route directly to ProcurementAgent."""
+    state = {
+        "messages": [HumanMessage(content="who can supply hilti products")],
+        "intent_context": "The user wants to find suppliers who carry a specific brand. First use search_brands to verify the brand name, then use search_suppliers with the brand parameter.",
+    }
+    result = await supervisor(state)
+    assert result["next_agent"] == "ProcurementAgent"
+    assert result["intent_context"] is None
+
+@pytest.mark.asyncio
+async def test_supervisor_intent_cleared_after_use(supervisor):
+    """Intent context should be set to None after routing so it doesn't re-trigger."""
+    state = {
+        "messages": [HumanMessage(content="anything")],
+        "intent_context": "Use search_products to find the product.",
+    }
+    result = await supervisor(state)
+    assert result["intent_context"] is None
+
+@pytest.mark.asyncio
+async def test_supervisor_non_procurement_intent_falls_through(supervisor, mock_model):
+    """Intent context without procurement tool names should not trigger intent routing."""
+    state = {
+        "messages": [HumanMessage(content="hello")],
+        "intent_context": "The user wants general help with something.",
+    }
+    mock_model.with_structured_output.return_value.ainvoke.return_value = RouteDecision(next_agent="GeneralAgent")
+    result = await supervisor(state)
+    assert result == {"next_agent": "GeneralAgent"}
 
 @pytest.mark.asyncio
 async def test_supervisor_llm_routing_procurement(supervisor, mock_model):

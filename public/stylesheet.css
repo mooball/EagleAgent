@@ -1,0 +1,23 @@
+/*
+ * Widen the chat message area to use available screen width.
+ * The thread content wrapper and each message div inside it
+ * both have max-width constraints that need overriding.
+ */
+
+/* Widen the main thread content wrapper */
+main .overflow-y-auto > .mx-auto {
+    max-width: min(1400px, 90vw) !important;
+}
+
+/* Widen each message row inside the thread */
+main .overflow-y-auto > .mx-auto > div > div {
+    max-width: min(1400px, 90vw) !important;
+}
+
+/* Let tables use their natural width and scroll if still too wide */
+table {
+    width: max-content;
+    max-width: calc(90vw - 2rem);
+    display: block;
+    overflow-x: auto;
+}

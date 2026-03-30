@@ -295,6 +295,34 @@ def _do_supplier_search(name: Optional[str] = None,
         for sid, bname in brand_links:
             supplier_brands.setdefault(sid, []).append(bname)
 
+        # Fetch purchase stats per supplier
+        from sqlalchemy import func
+        t_purchase = time.monotonic()
+        purchase_stats_query = (
+            session.query(
+                ProductSupplier.supplier_id,
+                func.count(ProductSupplier.id).label('purchase_count'),
+                func.max(ProductSupplier.date).label('last_purchase_date'),
+            )
+            .filter(ProductSupplier.supplier_id.in_(supplier_ids))
+        )
+        if brand:
+            purchase_stats_query = (
+                purchase_stats_query
+                .join(Product, ProductSupplier.product_id == Product.id)
+                .filter(Product.brand.ilike(f"%{brand}%"))
+            )
+        purchase_stats_rows = (
+            purchase_stats_query
+            .group_by(ProductSupplier.supplier_id)
+            .all()
+        )
+        logger.info(f"[TIMING] supplier_search: purchase stats query took {time.monotonic() - t_purchase:.3f}s")
+        supplier_purchase_stats = {
+            row.supplier_id: (row.purchase_count, row.last_purchase_date)
+            for row in purchase_stats_rows
+        }
+
         output_parts = [f"Found {total} matching supplier(s). Displaying {len(results)}:"]
         for s in results:
             item = f"- {s.name}"
@@ -320,6 +348,14 @@ def _do_supplier_search(name: Optional[str] = None,
             brands = supplier_brands.get(s.id, [])
             if brands:
                 item += f" | Brands: {', '.join(sorted(brands))}"
+            # Purchase stats
+            stats = supplier_purchase_stats.get(s.id)
+            if stats:
+                count, last_date = stats
+                date_str = last_date.strftime("%-d %b %Y") if last_date else "N/A"
+                item += f" | Purchases: {count} | Last Purchase: {date_str}"
+            else:
+                item += f" | Purchases: 0"
             output_parts.append(item)
 
         if total > limit:
@@ -394,7 +430,7 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
             .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
             .filter(ProductSupplier.product_id.in_(product_ids))
             .group_by(Supplier.id, Supplier.name, Product.part_number, Product.brand)
-            .order_by(desc('total_quantity'))
+            .order_by(desc('order_count'))
             .limit(limit)
             .all()
         )
@@ -424,7 +460,7 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
 
         # Format output as markdown table
         output_parts = [f"Purchase history for part number '{part_number}':"]
-        output_parts.append(f"\nFound {len(results)} supplier(s), sorted by total quantity supplied:\n")
+        output_parts.append(f"\nFound {len(results)} supplier(s), sorted by number of purchases:\n")
         output_parts.append("| # | Supplier | Part Number | Brand | Last Price | Last Date | Total Qty | Orders |")
         output_parts.append("|---|----------|-------------|-------|-----------|-----------|-----------|--------|")
 

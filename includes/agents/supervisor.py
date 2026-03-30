@@ -34,50 +34,36 @@ class Supervisor:
             # Just route to FINISH. The user will reply next.
             return {"next_agent": "FINISH"}
 
-        # It's a HumanMessage. Let's do hybrid routing.
+        # Intent-based routing: if an action button set a procurement intent, honour it
+        intent_context = state.get("intent_context")
+        if intent_context:
+            procurement_intent_signals = [
+                "search_products", "search_suppliers", "search_brands",
+                "part_purchase_history", "search_purchase_history",
+            ]
+            if any(signal in intent_context for signal in procurement_intent_signals):
+                logger.info("Supervisor intent-based routing: ProcurementAgent (intent_context set)")
+                return {"next_agent": "ProcurementAgent", "intent_context": None}
+
+        # It's a HumanMessage. Route via LLM.
         content = last_message.content if hasattr(last_message, "content") else str(last_message)
-        if isinstance(content, list):
-            # Handle multimodal/list content
-            text_parts = []
-            for part in content:
-                if isinstance(part, dict) and "text" in part:
-                    text_parts.append(part["text"])
-                elif isinstance(part, str):
-                    text_parts.append(part)
-            user_text = " ".join(text_parts).lower()
-        elif isinstance(content, str):
-            user_text = content.lower()
-        else:
-            user_text = str(content).lower()
-        
-        # Rule-based fast routing (kept as escape hatch for unambiguous cases)
-        # Empty for now — LLM routing handles all cases
-        browser_keywords = []
-        procurement_keywords = []
-        
-        if any(keyword in user_text for keyword in browser_keywords):
-            logger.info("Supervisor rule-based routing: BrowserAgent")
-            return {"next_agent": "BrowserAgent"}
-            
-        if any(keyword in user_text for keyword in procurement_keywords):
-            logger.info("Supervisor rule-based routing: ProcurementAgent")
-            return {"next_agent": "ProcurementAgent"}
             
         # LLM-based routing
         system_prompt = """You are a supervisor managing a team of expert agents.
 Your job is to route the user's request to the correct agent.
 
 Available agents:
-- GeneralAgent: Use for general conversation, memory retrieval, task planning, document summarization. Also has built-in web search knowledge (Google Search grounding) so it can answer questions about products, companies, or topics using real-time web information — use it when the user wants external/public information about something, or wants to know more beyond what's in our internal database.
+- GeneralAgent: General conversation, memory retrieval, task planning, document summarization. Has Google Search grounding for answering questions using real-time web information. Use when the user explicitly wants external/public/web information, or for non-procurement topics.
 - BrowserAgent: Use ONLY for tasks that require interacting with a specific website — opening a URL, navigating pages, filling forms, clicking buttons, taking screenshots. Do NOT use for general information questions.
-- ProcurementAgent: Use for searching the INTERNAL product catalog, finding part numbers, brands, product descriptions, supplier details, purchase history, purchase orders, and any questions about what products or suppliers exist in our database. Also use for questions like "how many products/suppliers/purchase orders do we have?" or "do you have purchase records?".
+- ProcurementAgent: Use for ANY question about products, parts, brands, suppliers, or purchase history that should be answered from our INTERNAL database. This includes: finding suppliers for a product or brand, looking up part numbers, checking purchase orders, searching the product catalog, and asking about what we have in stock or on record. When the user asks "who can supply X?" or "find a supplier for X" without specifying "search the web", default to ProcurementAgent.
 - FINISH: Use if the conversation is over or the request is fully fulfilled.
 
 Routing guidelines:
-- If the user asks about a product/supplier and wants INTERNAL database info → ProcurementAgent
-- If the user wants MORE info, external details, web descriptions, or public knowledge about something → GeneralAgent
+- Questions about suppliers, products, brands, parts, purchase history → ProcurementAgent (unless the user explicitly asks for web/external info)
+- "Search the web for..." or "find me information online about..." → GeneralAgent
+- If the user wants MORE info beyond what our database returned, or explicitly asks for external/public knowledge → GeneralAgent
 - If the user wants to navigate to a specific website or interact with a web page → BrowserAgent
-- If unsure, prefer GeneralAgent
+- If unsure between ProcurementAgent and GeneralAgent, prefer ProcurementAgent for supplier/product questions
 
 Given the conversation, which agent should act next?
 """
