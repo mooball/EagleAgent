@@ -203,7 +203,7 @@ def _do_supplier_search(name: Optional[str] = None,
                         brand: Optional[str] = None,
                         country: Optional[str] = None,
                         query: Optional[str] = None,
-                        limit: int = 20) -> str:
+                        limit: int = 10) -> str:
     """Executes the supplier search synchronously."""
     import time
     t0 = time.monotonic()
@@ -339,7 +339,7 @@ async def search_suppliers(name: Optional[str] = None,
                            brand: Optional[str] = None,
                            country: Optional[str] = None,
                            query: Optional[str] = None,
-                           limit: int = 20) -> str:
+                           limit: int = 10) -> str:
     """
     Search the suppliers database.
 

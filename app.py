@@ -99,7 +99,7 @@ class FixedSQLAlchemyDataLayer(SQLAlchemyDataLayer):
             "name": name_value,
             "userId": user_id,
             "userIdentifier": user_identifier,
-            "tags": tags,
+            "tags": ",".join(tags) if isinstance(tags, list) else tags,
             "metadata": _json.dumps(metadata) if metadata else None,
         }
         parameters = {
@@ -225,7 +225,13 @@ pg_pool = AsyncConnectionPool(
     config.CHECKPOINT_DATABASE_URL,
     min_size=1,
     max_size=10,
-    kwargs={"autocommit": True},
+    kwargs={
+        "autocommit": True,
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
+    },
     open=False, # We will open this explicitly in an async context or lazily
 )
 
@@ -245,7 +251,9 @@ def create_model(agent_name: str) -> ChatGoogleGenerativeAI:
     """Create a model instance for a specific agent, using per-agent model overrides."""
     return ChatGoogleGenerativeAI(
         model=config.get_agent_model(agent_name),
-        google_api_key=os.getenv("GOOGLE_API_KEY")
+        google_api_key=os.getenv("GOOGLE_API_KEY"),
+        temperature=config.DEFAULT_TEMPERATURE,
+        max_output_tokens=config.DEFAULT_MAX_TOKENS,
     )
 
 # Initialize agents
@@ -940,6 +948,11 @@ async def main(message: cl.Message):
             if gap > 0.5:  # Only log gaps > 500ms to reduce noise
                 logger.info(f"[TIMING] {kind} '{name}' at T+{now - request_start:.1f}s (gap: {gap:.1f}s)")
             last_event_time = now
+        
+        # Log tool invocations to trace ReAct agent loop behavior
+        if kind == "on_tool_start":
+            tool_input = event.get("data", {}).get("input", "")
+            logger.info(f"[TOOL] calling '{name}' with: {str(tool_input)[:200]}")
         
         if kind == "on_chain_start" and name in ["GeneralAgent", "BrowserAgent", "ProcurementAgent", "SysAdminAgent"]:
             active_agent = name
