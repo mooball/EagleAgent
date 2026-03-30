@@ -130,7 +130,11 @@ class TestPurchaseHistorySearch:
 
         # Mock the aggregated result row
         row = MagicMock()
+        row.supplier_id = "supp-uuid-1"
         row.supplier_name = "Acme Tools"
+        row.supplier_city = "Sydney"
+        row.supplier_country = "Australia"
+        row.supplier_contacts = [{"name": "John", "email": "john@acme.com", "phone": "555-1234"}]
         row.part_number = "P-100"
         row.brand = "BrandA"
         row.most_recent_date = date(2026, 1, 15)
@@ -149,7 +153,6 @@ class TestPurchaseHistorySearch:
         # Mock the price subquery
         (mock_session.query.return_value
          .join.return_value
-         .join.return_value
          .filter.return_value
          .order_by.return_value
          .first.return_value) = (42.50,)
@@ -157,19 +160,26 @@ class TestPurchaseHistorySearch:
         result = _do_part_purchase_history(part_number="P-100")
 
         assert "Purchase history for part number 'P-100'" in result
-        assert "| # | Supplier | Part Number | Brand | Last Price | Last Date | Total Qty | Orders |" in result
+        assert "Supplier ID" in result
+        assert "Location" in result
         assert "Acme Tools" in result
         assert "$42.50" in result
         assert "15 Jan 2026" in result
         assert "500" in result
         assert "12" in result
+        assert "Sydney" in result
+        assert "john@acme.com" in result
 
     def test_multiple_suppliers(self, mock_session):
         p1 = Product(id="uuid-1", part_number="P-200", brand="BrandB")
         mock_session.query.return_value.filter.return_value.all.return_value = [p1]
 
         row1 = MagicMock()
+        row1.supplier_id = "supp-uuid-1"
         row1.supplier_name = "Supplier One"
+        row1.supplier_city = "Melbourne"
+        row1.supplier_country = "Australia"
+        row1.supplier_contacts = None
         row1.part_number = "P-200"
         row1.brand = "BrandB"
         row1.most_recent_date = date(2026, 3, 1)
@@ -177,7 +187,11 @@ class TestPurchaseHistorySearch:
         row1.order_count = 20
 
         row2 = MagicMock()
+        row2.supplier_id = "supp-uuid-2"
         row2.supplier_name = "Supplier Two"
+        row2.supplier_city = None
+        row2.supplier_country = "China"
+        row2.supplier_contacts = []
         row2.part_number = "P-200"
         row2.brand = "BrandB"
         row2.most_recent_date = date(2025, 6, 15)
@@ -195,7 +209,6 @@ class TestPurchaseHistorySearch:
 
         (mock_session.query.return_value
          .join.return_value
-         .join.return_value
          .filter.return_value
          .order_by.return_value
          .first.return_value) = (55.00,)
@@ -211,7 +224,11 @@ class TestPurchaseHistorySearch:
         mock_session.query.return_value.filter.return_value.all.return_value = [p1]
 
         row = MagicMock()
+        row.supplier_id = "supp-uuid-3"
         row.supplier_name = "NullSupplier"
+        row.supplier_city = None
+        row.supplier_country = None
+        row.supplier_contacts = None
         row.part_number = "P-300"
         row.brand = None
         row.most_recent_date = None
@@ -228,7 +245,6 @@ class TestPurchaseHistorySearch:
          .all.return_value) = [row]
 
         (mock_session.query.return_value
-         .join.return_value
          .join.return_value
          .filter.return_value
          .order_by.return_value

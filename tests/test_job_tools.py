@@ -285,37 +285,25 @@ class TestScriptAwareness:
 
 class TestSignalHandling:
     @pytest.mark.asyncio
-    async def test_start_registers_signal_handlers(self):
-        """JobRunner.start() should register SIGTERM and SIGINT handlers."""
-        import signal as sig_mod
-
+    async def test_start_creates_reaper_task(self):
+        """JobRunner.start() should create a background reaper task."""
         runner = JobRunner()
-        loop = asyncio.get_running_loop()
-
-        # Record original handlers
-        orig_term = loop._signal_handlers.get(sig_mod.SIGTERM)
-        orig_int = loop._signal_handlers.get(sig_mod.SIGINT)
+        assert runner._reaper_task is None
 
         await runner.start()
         try:
-            # Handlers should now be set
-            assert sig_mod.SIGTERM.value in loop._signal_handlers
-            assert sig_mod.SIGINT.value in loop._signal_handlers
+            assert runner._reaper_task is not None
+            assert not runner._reaper_task.done()
         finally:
-            # Clean up: restore original handlers
-            loop.remove_signal_handler(sig_mod.SIGTERM)
-            loop.remove_signal_handler(sig_mod.SIGINT)
             await runner.shutdown()
 
     @pytest.mark.asyncio
-    async def test_handle_signal_calls_shutdown(self):
-        """_handle_signal should schedule shutdown."""
-        import signal as sig_mod
-
+    async def test_shutdown_cancels_reaper(self):
+        """shutdown() should cancel the reaper task."""
         runner = JobRunner()
-        runner.shutdown = AsyncMock()
-        runner._handle_signal(sig_mod.SIGTERM)
+        await runner.start()
+        reaper = runner._reaper_task
+        assert reaper is not None
 
-        # Give the event loop a tick to execute the ensure_future
-        await asyncio.sleep(0.05)
-        runner.shutdown.assert_awaited_once()
+        await runner.shutdown()
+        assert reaper.done()

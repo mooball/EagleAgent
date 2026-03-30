@@ -30,6 +30,18 @@ def _is_transient_error(exc: Exception) -> bool:
     return any(code in err_str for code in ("429", "503", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded"))
 
 
+async def _notify_retry(agent_name: str, attempt: int, max_retries: int, delay: int) -> None:
+    """Send a Chainlit status message to the user on transient API retries."""
+    try:
+        import chainlit as cl
+        await cl.Message(
+            content=f"\u23f3 LLM temporarily unavailable \u2014 retrying ({attempt}/{max_retries})...",
+            author="System",
+        ).send()
+    except Exception:
+        pass  # Don't let notification failures break the retry loop
+
+
 class BaseSubAgent(ABC):
     """
     Base class for all sub-agents with common patterns.
@@ -263,6 +275,7 @@ class BaseSubAgent(ABC):
                     if _is_transient_error(e) and attempt < MAX_RETRIES:
                         delay = RETRY_BASE_DELAY * attempt
                         logger.warning(f"{self.name} transient API error (attempt {attempt}/{MAX_RETRIES}), retrying in {delay}s: {e}")
+                        await _notify_retry(self.name, attempt, MAX_RETRIES, delay)
                         await asyncio.sleep(delay)
                     else:
                         raise
@@ -280,6 +293,7 @@ class BaseSubAgent(ABC):
                     if _is_transient_error(e) and attempt < MAX_RETRIES:
                         delay = RETRY_BASE_DELAY * attempt
                         logger.warning(f"{self.name} transient API error (attempt {attempt}/{MAX_RETRIES}), retrying in {delay}s: {e}")
+                        await _notify_retry(self.name, attempt, MAX_RETRIES, delay)
                         await asyncio.sleep(delay)
                     else:
                         raise

@@ -216,6 +216,53 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Surface Google API retries to Chainlit UI in real-time
+# ---------------------------------------------------------------------------
+class _GeminiRetryNotifier(logging.Handler):
+    """Intercepts google_genai retry log messages and pushes them to the UI.
+    
+    Debounced: only sends one UI notification per 10-second window to avoid spam
+    when Google does rapid-fire exponential backoff retries.
+    """
+
+    def __init__(self, level: int = logging.NOTSET):
+        super().__init__(level)
+        self._last_notified = 0.0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        msg = record.getMessage()
+        if "Retrying" not in msg:
+            return
+        if "503" not in msg and "429" not in msg:
+            return
+        import time
+        now = time.monotonic()
+        if now - self._last_notified < 10:
+            return  # Debounce: skip if we notified recently
+        self._last_notified = now
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._send_notification())
+        except RuntimeError:
+            pass  # No event loop — nothing we can do
+
+    @staticmethod
+    async def _send_notification() -> None:
+        try:
+            await cl.Message(
+                content="\u23f3 Model temporarily overloaded — retrying automatically...",
+                author="System",
+            ).send()
+        except Exception:
+            pass  # Never break the app for a UI notification
+
+_genai_logger = logging.getLogger("google_genai._api_client")
+_genai_logger.addHandler(_GeminiRetryNotifier(level=logging.INFO))
+
+
 # Define which tools require Admin privileges
 ADMIN_ONLY_TOOLS = ["delete_all_user_data"]
 
@@ -1047,3 +1094,6 @@ async def main(message: cl.Message):
             await msg.stream_token("\n\nSorry, an unexpected error occurred. Please try again.")
 
     await msg.update()
+
+    # Clear single-use intent so the next message isn't influenced by the old button
+    cl.user_session.set("intent_context", None)

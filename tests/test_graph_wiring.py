@@ -4,32 +4,36 @@ import sys
 import pytest
 
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.outputs import ChatResult, ChatGeneration
 from includes.agents import RouteDecision
 
 
-class StubChatModel:
+class StubChatModel(BaseChatModel):
     """Stub replacement for ChatGoogleGenerativeAI used in tests.
 
-    It pretends to be the LLM and returns a deterministic AIMessage
-    based on the latest human message, without making any network calls.
+    Extends BaseChatModel so it's a proper LangChain Runnable, which is required
+    by create_react_agent. Returns a deterministic AIMessage based on the latest
+    human message, without making any network calls.
     """
 
-    def __init__(self, *args, **kwargs) -> None:  # signature-compatible
-        pass
-
-    async def ainvoke(self, messages, **kwargs):
-        # Find the last human message content (if any)
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         last = messages[-1]
         content = getattr(last, "content", "")
-        return AIMessage(content=f"stub-response: {content}")
-    
-    def bind_tools(self, tools):
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content=f"stub-response: {content}"))]
+        )
+
+    @property
+    def _llm_type(self):
+        return "stub"
+
+    def bind_tools(self, tools, **kwargs):
         """Support tool binding for compatibility."""
         return self
 
     def with_structured_output(self, schema):
         """Return a stub that produces a RouteDecision for supervisor routing."""
-        parent = self
 
         class _StructuredStub:
             async def ainvoke(self, messages, **kwargs):
