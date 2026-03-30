@@ -936,7 +936,8 @@ async def main(message: cl.Message):
     
     active_graph = cl.user_session.get("active_graph", graph)
     last_event_time = request_start
-    async for event in active_graph.astream_events(inputs, config=graph_config, version="v1"):
+    try:
+      async for event in active_graph.astream_events(inputs, config=graph_config, version="v1"):
         kind = event["event"]
         name = event.get("name", "")
         tags = event.get("tags", [])
@@ -1037,5 +1038,12 @@ async def main(message: cl.Message):
                 # Track cumulative tokens in session
                 current_total = cl.user_session.get("total_tokens_used", 0)
                 cl.user_session.set("total_tokens_used", current_total + total_tokens)
+    except Exception as e:
+        logger.error(f"Graph execution error: {e}", exc_info=True)
+        error_text = str(e)
+        if any(code in error_text for code in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED")):
+            await msg.stream_token("\n\nSorry, the AI model is temporarily overloaded. Please try again in a moment.")
+        else:
+            await msg.stream_token("\n\nSorry, an unexpected error occurred. Please try again.")
 
     await msg.update()
