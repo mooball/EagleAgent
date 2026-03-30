@@ -3,7 +3,6 @@ import uuid
 import urllib.parse
 from chainlit.types import ThreadDict
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
-from chainlit.data.utils import queue_until_user_message
 from datetime import datetime, timezone
 from langchain_core.messages import HumanMessage, BaseMessage
 from langgraph.graph import END, START, StateGraph
@@ -40,54 +39,96 @@ class FixedSQLAlchemyDataLayer(SQLAlchemyDataLayer):
 
     1. get_current_timestamp() uses datetime.now() (local time) + "Z" suffix,
        producing timestamps that claim to be UTC but are actually local time.
-    2. create_step() calls update_thread(thread_id) with no args, which causes
-       createdAt to be overwritten on every step — resetting the thread date.
+    2. update_thread() includes createdAt in the ON CONFLICT UPDATE clause,
+       which overwrites the original creation date every time a step is created.
+
+    Fix: override get_current_timestamp() and update_thread() to exclude
+    createdAt from the UPDATE (only set it on initial INSERT).  The parent
+    create_step() is intentionally left intact so that Chainlit's internal
+    flush_thread_queues() can set userId, name, and tags on the thread row.
     """
 
     async def get_current_timestamp(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    @queue_until_user_message()
-    async def create_step(self, step_dict):
+    async def update_thread(
+        self,
+        thread_id: str,
+        name=None,
+        user_id=None,
+        metadata=None,
+        tags=None,
+    ):
         import json as _json
 
-        # Ensure thread row exists without overwriting createdAt on existing threads
-        thread_id = step_dict["threadId"]
-        await self.execute_sql(
-            query="""
-                INSERT INTO threads ("id", "createdAt")
-                VALUES (:id, :createdAt)
-                ON CONFLICT ("id") DO NOTHING;
-            """,
-            parameters={"id": thread_id, "createdAt": await self.get_current_timestamp()},
-        )
-
         if self.show_logger:
-            logger.info(f"SQLAlchemy: create_step, step_id={step_dict.get('id')}")
+            logger.info(f"SQLAlchemy: update_thread, thread_id={thread_id}")
 
-        step_dict["showInput"] = (
-            str(step_dict.get("showInput", "")).lower()
-            if "showInput" in step_dict
-            else None
+        user_identifier = None
+        if user_id:
+            user_identifier = await self._get_user_identifer_by_id(user_id)
+
+        if metadata is not None:
+            existing = await self.execute_sql(
+                query='SELECT "metadata" FROM threads WHERE "id" = :id',
+                parameters={"id": thread_id},
+            )
+            base = {}
+            if isinstance(existing, list) and existing:
+                raw = existing[0].get("metadata") or {}
+                if isinstance(raw, str):
+                    try:
+                        base = _json.loads(raw)
+                    except _json.JSONDecodeError:
+                        base = {}
+                elif isinstance(raw, dict):
+                    base = raw
+            incoming = {k: v for k, v in metadata.items() if v is not None}
+            metadata = {**base, **incoming}
+
+        name_value = name
+        if name_value is None and metadata:
+            name_value = metadata.get("name")
+        created_at_value = (
+            await self.get_current_timestamp() if metadata is None else None
         )
-        parameters = {
-            key: value
-            for key, value in step_dict.items()
-            if value is not None and not (isinstance(value, dict) and not value)
+
+        data = {
+            "id": thread_id,
+            "createdAt": created_at_value,
+            "name": name_value,
+            "userId": user_id,
+            "userIdentifier": user_identifier,
+            "tags": tags,
+            "metadata": _json.dumps(metadata) if metadata else None,
         }
-        parameters["metadata"] = _json.dumps(step_dict.get("metadata", {}))
-        parameters["generation"] = _json.dumps(step_dict.get("generation", {}))
+        parameters = {
+            key: value for key, value in data.items() if value is not None
+        }
         columns = ", ".join(f'"{key}"' for key in parameters.keys())
         values = ", ".join(f":{key}" for key in parameters.keys())
+        # FIX: exclude createdAt from the UPDATE so the original timestamp
+        # is preserved when re-upserting the same thread.
         updates = ", ".join(
-            f'"{key}" = :{key}' for key in parameters.keys() if key != "id"
+            f'"{key}" = EXCLUDED."{key}"'
+            for key in parameters.keys()
+            if key not in ("id", "createdAt")
         )
-        query = f"""
-            INSERT INTO steps ({columns})
-            VALUES ({values})
-            ON CONFLICT (id) DO UPDATE
-            SET {updates};
-        """
+
+        if updates:
+            query = f"""
+                INSERT INTO threads ({columns})
+                VALUES ({values})
+                ON CONFLICT ("id") DO UPDATE
+                SET {updates};
+            """
+        else:
+            # Nothing to update — just ensure the row exists
+            query = f"""
+                INSERT INTO threads ({columns})
+                VALUES ({values})
+                ON CONFLICT ("id") DO NOTHING;
+            """
         await self.execute_sql(query=query, parameters=parameters)
 
 
