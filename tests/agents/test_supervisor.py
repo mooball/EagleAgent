@@ -91,17 +91,20 @@ async def test_supervisor_intent_routes_to_procurement(supervisor):
     }
     result = await supervisor(state)
     assert result["next_agent"] == "ProcurementAgent"
-    assert result["intent_context"] is None
+    # intent_context is NOT cleared by Supervisor — it's cleared by app.py after graph execution
+    assert "intent_context" not in result
 
 @pytest.mark.asyncio
-async def test_supervisor_intent_cleared_after_use(supervisor):
-    """Intent context should be set to None after routing so it doesn't re-trigger."""
+async def test_supervisor_intent_preserved_for_agent(supervisor):
+    """Intent context should be preserved in state so the sub-agent can use it."""
     state = {
         "messages": [HumanMessage(content="anything")],
         "intent_context": "Use search_products to find the product.",
     }
     result = await supervisor(state)
-    assert result["intent_context"] is None
+    assert result["next_agent"] == "ProcurementAgent"
+    # Supervisor must NOT clear intent_context — ProcurementAgent needs it
+    assert "intent_context" not in result
 
 @pytest.mark.asyncio
 async def test_supervisor_non_procurement_intent_falls_through(supervisor, mock_model):

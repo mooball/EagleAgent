@@ -43,7 +43,7 @@ class Supervisor:
             ]
             if any(signal in intent_context for signal in procurement_intent_signals):
                 logger.info("Supervisor intent-based routing: ProcurementAgent (intent_context set)")
-                return {"next_agent": "ProcurementAgent", "intent_context": None}
+                return {"next_agent": "ProcurementAgent"}
 
         # It's a HumanMessage. Route via LLM.
         content = last_message.content if hasattr(last_message, "content") else str(last_message)

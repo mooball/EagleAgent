@@ -1047,3 +1047,6 @@ async def main(message: cl.Message):
             await msg.stream_token("\n\nSorry, an unexpected error occurred. Please try again.")
 
     await msg.update()
+
+    # Clear single-use intent so the next message isn't influenced by the old button
+    cl.user_session.set("intent_context", None)
