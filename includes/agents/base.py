@@ -8,15 +8,26 @@ from typing import List, Optional, Dict, Any
 from abc import ABC, abstractmethod
 from langchain_core.runnables.config import RunnableConfig
 from langchain_core.tools import BaseTool
-from langchain_core.messages import SystemMessage, trim_messages, RemoveMessage
+from langchain_core.messages import SystemMessage, AIMessage, trim_messages, RemoveMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.store.base import BaseStore
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
 
 # Default message trim limit for all agents
 DEFAULT_MAX_MESSAGES = 30
+
+# Retry settings for transient API errors (429, 503)
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 5  # seconds
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """Check if an exception is a transient API error worth retrying."""
+    err_str = str(exc)
+    return any(code in err_str for code in ("429", "503", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded"))
 
 
 class BaseSubAgent(ABC):
@@ -243,14 +254,35 @@ class BaseSubAgent(ABC):
             invoke_config = {"recursion_limit": 25}
             if config is not None:
                 invoke_config.update(config)
-            result = await sub_agent_graph.ainvoke({"messages": trimmed_messages}, config=invoke_config)
+            
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    result = await sub_agent_graph.ainvoke({"messages": trimmed_messages}, config=invoke_config)
+                    break
+                except Exception as e:
+                    if _is_transient_error(e) and attempt < MAX_RETRIES:
+                        delay = RETRY_BASE_DELAY * attempt
+                        logger.warning(f"{self.name} transient API error (attempt {attempt}/{MAX_RETRIES}), retrying in {delay}s: {e}")
+                        await asyncio.sleep(delay)
+                    else:
+                        raise
             
             response = result["messages"][-1]
         else:
-            if config is not None:
-                response = await self.model.ainvoke(trimmed_messages, config=config)
-            else:
-                response = await self.model.ainvoke(trimmed_messages)
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    if config is not None:
+                        response = await self.model.ainvoke(trimmed_messages, config=config)
+                    else:
+                        response = await self.model.ainvoke(trimmed_messages)
+                    break
+                except Exception as e:
+                    if _is_transient_error(e) and attempt < MAX_RETRIES:
+                        delay = RETRY_BASE_DELAY * attempt
+                        logger.warning(f"{self.name} transient API error (attempt {attempt}/{MAX_RETRIES}), retrying in {delay}s: {e}")
+                        await asyncio.sleep(delay)
+                    else:
+                        raise
                 
         logger.info(f"{self.name} completed successfully")
         
