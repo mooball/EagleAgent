@@ -205,7 +205,11 @@ def _do_supplier_search(name: Optional[str] = None,
                         query: Optional[str] = None,
                         limit: int = 20) -> str:
     """Executes the supplier search synchronously."""
+    import time
+    t0 = time.monotonic()
     session = get_session()
+    t_session = time.monotonic()
+    logger.info(f"[TIMING] supplier_search: get_session took {t_session - t0:.3f}s")
     try:
         base_query = session.query(Supplier)
 
@@ -228,6 +232,7 @@ def _do_supplier_search(name: Optional[str] = None,
         seen_ids = set()
 
         # Stage 1: string match on query (ilike across name, notes, city)
+        t_stage1 = time.monotonic()
         if query:
             string_query = base_query.filter(
                 or_(
@@ -247,18 +252,23 @@ def _do_supplier_search(name: Optional[str] = None,
             results = base_query.distinct().limit(limit).all()
             for r in results:
                 seen_ids.add(r.id)
+        logger.info(f"[TIMING] supplier_search: stage1 query took {time.monotonic() - t_stage1:.3f}s (found {len(results)} results)")
 
         # Stage 2: vector fallback if query provided and we need more results
         if query and len(results) < limit:
             try:
+                t_embed = time.monotonic()
                 emb_model = get_embeddings_model()
                 query_vector = emb_model.embed_query(query)
+                logger.info(f"[TIMING] supplier_search: embedding generation took {time.monotonic() - t_embed:.3f}s")
+                t_vector = time.monotonic()
                 vector_query = base_query.filter(
                     Supplier.embedding.isnot(None)
                 ).order_by(
                     Supplier.embedding.cosine_distance(query_vector)
                 )
                 v_results = vector_query.limit(limit * 2).all()
+                logger.info(f"[TIMING] supplier_search: vector query took {time.monotonic() - t_vector:.3f}s")
                 for r in v_results:
                     if r.id not in seen_ids:
                         results.append(r)
@@ -272,6 +282,7 @@ def _do_supplier_search(name: Optional[str] = None,
             return "No suppliers found matching those criteria."
 
         # Fetch linked brand names for each supplier
+        t_brands = time.monotonic()
         supplier_ids = [s.id for s in results]
         brand_links = (
             session.query(SupplierBrand.supplier_id, Brand.name)
@@ -279,6 +290,7 @@ def _do_supplier_search(name: Optional[str] = None,
             .filter(SupplierBrand.supplier_id.in_(supplier_ids))
             .all()
         )
+        logger.info(f"[TIMING] supplier_search: brand links query took {time.monotonic() - t_brands:.3f}s")
         supplier_brands = {}
         for sid, bname in brand_links:
             supplier_brands.setdefault(sid, []).append(bname)
@@ -313,6 +325,7 @@ def _do_supplier_search(name: Optional[str] = None,
         if total > limit:
             output_parts.append(f"\nNote: There are {total - limit} more unshown results. Ask the user if they'd like to see more or refine the search.")
 
+        logger.info(f"[TIMING] supplier_search: TOTAL took {time.monotonic() - t0:.3f}s")
         return "\n".join(output_parts)
     except Exception as e:
         logger.error(f"Error executing supplier search: {e}")
