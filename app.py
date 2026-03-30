@@ -927,10 +927,19 @@ async def main(message: cl.Message):
     supervisor_done_at = None
     
     active_graph = cl.user_session.get("active_graph", graph)
+    last_event_time = request_start
     async for event in active_graph.astream_events(inputs, config=graph_config, version="v1"):
         kind = event["event"]
         name = event.get("name", "")
         tags = event.get("tags", [])
+        
+        # Log significant graph lifecycle events to trace checkpoint overhead
+        if kind in ("on_chain_start", "on_chain_end", "on_tool_start", "on_tool_end", "on_chat_model_start", "on_chat_model_end"):
+            now = time.monotonic()
+            gap = now - last_event_time
+            if gap > 0.5:  # Only log gaps > 500ms to reduce noise
+                logger.info(f"[TIMING] {kind} '{name}' at T+{now - request_start:.1f}s (gap: {gap:.1f}s)")
+            last_event_time = now
         
         if kind == "on_chain_start" and name in ["GeneralAgent", "BrowserAgent", "ProcurementAgent", "SysAdminAgent"]:
             active_agent = name
