@@ -140,7 +140,7 @@ def stub_chat_model():
             content = getattr(last, "content", "")
             return AIMessage(content=f"stub-response: {content}")
         
-        def bind_tools(self, tools):
+        def bind_tools(self, tools, **kwargs):
             """Support tool binding for compatibility."""
             return self
     
