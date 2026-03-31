@@ -519,7 +519,7 @@ def _do_search_purchase_history(
     supplier: str = None,
     date_from: str = None,
     date_to: str = None,
-    po_number: str = None,
+    doc_number: str = None,
     limit: int = 50,
 ) -> str:
     """Executes generic purchase history search with flexible filters."""
@@ -530,7 +530,7 @@ def _do_search_purchase_history(
     try:
         query = (
             session.query(
-                ProductSupplier.po_number,
+                ProductSupplier.doc_number,
                 ProductSupplier.date,
                 ProductSupplier.quantity,
                 ProductSupplier.price,
@@ -554,9 +554,9 @@ def _do_search_purchase_history(
             query = query.filter(Supplier.name.ilike(f"%{supplier}%"))
             filter_desc.append(f"supplier matching '{supplier}'")
 
-        if po_number:
-            query = query.filter(ProductSupplier.po_number.ilike(f"%{po_number}%"))
-            filter_desc.append(f"PO number matching '{po_number}'")
+        if doc_number:
+            query = query.filter(ProductSupplier.doc_number.ilike(f"%{doc_number}%"))
+            filter_desc.append(f"document number matching '{doc_number}'")
 
         if date_from:
             try:
@@ -582,11 +582,11 @@ def _do_search_purchase_history(
             return f"No purchase history records found ({desc_str})."
 
         # If no specific filters, just return the count summary
-        if not any([part_number, supplier, po_number, date_from, date_to]):
+        if not any([part_number, supplier, doc_number, date_from, date_to]):
             # Provide aggregate stats
             stats = session.query(
                 func.count(ProductSupplier.id).label('total_records'),
-                func.count(func.distinct(ProductSupplier.po_number)).label('total_pos'),
+                func.count(func.distinct(ProductSupplier.doc_number)).label('total_pos'),
                 func.count(func.distinct(ProductSupplier.product_id)).label('total_products'),
                 func.count(func.distinct(ProductSupplier.supplier_id)).label('total_suppliers'),
                 func.min(ProductSupplier.date).label('earliest_date'),
@@ -618,15 +618,15 @@ def _do_search_purchase_history(
         desc_str = ", ".join(filter_desc)
         output = [f"Purchase history search ({desc_str}):"]
         output.append(f"\nFound {total_count:,} records. Showing {'all' if total_count <= limit else f'first {limit}'}:\n")
-        output.append("| # | PO Number | Date | Part Number | Brand | Supplier | Qty | Price | Status |")
-        output.append("|---|-----------|------|-------------|-------|----------|-----|-------|--------|")
+        output.append("| # | Doc Number | Date | Part Number | Brand | Supplier | Qty | Price | Status |")
+        output.append("|---|------------|------|-------------|-------|----------|-----|-------|--------|")
 
         for idx, row in enumerate(rows, 1):
             date_str = row.date.strftime("%-d %b %Y") if row.date else "N/A"
             price_str = f"${row.price:,.2f}" if row.price is not None else "N/A"
             qty_str = f"{row.quantity:,.0f}" if row.quantity is not None else "N/A"
             output.append(
-                f"| {idx} | {row.po_number or 'N/A'} | {date_str} | {row.part_number} | {row.brand or 'N/A'} | {row.supplier_name} | {qty_str} | {price_str} | {row.status or 'N/A'} |"
+                f"| {idx} | {row.doc_number or 'N/A'} | {date_str} | {row.part_number} | {row.brand or 'N/A'} | {row.supplier_name} | {qty_str} | {price_str} | {row.status or 'N/A'} |"
             )
 
         if total_count > limit:
@@ -646,19 +646,19 @@ async def search_purchase_history(
     supplier: str = None,
     date_from: str = None,
     date_to: str = None,
-    po_number: str = None,
+    doc_number: str = None,
     limit: int = 50,
 ) -> str:
     """
     Search and filter purchase history records. Flexible general-purpose query tool.
 
     Use with NO arguments to get a summary of the entire purchase history database
-    (total records, total POs, unique products, unique suppliers, date range).
+    (total records, total POs/quotes, unique products, unique suppliers, date range).
 
     Use with filters to find specific records. All filters are optional and combinable.
 
     Use when the user asks "how many purchase orders do we have?", "show me purchases
-    from supplier X", "what did we buy in 2026?", "find PO number P12345", or similar.
+    from supplier X", "what did we buy in 2026?", "find document number P12345", or similar.
 
     For per-part supplier analysis ("who supplies part X?"), prefer part_purchase_history instead.
 
@@ -667,9 +667,9 @@ async def search_purchase_history(
         supplier: Filter by supplier name (partial match, e.g. 'Acme')
         date_from: Start date filter in YYYY-MM-DD format (e.g. '2026-01-01')
         date_to: End date filter in YYYY-MM-DD format (e.g. '2026-12-31')
-        po_number: Filter by purchase order number (partial match, e.g. 'P158740')
+        doc_number: Filter by document number - PO or quote (partial match, e.g. 'P158740')
         limit: Maximum number of records to return (default: 50)
     """
     return await asyncio.to_thread(
-        _do_search_purchase_history, part_number, supplier, date_from, date_to, po_number, limit
+        _do_search_purchase_history, part_number, supplier, date_from, date_to, doc_number, limit
     )

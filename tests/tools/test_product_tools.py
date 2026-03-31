@@ -313,7 +313,7 @@ class TestSearchPurchaseHistory:
         mock_query.count.return_value = 1
 
         row = MagicMock()
-        row.po_number = "P158740"
+        row.doc_number = "P158740"
         row.date = date(2026, 3, 10)
         row.quantity = 16.0
         row.price = 236.68
