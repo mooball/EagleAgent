@@ -126,10 +126,28 @@ def build_supplier_lookup(engine):
         session.close()
 
 
-def import_purchase_history(engine, df: pd.DataFrame, product_exact: dict, product_stripped: dict, supplier_lookup: dict):
+def build_existing_keys(engine):
+    """Load existing (doc_number, product_id, supplier_id, date) tuples for duplicate detection."""
+    session = make_session(engine)
+    try:
+        rows = session.query(
+            ProductSupplier.doc_number,
+            ProductSupplier.product_id,
+            ProductSupplier.supplier_id,
+            ProductSupplier.date,
+        ).all()
+        keys = {(r.doc_number, str(r.product_id), str(r.supplier_id), r.date) for r in rows}
+        print(f"  Existing records loaded: {len(keys)} for duplicate detection.")
+        return keys
+    finally:
+        session.close()
+
+
+def import_purchase_history(engine, df: pd.DataFrame, product_exact: dict, product_stripped: dict, supplier_lookup: dict, existing_keys: set):
     """Import purchase history rows into the product_suppliers table."""
     inserted = 0
     skipped = 0
+    duplicates = 0
     unmatched_parts = set()
     unmatched_suppliers = set()
     failed_rows = []
@@ -148,12 +166,12 @@ def import_purchase_history(engine, df: pd.DataFrame, product_exact: dict, produ
             # Pre-parse rows and resolve IDs
             batch_rows = []
             for _, row in batch_df.iterrows():
-                po_number = clean_string(row.get('po_number'))
+                doc_number = clean_string(row.get('doc_number'))
                 part_number = clean_string(row.get('part_number'))
                 supplier_name = clean_string(row.get('supplier'))
 
-                if not po_number or not part_number:
-                    failed_rows.append({**row, '_reason': 'missing po_number or part_number'})
+                if not doc_number or not part_number:
+                    failed_rows.append({**row, '_reason': 'missing doc_number or part_number'})
                     skipped += 1
                     continue
 
@@ -181,15 +199,23 @@ def import_purchase_history(engine, df: pd.DataFrame, product_exact: dict, produ
                     skipped += 1
                     continue
 
+                row_date = parse_date(row.get('date'))
+                dup_key = (doc_number, str(product_id), str(supplier_id), row_date)
+                if dup_key in existing_keys:
+                    duplicates += 1
+                    skipped += 1
+                    continue
+
                 batch_rows.append({
-                    'po_number': po_number,
-                    'date': parse_date(row.get('date')),
+                    'doc_number': doc_number,
+                    'date': row_date,
                     'product_id': product_id,
                     'supplier_id': supplier_id,
                     'quantity': safe_float(row.get('quantity')),
                     'price': safe_float(row.get('price')),
                     'status': clean_string(row.get('status')),
                 })
+                existing_keys.add(dup_key)
 
             if not batch_rows:
                 session.close()
@@ -208,7 +234,7 @@ def import_purchase_history(engine, df: pd.DataFrame, product_exact: dict, produ
             session.close()
 
     # Print summary
-    print(f"\n  Summary: {inserted} inserted, {skipped} skipped.")
+    print(f"\n  Summary: {inserted} inserted, {skipped} skipped ({duplicates} duplicates).")
 
     if unmatched_parts:
         sorted_parts = sorted(unmatched_parts)
@@ -252,6 +278,7 @@ def main():
     print("Building lookup caches...")
     product_exact, product_stripped = build_product_lookup(engine)
     supplier_lookup = build_supplier_lookup(engine)
+    existing_keys = build_existing_keys(engine)
 
     for filepath in csv_files:
         filename = os.path.basename(filepath)
@@ -261,16 +288,16 @@ def main():
             filepath,
             quotechar='"',
             skipinitialspace=True,
-            dtype={'po_number': str, 'part_number': str},
+            dtype={'doc_number': str, 'part_number': str},
         )
         df = df.replace({np.nan: None})
 
-        if 'po_number' not in df.columns or 'part_number' not in df.columns:
-            print("Error: CSV must have 'po_number' and 'part_number' columns.")
+        if 'doc_number' not in df.columns or 'part_number' not in df.columns:
+            print("Error: CSV must have 'doc_number' and 'part_number' columns.")
             continue
 
         print(f"Found {len(df)} rows.")
-        inserted, skipped, failed_rows = import_purchase_history(engine, df, product_exact, product_stripped, supplier_lookup)
+        inserted, skipped, failed_rows = import_purchase_history(engine, df, product_exact, product_stripped, supplier_lookup, existing_keys)
 
         # Export failed rows to CSV for investigation
         if failed_rows:

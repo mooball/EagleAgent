@@ -79,7 +79,7 @@ class ProductSupplier(Base):
     __tablename__ = 'product_suppliers'
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    po_number = Column(String, nullable=False, index=True)
+    doc_number = Column(String, nullable=False, index=True)
     date = Column(Date, nullable=True)
     product_id = Column(UUID(as_uuid=True), ForeignKey('products.id'), nullable=False, index=True)
     supplier_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id'), nullable=False, index=True)
@@ -88,4 +88,4 @@ class ProductSupplier(Base):
     status = Column(String, nullable=True)
 
     def __repr__(self):
-        return f"<ProductSupplier(po_number='{self.po_number}', product_id='{self.product_id}', supplier_id='{self.supplier_id}')>"
+        return f"<ProductSupplier(doc_number='{self.doc_number}', product_id='{self.product_id}', supplier_id='{self.supplier_id}')>"
