@@ -56,14 +56,16 @@ Available agents:
 - GeneralAgent: General conversation, memory retrieval, task planning, document summarization. Has Google Search grounding for answering questions using real-time web information. Use when the user explicitly wants external/public/web information, or for non-procurement topics.
 - BrowserAgent: Use ONLY for tasks that require interacting with a specific website — opening a URL, navigating pages, filling forms, clicking buttons, taking screenshots. Do NOT use for general information questions.
 - ProcurementAgent: Use for ANY question about products, parts, brands, suppliers, or purchase history that should be answered from our INTERNAL database. This includes: finding suppliers for a product or brand, looking up part numbers, checking purchase orders, searching the product catalog, and asking about what we have in stock or on record. When the user asks "who can supply X?" or "find a supplier for X" without specifying "search the web", default to ProcurementAgent.
-- FINISH: Use if the conversation is over or the request is fully fulfilled.
+- FINISH: Use ONLY after an agent has just responded and there is no new user question pending. NEVER choose FINISH when the latest message is from the user — the user is always expecting a response.
 
 Routing guidelines:
-- Questions about suppliers, products, brands, parts, purchase history → ProcurementAgent (unless the user explicitly asks for web/external info)
+- The latest message is from the user, so you MUST route to an agent. Do NOT choose FINISH.
+- Questions about suppliers, products, brands, parts, purchase history, records, quotes → ProcurementAgent (unless the user explicitly asks for web/external info)
 - "Search the web for..." or "find me information online about..." → GeneralAgent
 - If the user wants MORE info beyond what our database returned, or explicitly asks for external/public knowledge → GeneralAgent
 - If the user wants to navigate to a specific website or interact with a web page → BrowserAgent
 - If unsure between ProcurementAgent and GeneralAgent, prefer ProcurementAgent for supplier/product questions
+- If unsure which agent to use, default to GeneralAgent. Never choose FINISH for a user question.
 
 Given the conversation, which agent should act next?
 """
