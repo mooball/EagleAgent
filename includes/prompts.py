@@ -219,9 +219,122 @@ INTENTS = {
 }
 
 
+# =============================================================================
+# RESEARCH INTENTS
+# =============================================================================
+# Intent definitions for Research Agent action buttons. Each intent stores
+# context that persists for the entire thread, guiding the Research Agent's
+# web search and analysis behaviour.
+
+RESEARCH_INTENTS = {
+    "research_product_info": {
+        "label": "Research a Product",
+        "icon": "🔎",
+        "description": "Search the web for detailed information about a product",
+        "follow_up": (
+            "I can research a product for you. Please provide the part number, "
+            "product name, or a description and I'll search for detailed information."
+        ),
+        "context": (
+            "The user wants to research a specific product. Follow this process "
+            "carefully:\n\n"
+            "## Step 1: Identify the Product\n"
+            "Before presenting any information, you MUST positively identify the "
+            "product. Search the web to:\n"
+            "- Confirm the part number exists, or find the corrected syntax if the "
+            "user made a typo.\n"
+            "- Confirm the brand/manufacturer for the part.\n\n"
+            "**Never guess.** If you cannot identify the product with certainty, "
+            "ask the user for more information — name, brand, description, or "
+            "application — to help narrow it down.\n\n"
+            "## Step 2: Present Product Information\n"
+            "Once the product is positively identified, present your findings using "
+            "this exact structure with markdown headings:\n\n"
+            "### Part Number\n"
+            "The confirmed part number (e.g. 1G8878).\n\n"
+            "### Product Name\n"
+            "The full product name (e.g. Spin-On Hydraulic and Transmission Oil "
+            "Filter).\n\n"
+            "### Brand\n"
+            "The manufacturer or brand (e.g. Caterpillar (CAT)). Include the "
+            "industry-standard cross-reference if one exists (e.g. HF6553 from "
+            "Fleetguard / Cummins Filtration).\n\n"
+            "### Product Description\n"
+            "A concise description of what the product is, its purpose, and any "
+            "notable characteristics such as performance ratings, classifications, "
+            "or design features.\n\n"
+            "### Technical Specifications\n"
+            "Key measurements and technical details as a bullet list. Include "
+            "whichever specifications are relevant to the product — this could be "
+            "dimensions, weight, volume, power ratings, voltage, pressure ratings, "
+            "flow capacity, micron ratings, thread sizes, material composition, or "
+            "any other measurable attribute. Focus on what matters for the specific "
+            "product type. Present all measurements in metric units (mm, kg, litres, "
+            "kW, bar, etc.).\n\n"
+            "### Primary Applications\n"
+            "List the machinery, equipment, or systems this product is used in. "
+            "Group by manufacturer with specific model numbers. For heavy machinery "
+            "spare parts, cover:\n"
+            "- **Caterpillar Equipment** — Wheel loaders, articulated dump trucks, "
+            "off-highway trucks, telehandlers, excavators, skid steers, etc. with "
+            "specific series/model numbers.\n"
+            "- **Other Brands (via Cross-Reference)** — e.g. Bobcat skid steer "
+            "loaders, John Deere tractors and combines, Case/New Holland "
+            "agricultural and construction equipment.\n\n"
+            "### Equivalent Parts\n"
+            "List aftermarket alternatives and direct cross-reference part numbers "
+            "from other manufacturers as a bullet list. Include manufacturer name "
+            "and part number for each (e.g. Donaldson: P164378, Baldwin: BT8851-MPG, "
+            "WIX: 51494, John Deere: RE47313, Bobcat: 6668819).\n\n"
+            "---\n"
+            "Cite sources for all information. Use this exact heading structure for "
+            "every product research response to ensure consistency."
+        ),
+    },
+    "research_supply_chain": {
+        "label": "Research a Supply Chain",
+        "icon": "🌐",
+        "description": "Search the web for supply chain and sourcing information for a product",
+        "follow_up": (
+            "I can research the supply chain for a product. Please provide the part "
+            "number, product name, or description and I'll search for manufacturers, "
+            "distributors, and sourcing options."
+        ),
+        "context": (
+            "The user wants to research the supply chain for a specific product. "
+            "Follow this process carefully:\n\n"
+            "## Step 1: Identify the Product\n"
+            "Before researching the supply chain, you MUST positively identify the "
+            "product. Search the web to confirm the part number exists (or find the "
+            "corrected syntax) and confirm the brand/manufacturer.\n\n"
+            "**Never guess.** If you cannot identify the product with certainty, "
+            "ask the user for more information — name, brand, description, or "
+            "application — to help narrow it down.\n\n"
+            "## Step 2: Map the Supply Chain\n"
+            "Once the product is positively identified, search the web to map out "
+            "the sourcing landscape. Structure your findings to cover:\n\n"
+            "1. **Original Manufacturer (OEM)** — Who manufactures the product and "
+            "where. Identify the parent company and manufacturing locations.\n"
+            "2. **Authorised Distributors** — Official distribution channels and "
+            "regional distributors, particularly in Australia and Asia-Pacific.\n"
+            "3. **Aftermarket & Alternative Suppliers** — Third-party manufacturers "
+            "of compatible or equivalent parts. Include quality comparisons where "
+            "available.\n"
+            "4. **Geographic Sourcing** — Key sourcing regions (e.g. China, USA, "
+            "Europe) and typical lead times.\n"
+            "5. **Pricing Landscape** — Price ranges across OEM, aftermarket, and "
+            "different suppliers to identify cost-effective sourcing options.\n"
+            "6. **Supply Risks** — Any known supply chain risks, shortages, or "
+            "disruptions affecting this product or category.\n\n"
+            "Cite sources for all information."
+        ),
+    },
+}
+
+
 def get_intent_context(intent_name: str) -> Optional[str]:
     """Return the LLM context string for a given intent, or None if unknown."""
-    intent = INTENTS.get(intent_name)
+    intent = INTENTS.get(intent_name) or RESEARCH_INTENTS.get(intent_name)
     return intent["context"] if intent else None
 
 
@@ -424,6 +537,46 @@ def build_sysadmin_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
         parts.append("")
 
     parts.append(_build_script_awareness(profile_data or {"role": "Admin"}))
+
+    return "\n".join(parts).strip()
+
+
+def build_research_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Build the system prompt for the Research Agent.
+
+    Includes agent identity in research mode, user profile context,
+    and instructions for web research with Google Search grounding.
+    """
+    parts = []
+
+    current_time = datetime.datetime.now(
+        datetime.timezone(datetime.timedelta(hours=10))
+    ).strftime("%A, %Y-%m-%d %H:%M:%S")
+    parts.append(f"The current date and time in AEST (UTC+10) is: {current_time}.")
+    parts.append("")
+
+    parts.append(f"You are {AGENT_CONFIG['name']} in Research mode.")
+    parts.append(
+        "You are a research assistant that helps users find, analyze, and synthesize "
+        "information from the web. You have access to Google Search to find current, "
+        "real-time information."
+    )
+    parts.append("")
+
+    parts.append("## Research Guidelines")
+    parts.append("- When answering questions, search for up-to-date information rather than relying on training data.")
+    parts.append("- Cite your sources — include URLs or source names when referencing specific information.")
+    parts.append("- Synthesize information from multiple sources when possible to provide balanced answers.")
+    parts.append("- Clearly distinguish between established facts and recent developments.")
+    parts.append("- If information is uncertain or conflicting across sources, say so.")
+    parts.append("- Provide concise summaries first, then offer to go deeper if the user wants more detail.")
+    parts.append("")
+
+    if profile_data:
+        parts.append(PROFILE_TEMPLATES["header"])
+        parts.extend(build_profile_context(profile_data))
+        parts.append("")
 
     return "\n".join(parts).strip()
 
