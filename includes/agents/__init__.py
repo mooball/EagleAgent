@@ -2,6 +2,7 @@ from includes.agents.base import BaseSubAgent
 from includes.agents.browser_agent import BrowserAgent
 from includes.agents.general_agent import GeneralAgent
 from includes.agents.procurement_agent import ProcurementAgent
+from includes.agents.research_agent import ResearchAgent
 from includes.agents.supervisor import RouteDecision, Supervisor
 from includes.agents.sysadmin_agent import SysAdminAgent
 
@@ -10,6 +11,7 @@ __all__ = [
     "BrowserAgent",
     "GeneralAgent",
     "ProcurementAgent",
+    "ResearchAgent",
     "RouteDecision",
     "Supervisor",
     "SysAdminAgent",

@@ -64,6 +64,7 @@ class Config:
     GENERAL_AGENT_MODEL = os.getenv("GENERAL_AGENT_MODEL", "")
     PROCUREMENT_AGENT_MODEL = os.getenv("PROCUREMENT_AGENT_MODEL", "")
     SYSADMIN_AGENT_MODEL = os.getenv("SYSADMIN_AGENT_MODEL", "")
+    RESEARCH_AGENT_MODEL = os.getenv("RESEARCH_AGENT_MODEL", "")
     # Supervisor only picks between agents — use a fast model by default
     SUPERVISOR_MODEL = os.getenv("SUPERVISOR_MODEL", "gemini-2.0-flash")
 
@@ -114,6 +115,7 @@ class Config:
             "GeneralAgent": cls.GENERAL_AGENT_MODEL,
             "ProcurementAgent": cls.PROCUREMENT_AGENT_MODEL,
             "SysAdminAgent": cls.SYSADMIN_AGENT_MODEL,
+            "ResearchAgent": cls.RESEARCH_AGENT_MODEL,
             "Supervisor": cls.SUPERVISOR_MODEL,
         }
         model = agent_model_map.get(agent_name, "")

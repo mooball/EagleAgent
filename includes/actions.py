@@ -15,7 +15,7 @@ from typing import Any, Callable, Awaitable, Optional
 import chainlit as cl
 
 from config import config
-from includes.prompts import INTENTS
+from includes.prompts import INTENTS, RESEARCH_INTENTS
 
 logger = logging.getLogger(__name__)
 
@@ -206,8 +206,10 @@ async def handle_delete_all_data(**_kwargs: Any) -> None:
 # ---------------------------------------------------------------------------
 
 async def _handle_intent(intent_name: str) -> None:
-    """Common handler for procurement intent buttons."""
-    intent = INTENTS[intent_name]
+    """Common handler for intent buttons (procurement and research)."""
+    intent = INTENTS.get(intent_name) or RESEARCH_INTENTS.get(intent_name)
+    if not intent:
+        return
     cl.user_session.set("intent_context", intent["context"])
     await cl.Message(
         content=f"{intent['icon']} {intent['follow_up']}",
@@ -268,3 +270,29 @@ async def handle_find_brand_supplier(**_kwargs: Any) -> None:
 )
 async def handle_check_purchase_history(**_kwargs: Any) -> None:
     await _handle_intent("check_purchase_history")
+
+
+# ---------------------------------------------------------------------------
+# Research intent action handlers
+# ---------------------------------------------------------------------------
+
+@register_action(
+    name="research_product_info",
+    label=RESEARCH_INTENTS["research_product_info"]["label"],
+    description=RESEARCH_INTENTS["research_product_info"]["description"],
+    icon=RESEARCH_INTENTS["research_product_info"]["icon"],
+    admin_only=True,
+)
+async def handle_research_product_info(**_kwargs: Any) -> None:
+    await _handle_intent("research_product_info")
+
+
+@register_action(
+    name="research_supply_chain",
+    label=RESEARCH_INTENTS["research_supply_chain"]["label"],
+    description=RESEARCH_INTENTS["research_supply_chain"]["description"],
+    icon=RESEARCH_INTENTS["research_supply_chain"]["icon"],
+    admin_only=True,
+)
+async def handle_research_supply_chain(**_kwargs: Any) -> None:
+    await _handle_intent("research_supply_chain")

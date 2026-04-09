@@ -327,6 +327,9 @@ graph = None
 # System Admin graph — single-agent for admin script/job management
 sysadmin_graph = None
 
+# Research graph — single-agent with Google Search grounding
+research_graph = None
+
 # Background job runner for admin script execution
 job_runner = JobRunner()
 
@@ -334,7 +337,7 @@ globals_initialized = False
 
 async def setup_globals():
     """Initialize async-dependent global variables."""
-    global store, mcp_client, browser_agent, general_agent, supervisor_node, checkpointer, graph, sysadmin_graph, globals_initialized
+    global store, mcp_client, browser_agent, general_agent, supervisor_node, checkpointer, graph, sysadmin_graph, research_graph, globals_initialized
     
     if globals_initialized:
         return
@@ -433,6 +436,21 @@ async def setup_globals():
     sa_builder.add_edge(START, "SysAdminAgent")
     sa_builder.add_edge("SysAdminAgent", END)
     sysadmin_graph = sa_builder.compile(checkpointer=checkpointer, store=store)
+
+    # Build Research graph — single-agent with Google Search grounding
+    from includes.agents import ResearchAgent
+    research_agent = ResearchAgent(
+        model=create_model("ResearchAgent"), store=store
+    )
+
+    async def run_research(state, config):
+        return await research_agent(state, config)
+
+    ra_builder = StateGraph(SupervisorState)
+    ra_builder.add_node("ResearchAgent", run_research)
+    ra_builder.add_edge(START, "ResearchAgent")
+    ra_builder.add_edge("ResearchAgent", END)
+    research_graph = ra_builder.compile(checkpointer=checkpointer, store=store)
 
     globals_initialized = True
 
@@ -554,14 +572,16 @@ async def chat_profile(current_user: cl.User):
             icon="/public/avatars/EagleAgent.png",
             default=True,
         ),
-        cl.ChatProfile(
-            name="Research Agent",
-            markdown_description="Research assistant — web search, analysis, and information gathering.",
-            icon="/public/avatars/EagleAgent.png",
-        ),
     ]
 
     if is_admin:
+        profiles.append(
+            cl.ChatProfile(
+                name="Research Agent",
+                markdown_description="Research assistant — web search, analysis, and information gathering.",
+                icon="/public/avatars/EagleAgent.png",
+            )
+        )
         profiles.append(
             cl.ChatProfile(
                 name="System Admin",
@@ -606,20 +626,33 @@ async def start():
     chat_profile_name = cl.user_session.get("chat_profile")
     if chat_profile_name == "System Admin":
         cl.user_session.set("active_graph", sysadmin_graph)
+    elif chat_profile_name == "Research Agent":
+        cl.user_session.set("active_graph", research_graph)
     else:
         cl.user_session.set("active_graph", graph)
 
     # Personalized welcome message
     if chat_profile_name == "Research Agent":
         if is_first_visit and user_name:
-            welcome_msg = f"Welcome to Research Agent, {user_name}! I can help with web research, analysis, and information gathering. What would you like to explore?"
+            welcome_msg = f"Welcome to Research Agent, {user_name}! I can help you search the web for information about products and their suppliers. Please choose one of the following actions to commence."
         elif is_first_visit:
-            welcome_msg = "Welcome to Research Agent! I can help with web research, analysis, and information gathering. What would you like to explore?"
+            welcome_msg = "Welcome to Research Agent! I can help you search the web for information about products and their suppliers. Please choose one of the following actions to commence."
         elif user_name:
-            welcome_msg = f"Hello {user_name}! What would you like to research today?"
+            welcome_msg = f"Hello {user_name}! I can help you search the web for information about products and their suppliers. Please choose one of the following actions to commence."
         else:
-            welcome_msg = "Hello! What would you like to research today?"
-        await cl.Message(content=welcome_msg).send()
+            welcome_msg = "Hello! I can help you search the web for information about products and their suppliers. Please choose one of the following actions to commence."
+
+        from includes.prompts import RESEARCH_INTENTS
+        research_buttons = [
+            cl.Action(
+                name=name,
+                payload={},
+                label=f"{intent['icon']} {intent['label']}",
+                description=intent["description"],
+            )
+            for name, intent in RESEARCH_INTENTS.items()
+        ]
+        await cl.Message(content=welcome_msg, actions=research_buttons).send()
     elif chat_profile_name == "System Admin":
         if user_name:
             welcome_msg = f"Welcome to System Admin mode, {user_name}. I can run scripts, check background jobs, and manage system tasks. What would you like to do?"
@@ -648,9 +681,9 @@ async def start():
         elif is_first_visit:
             welcome_msg = "Welcome to Eagle Agent! I don't think we've met before. What is your preferred name?"
         elif user_name:
-            welcome_msg = f"Hello {user_name}! How can I help you today?"
+            welcome_msg = f"Hello {user_name}! I can help you search our internal database for historical records about products, brands and suppliers. Choose one of the following actions to commence."
         else:
-            welcome_msg = "Hello! How can I help you today?"
+            welcome_msg = "Hello! I can help you search our internal database for historical records about products, brands and suppliers. Choose one of the following actions to commence."
 
         # Procurement intent buttons for EagleAgent profile
         from includes.prompts import INTENTS
@@ -692,6 +725,8 @@ async def on_chat_resume(thread: ThreadDict):
     chat_profile_name = cl.user_session.get("chat_profile")
     if chat_profile_name == "System Admin":
         cl.user_session.set("active_graph", sysadmin_graph)
+    elif chat_profile_name == "Research Agent":
+        cl.user_session.set("active_graph", research_graph)
     else:
         cl.user_session.set("active_graph", graph)
     
@@ -706,9 +741,20 @@ async def on_chat_resume(thread: ThreadDict):
     # Optional: Send a welcome back message
     if user_name:
         if chat_profile_name == "Research Agent":
+            from includes.prompts import RESEARCH_INTENTS
+            research_buttons = [
+                cl.Action(
+                    name=name,
+                    payload={},
+                    label=f"{intent['icon']} {intent['label']}",
+                    description=intent["description"],
+                )
+                for name, intent in RESEARCH_INTENTS.items()
+            ]
             await cl.Message(
                 content=f"Welcome back, {user_name}! Continuing your research session.",
                 author="EagleAgent",
+                actions=research_buttons,
             ).send()
         elif chat_profile_name == "System Admin":
             action_buttons = [
@@ -797,6 +843,16 @@ async def on_action_find_brand_supplier(action: cl.Action):
 @cl.action_callback("check_purchase_history")
 async def on_action_check_purchase_history(action: cl.Action):
     await dispatch_action("check_purchase_history")
+
+
+@cl.action_callback("research_product_info")
+async def on_action_research_product_info(action: cl.Action):
+    await dispatch_action("research_product_info")
+
+
+@cl.action_callback("research_supply_chain")
+async def on_action_research_supply_chain(action: cl.Action):
+    await dispatch_action("research_supply_chain")
 
 
 @cl.action_callback("confirm_delete_all")
@@ -984,7 +1040,7 @@ async def main(message: cl.Message):
             tool_input = event.get("data", {}).get("input", "")
             logger.info(f"[TOOL] calling '{name}' with: {str(tool_input)[:200]}")
         
-        if kind == "on_chain_start" and name in ["GeneralAgent", "BrowserAgent", "ProcurementAgent", "SysAdminAgent"]:
+        if kind == "on_chain_start" and name in ["GeneralAgent", "BrowserAgent", "ProcurementAgent", "SysAdminAgent", "ResearchAgent"]:
             active_agent = name
             if supervisor_done_at is None:
                 supervisor_done_at = time.monotonic()
