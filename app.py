@@ -549,10 +549,15 @@ async def chat_profile(current_user: cl.User):
 
     profiles = [
         cl.ChatProfile(
-            name="EagleAgent",
+            name="Eagle Agent",
             markdown_description="General assistant for product procurement, supplier information, and web search.",
             icon="/public/avatars/EagleAgent.png",
             default=True,
+        ),
+        cl.ChatProfile(
+            name="Research Agent",
+            markdown_description="Research assistant — web search, analysis, and information gathering.",
+            icon="/public/avatars/EagleAgent.png",
         ),
     ]
 
@@ -562,23 +567,6 @@ async def chat_profile(current_user: cl.User):
                 name="System Admin",
                 markdown_description="Server administration — run scripts, manage background jobs, and system maintenance.",
                 icon="/public/avatars/EagleAgent.png",
-                starters=[
-                    cl.Starter(
-                        label="List available scripts",
-                        message="What scripts are available?",
-                        icon="/public/avatars/EagleAgent.png",
-                    ),
-                    cl.Starter(
-                        label="Check running jobs",
-                        message="Are there any running jobs?",
-                        icon="/public/avatars/EagleAgent.png",
-                    ),
-                    cl.Starter(
-                        label="Update product embeddings",
-                        message="Please update the product embeddings",
-                        icon="/public/avatars/EagleAgent.png",
-                    ),
-                ],
             )
         )
 
@@ -587,29 +575,8 @@ async def chat_profile(current_user: cl.User):
 
 @cl.set_starters
 async def set_starters():
-    """Show suggested prompts when a new chat thread starts."""
-    return [
-        cl.Starter(
-            label="What can you help me with?",
-            message="What can you help me with?",
-            icon="/public/avatars/EagleAgent.png",
-        ),
-        cl.Starter(
-            label="Find a product",
-            message="I need to find a product in the database",
-            icon="/public/avatars/EagleAgent.png",
-        ),
-        cl.Starter(
-            label="Find a supplier",
-            message="I need to find a supplier",
-            icon="/public/avatars/EagleAgent.png",
-        ),
-        cl.Starter(
-            label="Check purchase history",
-            message="I want to check purchase history",
-            icon="/public/avatars/EagleAgent.png",
-        ),
-    ]
+    """Disabled — action buttons are sent in on_chat_start instead."""
+    return []
 
 
 @cl.on_chat_start
@@ -643,7 +610,17 @@ async def start():
         cl.user_session.set("active_graph", graph)
 
     # Personalized welcome message
-    if chat_profile_name == "System Admin":
+    if chat_profile_name == "Research Agent":
+        if is_first_visit and user_name:
+            welcome_msg = f"Welcome to Research Agent, {user_name}! I can help with web research, analysis, and information gathering. What would you like to explore?"
+        elif is_first_visit:
+            welcome_msg = "Welcome to Research Agent! I can help with web research, analysis, and information gathering. What would you like to explore?"
+        elif user_name:
+            welcome_msg = f"Hello {user_name}! What would you like to research today?"
+        else:
+            welcome_msg = "Hello! What would you like to research today?"
+        await cl.Message(content=welcome_msg).send()
+    elif chat_profile_name == "System Admin":
         if user_name:
             welcome_msg = f"Welcome to System Admin mode, {user_name}. I can run scripts, check background jobs, and manage system tasks. What would you like to do?"
         else:
@@ -667,9 +644,9 @@ async def start():
         await cl.Message(content=welcome_msg, actions=action_buttons).send()
     else:
         if is_first_visit and user_name:
-            welcome_msg = f"Welcome to EagleAgent, {user_name}! I don't think we've met before. Is it OK to call you {user_name} or do you have a preferred name?"
+            welcome_msg = f"Welcome to Eagle Agent, {user_name}! I don't think we've met before. Is it OK to call you {user_name} or do you have a preferred name?"
         elif is_first_visit:
-            welcome_msg = "Welcome to EagleAgent! I don't think we've met before. What is your preferred name?"
+            welcome_msg = "Welcome to Eagle Agent! I don't think we've met before. What is your preferred name?"
         elif user_name:
             welcome_msg = f"Hello {user_name}! How can I help you today?"
         else:
@@ -719,7 +696,7 @@ async def on_chat_resume(thread: ThreadDict):
         cl.user_session.set("active_graph", graph)
     
     # Log for debugging
-    print(f"Resuming conversation with thread_id: {thread_id}")
+    print(f"Resuming conversation with thread_id: {thread_id} (profile: {chat_profile_name})")
     
     # Load/create user profile and resolve display name
     user_name = None
@@ -728,7 +705,12 @@ async def on_chat_resume(thread: ThreadDict):
     
     # Optional: Send a welcome back message
     if user_name:
-        if chat_profile_name == "System Admin":
+        if chat_profile_name == "Research Agent":
+            await cl.Message(
+                content=f"Welcome back, {user_name}! Continuing your research session.",
+                author="EagleAgent",
+            ).send()
+        elif chat_profile_name == "System Admin":
             action_buttons = [
                 cl.Action(
                     name="confirm_run_script",
