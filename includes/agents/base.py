@@ -253,9 +253,16 @@ class BaseSubAgent(ABC):
                 # 2. Use a dynamic model function so create_react_agent skips
                 #    its own bind_tools call
                 native_tool_dicts = [t.model_dump() for t in native_tools]
+                
+                # Gemini 2.5 models don't support include_server_side_tool_invocations
+                model_name = getattr(self.model, "model", "")
+                bind_kwargs = {}
+                if "gemini-2.5" not in model_name and "gemini-2.0" not in model_name:
+                    bind_kwargs["tool_config"] = {"include_server_side_tool_invocations": True}
+                
                 bound_model = self.model.bind_tools(
                     list(tools) + native_tool_dicts,
-                    tool_config={"include_server_side_tool_invocations": True}
+                    **bind_kwargs
                 )
                 # Dynamic model function bypasses _should_bind_tools validation
                 sub_agent_graph = create_react_agent(

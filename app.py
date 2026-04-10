@@ -568,7 +568,7 @@ async def chat_profile(current_user: cl.User):
     profiles = [
         cl.ChatProfile(
             name="Eagle Agent",
-            markdown_description="General assistant for product procurement, supplier information, and web search.",
+            markdown_description="",
             icon="/public/avatars/EagleAgent.png",
             default=True,
         ),
@@ -578,14 +578,14 @@ async def chat_profile(current_user: cl.User):
         profiles.append(
             cl.ChatProfile(
                 name="Research Agent",
-                markdown_description="Research assistant — web search, analysis, and information gathering.",
+                markdown_description="",
                 icon="/public/avatars/EagleAgent.png",
             )
         )
         profiles.append(
             cl.ChatProfile(
                 name="System Admin",
-                markdown_description="Server administration — run scripts, manage background jobs, and system maintenance.",
+                markdown_description="",
                 icon="/public/avatars/EagleAgent.png",
             )
         )
@@ -661,6 +661,18 @@ async def start():
 
         # Embedding update buttons for System Admin profile
         action_buttons = [
+            cl.Action(
+                name="list_running_jobs",
+                payload={},
+                label="📋 Check Running Jobs",
+                description="List all running and recent jobs",
+            ),
+            cl.Action(
+                name="list_available_scripts",
+                payload={},
+                label="📜 List Available Scripts",
+                description="Show all scripts that can be run",
+            ),
             cl.Action(
                 name="confirm_run_script",
                 payload={"script_name": "update_product_embeddings"},
@@ -902,6 +914,45 @@ async def on_action_confirm_run_script(action: cl.Action):
 
     import asyncio
     asyncio.create_task(monitor_job(job_runner, job))
+
+
+@cl.action_callback("list_available_scripts")
+async def on_action_list_available_scripts(action: cl.Action):
+    """Show all registered scripts that can be run."""
+    from config.scripts import list_scripts
+    registry = list_scripts()
+    if not registry:
+        await cl.Message(content="No scripts are registered.", author="EagleAgent").send()
+        return
+    lines = []
+    for name, info in registry.items():
+        lines.append(f"- **{name}**: {info['description']}")
+    await cl.Message(content="\n".join(lines), author="EagleAgent").send()
+
+
+@cl.action_callback("list_running_jobs")
+async def on_action_list_running_jobs(action: cl.Action):
+    """Show all tracked jobs (running + recent completed/failed)."""
+    jobs = job_runner.list_jobs()
+    if not jobs:
+        await cl.Message(content="No jobs have been run yet.", author="EagleAgent").send()
+        return
+
+    from datetime import datetime, timezone
+    lines = ["| Script | Status | Started | Duration | Job ID |",
+             "|--------|--------|---------|----------|--------|"]
+    for j in jobs:
+        started = j.started_at.strftime("%H:%M:%S")
+        if j.finished_at:
+            delta = j.finished_at - j.started_at
+            duration = str(delta).split(".")[0]
+        elif j.status == "running":
+            delta = datetime.now(timezone.utc) - j.started_at
+            duration = str(delta).split(".")[0] + " (running)"
+        else:
+            duration = "—"
+        lines.append(f"| {j.script_name} | {j.status} | {started} | {duration} | `{j.id[:8]}` |")
+    await cl.Message(content="\n".join(lines), author="EagleAgent").send()
 
 
 @cl.action_callback("cancel_run_script")
