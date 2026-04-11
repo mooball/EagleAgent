@@ -240,12 +240,25 @@ class BaseSubAgent(ABC):
         
         # Invoke model
         logger.info(f"{self.name} invoking model")
-        if tools:
+        
+        # Check for Gemini-native tools (e.g. Google Search grounding)
+        native_tools = self.get_native_tools()
+        
+        if tools or native_tools:
             from langgraph.prebuilt import create_react_agent
             
-            # Check for Gemini-native tools (e.g. Google Search grounding)
-            native_tools = self.get_native_tools()
-            
+            # Gemini 2.5 models cannot combine built-in tools (google_search)
+            # with function calling in the same request.  When both are present,
+            # use only native tools (google_search is the core capability).
+            model_name = getattr(self.model, "model", "")
+            if native_tools and tools and "gemini-2.5" in model_name:
+                logger.info(
+                    f"{self.name}: dropping {len(tools)} LangChain tool(s) for "
+                    f"{model_name} — built-in tools + function calling cannot be "
+                    "combined; using native tools only"
+                )
+                tools = []
+
             if native_tools:
                 # When mixing native Gemini tools with LangChain tools, we must:
                 # 1. Pre-bind tools + tool_config ourselves (create_react_agent's

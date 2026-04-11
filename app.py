@@ -557,6 +557,79 @@ async def _ensure_user_profile(user: cl.User) -> tuple:
     return user_name, is_new_user
 
 
+# ---------------------------------------------------------------------------
+# Command helpers — map INTENTS to Chainlit CommandDicts
+# ---------------------------------------------------------------------------
+
+# Map emoji icons from INTENTS to Lucide icon names used by Commands
+_LUCIDE_ICONS = {
+    "🏭": "factory",
+    "📦": "package",
+    "🔍": "search",
+    "🏷️": "tag",
+    "📋": "clipboard-list",
+    "🔎": "search",
+    "🌐": "globe",
+}
+
+
+def _intents_to_commands(intents: dict) -> list[dict]:
+    """Convert an INTENTS dict to a list of Chainlit CommandDicts."""
+    return [
+        {
+            "id": intent["label"],
+            "description": intent["description"],
+            "icon": _LUCIDE_ICONS.get(intent["icon"], "circle"),
+            "button": True,
+            "persistent": False,
+        }
+        for name, intent in intents.items()
+    ]
+
+
+# Reverse lookup: command label → intent key
+def _command_to_intent_name(command_label: str) -> str | None:
+    """Map a command label back to an intent key."""
+    from includes.prompts import INTENTS, RESEARCH_INTENTS
+    for name, intent in {**INTENTS, **RESEARCH_INTENTS}.items():
+        if intent["label"] == command_label:
+            return name
+    return None
+
+
+# System Admin commands (not driven by INTENTS, defined directly)
+_SYSADMIN_COMMANDS = [
+    {
+        "id": "Check Running Jobs",
+        "description": "List all running and recent jobs",
+        "icon": "clipboard-list",
+        "button": True,
+        "persistent": False,
+    },
+    {
+        "id": "List Available Scripts",
+        "description": "Show all scripts that can be run",
+        "icon": "scroll-text",
+        "button": True,
+        "persistent": False,
+    },
+    {
+        "id": "Update Product Embeddings",
+        "description": "Regenerate missing product vector embeddings",
+        "icon": "database",
+        "button": True,
+        "persistent": False,
+    },
+    {
+        "id": "Update Supplier Embeddings",
+        "description": "Regenerate missing supplier vector embeddings",
+        "icon": "database",
+        "button": True,
+        "persistent": False,
+    },
+]
+
+
 @cl.set_chat_profiles
 async def chat_profile(current_user: cl.User):
     """Define available chat profiles. Admin users see the System Admin profile."""
@@ -568,7 +641,7 @@ async def chat_profile(current_user: cl.User):
     profiles = [
         cl.ChatProfile(
             name="Eagle Agent",
-            markdown_description="",
+            markdown_description="General assistant for product procurement, supplier information, and web search.",
             icon="/public/avatars/EagleAgent.png",
             default=True,
         ),
@@ -578,25 +651,19 @@ async def chat_profile(current_user: cl.User):
         profiles.append(
             cl.ChatProfile(
                 name="Research Agent",
-                markdown_description="",
+                markdown_description="Search the web for information and research topics.",
                 icon="/public/avatars/EagleAgent.png",
             )
         )
         profiles.append(
             cl.ChatProfile(
                 name="System Admin",
-                markdown_description="",
+                markdown_description="Administrative tools for system configuration and maintenance.",
                 icon="/public/avatars/EagleAgent.png",
             )
         )
 
     return profiles
-
-
-@cl.set_starters
-async def set_starters():
-    """Disabled — action buttons are sent in on_chat_start instead."""
-    return []
 
 
 @cl.on_chat_start
@@ -634,81 +701,39 @@ async def start():
     # Personalized welcome message
     if chat_profile_name == "Research Agent":
         if is_first_visit and user_name:
-            welcome_msg = f"Welcome to Research Agent, {user_name}! I can help you search the web for information about products and their suppliers. Please choose one of the following actions to commence."
+            welcome_msg = f"Welcome to Research Agent, {user_name}! I can help you search the web for information about products and their suppliers."
         elif is_first_visit:
-            welcome_msg = "Welcome to Research Agent! I can help you search the web for information about products and their suppliers. Please choose one of the following actions to commence."
+            welcome_msg = "Welcome to Research Agent! I can help you search the web for information about products and their suppliers."
         elif user_name:
-            welcome_msg = f"Hello {user_name}! I can help you search the web for information about products and their suppliers. Please choose one of the following actions to commence."
+            welcome_msg = f"Hello {user_name}! I can help you search the web for information about products and their suppliers."
         else:
-            welcome_msg = "Hello! I can help you search the web for information about products and their suppliers. Please choose one of the following actions to commence."
+            welcome_msg = "Hello! I can help you search the web for information about products and their suppliers."
 
         from includes.prompts import RESEARCH_INTENTS
-        research_buttons = [
-            cl.Action(
-                name=name,
-                payload={},
-                label=f"{intent['icon']} {intent['label']}",
-                description=intent["description"],
-            )
-            for name, intent in RESEARCH_INTENTS.items()
-        ]
-        await cl.Message(content=welcome_msg, actions=research_buttons).send()
+        await cl.context.emitter.set_commands(_intents_to_commands(RESEARCH_INTENTS))
+        await cl.Message(content=welcome_msg).send()
     elif chat_profile_name == "System Admin":
         if user_name:
-            welcome_msg = f"Welcome to System Admin mode, {user_name}. I can run scripts, check background jobs, and manage system tasks. What would you like to do?"
+            welcome_msg = f"Welcome to System Admin mode, {user_name}. I can run scripts, check background jobs, and manage system tasks."
         else:
-            welcome_msg = "Welcome to System Admin mode. I can run scripts, check background jobs, and manage system tasks. What would you like to do?"
+            welcome_msg = "Welcome to System Admin mode. I can run scripts, check background jobs, and manage system tasks."
 
-        # Embedding update buttons for System Admin profile
-        action_buttons = [
-            cl.Action(
-                name="list_running_jobs",
-                payload={},
-                label="📋 Check Running Jobs",
-                description="List all running and recent jobs",
-            ),
-            cl.Action(
-                name="list_available_scripts",
-                payload={},
-                label="📜 List Available Scripts",
-                description="Show all scripts that can be run",
-            ),
-            cl.Action(
-                name="confirm_run_script",
-                payload={"script_name": "update_product_embeddings"},
-                label="Update Product Embeddings",
-                description="Regenerate missing product vector embeddings",
-            ),
-            cl.Action(
-                name="confirm_run_script",
-                payload={"script_name": "update_supplier_embeddings"},
-                label="Update Supplier Embeddings",
-                description="Regenerate missing supplier vector embeddings",
-            ),
-        ]
-        await cl.Message(content=welcome_msg, actions=action_buttons).send()
+        await cl.context.emitter.set_commands(_SYSADMIN_COMMANDS)
+        await cl.Message(content=welcome_msg).send()
     else:
         if is_first_visit and user_name:
             welcome_msg = f"Welcome to Eagle Agent, {user_name}! I don't think we've met before. Is it OK to call you {user_name} or do you have a preferred name?"
         elif is_first_visit:
             welcome_msg = "Welcome to Eagle Agent! I don't think we've met before. What is your preferred name?"
         elif user_name:
-            welcome_msg = f"Hello {user_name}! I can help you search our internal database for historical records about products, brands and suppliers. Choose one of the following actions to commence."
+            welcome_msg = f"Hello {user_name}! I can help you search our internal database for historical records about products, brands and suppliers."
         else:
-            welcome_msg = "Hello! I can help you search our internal database for historical records about products, brands and suppliers. Choose one of the following actions to commence."
+            welcome_msg = "Hello! I can help you search our internal database for historical records about products, brands and suppliers."
 
-        # Procurement intent buttons for EagleAgent profile
+        # Set procurement intent commands next to the chat input box
         from includes.prompts import INTENTS
-        intent_buttons = [
-            cl.Action(
-                name=name,
-                payload={},
-                label=f"{intent['icon']} {intent['label']}",
-                description=intent["description"],
-            )
-            for name, intent in INTENTS.items()
-        ]
-        await cl.Message(content=welcome_msg, actions=intent_buttons).send()
+        await cl.context.emitter.set_commands(_intents_to_commands(INTENTS))
+        await cl.Message(content=welcome_msg).send()
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
@@ -754,55 +779,23 @@ async def on_chat_resume(thread: ThreadDict):
     if user_name:
         if chat_profile_name == "Research Agent":
             from includes.prompts import RESEARCH_INTENTS
-            research_buttons = [
-                cl.Action(
-                    name=name,
-                    payload={},
-                    label=f"{intent['icon']} {intent['label']}",
-                    description=intent["description"],
-                )
-                for name, intent in RESEARCH_INTENTS.items()
-            ]
+            await cl.context.emitter.set_commands(_intents_to_commands(RESEARCH_INTENTS))
             await cl.Message(
                 content=f"Welcome back, {user_name}! Continuing your research session.",
                 author="EagleAgent",
-                actions=research_buttons,
             ).send()
         elif chat_profile_name == "System Admin":
-            action_buttons = [
-                cl.Action(
-                    name="confirm_run_script",
-                    payload={"script_name": "update_product_embeddings"},
-                    label="Update Product Embeddings",
-                    description="Regenerate missing product vector embeddings",
-                ),
-                cl.Action(
-                    name="confirm_run_script",
-                    payload={"script_name": "update_supplier_embeddings"},
-                    label="Update Supplier Embeddings",
-                    description="Regenerate missing supplier vector embeddings",
-                ),
-            ]
+            await cl.context.emitter.set_commands(_SYSADMIN_COMMANDS)
             await cl.Message(
                 content=f"Welcome back, {user_name}! Continuing System Admin session.",
                 author="EagleAgent",
-                actions=action_buttons,
             ).send()
         else:
             from includes.prompts import INTENTS
-            intent_buttons = [
-                cl.Action(
-                    name=name,
-                    payload={},
-                    label=f"{intent['icon']} {intent['label']}",
-                    description=intent["description"],
-                )
-                for name, intent in INTENTS.items()
-            ]
+            await cl.context.emitter.set_commands(_intents_to_commands(INTENTS))
             await cl.Message(
                 content=f"Welcome back, {user_name}! Continuing our previous conversation.",
                 author="EagleAgent",
-                actions=intent_buttons,
             ).send()
 
 
@@ -830,41 +823,6 @@ async def on_action_new_conversation(action: cl.Action):
 async def on_action_delete_all_data(action: cl.Action):
     """Handle the Delete All Data action button (sends confirmation)."""
     await dispatch_action("delete_all_data")
-
-
-@cl.action_callback("find_product_supplier")
-async def on_action_find_product_supplier(action: cl.Action):
-    await dispatch_action("find_product_supplier")
-
-
-@cl.action_callback("find_product")
-async def on_action_find_product(action: cl.Action):
-    await dispatch_action("find_product")
-
-
-@cl.action_callback("find_supplier")
-async def on_action_find_supplier(action: cl.Action):
-    await dispatch_action("find_supplier")
-
-
-@cl.action_callback("find_brand_supplier")
-async def on_action_find_brand_supplier(action: cl.Action):
-    await dispatch_action("find_brand_supplier")
-
-
-@cl.action_callback("check_purchase_history")
-async def on_action_check_purchase_history(action: cl.Action):
-    await dispatch_action("check_purchase_history")
-
-
-@cl.action_callback("research_product_info")
-async def on_action_research_product_info(action: cl.Action):
-    await dispatch_action("research_product_info")
-
-
-@cl.action_callback("research_supply_chain")
-async def on_action_research_supply_chain(action: cl.Action):
-    await dispatch_action("research_supply_chain")
 
 
 @cl.action_callback("confirm_delete_all")
@@ -895,66 +853,6 @@ async def on_action_cancel_delete(action: cl.Action):
     ).send()
 
 
-@cl.action_callback("confirm_run_script")
-async def on_action_confirm_run_script(action: cl.Action):
-    """Run button from the run_script confirmation prompt."""
-    from includes.job_progress import monitor_job
-
-    script_name = action.payload.get("script_name", "")
-    thread_id = cl.user_session.get("thread_id", "")
-
-    try:
-        job = await job_runner.run_script(script_name, [], thread_id=thread_id)
-    except ValueError as e:
-        await cl.Message(
-            content=f"Could not start `{script_name}`: {e}",
-            author="EagleAgent",
-        ).send()
-        return
-
-    import asyncio
-    asyncio.create_task(monitor_job(job_runner, job))
-
-
-@cl.action_callback("list_available_scripts")
-async def on_action_list_available_scripts(action: cl.Action):
-    """Show all registered scripts that can be run."""
-    from config.scripts import list_scripts
-    registry = list_scripts()
-    if not registry:
-        await cl.Message(content="No scripts are registered.", author="EagleAgent").send()
-        return
-    lines = []
-    for name, info in registry.items():
-        lines.append(f"- **{name}**: {info['description']}")
-    await cl.Message(content="\n".join(lines), author="EagleAgent").send()
-
-
-@cl.action_callback("list_running_jobs")
-async def on_action_list_running_jobs(action: cl.Action):
-    """Show all tracked jobs (running + recent completed/failed)."""
-    jobs = job_runner.list_jobs()
-    if not jobs:
-        await cl.Message(content="No jobs have been run yet.", author="EagleAgent").send()
-        return
-
-    from datetime import datetime, timezone
-    lines = ["| Script | Status | Started | Duration | Job ID |",
-             "|--------|--------|---------|----------|--------|"]
-    for j in jobs:
-        started = j.started_at.strftime("%H:%M:%S")
-        if j.finished_at:
-            delta = j.finished_at - j.started_at
-            duration = str(delta).split(".")[0]
-        elif j.status == "running":
-            delta = datetime.now(timezone.utc) - j.started_at
-            duration = str(delta).split(".")[0] + " (running)"
-        else:
-            duration = "—"
-        lines.append(f"| {j.script_name} | {j.status} | {started} | {duration} | `{j.id[:8]}` |")
-    await cl.Message(content="\n".join(lines), author="EagleAgent").send()
-
-
 @cl.action_callback("cancel_run_script")
 async def on_action_cancel_run_script(action: cl.Action):
     """Cancel button from the run_script confirmation prompt."""
@@ -982,6 +880,64 @@ async def on_action_cancel_job(action: cl.Action):
         ).send()
 
 
+# ---------------------------------------------------------------------------
+# System Admin command handlers (invoked from on_message when command is set)
+# ---------------------------------------------------------------------------
+
+async def _handle_list_running_jobs():
+    """Show all tracked jobs (running + recent completed/failed)."""
+    jobs = job_runner.list_jobs()
+    if not jobs:
+        await cl.Message(content="No jobs have been run yet.", author="EagleAgent").send()
+        return
+
+    from datetime import datetime, timezone
+    lines = ["| Script | Status | Started | Duration | Job ID |",
+             "|--------|--------|---------|----------|--------|"]
+    for j in jobs:
+        started = j.started_at.strftime("%H:%M:%S")
+        if j.finished_at:
+            delta = j.finished_at - j.started_at
+            duration = str(delta).split(".")[0]
+        elif j.status == "running":
+            delta = datetime.now(timezone.utc) - j.started_at
+            duration = str(delta).split(".")[0] + " (running)"
+        else:
+            duration = "—"
+        lines.append(f"| {j.script_name} | {j.status} | {started} | {duration} | `{j.id[:8]}` |")
+    await cl.Message(content="\n".join(lines), author="EagleAgent").send()
+
+
+async def _handle_list_available_scripts():
+    """Show all registered scripts that can be run."""
+    from config.scripts import list_scripts
+    registry = list_scripts()
+    if not registry:
+        await cl.Message(content="No scripts are registered.", author="EagleAgent").send()
+        return
+    lines = []
+    for name, info in registry.items():
+        lines.append(f"- **{name}**: {info['description']}")
+    await cl.Message(content="\n".join(lines), author="EagleAgent").send()
+
+
+async def _handle_run_script(script_name: str):
+    """Run a script by name via the job runner."""
+    from includes.job_progress import monitor_job
+    thread_id = cl.user_session.get("thread_id", "")
+    try:
+        job = await job_runner.run_script(script_name, [], thread_id=thread_id)
+    except ValueError as e:
+        await cl.Message(
+            content=f"Could not start `{script_name}`: {e}",
+            author="EagleAgent",
+        ).send()
+        return
+
+    import asyncio
+    asyncio.create_task(monitor_job(job_runner, job))
+
+
 @cl.on_message
 async def main(message: cl.Message):
     # Use the session ID as the thread ID to maintain conversation history
@@ -992,6 +948,26 @@ async def main(message: cl.Message):
     if is_help_request(message.content):
         await send_action_buttons(user_id)
         return
+
+    # Handle System Admin commands (self-contained, don't go through the graph)
+    if message.command:
+        _sysadmin_handlers = {
+            "Check Running Jobs": "_list_running_jobs",
+            "List Available Scripts": "_list_available_scripts",
+            "Update Product Embeddings": "_run_script:update_product_embeddings",
+            "Update Supplier Embeddings": "_run_script:update_supplier_embeddings",
+        }
+        handler_key = _sysadmin_handlers.get(message.command)
+        if handler_key == "_list_running_jobs":
+            await _handle_list_running_jobs()
+            return
+        elif handler_key == "_list_available_scripts":
+            await _handle_list_available_scripts()
+            return
+        elif handler_key and handler_key.startswith("_run_script:"):
+            script_name = handler_key.split(":", 1)[1]
+            await _handle_run_script(script_name)
+            return
 
     graph_config = {
         "configurable": {"thread_id": thread_id},
@@ -1053,8 +1029,14 @@ async def main(message: cl.Message):
         "user_id": user_id
     }
     
-    # Inject procurement intent context if set by an action button
-    intent_context = cl.user_session.get("intent_context")
+    # Inject procurement intent context if set by a command or action button
+    from includes.prompts import get_intent_context
+    intent_context = None
+    if message.command:
+        intent_name = _command_to_intent_name(message.command) or message.command
+        intent_context = get_intent_context(intent_name)
+    if not intent_context:
+        intent_context = cl.user_session.get("intent_context")
     if intent_context:
         inputs["intent_context"] = intent_context
     
