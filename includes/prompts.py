@@ -150,9 +150,12 @@ INTENTS = {
         ),
         "context": (
             "The user is specifically looking for a supplier from our current database "
-            "who can fulfil a product order. Use `part_purchase_history` to find suppliers "
-            "who have previously supplied the product, and `search_suppliers` to find "
-            "additional matches. Prioritise suppliers with recent purchase history."
+            "who can fulfil a product order. Use `search_suppliers` with the `query` "
+            "parameter and `limit=10` (or more) to find all keyword matches ranked by "
+            "relevance. Also use `part_purchase_history` to find suppliers who have "
+            "previously supplied the product. Prioritise suppliers with recent purchase history. "
+            "Always present at least 10 suppliers if available, and tell the user how many "
+            "more exist beyond the displayed results."
         ),
     },
     "find_product": {

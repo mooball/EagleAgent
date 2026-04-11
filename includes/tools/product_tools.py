@@ -8,7 +8,7 @@ and running vector similarity searches using pgvector and Gemini.
 import logging
 from typing import Optional
 from langchain_core.tools import tool
-from sqlalchemy import create_engine, or_
+from sqlalchemy import create_engine, or_, text
 from sqlalchemy.orm import sessionmaker, aliased
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import asyncio
@@ -199,6 +199,38 @@ async def search_brands(query: Optional[str] = None, limit: int = 20) -> str:
     return await asyncio.to_thread(_do_brand_search, query, limit)
 
 
+def _suggest_spelling(session, query: str) -> Optional[str]:
+    """Use pg_trgm word_similarity to suggest a corrected spelling from supplier names/notes.
+    
+    Returns the best matching word if similarity is high enough, else None.
+    """
+    try:
+        # Extract individual words from query (3+ chars) to check each
+        words = [w for w in query.split() if len(w) >= 3]
+        if not words:
+            return None
+
+        for word in words:
+            # Find the best matching supplier name word via pg_trgm
+            row = session.execute(
+                text(
+                    "SELECT DISTINCT w.word, word_similarity(:q, w.word) AS sim "
+                    "FROM suppliers s, LATERAL unnest(string_to_array(s.name, ' ')) AS w(word) "
+                    "WHERE length(w.word) >= 3 AND word_similarity(:q, w.word) > 0.5 "
+                    "ORDER BY sim DESC LIMIT 1"
+                ),
+                {"q": word},
+            ).fetchone()
+            if row and row[0].lower() != word.lower():
+                # Suggest the corrected query with this word replaced
+                corrected = query.replace(word, row[0])
+                if corrected.lower() != query.lower():
+                    return corrected
+    except Exception as e:
+        logger.warning(f"Spell suggestion failed: {e}")
+    return None
+
+
 def _do_supplier_search(name: Optional[str] = None,
                         brand: Optional[str] = None,
                         country: Optional[str] = None,
@@ -230,8 +262,9 @@ def _do_supplier_search(name: Optional[str] = None,
 
         results = []
         seen_ids = set()
+        text_match_count = 0  # Track original text matches for spell suggestion
 
-        # Stage 1: string match on query (ilike across name, notes, city)
+        # Stage 1: Get ALL text matches (no limit) so we don't miss any
         t_stage1 = time.monotonic()
         if query:
             string_query = base_query.filter(
@@ -241,9 +274,10 @@ def _do_supplier_search(name: Optional[str] = None,
                     Supplier.city.ilike(f"%{query}%"),
                 )
             )
-            total = string_query.distinct().count()
-            string_results = string_query.distinct().limit(limit).all()
-            for r in string_results:
+            text_results = string_query.distinct().all()
+            total = len(text_results)
+            text_match_count = total
+            for r in text_results:
                 if r.id not in seen_ids:
                     results.append(r)
                     seen_ids.add(r.id)
@@ -254,36 +288,110 @@ def _do_supplier_search(name: Optional[str] = None,
                 seen_ids.add(r.id)
         logger.info(f"[TIMING] supplier_search: stage1 query took {time.monotonic() - t_stage1:.3f}s (found {len(results)} results)")
 
-        # Stage 2: vector fallback if query provided and we need more results
-        if query and len(results) < limit:
+        # Stage 2: Rank text matches by weighted score
+        #   score = vector_distance - name_boost - purchase_boost
+        #   Lower score = better rank
+        if query and results:
             try:
+                import math
                 t_embed = time.monotonic()
                 emb_model = get_embeddings_model()
                 query_vector = emb_model.embed_query(query)
                 logger.info(f"[TIMING] supplier_search: embedding generation took {time.monotonic() - t_embed:.3f}s")
+
                 t_vector = time.monotonic()
-                vector_query = base_query.filter(
-                    Supplier.embedding.isnot(None)
-                ).order_by(
-                    Supplier.embedding.cosine_distance(query_vector)
+                text_ids = [r.id for r in results]
+
+                # Fetch vector distances
+                from sqlalchemy import func as sa_func
+                dist_rows = (
+                    session.query(
+                        Supplier.id,
+                        Supplier.embedding.cosine_distance(query_vector).label("dist"),
+                    )
+                    .filter(
+                        Supplier.id.in_(text_ids),
+                        Supplier.embedding.isnot(None),
+                    )
+                    .all()
                 )
-                v_results = vector_query.limit(limit * 2).all()
-                logger.info(f"[TIMING] supplier_search: vector query took {time.monotonic() - t_vector:.3f}s")
-                for r in v_results:
+                dist_map = {row.id: row.dist for row in dist_rows}
+
+                # Fetch purchase counts per supplier
+                purchase_rows = (
+                    session.query(
+                        ProductSupplier.supplier_id,
+                        sa_func.count(ProductSupplier.id).label("cnt"),
+                    )
+                    .filter(ProductSupplier.supplier_id.in_(text_ids))
+                    .group_by(ProductSupplier.supplier_id)
+                    .all()
+                )
+                purchase_map = {row.supplier_id: row.cnt for row in purchase_rows}
+
+                # Compute weighted score for each result
+                query_lower = query.lower()
+                scored = []
+                for r in results:
+                    base_dist = dist_map.get(r.id, 1.0)  # default high if no embedding
+                    # Name-match boost: 0.05 discount if query appears in supplier name
+                    name_boost = 0.05 if query_lower in (r.name or "").lower() else 0.0
+                    # Purchase boost: log-scaled, capped at 0.05
+                    purchases = purchase_map.get(r.id, 0)
+                    purchase_boost = min(0.05, math.log1p(purchases) / 100)
+                    score = base_dist - name_boost - purchase_boost
+                    scored.append((score, r))
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"  {r.name[:50]}: dist={base_dist:.4f} name_boost={name_boost:.4f} purchase_boost={purchase_boost:.4f} score={score:.4f}")
+
+                scored.sort(key=lambda x: x[0])
+                results = [r for _, r in scored]
+                seen_ids = {r.id for r in results}
+                logger.info(f"[TIMING] supplier_search: weighted ranking took {time.monotonic() - t_vector:.3f}s")
+            except Exception as e:
+                logger.error(f"Failed to compute weighted ranking for supplier search: {e}")
+
+        # Stage 3: If we still need more, add vector-only semantic matches
+        if query and len(results) < limit:
+            try:
+                t_embed2 = time.monotonic()
+                emb_model = get_embeddings_model()
+                query_vector = emb_model.embed_query(query)
+                logger.info(f"[TIMING] supplier_search: embedding (stage3) took {time.monotonic() - t_embed2:.3f}s")
+                t_vector2 = time.monotonic()
+                vector_results = (
+                    base_query.filter(
+                        Supplier.embedding.isnot(None),
+                        ~Supplier.id.in_(list(seen_ids)) if seen_ids else True,
+                    )
+                    .order_by(Supplier.embedding.cosine_distance(query_vector))
+                    .limit(limit - len(results))
+                    .all()
+                )
+                logger.info(f"[TIMING] supplier_search: vector fill took {time.monotonic() - t_vector2:.3f}s")
+                for r in vector_results:
                     if r.id not in seen_ids:
                         results.append(r)
                         seen_ids.add(r.id)
-                        if len(results) >= limit:
-                            break
+                        total += 1
             except Exception as e:
-                logger.error(f"Failed to compute embedding for supplier search: {e}")
+                logger.error(f"Failed vector fill for supplier search: {e}")
 
         if not results:
+            # No results at all — check for spelling suggestions
+            suggestion = _suggest_spelling(session, query) if query else None
+            if suggestion:
+                return f"No suppliers found matching '{query}'. Did you mean **{suggestion}**?"
             return "No suppliers found matching those criteria."
+
+        # Apply display limit
+        displayed = results[:limit]
+
+        # Collect all supplier IDs we need metadata for
+        supplier_ids = [s.id for s in displayed]
 
         # Fetch linked brand names for each supplier
         t_brands = time.monotonic()
-        supplier_ids = [s.id for s in results]
         brand_links = (
             session.query(SupplierBrand.supplier_id, Brand.name)
             .join(Brand, SupplierBrand.brand_id == Brand.id)
@@ -323,15 +431,14 @@ def _do_supplier_search(name: Optional[str] = None,
             for row in purchase_stats_rows
         }
 
-        output_parts = [f"Found {total} matching supplier(s). Displaying {len(results)}:"]
-        for s in results:
+        output_parts = [f"Found {total} matching supplier(s). Displaying {len(displayed)}:"]
+        for s in displayed:
             item = f"- {s.name}"
             if s.city or s.country:
                 location = ", ".join(filter(None, [s.city, s.country]))
                 item += f" | Location: {location}"
             if s.url:
                 item += f" | URL: {s.url}"
-            # Contacts summary
             if s.contacts:
                 for contact in s.contacts:
                     label = contact.get("label", "")
@@ -344,11 +451,9 @@ def _do_supplier_search(name: Optional[str] = None,
                         c_parts.append(contact["phone"])
                     if c_parts:
                         item += f" | {label} Contact: {', '.join(c_parts)}"
-            # Brands
             brands = supplier_brands.get(s.id, [])
             if brands:
                 item += f" | Brands: {', '.join(sorted(brands))}"
-            # Purchase stats
             stats = supplier_purchase_stats.get(s.id)
             if stats:
                 count, last_date = stats
@@ -358,8 +463,14 @@ def _do_supplier_search(name: Optional[str] = None,
                 item += f" | Purchases: 0"
             output_parts.append(item)
 
-        if total > limit:
-            output_parts.append(f"\nNote: There are {total - limit} more unshown results. Ask the user if they'd like to see more or refine the search.")
+        if total > len(displayed):
+            output_parts.append(f"\nNote: There are {total - len(displayed)} more unshown results. Ask the user if they'd like to see more or refine the search.")
+
+        # If few text matches, suggest a spelling correction
+        if query and text_match_count < 3:
+            suggestion = _suggest_spelling(session, query)
+            if suggestion:
+                output_parts.append(f"\nDid you mean **{suggestion}**? Try searching with the corrected spelling for more results.")
 
         logger.info(f"[TIMING] supplier_search: TOTAL took {time.monotonic() - t0:.3f}s")
         return "\n".join(output_parts)
@@ -395,7 +506,8 @@ async def search_suppliers(name: Optional[str] = None,
         brand: Brand name to filter by (e.g. 'Hilti') — finds suppliers linked to that brand
         country: Country to filter by (e.g. 'Australia')
         query: Text and semantic search across name, notes, and city. Accepts natural language descriptions.
-        limit: Maximum number of results to return (default: 20)
+              Finds ALL keyword matches first, then ranks them by vector proximity.
+        limit: Maximum number of results to return (default: 10)
     """
     return await asyncio.to_thread(_do_supplier_search, name, brand, country, query, limit)
 
