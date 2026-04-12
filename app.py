@@ -209,7 +209,7 @@ if not getattr(cl_server.app, "_eagleagent_patched", False):
     )
     routes.insert(catch_all_idx, files_mount)
 
-# Load environment variables (still needed for secrets like GOOGLE_API_KEY)
+# Load environment variables (Vertex AI config, OAuth secrets, etc.)
 load_dotenv()
 
 # Configure logging
@@ -293,12 +293,11 @@ mcp_client = None
 
 # Initialize the model
 # Model configuration is in config/settings.py (DEFAULT_MODEL + per-agent overrides)
-# API key is loaded from environment variable (secret)
+# Auth is handled via Vertex AI env vars (GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_APPLICATION_CREDENTIALS)
 def create_model(agent_name: str) -> ChatGoogleGenerativeAI:
     """Create a model instance for a specific agent, using per-agent model overrides."""
     return ChatGoogleGenerativeAI(
         model=config.get_agent_model(agent_name),
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
         temperature=config.DEFAULT_TEMPERATURE,
         max_output_tokens=config.DEFAULT_MAX_TOKENS,
     )
@@ -758,6 +757,12 @@ async def on_chat_resume(thread: ThreadDict):
     if user:
         cl.user_session.set("user_id", user.identifier)
 
+    # Normalize legacy chat profile names (EagleAgent → Eagle Agent)
+    chat_profile_name = cl.user_session.get("chat_profile")
+    if chat_profile_name == "EagleAgent":
+        chat_profile_name = "Eagle Agent"
+        cl.user_session.set("chat_profile", chat_profile_name)
+
     # Select graph based on chat profile (persisted with thread)
     chat_profile_name = cl.user_session.get("chat_profile")
     if chat_profile_name == "System Admin":
@@ -775,28 +780,31 @@ async def on_chat_resume(thread: ThreadDict):
     if user:
         user_name, _ = await _ensure_user_profile(user)
     
-    # Optional: Send a welcome back message
+    # Restore commands and send a transient welcome-back message
+    # (skip DB persistence so resumed threads don't accumulate duplicates)
     if user_name:
         if chat_profile_name == "Research Agent":
             from includes.prompts import RESEARCH_INTENTS
             await cl.context.emitter.set_commands(_intents_to_commands(RESEARCH_INTENTS))
-            await cl.Message(
+            msg = cl.Message(
                 content=f"Welcome back, {user_name}! Continuing your research session.",
                 author="EagleAgent",
-            ).send()
+            )
         elif chat_profile_name == "System Admin":
             await cl.context.emitter.set_commands(_SYSADMIN_COMMANDS)
-            await cl.Message(
+            msg = cl.Message(
                 content=f"Welcome back, {user_name}! Continuing System Admin session.",
                 author="EagleAgent",
-            ).send()
+            )
         else:
             from includes.prompts import INTENTS
             await cl.context.emitter.set_commands(_intents_to_commands(INTENTS))
-            await cl.Message(
+            msg = cl.Message(
                 content=f"Welcome back, {user_name}! Continuing our previous conversation.",
                 author="EagleAgent",
-            ).send()
+            )
+        msg.persisted = True  # skip DB write — display only
+        await msg.send()
 
 
 # ---------------------------------------------------------------------------

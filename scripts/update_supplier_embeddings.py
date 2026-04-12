@@ -48,8 +48,8 @@ def main():
     parser.add_argument("--production", action="store_true", help="Update embeddings in the PRODUCTION database.")
     args = parser.parse_args()
 
-    if "GOOGLE_API_KEY" not in os.environ:
-        print("Error: GOOGLE_API_KEY is not set in your environment. Cannot generate embeddings.")
+    if os.environ.get("GOOGLE_GENAI_USE_VERTEXAI") != "true":
+        print("Error: GOOGLE_GENAI_USE_VERTEXAI is not set. Configure Vertex AI env vars first.")
         return
 
     env_label = "PRODUCTION" if args.production else "LOCAL"

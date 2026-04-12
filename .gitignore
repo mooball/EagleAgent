@@ -12,6 +12,7 @@ __pycache__/
 temp_files/
 data/
 service-account-key.json
+service-account-key.mooball.json
 chainlit_datalayer.db
 chainlit.db
 *.db

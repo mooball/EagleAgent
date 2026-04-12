@@ -180,15 +180,14 @@ class TestBrowserAgentIntegration:
         
         load_dotenv()
         
-        # Only run if we have an API key
-        if not os.getenv("GOOGLE_API_KEY"):
-            pytest.skip("GOOGLE_API_KEY not set")
+        # Only run if we have Vertex AI configured
+        if not os.getenv("GOOGLE_GENAI_USE_VERTEXAI"):
+            pytest.skip("GOOGLE_GENAI_USE_VERTEXAI not set")
         
         # Create real model
         from config import config
         self.model = ChatGoogleGenerativeAI(
             model=config.DEFAULT_MODEL,
-            google_api_key=os.getenv("GOOGLE_API_KEY")
         )
         
         self.agent = BrowserAgent(model=self.model, store=None)

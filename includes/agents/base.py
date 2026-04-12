@@ -13,6 +13,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.store.base import BaseStore
 import asyncio
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -267,10 +268,12 @@ class BaseSubAgent(ABC):
                 #    its own bind_tools call
                 native_tool_dicts = [t.model_dump() for t in native_tools]
                 
-                # Gemini 2.5 models don't support include_server_side_tool_invocations
+                # include_server_side_tool_invocations is not supported on
+                # Vertex AI, nor on Gemini 2.5/2.0 models via AI Studio.
                 model_name = getattr(self.model, "model", "")
+                use_vertexai = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
                 bind_kwargs = {}
-                if "gemini-2.5" not in model_name and "gemini-2.0" not in model_name:
+                if not use_vertexai and "gemini-2.5" not in model_name and "gemini-2.0" not in model_name:
                     bind_kwargs["tool_config"] = {"include_server_side_tool_invocations": True}
                 
                 bound_model = self.model.bind_tools(
