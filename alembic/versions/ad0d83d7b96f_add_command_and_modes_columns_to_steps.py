@@ -27,26 +27,3 @@ def downgrade() -> None:
     """Remove command and modes columns from steps table."""
     op.drop_column('steps', 'modes')
     op.drop_column('steps', 'command')
-
-    sa.UniqueConstraint('identifier', name=op.f('users_identifier_key'), postgresql_include=[], postgresql_nulls_not_distinct=False)
-    )
-    op.create_table('feedbacks',
-    sa.Column('id', sa.VARCHAR(), autoincrement=False, nullable=False),
-    sa.Column('forId', sa.VARCHAR(), autoincrement=False, nullable=False),
-    sa.Column('threadId', sa.VARCHAR(), autoincrement=False, nullable=False),
-    sa.Column('value', sa.INTEGER(), autoincrement=False, nullable=False),
-    sa.Column('comment', sa.VARCHAR(), autoincrement=False, nullable=True),
-    sa.ForeignKeyConstraint(['threadId'], ['threads.id'], name=op.f('feedbacks_threadId_fkey'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('feedbacks_pkey'))
-    )
-    op.create_table('checkpoint_blobs',
-    sa.Column('thread_id', sa.TEXT(), autoincrement=False, nullable=False),
-    sa.Column('checkpoint_ns', sa.TEXT(), server_default=sa.text("''::text"), autoincrement=False, nullable=False),
-    sa.Column('channel', sa.TEXT(), autoincrement=False, nullable=False),
-    sa.Column('version', sa.TEXT(), autoincrement=False, nullable=False),
-    sa.Column('type', sa.TEXT(), autoincrement=False, nullable=False),
-    sa.Column('blob', postgresql.BYTEA(), autoincrement=False, nullable=True),
-    sa.PrimaryKeyConstraint('thread_id', 'checkpoint_ns', 'channel', 'version', name=op.f('checkpoint_blobs_pkey'))
-    )
-    op.create_index(op.f('checkpoint_blobs_thread_id_idx'), 'checkpoint_blobs', ['thread_id'], unique=False)
-    # ### end Alembic commands ###
