@@ -5,10 +5,8 @@ echo "🚀 Starting EagleAgent on Railway..."
 
 # Decode service account credentials from base64 env var (Railway deployment)
 if [ -n "$GOOGLE_SERVICE_ACCOUNT_BASE64" ]; then
-    SA_DIR="${DATA_DIR:-/app/data}"
-    mkdir -p "$SA_DIR"
-    echo "$GOOGLE_SERVICE_ACCOUNT_BASE64" | base64 -d > "$SA_DIR/service-account-key.json"
-    export GOOGLE_APPLICATION_CREDENTIALS="$SA_DIR/service-account-key.json"
+    echo "$GOOGLE_SERVICE_ACCOUNT_BASE64" | base64 -d > /tmp/service-account-key.json
+    export GOOGLE_APPLICATION_CREDENTIALS="/tmp/service-account-key.json"
     echo "✅ Service account credentials decoded"
 fi
 
