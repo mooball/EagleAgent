@@ -3,9 +3,20 @@ set -e
 
 echo "🚀 Starting EagleAgent on Railway..."
 
+# Decode service account credentials from base64 env var (Railway deployment)
+if [ -n "$GOOGLE_SERVICE_ACCOUNT_BASE64" ]; then
+    SA_DIR="${DATA_DIR:-/app/data}"
+    mkdir -p "$SA_DIR"
+    echo "$GOOGLE_SERVICE_ACCOUNT_BASE64" | base64 -d > "$SA_DIR/service-account-key.json"
+    export GOOGLE_APPLICATION_CREDENTIALS="$SA_DIR/service-account-key.json"
+    echo "✅ Service account credentials decoded"
+fi
+
 # Validate required environment variables
 required_vars=(
-    "GOOGLE_API_KEY"
+    "GOOGLE_GENAI_USE_VERTEXAI"
+    "GOOGLE_CLOUD_PROJECT"
+    "GOOGLE_APPLICATION_CREDENTIALS"
     "CHAINLIT_AUTH_SECRET"
     "OAUTH_GOOGLE_CLIENT_ID"
     "OAUTH_GOOGLE_CLIENT_SECRET"

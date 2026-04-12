@@ -179,7 +179,6 @@ Example response:
 
     model = ChatGoogleGenerativeAI(
         model="gemini-3-flash-preview",
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
         temperature=0,
         timeout=60,
     )

@@ -117,7 +117,7 @@ class JobRunner:
         safe_args = validate_args(script_name, args or [])
         full_command = script["command"] + safe_args
 
-        # Inherit the current environment so scripts get GOOGLE_API_KEY etc.
+        # Inherit the current environment so scripts get Vertex AI config etc.
         proc = await asyncio.create_subprocess_exec(
             *full_command,
             stdout=asyncio.subprocess.PIPE,

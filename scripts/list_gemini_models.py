@@ -1,10 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
-import requests
-import os
+from google import genai
 
-api_key = os.environ.get("GOOGLE_API_KEY")
-url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-res = requests.get(url).json()
-for model in res.get('models', []):
-    print(model['name'])
+client = genai.Client()
+for model in client.models.list():
+    print(model.name)
