@@ -140,24 +140,6 @@ PROFILE_TEMPLATES = {
 # context that persists for the entire thread, guiding the LLM's behaviour.
 
 INTENTS = {
-    "find_product_supplier": {
-        "label": "Find a Product Supplier",
-        "icon": "🏭",
-        "description": "Find a supplier who can supply specific products",
-        "follow_up": (
-            "I understand you're looking to find a supplier for specific products. "
-            "Can you tell me the product part numbers, name, or a detailed description?"
-        ),
-        "context": (
-            "The user is specifically looking for a supplier from our current database "
-            "who can fulfil a product order. Use `search_suppliers` with the `query` "
-            "parameter and `limit=10` (or more) to find all keyword matches ranked by "
-            "relevance. Also use `part_purchase_history` to find suppliers who have "
-            "previously supplied the product. Prioritise suppliers with recent purchase history. "
-            "Always present at least 10 suppliers if available, and tell the user how many "
-            "more exist beyond the displayed results."
-        ),
-    },
     "find_product": {
         "label": "Find a Product",
         "icon": "📦",
@@ -176,32 +158,30 @@ INTENTS = {
     "find_supplier": {
         "label": "Find a Supplier",
         "icon": "🔍",
-        "description": "Search for a supplier in the database",
+        "description": "Find a supplier by name, product, brand, or description",
         "follow_up": (
-            "I can search our supplier database. Are you looking for a specific "
-            "supplier by name, country, or do you have a description of what they "
-            "should supply?"
+            "I can help you find a supplier. You can give me:\n"
+            "- A **part number** (e.g. `6Y-0834`) — I'll find who supplies it\n"
+            "- A **brand name** (e.g. `Caterpillar`) — I'll find authorised suppliers\n"
+            "- A **supplier name** (e.g. `RAM Conveyors`) — I'll look them up\n"
+            "- A **description** (e.g. `heavy duty conveyor belts`) — I'll search by relevance\n\n"
+            "What are you looking for?"
         ),
         "context": (
-            "The user wants to find a supplier in the internal supplier database. "
-            "Use `search_suppliers` with whatever criteria they provide. The `query` "
-            "parameter supports natural language and falls back to vector similarity "
-            "search on supplier notes."
-        ),
-    },
-    "find_brand_supplier": {
-        "label": "Find a Brand Supplier",
-        "icon": "🏷️",
-        "description": "Find a supplier who carries a specific brand",
-        "follow_up": (
-            "I can find suppliers who carry a specific brand. "
-            "What brand are you looking for?"
-        ),
-        "context": (
-            "The user wants to find suppliers who carry a specific brand. First use "
-            "`search_brands` to verify/resolve the brand name, then use "
-            "`search_suppliers` with the `brand` parameter to find suppliers linked "
-            "to that brand."
+            "The user wants to find a supplier. They may provide a part number, "
+            "a brand name, a supplier name, a country, or a general description. "
+            "Determine the type of input and use the appropriate search strategy:\n"
+            "- **Part number**: Use `search_products` to identify the product and brand, "
+            "then `part_purchase_history` to find proven suppliers. Fall back to "
+            "`search_suppliers(brand=...)` if no purchase history exists.\n"
+            "- **Brand name**: Use `search_brands` to verify the brand, then "
+            "`search_suppliers(brand=...)` to find linked suppliers.\n"
+            "- **Supplier name/country/description**: Use `search_suppliers` with the "
+            "appropriate parameters (name, country, query).\n"
+            "If the input is ambiguous (could be a part number, brand, or supplier name), "
+            "ask the user to clarify before searching. "
+            "Always present at least 10 suppliers if available, and tell the user how many "
+            "more exist beyond the displayed results."
         ),
     },
     "check_purchase_history": {
@@ -574,6 +554,26 @@ def build_research_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
     parts.append("- Clearly distinguish between established facts and recent developments.")
     parts.append("- If information is uncertain or conflicting across sources, say so.")
     parts.append("- Provide concise summaries first, then offer to go deeper if the user wants more detail.")
+    parts.append("")
+
+    parts.append("## Tool Call Budget")
+    parts.append("You have a maximum of 5 tool calls per response. If after 3 calls you haven't found useful results, STOP and ask the user for clarification. Never make more than 5 tool calls without returning a response.")
+    parts.append("")
+
+    parts.append("## Image/Document Input")
+    parts.append("If the user provides an image or document:")
+    parts.append("1. First, analyse what you're looking at — is it a product photo, a screenshot, a document, or something else?")
+    parts.append("2. **If it contains readable text** (names, URLs, descriptions, etc.), extract the key information and use it to guide your search. If there are many items, list what you found and ask which to research rather than searching them all.")
+    parts.append("3. **If it's a photo** with no readable text, describe what you see, try 1–2 broad searches based on your description, and if those don't help, STOP and ask the user for more context.")
+    parts.append("4. Never make more than 3 search attempts from a single image without returning results or asking the user for clarification.")
+    parts.append("")
+
+    parts.append("## Product Identification Confidence")
+    parts.append("When identifying a product — especially from an image, description, or partial information — you MUST be certain before presenting detailed product data. If there is ANY doubt about the exact product:")
+    parts.append("1. Present your best guess as a hypothesis: 'Based on what I can see, this looks like it could be [product]. Can you confirm?'")
+    parts.append("2. Do NOT proceed with detailed specs, pricing, or supplier lookups until the user confirms the identification.")
+    parts.append("3. If multiple products could match, list the candidates and ask the user to pick the right one.")
+    parts.append("4. Only present definitive product information when you have an exact match confirmed by the user or an unambiguous identifier (e.g. a clearly readable part number).")
     parts.append("")
 
     if profile_data:

@@ -1070,6 +1070,14 @@ async def main(message: cl.Message):
     active_agent = "GeneralAgent"
     supervisor_done_at = None
     
+    # Accumulate token usage across all model calls for a single footer
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_all_tokens = 0
+    
+    # Track active cl.Step for tool progress display
+    active_step = None
+    
     active_graph = cl.user_session.get("active_graph", graph)
     last_event_time = request_start
     try:
@@ -1117,29 +1125,34 @@ async def main(message: cl.Message):
                 # Handle single string content
                 elif isinstance(content, str):
                     await msg.stream_token(content)
+
+        elif kind == "on_tool_start":
+            # Show a progress step in the UI while the tool runs
+            friendly = name.replace("_", " ").title()
+            active_step = cl.Step(name=friendly, type="tool")
+            await active_step.send()
+
         elif kind == "on_tool_end":
-            data = event.get("data", {})
-            output = data.get("output")
-            
-            # Extract string content from tool output robustly
-            output_str = ""
-            if isinstance(output, str):
-                output_str = output
-            elif hasattr(output, "content"):
-                output_str = str(output.content)
-            elif hasattr(output, "get") and "output" in output:
-                output_str = str(output["output"])
-            else:
-                output_str = str(output)
-            
-            if "Screenshot saved to" in output_str:
-                # Intercept logic moved back to the tool itself for context stability
-                pass
+            # Close the progress step
+            if active_step:
+                data = event.get("data", {})
+                output = data.get("output")
+                output_str = ""
+                if isinstance(output, str):
+                    output_str = output
+                elif hasattr(output, "content"):
+                    output_str = str(output.content)
+                elif hasattr(output, "get") and "output" in output:
+                    output_str = str(output["output"])
+                else:
+                    output_str = str(output)
+                active_step.output = output_str[:2000] if len(output_str) > 2000 else output_str
+                await active_step.update()
+                active_step = None
 
         elif kind == "on_chat_model_end":
+            # Accumulate token usage — footer is emitted once after the stream
             output = event.get("data", {}).get("output")
-            
-            # Extract usage_metadata depending on whether output is a dict or an object
             usage = None
             if hasattr(output, "usage_metadata") and output.usage_metadata:
                 usage = output.usage_metadata
@@ -1156,24 +1169,11 @@ async def main(message: cl.Message):
                 usage = output.response_metadata.get("usage_metadata") or output.response_metadata.get("token_usage")
 
             if usage:
-                prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
-                completion_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
-                total_tokens = usage.get("total_tokens", 0)
-                
-                # Compute timing info
-                total_elapsed = time.monotonic() - request_start
-                routing_part = ""
-                if supervisor_done_at is not None:
-                    routing_s = supervisor_done_at - request_start
-                    routing_part = f" | Routing: {routing_s:.1f}s"
-                
-                # HTML enabled in chainlit config so we can inject exact precision styles!
-                token_info = f"\n\n<div style='margin-top:20px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Agent: {active_agent} | Tokens: {total_tokens:,} (Context: {prompt_tokens:,}, Generated: {completion_tokens:,}){routing_part} | Total: {total_elapsed:.1f}s</div>\n\n"
-                await msg.stream_token(token_info)
-                
-                # Track cumulative tokens in session
+                total_prompt_tokens += usage.get("input_tokens", usage.get("prompt_tokens", 0))
+                total_completion_tokens += usage.get("output_tokens", usage.get("completion_tokens", 0))
+                total_all_tokens += usage.get("total_tokens", 0)
                 current_total = cl.user_session.get("total_tokens_used", 0)
-                cl.user_session.set("total_tokens_used", current_total + total_tokens)
+                cl.user_session.set("total_tokens_used", current_total + usage.get("total_tokens", 0))
     except Exception as e:
         logger.error(f"Graph execution error: {e}", exc_info=True)
         error_text = str(e)
@@ -1181,6 +1181,16 @@ async def main(message: cl.Message):
             await msg.stream_token("\n\nSorry, the AI model is temporarily overloaded. Please try again in a moment.")
         else:
             await msg.stream_token("\n\nSorry, an unexpected error occurred. Please try again.")
+
+    # Emit a single token-usage footer after the full response
+    if total_all_tokens > 0:
+        total_elapsed = time.monotonic() - request_start
+        routing_part = ""
+        if supervisor_done_at is not None:
+            routing_s = supervisor_done_at - request_start
+            routing_part = f" | Routing: {routing_s:.1f}s"
+        token_info = f"\n\n<div style='margin-top:20px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Agent: {active_agent} | Tokens: {total_all_tokens:,} (Context: {total_prompt_tokens:,}, Generated: {total_completion_tokens:,}){routing_part} | Total: {total_elapsed:.1f}s</div>\n\n"
+        await msg.stream_token(token_info)
 
     await msg.update()
 
