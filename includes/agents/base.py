@@ -286,7 +286,7 @@ class BaseSubAgent(ABC):
                 )
             else:
                 sub_agent_graph = create_react_agent(self.model, tools)
-            invoke_config = {"recursion_limit": 25}
+            invoke_config = {"recursion_limit": 12}
             if config is not None:
                 invoke_config.update(config)
             

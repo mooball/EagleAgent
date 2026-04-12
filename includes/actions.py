@@ -218,17 +218,6 @@ async def _handle_intent(intent_name: str) -> None:
 
 
 @register_action(
-    name="find_product_supplier",
-    label=INTENTS["find_product_supplier"]["label"],
-    description=INTENTS["find_product_supplier"]["description"],
-    icon=INTENTS["find_product_supplier"]["icon"],
-    admin_only=False,
-)
-async def handle_find_product_supplier(**_kwargs: Any) -> None:
-    await _handle_intent("find_product_supplier")
-
-
-@register_action(
     name="find_product",
     label=INTENTS["find_product"]["label"],
     description=INTENTS["find_product"]["description"],
@@ -248,17 +237,6 @@ async def handle_find_product(**_kwargs: Any) -> None:
 )
 async def handle_find_supplier(**_kwargs: Any) -> None:
     await _handle_intent("find_supplier")
-
-
-@register_action(
-    name="find_brand_supplier",
-    label=INTENTS["find_brand_supplier"]["label"],
-    description=INTENTS["find_brand_supplier"]["description"],
-    icon=INTENTS["find_brand_supplier"]["icon"],
-    admin_only=False,
-)
-async def handle_find_brand_supplier(**_kwargs: Any) -> None:
-    await _handle_intent("find_brand_supplier")
 
 
 @register_action(
