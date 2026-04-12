@@ -948,10 +948,15 @@ async def _handle_run_script(script_name: str):
 
 @cl.on_message
 async def main(message: cl.Message):
-    # Reject blank messages — Gemini requires at least one content part
+    # Gemini requires at least one content part. If a command button was
+    # clicked without text, use the command label as the prompt so the LLM
+    # can infer intent from conversation history + command name.
     if not message.content or not message.content.strip():
-        await cl.Message(content="Please enter some text to get started.").send()
-        return
+        if message.command:
+            message.content = message.command
+        else:
+            await cl.Message(content="Please enter some text to get started.").send()
+            return
 
     # Use the session ID as the thread ID to maintain conversation history
     thread_id = cl.user_session.get("thread_id")
