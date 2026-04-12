@@ -33,10 +33,20 @@ if config.config_file_name is not None:
 from includes.db_models import Base
 target_metadata = Base.metadata
 
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
+# Tables managed externally (Chainlit data layer / LangGraph checkpointer).
+# Exclude from autogenerate so Alembic doesn't try to DROP or CREATE them.
+EXTERNAL_TABLES = {
+    "users", "threads", "steps", "elements", "feedbacks",          # Chainlit
+    "checkpoints", "checkpoint_blobs", "checkpoint_writes",        # LangGraph
+    "checkpoint_migrations", "store", "store_migrations",          # LangGraph
+}
+
+
+def include_object(object, name, type_, reflected, compare_to):
+    """Filter for autogenerate — skip tables we don't own."""
+    if type_ == "table" and name in EXTERNAL_TABLES:
+        return False
+    return True
 
 
 def run_migrations_offline() -> None:
@@ -57,6 +67,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -78,7 +89,9 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection,
+            target_metadata=target_metadata,
+            include_object=include_object,
         )
 
         with context.begin_transaction():
