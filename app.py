@@ -888,6 +888,65 @@ async def on_action_cancel_job(action: cl.Action):
         ).send()
 
 
+@cl.action_callback("rfq_update_supplier")
+async def on_rfq_update_supplier(action: cl.Action):
+    """Handle supplier status change from RFQ custom element."""
+    from includes.tools.quote_tools import NAMESPACE
+
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id")
+    line = payload.get("line")
+    supplier_name = payload.get("supplier_name")
+    new_status = payload.get("status")
+
+    if not all([rfq_id, line, supplier_name, new_status, store]):
+        return
+
+    item = await store.aget(NAMESPACE, rfq_id)
+    if not item:
+        return
+    rfq = item.value
+
+    line_item = next((i for i in rfq.get("items", []) if i["line"] == line), None)
+    if not line_item:
+        return
+
+    supplier = next(
+        (s for s in line_item.get("suppliers", []) if s["name"] == supplier_name),
+        None,
+    )
+    if not supplier:
+        return
+
+    old_status = supplier.get("status", "candidate")
+    supplier["status"] = new_status
+
+    user_id = cl.user_session.get("user_id", "unknown")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    rfq.setdefault("history", []).append({
+        "date": now, "user": user_id,
+        "action": f"Changed supplier '{supplier_name}' on line {line} from {old_status} to {new_status}",
+    })
+
+    await store.aput(NAMESPACE, rfq_id, rfq)
+
+    # Update the custom element in-place with new props
+    parent_msg_id = getattr(action, "forId", None)
+    if parent_msg_id:
+        # Find the element and update its props
+        elements = cl.user_session.get("rfq_elements", {})
+        el = elements.get(rfq_id)
+        if el:
+            el.props = rfq
+            await el.update()
+
+    status_label = new_status.replace("_", " ")
+    await cl.Message(
+        content=f"Updated **{supplier_name}** on line {line} of {rfq_id} → *{status_label}*",
+        author="EagleAgent",
+    ).send()
+
+
 # ---------------------------------------------------------------------------
 # System Admin command handlers (invoked from on_message when command is set)
 # ---------------------------------------------------------------------------

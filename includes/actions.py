@@ -250,6 +250,17 @@ async def handle_check_purchase_history(**_kwargs: Any) -> None:
     await _handle_intent("check_purchase_history")
 
 
+@register_action(
+    name="new_rfq",
+    label=INTENTS["new_rfq"]["label"],
+    description=INTENTS["new_rfq"]["description"],
+    icon=INTENTS["new_rfq"]["icon"],
+    admin_only=False,
+)
+async def handle_new_rfq(**_kwargs: Any) -> None:
+    await _handle_intent("new_rfq")
+
+
 # ---------------------------------------------------------------------------
 # Research intent action handlers
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import logging
 
 from includes.agents.base import BaseSubAgent
 from includes.tools.user_profile import create_profile_tools
+from includes.tools.quote_tools import create_quote_tools
 from includes.prompts import build_research_prompt
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class ResearchAgent(BaseSubAgent):
         tools = []
         if user_id and self.store:
             tools.extend(create_profile_tools(self.store, user_id))
+            tools.extend(create_quote_tools(self.store, user_id))
         return tools
 
     def get_native_tools(self) -> list:

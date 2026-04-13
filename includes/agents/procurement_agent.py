@@ -10,6 +10,8 @@ import logging
 
 from .base import BaseSubAgent
 from includes.tools.product_tools import search_products, search_brands, search_suppliers, part_purchase_history, search_purchase_history
+from includes.tools.quote_tools import create_quote_tools
+from includes.prompts import RFQ_WORKFLOW_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,10 @@ class ProcurementAgent(BaseSubAgent):
         """
         Provide procurement tools.
         """
-        return [search_products, search_brands, search_suppliers, part_purchase_history, search_purchase_history]
+        tools = [search_products, search_brands, search_suppliers, part_purchase_history, search_purchase_history]
+        if self.store:
+            tools.extend(create_quote_tools(self.store, user_id))
+        return tools
     
     def get_system_prompt(self) -> str:
         """
@@ -102,4 +107,5 @@ When the user asks to find a supplier, first determine what kind of input they'v
 
 *If the user provides a supplier name, country, or description:*
 1. Call `search_suppliers` with the appropriate parameters (`name`, `country`, or `query`).
-"""
+
+""" + RFQ_WORKFLOW_PROMPT

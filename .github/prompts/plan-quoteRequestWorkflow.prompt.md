@@ -5,7 +5,7 @@ Build a structured Request for Quote (RFQ) workflow on top of the existing chat 
 
 ## Phased approach
 
-### Phase 1: RFQ state in LangGraph Store + chat UI
+### Phase 1: RFQ state in LangGraph Store + chat UI ✅ IMPLEMENTED
 Validate the workflow and data model using existing infrastructure. No new tables, no new UI framework. The agent manages RFQ state via tools, renders markdown summaries, and offers action buttons for common operations.
 
 ### Phase 2: Dedicated database tables
@@ -18,11 +18,15 @@ Build a lightweight web app (FastAPI + HTMX) alongside Chainlit for traditional 
 
 ## Phase 1 — Detailed plan
 
-### Data model (LangGraph Store)
+**Status: ✅ Complete** — Implemented 13 Apr 2026.
+
+### What was built
+
+#### Data model (LangGraph Store)
 
 **Namespace:** `("rfqs",)` — shared across all users for cross-user visibility.
 
-**Key:** Auto-generated RFQ ID (e.g. `RFQ-2026-0042`)
+**Key:** Auto-generated sequential RFQ ID (e.g. `RFQ-2026-0042`)
 
 **Value structure:**
 ```python
@@ -63,95 +67,73 @@ Build a lightweight web app (FastAPI + HTMX) alongside Chainlit for traditional 
                         {"type": "phone", "value": "02 9123 4567"},
                         {"type": "url", "value": "https://sydneytools.com.au"}
                     ],
-                    "status": "shortlisted",  # candidate | shortlisted | dropped | selected
+                    "status": "previous_purchase",  # see supplier statuses below
                     "price": 189.00,
                     "lead_time": "3-5 business days",
                     "notes": "Best price so far"
-                },
-                {
-                    "supplier_id": null,         # not in our database yet
-                    "name": "ToolMart Online",
-                    "contacts": [
-                        {"type": "url", "value": "https://toolmart.com.au"},
-                        {"type": "email", "value": "quotes@toolmart.com.au"}
-                    ],
-                    "status": "candidate",
-                    "price": null,
-                    "lead_time": null,
-                    "notes": "Found via web search"
                 }
             ]
-        },
-        {
-            "line": 2,
-            "input_description": "Dumpy level",
-            "input_code": "Topcon brand",
-            "part_number": null,
-            "brand": "Topcon",
-            "product_id": null,
-            "quantity": 1,
-            "uom": "ea",
-            "status": "unidentified",
-            "suppliers": []
         }
     ],
     "history": [
-        {"date": "2026-04-13T10:30:00", "user": "tom@eagle.com.au", "action": "Created RFQ with 30 items"},
-        {"date": "2026-04-13T10:35:00", "user": "tom@eagle.com.au", "action": "Identified 28 of 30 items"},
-        {"date": "2026-04-14T09:00:00", "user": "tom@eagle.com.au", "action": "Assigned to sarah@eagle.com.au"}
+        {"date": "2026-04-13T10:30:00+10:00", "user": "tom@eagle.com.au", "action": "Created RFQ with 30 items"},
+        {"date": "2026-04-13T10:35:00+10:00", "user": "tom@eagle.com.au", "action": "Identified 28 of 30 items"}
     ]
 }
 ```
 
-### Agent tools
+**Supplier status values** (source-aware pricing):
+- `candidate` — default, no price yet
+- `estimated` — price from web search/estimate
+- `previous_purchase` — price from purchase history
+- `previous_quote` — price from a past quote
+- `quoted` — new quote received (not yet implemented — Phase 1 does not include quote receipt workflow)
+- `shortlisted` — user has shortlisted this supplier
+- `selected` — final supplier selected
+- `dropped` — removed from consideration
 
-Two new tools registered on `ProcurementAgent` and `ResearchAgent`:
+#### Agent tools (`includes/tools/quote_tools.py`)
 
-**`manage_rfq(action, rfq_id, data)`**
-A single tool handling all RFQ mutations:
-- `create` — create a new RFQ from a parts list (items can be vague descriptions or identified products)
-- `update_item` — identify a part, confirm it, change quantity, etc.
-- `add_supplier` — add a supplier candidate to a line item
-- `update_supplier` — change supplier status (shortlist, drop, select) or update price/notes
+**`manage_rfq(action, rfq_id, data)`** — Single tool for all RFQ mutations:
+- `create` — create a new RFQ from a parts list
+- `update_item` — identify a part, confirm it, change quantity, etc. Accepts `line`, `line_number`, or `item` as aliases for the line parameter
+- `add_supplier` — add supplier candidate(s) to a line item. Accepts a single supplier (`name=...`) or a batch (`suppliers=[{...}, ...]`) to avoid race conditions from parallel tool calls
+- `update_supplier` — change supplier status, update price/notes
 - `assign` — reassign RFQ to another user
 - `update_status` — change overall RFQ status
 - `add_note` — append a note to the RFQ
 - `link_external` — set NetSuite Opportunity Number or HubSpot Deal Number
 
-Each mutation appends to the `history` array for audit trail.
+Each mutation appends to the `history` array for audit trail and returns a rendered markdown summary.
 
-**`get_rfq(rfq_id, list_all, assigned_to, status)`**
-Read access:
-- `get_rfq(rfq_id="RFQ-2026-0042")` — full detail of one RFQ
-- `get_rfq(list_all=True)` — summary list of all RFQs
-- `get_rfq(assigned_to="tom@eagle.com.au")` — RFQs for a specific user
-- `get_rfq(status="in_progress")` — filter by status
+**`get_rfq(rfq_id, list_all, assigned_to, status)`** — Read access:
+- Single RFQ detail, list all, filter by assignee/status
+- Default (no args) shows current user's RFQs
+- Returns rendered markdown tables
 
-Returns rendered markdown: summary table for listings, full detail with parts + suppliers for single RFQ.
+Both tools are created via `create_quote_tools(store, user_id)` factory pattern (same as user_profile tools).
 
-### Chat UI patterns
+#### Chat UI
 
-**RFQ summary block** — rendered by the agent after each state change:
+**RFQ summary block** — rendered by the tool after each state change:
 ```markdown
 ## 📋 RFQ-2026-0042 — Acme Construction
-**Status:** In Progress | **Assigned to:** Tom | **Created:** 13 Apr 2026
+**Status:** In Progress | **Assigned to:** Tom | **Created:** 2026-04-13
+**Contact:** John Smith · john.smith@acme.com.au
 
 | # | Description | Part Number | Brand | Qty | Status | Suppliers |
 |---|------------|-------------|-------|-----|--------|-----------|
-| 1 | Cordless drill skin only | DHP486Z | Makita | 4 | ✅ Confirmed | Sydney Tools ($189), ~~Total Tools~~ |
-| 2 | Dumpy level | — | Topcon | 1 | ⚠️ Unidentified | — |
-| ... | ... | ... | ... | ... | ... | ... |
+| 1 | Cordless drill skin only | DHP486Z | Makita | 4 ea | ✅ Confirmed | Sydney Tools ($189.00 prev purchase) |
+| 2 | Dumpy level | — | Topcon | 1 ea | ⚠️ Unidentified | — |
 
-**30 items** | 28 confirmed, 2 unidentified | 15 with suppliers
+**2 items** | 1 confirmed, 1 unidentified | 1 with suppliers
 ```
 
-**Action buttons** — sent with the summary:
-- 📋 Show RFQ Summary
-- 🔍 Find Suppliers for Unconfirmed Items
-- 📧 Export RFQ (CSV)
-- ✅ Confirm All Identified Items
+Suppliers within a cell are separated by `<br>` for multi-supplier visibility. Dropped suppliers render with ~~strikethrough~~.
 
-**Natural language interactions:**
+**New RFQ command** (📋 icon) — triggers intent context that guides the agent through RFQ creation.
+
+**Natural language interactions** (all working):
 - "Create an RFQ for Acme Construction from this screenshot"
 - "Line 2 is the Topcon RL-H5A"
 - "Find suppliers for all confirmed items"
@@ -162,44 +144,47 @@ Returns rendered markdown: summary table for listings, full detail with parts + 
 - "Link this to NetSuite opportunity 12345"
 - "Set the HubSpot deal to D-9876"
 
-### ProcurementAgent prompt updates
+#### Agent prompt behaviour
 
-Add an "RFQ Management Workflow" section:
-- When user provides a list of products (screenshot, pasted text), offer to create an RFQ
-- After product identification, auto-update RFQ items from `unidentified` → `identified`
-- After supplier search, offer to add results as candidates on the relevant RFQ items
-- After each mutation, re-render the RFQ summary
-- When user says "show RFQ" or "show my RFQs", use `get_rfq` tool
+Shared `RFQ_WORKFLOW_PROMPT` constant in `includes/prompts.py` used by both ProcurementAgent and ResearchAgent — single source of truth.
 
-### New Chainlit command
+Key behaviours:
+- **After RFQ creation:** STOP and present summary for user to confirm customer details and line items. Do NOT auto-search for products.
+- **After user confirms:** Search for products/suppliers and immediately update the RFQ — don't just present results and wait to be asked.
+- **Batch supplier adds:** Use `suppliers` list to add all suppliers for a line in one call (avoids race condition from parallel tool calls overwriting each other).
+- **Price source tagging:** Set supplier status to `previous_purchase`, `estimated`, `previous_quote` etc. based on where the price came from.
+- **Always present summary:** After every RFQ mutation, show the updated summary to the user.
 
-Add a "New RFQ" command to the commands list:
-- Icon: 📋
-- Follow-up: "I'll create a new Request for Quote. Who is the customer, and do you have a parts list (screenshot, text, or document)?"
-- Intent context: routes to ProcurementAgent with RFQ creation workflow
+#### Files created
+- `includes/tools/quote_tools.py` — tool implementations, rendering, ID generation
 
-### Cross-user and cross-profile visibility
+#### Files modified
+- `includes/prompts.py` — added `RFQ_WORKFLOW_PROMPT` shared constant, `new_rfq` intent in `INTENTS`, RFQ section in `build_research_prompt()`
+- `includes/actions.py` — added `handle_new_rfq` action handler
+- `includes/agents/procurement_agent.py` — registered RFQ tools in `get_tools()`, appended `RFQ_WORKFLOW_PROMPT` to system prompt
+- `includes/agents/research_agent.py` — registered RFQ tools in `get_tools()`
 
-- Shared namespace `("rfqs",)` means any user's agent can list/read/update any RFQ
-- `assigned_to` field tracks ownership; agent filters by current user by default, shows all when asked
-- `history` array provides audit trail of who changed what
-- **Both profiles have full access**: Eagle Agent (via ProcurementAgent) and Research Agent both get `manage_rfq` and `get_rfq` tools. This allows the Research Agent to update RFQs with newly found suppliers or confirmed product IDs from web research.
-- Limitation: users cannot see each other's chat threads — only the structured RFQ data
+#### Tests (36 tests in `tests/tools/test_quote_tools.py`)
+- Create: basic, sequential IDs, requires customer, default draft status, history, customer contact, items default unidentified
+- Update item: set part number/brand/status, missing line error, invalid line error, `line_number` alias
+- Suppliers: add single, add batch (multiple in one call), update status/price, not found error, missing name error
+- Misc: assign, update status (valid + invalid), add note (single + append), link NetSuite, link HubSpot, empty link error, unknown action, RFQ not found, history accumulation
+- Get: single, not found, list all, filter by status, filter by assigned_to, default shows my RFQs
+- Rendering: supplier price with source label, estimated label, customer contact display
 
-### Files to modify
-- `includes/tools/product_tools.py` — add `manage_rfq` and `get_rfq` tools (or new file `includes/tools/quote_tools.py`)
-- `includes/agents/procurement_agent.py` — register RFQ tools, update system prompt with RFQ workflow
-- `includes/agents/research_agent.py` — register RFQ tools, update system prompt with RFQ workflow (same tools, different usage guidance — e.g. "update RFQ with supplier found from web research")
-- `includes/prompts.py` — add "New RFQ" intent to `INTENTS`, add RFQ workflow section to research prompt
-- `includes/actions.py` — add action handler for new RFQ command
+### Known issues / refinements discovered during implementation
 
-### Files to create
-- `includes/tools/quote_tools.py` — RFQ management tool implementations
+1. **Embedding model change:** Default changed from `gemini-embedding-2-preview` (not available on Vertex AI) to `text-embedding-005`. Existing product/supplier embeddings need re-generation — deferred to a separate task.
+2. **Action buttons not yet implemented:** The plan mentioned action buttons (Show Summary, Find Suppliers, Export CSV, Confirm All) sent with the summary. These are not yet built — the agent responds to natural language requests instead.
+3. **CSV export not yet implemented:** The plan mentioned export functionality. Not built in Phase 1.
+4. **Tool call budget vs large RFQs:** When searching for products across many RFQ line items, the agent may hit the 5-tool-call budget before processing all items. May need a batch product lookup tool (see `plan-batchProductLookupTools.prompt.md`).
 
-### Tests
-- Unit tests for `manage_rfq` (create, update, supplier ops, assign, link external IDs)
-- Unit tests for `get_rfq` (single, list, filter)
-- Integration test: create RFQ → identify items → add suppliers → shortlist → export
+### Remaining Phase 1 enhancements (optional)
+
+- [ ] Action buttons on RFQ summary (Show Summary, Find Suppliers, Export CSV)
+- [ ] CSV export tool for RFQ data
+- [ ] Batch product lookup to handle large RFQs efficiently
+- [ ] Auto-link RFQ to current thread_id on creation
 
 ---
 

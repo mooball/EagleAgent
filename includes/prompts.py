@@ -134,6 +134,46 @@ PROFILE_TEMPLATES = {
 }
 
 # =============================================================================
+# RFQ WORKFLOW PROMPT (shared across all agent profiles)
+# =============================================================================
+
+RFQ_WORKFLOW_PROMPT = """## RFQ Management Workflow
+You manage Requests for Quote (RFQs) that track customer parts lists through identification, supplier sourcing, and shortlisting.
+
+**Tools:**
+- `manage_rfq(action, rfq_id, data)` — Create or update RFQs. Actions: create, update_item, add_supplier, update_supplier, assign, update_status, add_note, link_external. The `add_supplier` action accepts a `suppliers` list to add multiple suppliers in one call.
+- `get_rfq(rfq_id, list_all, assigned_to, status)` — Retrieve one RFQ, list all, or filter by assignee/status.
+
+**Creating an RFQ:**
+When the user provides a list of products (screenshot, pasted text, document):
+1. Extract each line item with description, part number/code (if any), and quantity.
+2. Create the RFQ with `manage_rfq(action='create', data={customer, items: [...]})`.
+3. **STOP HERE.** Present the RFQ summary and ask the user to confirm the customer details and line items are correct. Do NOT search for products, brands, or suppliers until the user explicitly confirms the RFQ or asks you to proceed.
+4. Only after user confirmation, offer to identify unconfirmed items or find suppliers.
+
+**Finding/identifying products on an RFQ:**
+When the user asks you to find or identify products:
+1. Search using the available tools.
+2. **Immediately update the RFQ** with any matches found — do NOT just present search results and wait for the user to ask you to update. For each match:
+   - Use `manage_rfq(action='update_item', ...)` to set the part_number, brand, and status to `confirmed` (or `identified` if not 100% certain).
+   - Use `manage_rfq(action='add_supplier', data={line, suppliers: [{name, price, status, ...}]})` to add ALL suppliers found as candidates on the relevant line items in a single call per line.
+   - Set the correct supplier **status** based on the price source: `previous_purchase` (from purchase history), `previous_quote` (from a past quote), `estimated` (from web search or estimate), `candidate` (no price yet). Never use `quoted` unless the user provides a new quote.
+3. After all updates, present the final RFQ summary so the user can see what changed.
+4. Summarise what you found and what still needs attention (e.g. "Updated 5 of 8 items. Lines 3, 6, and 7 still need identification.").
+
+**Finding suppliers for RFQ items:**
+1. Search for suppliers using the appropriate tools.
+2. **Immediately add them** to the relevant RFQ line items using `manage_rfq(action='add_supplier', data={line, suppliers: [...]})`. Add ALL suppliers for a line in a single call.
+3. Present the updated RFQ summary after adding suppliers.
+
+**Key rules:**
+- Never automatically start product searches after creating an RFQ. Always wait for the user to review and confirm first.
+- Once the user asks you to search, update the RFQ directly with your findings — don't make them ask twice.
+- After each RFQ mutation, the tool returns a rendered summary. An interactive RFQ card is automatically shown to the user, so **do NOT repeat or copy the full summary table** in your response. Instead, write a brief conversational message about what changed (e.g. "I've created the RFQ with 12 items" or "Updated lines 3 and 5 with suppliers from purchase history. Lines 7 and 9 still need identification.").
+- When the user says "show RFQ" or "show my RFQs", use `get_rfq`.
+- RFQ statuses: draft → in_progress → awaiting_quotes → completed (or cancelled at any point)."""
+
+# =============================================================================
 # PROCUREMENT INTENTS
 # =============================================================================
 # Intent definitions for procurement action buttons. Each intent stores
@@ -197,6 +237,26 @@ INTENTS = {
             "`search_purchase_history` to find records matching their criteria. "
             "If they provide a specific part number, also use `part_purchase_history` "
             "to get a per-supplier summary. Dates use YYYY-MM-DD format."
+        ),
+    },
+    "new_rfq": {
+        "label": "New RFQ",
+        "icon": "📋",
+        "description": "Create a new Request for Quote",
+        "follow_up": (
+            "I'll create a new Request for Quote. Who is the customer, and do "
+            "you have a parts list (screenshot, text, or document)?"
+        ),
+        "context": (
+            "The user wants to create a new RFQ (Request for Quote). "
+            "Gather the customer name and a parts list. The parts list can come "
+            "from text, a screenshot, or an attachment — extract each line item "
+            "with description, part number/code (if provided), and quantity. "
+            "Then use `manage_rfq(action='create', data={...})` to create the RFQ. "
+            "After creation, STOP and present the RFQ summary for the user to "
+            "review. Ask them to confirm the customer details and line items are "
+            "correct before proceeding. Do NOT search for products or suppliers "
+            "until the user explicitly confirms the RFQ or asks you to."
         ),
     },
 }
@@ -574,6 +634,9 @@ def build_research_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
     parts.append("2. Do NOT proceed with detailed specs, pricing, or supplier lookups until the user confirms the identification.")
     parts.append("3. If multiple products could match, list the candidates and ask the user to pick the right one.")
     parts.append("4. Only present definitive product information when you have an exact match confirmed by the user or an unambiguous identifier (e.g. a clearly readable part number).")
+    parts.append("")
+
+    parts.append(RFQ_WORKFLOW_PROMPT)
     parts.append("")
 
     if profile_data:
