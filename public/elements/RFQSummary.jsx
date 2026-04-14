@@ -528,16 +528,6 @@ export default function RFQSummary() {
                   <Package className="h-4 w-4 mr-1.5" /> Identify items
                 </Button>
               )}
-              <Button
-                variant="outline"
-                size="default"
-                className="text-sm"
-                onClick={function() {
-                  sendUserMessage("Find suppliers for all confirmed items in " + rfqId)
-                }}
-              >
-                <Search className="h-4 w-4 mr-1.5" /> Find suppliers
-              </Button>
             </div>
           </>
         ) : (

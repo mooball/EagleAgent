@@ -5,6 +5,7 @@ Provides tools to create, update, and query RFQs stored in the
 LangGraph BaseStore under the ("rfqs",) namespace.
 """
 
+import asyncio
 import datetime
 import logging
 from typing import Any, Dict, List, Optional
@@ -16,6 +17,15 @@ from langgraph.store.base import BaseStore
 logger = logging.getLogger(__name__)
 
 NAMESPACE = ("rfqs",)
+
+# Per-RFQ lock to prevent concurrent read-modify-write race conditions.
+_rfq_locks: Dict[str, asyncio.Lock] = {}
+
+def get_rfq_lock(rfq_id: str) -> asyncio.Lock:
+    """Get or create an asyncio.Lock for the given RFQ ID."""
+    if rfq_id not in _rfq_locks:
+        _rfq_locks[rfq_id] = asyncio.Lock()
+    return _rfq_locks[rfq_id]
 
 # Common aliases LLMs use for the "line" parameter
 _LINE_ALIASES = ("line", "line_number", "item", "item_number")
@@ -346,6 +356,11 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
         if not rfq_id:
             return "Error: rfq_id is required for this action."
 
+        async with get_rfq_lock(rfq_id):
+            return await _manage_rfq_locked(store, rfq_id, action, data, user_id)
+
+    async def _manage_rfq_locked(store, rfq_id, action, data, user_id):
+        """Execute the RFQ mutation while holding the per-RFQ lock."""
         item = await store.aget(NAMESPACE, rfq_id)
         if not item:
             return f"Error: RFQ '{rfq_id}' not found."
