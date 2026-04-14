@@ -371,12 +371,19 @@ async def setup_globals():
         mcp_client = None
         
     # Initialize agents
+    # NOTE: BrowserAgent is NOT USED in the Eagle graph — disabled to avoid misrouting
     browser_agent = BrowserAgent(model=create_model("BrowserAgent"), store=store)
     procurement_agent = ProcurementAgent(model=create_model("ProcurementAgent"), store=store)
     general_agent = GeneralAgent(model=create_model("GeneralAgent"), store=store, mcp_client=mcp_client, admin_only_tools=ADMIN_ONLY_TOOLS)
     supervisor_node = Supervisor(model=create_model("Supervisor"))
     
     # Build the graph inside setup_globals where agents are initialized
+    from includes.agents import ResearchAgent
+    research_agent = ResearchAgent(
+        model=create_model("ResearchAgent"), store=store,
+        include_rfq_tools=True,  # Has RFQ tools when used inside Eagle Agent graph
+    )
+
     builder = StateGraph(SupervisorState)
 
     async def run_supervisor(state, config):
@@ -384,31 +391,31 @@ async def setup_globals():
     
     async def run_general(state, config):
         return await general_agent(state, config)
-        
-    async def run_browser(state, config):
-        return await browser_agent(state, config)
 
     async def run_procurement(state, config):
         return await procurement_agent(state, config)
 
+    async def run_research(state, config):
+        return await research_agent(state, config)
+
     # Add nodes
     builder.add_node("Supervisor", run_supervisor)
     builder.add_node("GeneralAgent", run_general)
-    builder.add_node("BrowserAgent", run_browser)
     builder.add_node("ProcurementAgent", run_procurement)
+    builder.add_node("ResearchAgent", run_research)
 
     # Add edges
     builder.add_edge(START, "Supervisor")
 
     # Conditional routing from Supervisor
-    def router(state: SupervisorState) -> Literal["GeneralAgent", "BrowserAgent", "ProcurementAgent", "__end__"]:
+    def router(state: SupervisorState) -> Literal["GeneralAgent", "ProcurementAgent", "ResearchAgent", "__end__"]:
         next_agent = state.get("next_agent", "FINISH")
         if next_agent == "GeneralAgent":
             return "GeneralAgent"
-        elif next_agent == "BrowserAgent":
-            return "BrowserAgent"
         elif next_agent == "ProcurementAgent":
             return "ProcurementAgent"
+        elif next_agent == "ResearchAgent":
+            return "ResearchAgent"
         else:
             return END
 
@@ -416,8 +423,8 @@ async def setup_globals():
 
     # Agents always route back to Supervisor
     builder.add_edge("GeneralAgent", "Supervisor")
-    builder.add_edge("BrowserAgent", "Supervisor")
     builder.add_edge("ProcurementAgent", "Supervisor")
+    builder.add_edge("ResearchAgent", "Supervisor")
 
     # Compile graph
     graph = builder.compile(checkpointer=checkpointer, store=store)
@@ -436,17 +443,17 @@ async def setup_globals():
     sa_builder.add_edge("SysAdminAgent", END)
     sysadmin_graph = sa_builder.compile(checkpointer=checkpointer, store=store)
 
-    # Build Research graph — single-agent with Google Search grounding
-    from includes.agents import ResearchAgent
-    research_agent = ResearchAgent(
-        model=create_model("ResearchAgent"), store=store
+    # Build Research graph — standalone single-agent profile (no RFQ tools)
+    standalone_research_agent = ResearchAgent(
+        model=create_model("ResearchAgent"), store=store,
+        include_rfq_tools=False,
     )
 
-    async def run_research(state, config):
-        return await research_agent(state, config)
+    async def run_standalone_research(state, config):
+        return await standalone_research_agent(state, config)
 
     ra_builder = StateGraph(SupervisorState)
-    ra_builder.add_node("ResearchAgent", run_research)
+    ra_builder.add_node("ResearchAgent", run_standalone_research)
     ra_builder.add_edge(START, "ResearchAgent")
     ra_builder.add_edge("ResearchAgent", END)
     research_graph = ra_builder.compile(checkpointer=checkpointer, store=store)
@@ -888,10 +895,27 @@ async def on_action_cancel_job(action: cl.Action):
         ).send()
 
 
+@cl.action_callback("rfq_refresh")
+async def on_rfq_refresh(action: cl.Action):
+    """Re-send the RFQ sidebar element with latest data."""
+    from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id")
+    if not rfq_id or not store:
+        return
+
+    item = await store.aget(NAMESPACE, rfq_id)
+    if not item:
+        return
+
+    await _send_rfq_element(item.value)
+
+
 @cl.action_callback("rfq_update_supplier")
 async def on_rfq_update_supplier(action: cl.Action):
     """Handle supplier status change from RFQ custom element."""
-    from includes.tools.quote_tools import NAMESPACE
+    from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
 
     payload = action.payload or {}
     rfq_id = payload.get("rfq_id")
@@ -930,21 +954,307 @@ async def on_rfq_update_supplier(action: cl.Action):
 
     await store.aput(NAMESPACE, rfq_id, rfq)
 
-    # Update the custom element in-place with new props
-    parent_msg_id = getattr(action, "forId", None)
-    if parent_msg_id:
-        # Find the element and update its props
-        elements = cl.user_session.get("rfq_elements", {})
-        el = elements.get(rfq_id)
-        if el:
-            el.props = rfq
-            await el.update()
+    # Update the sidebar element with new props
+    await _send_rfq_element(rfq)
 
     status_label = new_status.replace("_", " ")
     await cl.Message(
         content=f"Updated **{supplier_name}** on line {line} of {rfq_id} → *{status_label}*",
         author="EagleAgent",
     ).send()
+
+
+@cl.action_callback("rfq_identify_items")
+async def on_rfq_identify_items(action: cl.Action):
+    """Handle Identify Items button from RFQ custom element.
+
+    Phase 1: Search internal product DB by part number, supplier code,
+             and description for each unidentified item.
+             Update the RFQ directly for any exact matches (with product_id).
+    Phase 2: Route unmatched items to ResearchAgent for web-based
+             identification (must be 100% positive match).
+    """
+    import asyncio
+    from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+    from includes.tools.product_tools import _find_product_exact, _find_product_by_supplier_code
+
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "???")
+    unidentified_items = payload.get("items", [])
+
+    if not unidentified_items or not store:
+        return
+
+    await cl.Message(
+        content=f"Identifying {len(unidentified_items)} item(s) in {rfq_id}...",
+        author="EagleAgent",
+    ).send()
+
+    # ---- Phase 1: Internal DB search ----
+    matched = []      # list of dicts: line, part_number, brand, product_id
+    unmatched = []     # items that need web search
+
+    for ui_item in unidentified_items:
+        line = ui_item.get("line")
+        description = ui_item.get("description", "")
+        part_number = ui_item.get("part_number", "")
+        brand = ui_item.get("brand", "")
+
+        product = None
+        # Try exact part number match first (most specific)
+        if part_number:
+            try:
+                product = await asyncio.to_thread(
+                    _find_product_exact, part_number, brand or None,
+                )
+            except Exception as e:
+                logger.warning(f"Phase 1 product search failed for line {line}: {e}")
+
+        # Try supplier code search if part number didn't match
+        if not product and part_number:
+            try:
+                product = await asyncio.to_thread(
+                    _find_product_by_supplier_code, part_number, brand or None,
+                )
+            except Exception as e:
+                logger.warning(f"Phase 1 supplier code search failed for line {line}: {e}")
+
+        if product:
+            matched.append({
+                "line": line,
+                "part_number": product["part_number"],
+                "brand": product["brand"],
+                "product_id": product["id"],
+            })
+        else:
+            unmatched.append(ui_item)
+
+    # Update RFQ with matched items
+    if matched and store:
+        item = await store.aget(NAMESPACE, rfq_id)
+        if item:
+            rfq = item.value
+            for m in matched:
+                line_item = next(
+                    (i for i in rfq.get("items", []) if i["line"] == m["line"]), None,
+                )
+                if line_item:
+                    line_item["part_number"] = m["part_number"]
+                    line_item["brand"] = m["brand"]
+                    line_item["product_id"] = m["product_id"]
+                    line_item["status"] = "confirmed"
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            user_id = cl.user_session.get("user_id", "unknown")
+            rfq.setdefault("history", []).append({
+                "date": now, "user": user_id,
+                "action": f"Auto-identified {len(matched)} item(s) from internal DB: lines {', '.join(str(m['line']) for m in matched)}",
+            })
+            await store.aput(NAMESPACE, rfq_id, rfq)
+            await _send_rfq_element(rfq)
+
+    # Notify user of Phase 1 results
+    if matched:
+        match_desc = ", ".join(f"line {m['line']} → {m['part_number']} ({m['brand']})" for m in matched)
+        msg = f"Identified {len(matched)} item(s) from our product database: {match_desc}."
+        if unmatched:
+            msg += f" Searching the web for {len(unmatched)} remaining item(s)..."
+        await cl.Message(content=msg, author="EagleAgent").send()
+    elif unmatched:
+        await cl.Message(
+            content=f"No exact matches found in our product database for {len(unmatched)} item(s). Searching the web...",
+            author="EagleAgent",
+        ).send()
+
+    # ---- Phase 2: Route unmatched items to ResearchAgent for web search ----
+    if unmatched:
+        parts = ["web_research"]
+        parts.append(f"Identify the following unidentified product(s) from {rfq_id}.")
+        parts.append("For each item, search the web and find a 100% positive product match.")
+        parts.append("Do NOT guess — only match if you are certain it is the correct product.")
+        parts.append("")
+        for ui_item in unmatched:
+            line = ui_item.get("line")
+            desc = ui_item.get("description", "")
+            pn = ui_item.get("part_number", "")
+            br = ui_item.get("brand", "")
+            item_parts = [f"Line {line}: {desc}"]
+            if pn:
+                item_parts.append(f"  Code/Part number: {pn}")
+            if br:
+                item_parts.append(f"  Brand: {br}")
+            parts.append("\n".join(item_parts))
+        parts.append("")
+        parts.append("For each item you can positively identify:")
+        parts.append("1. Use manage_rfq(action='update_item') to set part_number, brand, and status='confirmed'")
+        parts.append("2. Report which items you identified and which you could not")
+        parts.append("Do NOT update items you are not 100% sure about.")
+
+        rich_prompt = "\n".join(parts)
+        cl.user_session.set("intent_context", rich_prompt)
+
+        short_label = f"Identify {len(unmatched)} unmatched item(s) in {rfq_id} via web search"
+        synthetic = cl.Message(content=short_label)
+        synthetic.author = "User"
+        await main(synthetic)
+    elif not matched:
+        await cl.Message(
+            content="All items could not be identified. Try adding more details (part numbers, brands) to help.",
+            author="EagleAgent",
+        ).send()
+
+
+@cl.action_callback("rfq_find_suppliers")
+async def on_rfq_find_suppliers(action: cl.Action):
+    """Handle Find Suppliers button from RFQ custom element.
+
+    Phase 1: Search internal DB for suppliers (purchase history + supplier DB).
+             Add any found directly to the RFQ with supplier_id and purchase refs.
+    Phase 2: Route to ResearchAgent for web-based supplier discovery,
+             with full context of what was already found internally.
+    """
+    import asyncio
+    from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+    from includes.tools.product_tools import (
+        _find_purchase_history_for_part,
+    )
+
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "???")
+    line = payload.get("line")
+    description = payload.get("description", "")
+    part_number = payload.get("part_number", "")
+    brand = payload.get("brand", "")
+    quantity = payload.get("quantity", "")
+    uom = payload.get("uom", "ea")
+    existing = payload.get("existing_suppliers", [])
+
+    # ---- Phase 1: Internal DB search ----
+    existing_names_lower = {n.lower() for n in existing}
+    internal_suppliers = []  # list of dicts to add to RFQ
+    internal_summary_lines = []  # for the ResearchAgent prompt
+
+    # 1a) Check purchase history if we have a part number
+    if part_number:
+        try:
+            ph_rows = await asyncio.to_thread(_find_purchase_history_for_part, part_number, 20)
+            for row in ph_rows:
+                if row["name"].lower() not in existing_names_lower:
+                    sup_entry = {
+                        "supplier_id": row["supplier_id"],
+                        "name": row["name"],
+                        "contacts": row["contacts"],
+                        "status": "candidate",
+                        "price_type": "previous_purchase",
+                        "price": row["price"],
+                        "purchase_ref": {
+                            "doc_number": row["doc_number"],
+                            "date": row["date"],
+                            "order_count": row["order_count"],
+                        },
+                    }
+                    internal_suppliers.append(sup_entry)
+                    existing_names_lower.add(row["name"].lower())
+                    price_str = f"${row['price']:,.2f}" if row["price"] else "N/A"
+                    internal_summary_lines.append(
+                        f"- {row['name']} (previous purchase, price: {price_str}, orders: {row['order_count']})"
+                    )
+        except Exception as e:
+            logger.warning(f"Phase 1 purchase history search failed: {e}")
+
+    # 1b) Brand-based search removed — too broad (returns suppliers for the
+    #     brand, not this specific part). The web search in Phase 2 handles
+    #     finding alternative suppliers.
+
+    # Add internal suppliers to the RFQ (with dedup)
+    if internal_suppliers and store:
+        item = await store.aget(NAMESPACE, rfq_id)
+        if item:
+            rfq = item.value
+            line_item = next((i for i in rfq.get("items", []) if i["line"] == line), None)
+            if line_item:
+                existing_by_name = {
+                    s["name"].lower(): s for s in line_item.get("suppliers", [])
+                }
+                added = 0
+                updated = 0
+                for sup in internal_suppliers:
+                    existing = existing_by_name.get(sup["name"].lower())
+                    if existing:
+                        # Merge — update fields that have new data
+                        for key in ["supplier_id", "contacts", "price", "price_type",
+                                    "lead_time", "notes", "purchase_ref"]:
+                            val = sup.get(key)
+                            if val is not None and val != "" and val != []:
+                                existing[key] = val
+                        updated += 1
+                    else:
+                        line_item["suppliers"].append(sup)
+                        existing_by_name[sup["name"].lower()] = sup
+                        added += 1
+                action_parts = []
+                if added:
+                    action_parts.append(f"Added {added} supplier(s)")
+                if updated:
+                    action_parts.append(f"Updated {updated} existing supplier(s)")
+                rfq.setdefault("history", []).append({
+                    "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "user": cl.user_session.get("user_id", "unknown"),
+                    "action": f"Internal DB search on line {line}: {' | '.join(action_parts)}" if action_parts else f"No changes to line {line}",
+                })
+                await store.aput(NAMESPACE, rfq_id, rfq)
+                await _send_rfq_element(rfq)
+
+    # Notify user of Phase 1 results
+    if internal_suppliers:
+        names = ", ".join(s["name"] for s in internal_suppliers)
+        await cl.Message(
+            content=f"Added {len(internal_suppliers)} supplier(s) from our records to line {line}: {names}. Now searching the web for more options...",
+            author="EagleAgent",
+        ).send()
+    else:
+        await cl.Message(
+            content=f"No matching suppliers found in our records for line {line}. Searching the web...",
+            author="EagleAgent",
+        ).send()
+
+    # ---- Phase 2: Route to ResearchAgent for web search ----
+    all_existing = list(existing or []) + [s["name"] for s in internal_suppliers]
+
+    parts = [f"research_suppliers"]
+    parts.append(f"Find external suppliers for line {line} of {rfq_id}.")
+    parts.append(f"Product description: {description}")
+    if part_number:
+        parts.append(f"Part number: {part_number}")
+    if brand:
+        parts.append(f"Brand: {brand}")
+    if quantity:
+        parts.append(f"Quantity needed: {quantity} {uom}")
+    if all_existing:
+        parts.append(f"Already have these suppliers (do NOT repeat them): {', '.join(all_existing)}")
+    if internal_summary_lines:
+        parts.append("Internal DB results:\n" + "\n".join(internal_summary_lines))
+    parts.append("")
+    parts.append("Search the web for distributors and wholesalers who can supply this product.")
+    parts.append("Prioritise authorised distributors and industrial wholesalers over retail sources.")
+    parts.append("If distributors are scarce, include reputable retailers as fallback options.")
+    parts.append("Aim for 3-5 good supplier options but more is fine if they look like strong matches.")
+    parts.append("")
+    parts.append("CRITICAL: After researching, you MUST call manage_rfq(action='add_supplier') to add each supplier you find to the RFQ.")
+    parts.append(f"Use rfq_id='{rfq_id}' and data={{line: {line}, suppliers: [...]}} with a list of all suppliers found.")
+    parts.append("Each supplier dict must include: name, contacts (list with at least one of email/phone/url), and optionally price, price_type, lead_time.")
+    parts.append("If you do NOT call add_supplier, the suppliers will NOT appear on the RFQ. The user is counting on you to update the RFQ directly.")
+    parts.append("Include any pricing, lead time, or contact information you can find.")
+
+    rich_prompt = "\n".join(parts)
+    cl.user_session.set("intent_context", rich_prompt)
+
+    short_label = f"Search the web for suppliers for line {line}"
+    if description:
+        short_label += f" ({description[:60]})"
+
+    synthetic = cl.Message(content=short_label)
+    synthetic.author = "User"
+    await main(synthetic)
 
 
 # ---------------------------------------------------------------------------
@@ -1046,6 +1356,134 @@ async def main(message: cl.Message):
             await _handle_run_script(script_name)
             return
 
+    # Direct RFQ loading — intercept "load/show/open RFQ" before the graph runs
+    import re
+    _rfq_load_keywords = ["load", "show", "open", "display", "get", "view", "pull up", "see"]
+    _rfq_list_keywords = ["list", "show", "all"]
+    msg_lower = message.content.lower()
+
+    # Flexible RFQ ID matching: "RFQ-2026-0001", "RFQ 0001", "RFQ-0001", "rfq 2026-0001"
+    rfq_match = re.search(r'\bRFQ[-\s]?(\d{4}[-\s]\d{4,}|\d{4,})\b', message.content, re.IGNORECASE)
+
+    def _resolve_rfq_id(match_str: str) -> str:
+        """Normalise a matched RFQ fragment to full RFQ-YYYY-NNNN format."""
+        digits = re.sub(r'[-\s]', '', match_str)
+        if len(digits) >= 8:  # e.g. "20260001"
+            return f"RFQ-{digits[:4]}-{digits[4:]}"
+        else:  # short form e.g. "0001" — assume current year
+            from datetime import datetime
+            return f"RFQ-{datetime.now().year}-{digits.zfill(4)}"
+
+    # If no explicit RFQ ID but message looks like a load request, scan chat history
+    if not rfq_match and any(kw in msg_lower for kw in _rfq_load_keywords) and "rfq" in msg_lower:
+        history = cl.chat_context.to_openai()
+        for hist_msg in reversed(history[:-1]):
+            content = hist_msg.get("content", "") or ""
+            hist_match = re.search(r'\bRFQ[-\s]?(\d{4}[-\s]\d{4,}|\d{4,})\b', content, re.IGNORECASE)
+            if hist_match:
+                rfq_match = hist_match
+                break
+
+    if rfq_match and any(kw in msg_lower for kw in _rfq_load_keywords):
+        from includes.tools.quote_tools import NAMESPACE, _send_rfq_element, _render_rfq_summary
+        rfq_id = _resolve_rfq_id(rfq_match.group(1))
+        if store:
+            item = await store.aget(NAMESPACE, rfq_id)
+            if item:
+                await _send_rfq_element(item.value)
+                await cl.Message(content=f"Loaded **{rfq_id}** in the sidebar.", author="EagleAgent").send()
+                return
+            else:
+                await cl.Message(content=f"RFQ **{rfq_id}** not found.", author="EagleAgent").send()
+                return
+
+    # Direct "list all RFQs" intercept
+    if "rfq" in msg_lower and any(kw in msg_lower for kw in _rfq_list_keywords) and not rfq_match:
+        from includes.tools.quote_tools import NAMESPACE
+        if store:
+            results = await store.asearch(NAMESPACE, limit=200)
+            if results:
+                lines = []
+                for r in results:
+                    rfq = r.value
+                    status = rfq.get("status", "draft")
+                    customer = rfq.get("customer", "Unknown")
+                    item_count = len(rfq.get("items", []))
+                    lines.append(f"- **{rfq['id']}** — {customer} ({item_count} items, {status})")
+                await cl.Message(
+                    content=f"Found {len(results)} RFQ(s):\n\n" + "\n".join(sorted(lines)),
+                    author="EagleAgent",
+                ).send()
+            else:
+                await cl.Message(content="No RFQs found.", author="EagleAgent").send()
+            return
+
+    # Direct supplier clearing — intercept "clear/strip/remove suppliers" requests
+    _clear_keywords = ["clear", "strip", "remove", "delete", "reset", "wipe"]
+    _clear_targets = ["supplier", "suppliers", "quote", "quotes"]
+    if any(kw in msg_lower for kw in _clear_keywords) and any(t in msg_lower for t in _clear_targets):
+        # Resolve RFQ ID from message or chat history
+        clear_rfq_match = rfq_match  # may already be set from above
+        if not clear_rfq_match:
+            history = cl.chat_context.to_openai()
+            for hist_msg in reversed(history[:-1]):
+                content = hist_msg.get("content", "") or ""
+                hist_match = re.search(r'\bRFQ[-\s]?(\d{4}[-\s]\d{4,}|\d{4,})\b', content, re.IGNORECASE)
+                if hist_match:
+                    clear_rfq_match = hist_match
+                    break
+        if clear_rfq_match and store:
+            from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+            from datetime import datetime, timezone
+            clear_rfq_id = _resolve_rfq_id(clear_rfq_match.group(1))
+            item = await store.aget(NAMESPACE, clear_rfq_id)
+            if item:
+                rfq = item.value
+                # Check if a specific line number was mentioned
+                line_match = re.search(r'\bline\s+(\d+)\b', msg_lower)
+                target_line = int(line_match.group(1)) if line_match else None
+
+                # Safety: require a specific line number or explicit "all" to clear everything
+                if target_line is None and "all" not in msg_lower:
+                    lines_with_suppliers = sum(
+                        1 for it in rfq.get("items", []) if it.get("suppliers")
+                    )
+                    await cl.Message(
+                        content=(
+                            f"**{clear_rfq_id}** has suppliers on {lines_with_suppliers} line(s). "
+                            "Please specify a line number (e.g. \"clear suppliers from line 3\") "
+                            "or say \"clear **all** suppliers\" to confirm."
+                        ),
+                        author="EagleAgent",
+                    ).send()
+                    return
+
+                cleared = []
+                for line_item in rfq.get("items", []):
+                    if target_line is not None and line_item["line"] != target_line:
+                        continue
+                    count = len(line_item.get("suppliers", []))
+                    if count:
+                        line_item["suppliers"] = []
+                        cleared.append(f"line {line_item['line']} ({count})")
+                if cleared:
+                    rfq.setdefault("history", []).append({
+                        "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "user": user_id,
+                        "action": f"Cleared suppliers from {', '.join(cleared)}",
+                    })
+                    await store.aput(NAMESPACE, clear_rfq_id, rfq)
+                    await _send_rfq_element(rfq)
+                    scope = f"line {target_line}" if target_line else f"all {len(cleared)} line(s)"
+                    await cl.Message(
+                        content=f"Cleared suppliers from **{clear_rfq_id}** ({scope}).",
+                        author="EagleAgent",
+                    ).send()
+                else:
+                    scope = f"line {target_line}" if target_line else "any line"
+                    await cl.Message(content=f"No suppliers to clear on {scope} of **{clear_rfq_id}**.", author="EagleAgent").send()
+                return
+
     graph_config = {
         "configurable": {"thread_id": thread_id},
         "recursion_limit": config.GRAPH_RECURSION_LIMIT
@@ -1106,7 +1544,9 @@ async def main(message: cl.Message):
         "user_id": user_id
     }
     
-    # Inject procurement intent context if set by a command or action button
+    # Inject procurement intent context if set by a command or action button.
+    # Always include the key so the checkpointed graph state is overwritten
+    # (otherwise a stale intent from a previous turn persists in the checkpoint).
     from includes.prompts import get_intent_context
     intent_context = None
     if message.command:
@@ -1114,8 +1554,7 @@ async def main(message: cl.Message):
         intent_context = get_intent_context(intent_name)
     if not intent_context:
         intent_context = cl.user_session.get("intent_context")
-    if intent_context:
-        inputs["intent_context"] = intent_context
+    inputs["intent_context"] = intent_context or ""
     
     if file_metadata:
         inputs["file_attachments"] = file_metadata
@@ -1158,7 +1597,7 @@ async def main(message: cl.Message):
             tool_input = event.get("data", {}).get("input", "")
             logger.info(f"[TOOL] calling '{name}' with: {str(tool_input)[:200]}")
         
-        if kind == "on_chain_start" and name in ["GeneralAgent", "BrowserAgent", "ProcurementAgent", "SysAdminAgent", "ResearchAgent"]:
+        if kind == "on_chain_start" and name in ["GeneralAgent", "ProcurementAgent", "SysAdminAgent", "ResearchAgent"]:
             active_agent = name
             if supervisor_done_at is None:
                 supervisor_done_at = time.monotonic()

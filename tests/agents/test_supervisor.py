@@ -29,11 +29,11 @@ async def test_supervisor_ai_message(supervisor):
     assert result == {"next_agent": "FINISH"}
 
 @pytest.mark.asyncio
-async def test_supervisor_rule_based_browser(supervisor, mock_model):
+async def test_supervisor_rule_based_general_web(supervisor, mock_model):
     state = {"messages": [HumanMessage(content="Can you search Google for Python tutorials?")]}
-    mock_model.with_structured_output.return_value.ainvoke.return_value = RouteDecision(next_agent="BrowserAgent")
+    mock_model.with_structured_output.return_value.ainvoke.return_value = RouteDecision(next_agent="GeneralAgent")
     result = await supervisor(state)
-    assert result == {"next_agent": "BrowserAgent"}
+    assert result == {"next_agent": "GeneralAgent"}
 
 @pytest.mark.asyncio
 async def test_supervisor_llm_routing_general(supervisor, mock_model):

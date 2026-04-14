@@ -137,19 +137,23 @@ def _render_rfq_summary(rfq: dict) -> str:
                 sup_parts = []
                 _status_labels = {
                     "estimated": "est",
-                    "previous_purchase": "prev purchase",
-                    "previous_quote": "prev quote",
+                    "previous_purchase": "prev",
+                    "previous_quote": "prev",
                     "quoted": "quoted",
                 }
                 for s in suppliers:
                     name = s.get("name", "?")
                     price = s.get("price")
                     st = s.get("status", "candidate")
+                    price_type = s.get("price_type", "")
                     if st == "dropped":
                         sup_parts.append(f"~~{name}~~")
                     elif price is not None:
-                        label = _status_labels.get(st, "")
-                        price_str = f"${price:,.2f}"
+                        label = _status_labels.get(price_type, "")
+                        try:
+                            price_str = f"${float(price):,.2f}"
+                        except (ValueError, TypeError):
+                            price_str = str(price)
                         if label:
                             sup_parts.append(f"{name} ({price_str} {label})")
                         else:
@@ -182,32 +186,18 @@ def _render_rfq_summary(rfq: dict) -> str:
 
 
 async def _send_rfq_element(rfq: dict) -> None:
-    """Send or update an interactive RFQ custom element in the chat UI.
+    """Send or update an interactive RFQ custom element in the sidebar.
 
-    If an element for this RFQ already exists in the session, updates it
-    in place (no new message). Otherwise creates a new message with the
-    element attached.
+    Shows the RFQ summary as a persistent sidebar panel that updates
+    in place as work progresses, keeping the chat area clean.
     """
     try:
+        import time
         rfq_id = rfq.get("id", "???")
-        elements = cl.user_session.get("rfq_elements") or {}
-        existing = elements.get(rfq_id)
-
-        if existing:
-            # Update the existing element in place — no new message
-            existing.props = rfq
-            await existing.update()
-        else:
-            # First time showing this RFQ — create new message + element
-            element = cl.CustomElement(name="RFQSummary", props=rfq, display="inline")
-            elements[rfq_id] = element
-            cl.user_session.set("rfq_elements", elements)
-
-            await cl.Message(
-                content="",
-                elements=[element],
-                author="EagleAgent",
-            ).send()
+        element = cl.CustomElement(name="RFQSummary", props=rfq, display="side")
+        await cl.ElementSidebar.set_title(f"RFQ {rfq_id}")
+        # Use a unique key each time to force Chainlit to replace the element
+        await cl.ElementSidebar.set_elements([element], key=f"rfq-{rfq_id}-{time.monotonic()}")
     except Exception:
         # If custom element fails (e.g. in tests), silently skip
         logger.debug("Custom element send skipped (not in Chainlit context)")
@@ -262,22 +252,32 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
                           customer_contact ({name, email, phone}), reference,
                           netsuite_opportunity, hubspot_deal, notes,
                           items ([{input_description, input_code, quantity, uom}])
+          update        — Update top-level RFQ properties. data keys: any of
+                          customer, customer_contact, reference, notes,
+                          netsuite_opportunity, hubspot_deal, assigned_to
           update_item   — Update an RFQ line item. data keys: line (required, int),
                           plus any of: input_description, input_code, part_number,
                           brand, product_id, quantity, uom, status
           add_supplier  — Add supplier candidate(s) to a line item. data keys:
                           line (required), EITHER name (required) for a single
                           supplier with optional supplier_id, contacts, status,
-                          price, lead_time, notes; OR suppliers (list of dicts
-                          with those same keys) to add multiple at once.
-                          Supplier status values: candidate (default), estimated
-                          (price from web search), previous_purchase (price from
-                          purchase history), previous_quote (price from past
-                          quote), quoted (new quote received), shortlisted,
-                          selected, dropped.
+                          price, price_type, lead_time, notes, purchase_ref;
+                          OR suppliers (list of dicts with those same keys)
+                          to add multiple at once.
+                          Supplier status values: candidate (default),
+                          shortlisted, selected, dropped.
+                          Price type values: estimated (price from web search),
+                          previous_purchase (price from purchase history),
+                          previous_quote (price from past quote), quoted
+                          (new quote received). Omit if no price.
+                          purchase_ref: optional dict {doc_number, date,
+                          order_count} linking to the latest purchase record.
           update_supplier — Update a supplier on a line item. data keys:
                           line (required), name (required), plus any of: status,
-                          price, lead_time, notes, contacts
+                          price, price_type, lead_time, notes, contacts,
+                          purchase_ref
+          clear_suppliers — Remove all suppliers from line item(s). data keys:
+                          line (optional, int — if omitted clears ALL lines)
           assign        — Reassign the RFQ. data keys: assigned_to (required)
           update_status — Change RFQ status. data keys: status (required, one of
                           draft/in_progress/awaiting_quotes/completed/cancelled)
@@ -352,7 +352,24 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
         rfq = item.value
         now = _now_iso()
 
-        if action == "update_item":
+        if action == "update":
+            updatable = [
+                "customer", "customer_contact", "reference", "notes",
+                "netsuite_opportunity", "hubspot_deal", "assigned_to",
+            ]
+            changes = []
+            for key in updatable:
+                if key in data:
+                    rfq[key] = data[key]
+                    changes.append(key)
+            if not changes:
+                return f"Error: provide at least one of {', '.join(updatable)} to update."
+            rfq["history"].append({
+                "date": now, "user": user_id,
+                "action": f"Updated RFQ: {', '.join(changes)}",
+            })
+
+        elif action == "update_item":
             line_num = _get_line(data)
             if line_num is None:
                 return "Error: 'line' is required in data for update_item."
@@ -388,22 +405,74 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
             if not suppliers_list:
                 return "Error: 'name' or 'suppliers' list is required for add_supplier."
 
-            added_names = []
+            # Filter out useless suppliers: those without a DB link must have
+            # a real name and at least one contact detail (email, phone, or url).
+            def _has_contact_info(sup):
+                contacts = sup.get("contacts") or []
+                if not isinstance(contacts, list):
+                    return False
+                return any(
+                    c.get("email") or c.get("phone") or c.get("url") or c.get("value")
+                    for c in contacts
+                )
+
+            _bad_names = {"unknown", ""}
+            skipped_names = []
+            valid_suppliers = []
             for sup in suppliers_list:
-                supplier_entry = {
-                    "supplier_id": sup.get("supplier_id"),
-                    "name": sup.get("name", "Unknown"),
-                    "contacts": sup.get("contacts", []),
-                    "status": sup.get("status", "candidate"),
-                    "price": sup.get("price"),
-                    "lead_time": sup.get("lead_time"),
-                    "notes": sup.get("notes", ""),
-                }
-                line_item["suppliers"].append(supplier_entry)
-                added_names.append(supplier_entry["name"])
+                name = (sup.get("name") or "").strip()
+                has_db_link = bool(sup.get("supplier_id"))
+                if not has_db_link and (name.lower() in _bad_names or not _has_contact_info(sup)):
+                    skipped_names.append(name or "Unknown")
+                else:
+                    valid_suppliers.append(sup)
+
+            added_names = []
+            updated_names = []
+            existing_by_name = {
+                s["name"].lower(): s for s in line_item.get("suppliers", [])
+            }
+            for sup in valid_suppliers:
+                name = sup.get("name", "Unknown")
+                existing = existing_by_name.get(name.lower())
+                if existing:
+                    # Merge into existing supplier — update non-empty fields
+                    for key in ["supplier_id", "contacts", "price", "price_type",
+                                "lead_time", "notes", "purchase_ref"]:
+                        val = sup.get(key)
+                        if val is not None and val != "" and val != []:
+                            existing[key] = val
+                    # Don't overwrite a user-set status (shortlisted/selected)
+                    # with a default candidate status
+                    new_status = sup.get("status", "candidate")
+                    if new_status != "candidate" or existing.get("status") == "candidate":
+                        existing["status"] = new_status
+                    updated_names.append(name)
+                else:
+                    supplier_entry = {
+                        "supplier_id": sup.get("supplier_id"),
+                        "name": name,
+                        "contacts": sup.get("contacts", []),
+                        "status": sup.get("status", "candidate"),
+                        "price": sup.get("price"),
+                        "price_type": sup.get("price_type"),
+                        "lead_time": sup.get("lead_time"),
+                        "notes": sup.get("notes", ""),
+                        "purchase_ref": sup.get("purchase_ref"),
+                    }
+                    line_item["suppliers"].append(supplier_entry)
+                    existing_by_name[name.lower()] = supplier_entry
+                    added_names.append(name)
+            action_parts = []
+            if added_names:
+                action_parts.append(f"Added {len(added_names)} supplier(s) to line {line_num}: {', '.join(added_names)}")
+            if updated_names:
+                action_parts.append(f"Updated {len(updated_names)} existing supplier(s) on line {line_num}: {', '.join(updated_names)}")
+            if skipped_names:
+                action_parts.append(f"Skipped {len(skipped_names)} supplier(s) (missing name or contact info): {', '.join(skipped_names)}")
             rfq["history"].append({
                 "date": now, "user": user_id,
-                "action": f"Added {len(added_names)} supplier(s) to line {line_num}: {', '.join(added_names)}",
+                "action": " | ".join(action_parts) or f"No changes to suppliers on line {line_num}",
             })
 
         elif action == "update_supplier":
@@ -420,7 +489,7 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
             )
             if not supplier:
                 return f"Error: supplier '{name}' not found on line {line_num}."
-            updatable = ["status", "price", "lead_time", "notes", "contacts"]
+            updatable = ["status", "price", "price_type", "lead_time", "notes", "contacts", "purchase_ref"]
             changes = []
             for key in updatable:
                 if key in data:
@@ -429,6 +498,24 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
             rfq["history"].append({
                 "date": now, "user": user_id,
                 "action": f"Updated supplier '{name}' on line {line_num}: {', '.join(changes)}",
+            })
+
+        elif action == "clear_suppliers":
+            line_num = data.get("line")  # optional — None means all lines
+            cleared = []
+            for item in rfq["items"]:
+                if line_num is not None and item["line"] != line_num:
+                    continue
+                count = len(item.get("suppliers", []))
+                if count:
+                    item["suppliers"] = []
+                    cleared.append(f"line {item['line']} ({count})")
+            if not cleared:
+                scope = f"line {line_num}" if line_num else "any line"
+                return f"No suppliers to clear on {scope}."
+            rfq["history"].append({
+                "date": now, "user": user_id,
+                "action": f"Cleared suppliers from {', '.join(cleared)}",
             })
 
         elif action == "assign":
@@ -481,8 +568,8 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
         else:
             return (
                 f"Error: unknown action '{action}'. Valid actions: create, "
-                "update_item, add_supplier, update_supplier, assign, "
-                "update_status, add_note, link_external."
+                "update, update_item, add_supplier, update_supplier, "
+                "clear_suppliers, assign, update_status, add_note, link_external."
             )
 
         rfq["updated_date"] = _today()

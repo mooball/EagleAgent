@@ -198,9 +198,9 @@ class TestManageRfqSuppliers:
             "data": {
                 "line": 1,
                 "suppliers": [
-                    {"name": "Sydney Tools", "price": 189.00},
-                    {"name": "Total Tools", "price": 195.00},
-                    {"name": "ToolMart Online"},
+                    {"name": "Sydney Tools", "price": 189.00, "contacts": [{"email": "info@sydneytools.com.au"}]},
+                    {"name": "Total Tools", "price": 195.00, "contacts": [{"email": "info@totaltools.com.au"}]},
+                    {"name": "ToolMart Online", "contacts": [{"url": "https://toolmart.com.au"}]},
                 ],
             },
         })
@@ -224,7 +224,7 @@ class TestManageRfqSuppliers:
         await manage.ainvoke({
             "action": "add_supplier",
             "rfq_id": rfq_id,
-            "data": {"line": 1, "name": "Sydney Tools"},
+            "data": {"line": 1, "name": "Sydney Tools", "contacts": [{"email": "info@sydneytools.com.au"}]},
         })
         result = await manage.ainvoke({
             "action": "update_supplier",
@@ -473,15 +473,15 @@ class TestRendering:
         await manage.ainvoke({
             "action": "add_supplier",
             "rfq_id": rfq_id,
-            "data": {"line": 1, "name": "Sydney Tools", "price": 189.0, "status": "previous_purchase"},
+            "data": {"line": 1, "name": "Sydney Tools", "price": 189.0, "price_type": "previous_purchase", "contacts": [{"email": "info@sydneytools.com.au"}]},
         })
         result = await manage.ainvoke({
             "action": "add_supplier",
             "rfq_id": rfq_id,
-            "data": {"line": 1, "name": "Total Tools", "status": "dropped"},
+            "data": {"line": 1, "name": "Total Tools", "status": "dropped", "contacts": [{"email": "info@totaltools.com.au"}]},
         })
         assert "$189.00" in result
-        assert "prev purchase" in result
+        assert "prev" in result
         assert "~~Total Tools~~" in result
 
     async def test_summary_shows_estimated_label(self, manage, test_store):
@@ -492,7 +492,7 @@ class TestRendering:
         result = await manage.ainvoke({
             "action": "add_supplier",
             "rfq_id": rfq_id,
-            "data": {"line": 1, "name": "WebSupplier", "price": 250.0, "status": "estimated"},
+            "data": {"line": 1, "name": "WebSupplier", "price": 250.0, "price_type": "estimated", "contacts": [{"url": "https://websupplier.com.au"}]},
         })
         assert "$250.00 est" in result
 

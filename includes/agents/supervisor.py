@@ -7,8 +7,14 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 class RouteDecision(BaseModel):
-    next_agent: Literal["GeneralAgent", "BrowserAgent", "ProcurementAgent", "FINISH"] = Field(
+    next_agent: Literal["GeneralAgent", "ProcurementAgent", "FINISH"] = Field(
         description="The agent to route the task to, or FINISH if the user request has been fully answered."
+    )
+
+# Extended decision type that includes ResearchAgent (used by intent routing only)
+class ExtendedRouteDecision(BaseModel):
+    next_agent: Literal["GeneralAgent", "ProcurementAgent", "ResearchAgent", "FINISH"] = Field(
+        description="The agent to route the task to."
     )
 
 class Supervisor:
@@ -34,9 +40,18 @@ class Supervisor:
             # Just route to FINISH. The user will reply next.
             return {"next_agent": "FINISH"}
 
-        # Intent-based routing: if an action button set a procurement intent, honour it
+        # Intent-based routing: if an action button set a specific intent, honour it
         intent_context = state.get("intent_context")
         if intent_context:
+            # Research intent signals → ResearchAgent (web search)
+            research_intent_signals = [
+                "research_suppliers", "web_research",
+            ]
+            if any(signal in intent_context for signal in research_intent_signals):
+                logger.info("Supervisor intent-based routing: ResearchAgent (intent_context set)")
+                return {"next_agent": "ResearchAgent"}
+
+            # Procurement intent signals → ProcurementAgent (internal DB)
             procurement_intent_signals = [
                 "search_products", "search_suppliers", "search_brands",
                 "part_purchase_history", "search_purchase_history",
@@ -54,16 +69,15 @@ Your job is to route the user's request to the correct agent.
 
 Available agents:
 - GeneralAgent: General conversation, memory retrieval, task planning, document summarization. Has Google Search grounding for answering questions using real-time web information. Use when the user explicitly wants external/public/web information, or for non-procurement topics.
-- BrowserAgent: Use ONLY for tasks that require interacting with a specific website — opening a URL, navigating pages, filling forms, clicking buttons, taking screenshots. Do NOT use for general information questions.
-- ProcurementAgent: Use for ANY question about products, parts, brands, suppliers, or purchase history that should be answered from our INTERNAL database. This includes: finding suppliers for a product or brand, looking up part numbers, checking purchase orders, searching the product catalog, and asking about what we have in stock or on record. When the user asks "who can supply X?" or "find a supplier for X" without specifying "search the web", default to ProcurementAgent.
+- ProcurementAgent: Use for ANY question about products, parts, brands, suppliers, purchase history, or RFQs that should be answered from our INTERNAL database. This includes: finding suppliers for a product or brand, looking up part numbers, checking purchase orders, searching the product catalog, and asking about what we have in stock or on record. Also handles ALL RFQ management: loading, creating, updating, listing RFQs. When the user asks "who can supply X?" or "find a supplier for X" without specifying "search the web", default to ProcurementAgent.
 - FINISH: Use ONLY after an agent has just responded and there is no new user question pending. NEVER choose FINISH when the latest message is from the user — the user is always expecting a response.
 
 Routing guidelines:
 - The latest message is from the user, so you MUST route to an agent. Do NOT choose FINISH.
 - Questions about suppliers, products, brands, parts, purchase history, records, quotes → ProcurementAgent (unless the user explicitly asks for web/external info)
 - "Search the web for..." or "find me information online about..." → GeneralAgent
+- RFQ requests (load, create, update, show, list) → ProcurementAgent
 - If the user wants MORE info beyond what our database returned, or explicitly asks for external/public knowledge → GeneralAgent
-- If the user wants to navigate to a specific website or interact with a web page → BrowserAgent
 - If unsure between ProcurementAgent and GeneralAgent, prefer ProcurementAgent for supplier/product questions
 - If unsure which agent to use, default to GeneralAgent. Never choose FINISH for a user question.
 

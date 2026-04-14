@@ -141,7 +141,7 @@ RFQ_WORKFLOW_PROMPT = """## RFQ Management Workflow
 You manage Requests for Quote (RFQs) that track customer parts lists through identification, supplier sourcing, and shortlisting.
 
 **Tools:**
-- `manage_rfq(action, rfq_id, data)` — Create or update RFQs. Actions: create, update_item, add_supplier, update_supplier, assign, update_status, add_note, link_external. The `add_supplier` action accepts a `suppliers` list to add multiple suppliers in one call.
+- `manage_rfq(action, rfq_id, data)` — Create or update RFQs. Actions: create, update, update_item, add_supplier, update_supplier, clear_suppliers, assign, update_status, add_note, link_external. The `update` action modifies top-level RFQ properties (customer, customer_contact, reference, notes, assigned_to, etc.). The `add_supplier` action accepts a `suppliers` list to add multiple suppliers in one call. The `clear_suppliers` action removes all suppliers from a specific line (data={line}) or all lines (data={}).
 - `get_rfq(rfq_id, list_all, assigned_to, status)` — Retrieve one RFQ, list all, or filter by assignee/status.
 
 **Creating an RFQ:**
@@ -170,7 +170,7 @@ When the user asks you to find or identify products:
 - Never automatically start product searches after creating an RFQ. Always wait for the user to review and confirm first.
 - Once the user asks you to search, update the RFQ directly with your findings — don't make them ask twice.
 - After each RFQ mutation, the tool returns a rendered summary. An interactive RFQ card is automatically shown to the user, so **do NOT repeat or copy the full summary table** in your response. Instead, write a brief conversational message about what changed (e.g. "I've created the RFQ with 12 items" or "Updated lines 3 and 5 with suppliers from purchase history. Lines 7 and 9 still need identification.").
-- When the user says "show RFQ" or "show my RFQs", use `get_rfq`.
+- When the user says "show RFQ", "load the RFQ", "pull up the RFQ", or similar, you MUST call `get_rfq(rfq_id=...)` to display it. Never just describe what you're doing — actually call the tool. If no RFQ ID is specified, use the most recently discussed one from the conversation.
 - RFQ statuses: draft → in_progress → awaiting_quotes → completed (or cancelled at any point)."""
 
 # =============================================================================
@@ -181,9 +181,9 @@ When the user asks you to find or identify products:
 
 INTENTS = {
     "find_product": {
-        "label": "Find a Product",
+        "label": "Product Lookup",
         "icon": "📦",
-        "description": "Search for a product in the internal catalog",
+        "description": "Search the internal product catalog by part number, brand, or description",
         "follow_up": (
             "Sure — I can search our product database. Do you have a part number, "
             "brand name, supplier code, or a description of what you're looking for?"
@@ -196,9 +196,9 @@ INTENTS = {
         ),
     },
     "find_supplier": {
-        "label": "Find a Supplier",
+        "label": "Supplier Lookup",
         "icon": "🔍",
-        "description": "Find a supplier by name, product, brand, or description",
+        "description": "Search our supplier database by name, product, brand, or description",
         "follow_up": (
             "I can help you find a supplier. You can give me:\n"
             "- A **part number** (e.g. `6Y-0834`) — I'll find who supplies it\n"
@@ -225,9 +225,9 @@ INTENTS = {
         ),
     },
     "check_purchase_history": {
-        "label": "Check Purchase History",
+        "label": "Purchase History",
         "icon": "📋",
-        "description": "Look up past purchase records",
+        "description": "Look up past purchase orders, suppliers, and pricing from our records",
         "follow_up": (
             "I can look up purchase history. Are you looking for a specific "
             "part number, supplier, PO number, or a date range?"
@@ -584,12 +584,17 @@ def build_sysadmin_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
     return "\n".join(parts).strip()
 
 
-def build_research_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
+def build_research_prompt(profile_data: Optional[Dict[str, Any]] = None, embedded: bool = False) -> str:
     """
     Build the system prompt for the Research Agent.
 
     Includes agent identity in research mode, user profile context,
     and instructions for web research with Google Search grounding.
+
+    Args:
+        profile_data: User profile data for personalization.
+        embedded: True when running as a node inside the Eagle Agent graph
+                  (has RFQ tools and should not tell users to switch profiles).
     """
     parts = []
 
@@ -617,7 +622,7 @@ def build_research_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
     parts.append("")
 
     parts.append("## Tool Call Budget")
-    parts.append("You have a maximum of 5 tool calls per response. If after 3 calls you haven't found useful results, STOP and ask the user for clarification. Never make more than 5 tool calls without returning a response.")
+    parts.append("You have a maximum of 15 tool calls per response. If after 5 search calls you haven't found useful results, STOP and ask the user for clarification.")
     parts.append("")
 
     parts.append("## Image/Document Input")
@@ -636,7 +641,14 @@ def build_research_prompt(profile_data: Optional[Dict[str, Any]] = None) -> str:
     parts.append("4. Only present definitive product information when you have an exact match confirmed by the user or an unambiguous identifier (e.g. a clearly readable part number).")
     parts.append("")
 
-    parts.append(RFQ_WORKFLOW_PROMPT)
+    parts.append("## RFQ and Procurement")
+    if embedded:
+        parts.append("You have access to RFQ management tools (manage_rfq, get_rfq) for adding suppliers and updating items.")
+        parts.append("You do NOT have access to the internal product or supplier database — those are handled by other agents.")
+        parts.append("If the user asks about internal product lookups, purchase history, or supplier searches from the database, let them know you'll hand it back to the appropriate agent.")
+    else:
+        parts.append("You do NOT have access to RFQ management or internal procurement tools in this profile.")
+        parts.append("If the user asks about RFQs, suppliers, products, or purchase history, politely direct them to switch to the **Eagle Agent** profile where those tools are available.")
     parts.append("")
 
     if profile_data:

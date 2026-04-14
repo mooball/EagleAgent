@@ -16,7 +16,7 @@ import { useState } from "react"
 import {
   ChevronDown, ChevronRight, Search, UserX, Star, Check,
   MoreHorizontal, ExternalLink, Mail, Phone, Globe, Package,
-  FileText, User, Calendar, Hash, ClipboardList, Info
+  FileText, User, Calendar, Hash, ClipboardList, Info, RefreshCw
 } from "lucide-react"
 
 /* ------------------------------------------------------------------ */
@@ -31,21 +31,24 @@ const itemStatusConfig = {
 
 const supplierStatusConfig = {
   candidate:          { label: "Candidate",    color: "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200" },
-  estimated:          { label: "Est",          color: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" },
-  previous_purchase:  { label: "Prev Purch",   color: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" },
-  previous_quote:     { label: "Prev Quote",   color: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-200" },
-  quoted:             { label: "Quoted",       color: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200" },
   shortlisted:        { label: "Shortlisted",  color: "bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200" },
   selected:           { label: "Selected",     color: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200" },
   dropped:            { label: "Dropped",      color: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200 line-through" },
 }
 
+const priceTypeLabels = {
+  estimated:          "est",
+  previous_purchase:  "prev",
+  previous_quote:     "prev",
+  quoted:             "quoted",
+}
+
 const rfqStatusConfig = {
-  draft:            { label: "Draft",           color: "bg-slate-100 text-slate-700" },
-  in_progress:      { label: "In Progress",     color: "bg-blue-100 text-blue-800" },
-  awaiting_quotes:  { label: "Awaiting Quotes", color: "bg-amber-100 text-amber-800" },
-  completed:        { label: "Completed",       color: "bg-green-100 text-green-800" },
-  cancelled:        { label: "Cancelled",       color: "bg-red-100 text-red-800" },
+  draft:            { label: "Draft",           color: "bg-slate-600 text-slate-100" },
+  in_progress:      { label: "In Progress",     color: "bg-blue-600 text-blue-100" },
+  awaiting_quotes:  { label: "Awaiting Quotes", color: "bg-amber-600 text-amber-100" },
+  completed:        { label: "Completed",       color: "bg-green-600 text-green-100" },
+  cancelled:        { label: "Cancelled",       color: "bg-red-600 text-red-100" },
 }
 
 function formatPrice(price) {
@@ -61,8 +64,9 @@ function SupplierRow({ supplier, rfqId, line }) {
   const st = supplierStatusConfig[supplier.status] || supplierStatusConfig.candidate
   const isDropped = supplier.status === "dropped"
 
-  const contacts = supplier.contacts || []
-  const hasDetails = contacts.length > 0 || supplier.lead_time || supplier.notes
+  const contacts = Array.isArray(supplier.contacts) ? supplier.contacts : []
+  const purchaseRef = supplier.purchase_ref || null
+  const hasDetails = contacts.length > 0 || supplier.lead_time || supplier.notes || supplier.supplier_id || purchaseRef
 
   const nameText = (
     <span className={`text-xs ${isDropped ? "line-through opacity-50" : ""}`}>
@@ -72,7 +76,7 @@ function SupplierRow({ supplier, rfqId, line }) {
 
   return (
     <tr className="border-b last:border-b-0" style={{ borderColor: "rgba(128,128,128,0.15)" }}>
-      <td className="py-1 pr-6">
+      <td className="px-2 py-1">
         {hasDetails ? (
           <HoverCard>
             <HoverCardTrigger asChild>
@@ -86,14 +90,20 @@ function SupplierRow({ supplier, rfqId, line }) {
             </HoverCardTrigger>
             <HoverCardContent className="w-72 text-xs" side="top">
               <div className="space-y-2">
-                <p className="font-semibold text-sm">{supplier.name}</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-semibold text-sm">{supplier.name}</p>
+                  {supplier.supplier_id && (
+                    <span className="text-[9px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300 font-medium">DB</span>
+                  )}
+                </div>
                 {contacts.map(function(c, i) {
                   return (
                     <div key={i} className="flex items-center gap-1.5">
                       {c.type === "email" && <Mail className="h-3 w-3 opacity-60" />}
                       {c.type === "phone" && <Phone className="h-3 w-3 opacity-60" />}
                       {c.type === "url" && <Globe className="h-3 w-3 opacity-60" />}
-                      <span>{c.value}</span>
+                      {c.name && !c.type && <User className="h-3 w-3 opacity-60" />}
+                      <span>{c.value || [c.name, c.email, c.phone].filter(Boolean).join(" · ")}</span>
                     </div>
                   )
                 })}
@@ -109,26 +119,48 @@ function SupplierRow({ supplier, rfqId, line }) {
                     <span className="italic">{supplier.notes}</span>
                   </div>
                 )}
+                {purchaseRef && (
+                  <div className="pt-1 border-t" style={{ borderColor: "rgba(128,128,128,0.2)" }}>
+                    <div className="flex items-center gap-1.5 text-muted-foreground">
+                      <ClipboardList className="h-3 w-3 opacity-60" />
+                      <span>
+                        {purchaseRef.doc_number && <span className="font-mono">{purchaseRef.doc_number}</span>}
+                        {purchaseRef.date && <span> · {purchaseRef.date}</span>}
+                        {purchaseRef.order_count > 1 && <span> · {purchaseRef.order_count} orders</span>}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             </HoverCardContent>
           </HoverCard>
         ) : nameText}
       </td>
-      <td className="py-1 pr-6 text-xs text-right font-medium" style={{ whiteSpace: "nowrap" }}>
+      <td className="px-2 py-1 text-xs text-right font-medium" style={{ whiteSpace: "nowrap" }}>
         {supplier.price != null ? (
           <span className={isDropped ? "line-through opacity-50" : ""}>
             {formatPrice(supplier.price)}
+            {supplier.price_type && priceTypeLabels[supplier.price_type] && (
+              <span className="ml-1 text-[10px] font-normal opacity-50">{priceTypeLabels[supplier.price_type]}</span>
+            )}
           </span>
         ) : (
           <span className="opacity-30">—</span>
         )}
       </td>
-      <td className="py-1 pr-6">
+      <td className="px-2 py-1 text-xs" style={{ whiteSpace: "nowrap" }}>
+        {supplier.lead_time ? (
+          <span className={isDropped ? "opacity-50" : ""}>{supplier.lead_time}</span>
+        ) : (
+          <span className="opacity-30">—</span>
+        )}
+      </td>
+      <td className="px-2 py-1">
         <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${st.color}`} style={{ whiteSpace: "nowrap" }}>
           {st.label}
         </span>
       </td>
-      <td className="py-1 w-6">
+      <td className="px-2 py-1 w-6">
         {!isDropped && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -199,7 +231,17 @@ function ItemRow({ item, rfqId, expanded, onToggle }) {
           </div>
         </TableCell>
         <TableCell className="text-sm font-mono">
-          {item.part_number || item.input_code || "—"}
+          <span className="inline-flex items-center gap-1 min-w-0">
+            <span className="truncate">{item.part_number || item.input_code || "—"}</span>
+            {item.product_id && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="text-[9px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300 font-medium font-sans shrink-0">DB</span>
+                </TooltipTrigger>
+                <TooltipContent>Linked to internal product database</TooltipContent>
+              </Tooltip>
+            )}
+          </span>
         </TableCell>
         <TableCell className="text-sm">
           {item.brand || "—"}
@@ -227,7 +269,16 @@ function ItemRow({ item, rfqId, expanded, onToggle }) {
                   className="p-1 rounded hover:bg-muted cursor-pointer"
                   onClick={function(e) {
                     e.stopPropagation()
-                    sendUserMessage("Find suppliers for line " + item.line + " of " + rfqId)
+                    callAction({ name: "rfq_find_suppliers", payload: {
+                      rfq_id: rfqId,
+                      line: item.line,
+                      description: item.input_description,
+                      part_number: item.part_number || item.input_code,
+                      brand: item.brand,
+                      quantity: item.quantity,
+                      uom: item.uom,
+                      existing_suppliers: []
+                    }})
                   }}
                 >
                   <Search className="h-3.5 w-3.5 opacity-40" />
@@ -242,18 +293,27 @@ function ItemRow({ item, rfqId, expanded, onToggle }) {
         <TableRow>
           <TableCell />
           <TableCell colSpan={6} className="py-2 pl-8 pr-4">
-            <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-3 mb-2">
               <span className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Suppliers</span>
               <button
-                className="text-xs text-muted-foreground hover:text-foreground cursor-pointer flex items-center gap-1"
+                className="text-[10px] text-muted-foreground hover:text-foreground cursor-pointer flex items-center gap-1"
                 onClick={function() {
-                  sendUserMessage("Find more suppliers for line " + item.line + " of " + rfqId)
+                  callAction({ name: "rfq_find_suppliers", payload: {
+                    rfq_id: rfqId,
+                    line: item.line,
+                    description: item.input_description,
+                    part_number: item.part_number || item.input_code,
+                    brand: item.brand,
+                    quantity: item.quantity,
+                    uom: item.uom,
+                    existing_suppliers: suppliers.filter(function(s) { return s.status !== "dropped" }).map(function(s) { return s.name })
+                  }})
                 }}
               >
                 <Search className="h-3 w-3" /> Find more
               </button>
             </div>
-            <table className="w-full">
+            <table className="w-full" style={{ borderSpacing: "0 2px" }}>
               <tbody>
                 {suppliers.map(function(s, i) {
                   return (
@@ -321,7 +381,7 @@ export default function RFQSummary() {
   const allExpanded = items.length > 0 && items.every(function(i) { return expandedRows[i.line] })
 
   return (
-    <Card className="w-full my-2">
+    <Card className="w-full my-2 overflow-hidden">
       <CardHeader className="pb-3 pt-4 px-4">
         <div className="flex items-start justify-between gap-2">
           <div className="space-y-1 min-w-0">
@@ -332,7 +392,7 @@ export default function RFQSummary() {
               <span className="text-lg font-medium">{customer}</span>
             </div>
             <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
-              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${stCfg.color}`}>
+              <span className={`py-0.5 rounded-full text-xs font-medium ${stCfg.color}`}>
                 {stCfg.label}
               </span>
               <span className="flex items-center gap-1">
@@ -350,8 +410,8 @@ export default function RFQSummary() {
               )}
             </div>
             {contact && (contact.name || contact.email || contact.phone) && (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-                {contact.name && <span>{contact.name}</span>}
+              <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+                {contact.name && <span className="flex items-center gap-1"><User className="h-3 w-3" />{contact.name}</span>}
                 {contact.email && (
                   <span className="flex items-center gap-1.5">
                     <Mail className="h-3 w-3" /> {contact.email}
@@ -374,6 +434,19 @@ export default function RFQSummary() {
               <p className="text-xs text-muted-foreground italic">{notes}</p>
             )}
           </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                className="p-1.5 rounded hover:bg-muted cursor-pointer shrink-0"
+                onClick={function() {
+                  callAction({ name: "rfq_refresh", payload: { rfq_id: rfqId } })
+                }}
+              >
+                <RefreshCw className="h-4 w-4 opacity-50" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Refresh</TooltipContent>
+          </Tooltip>
         </div>
       </CardHeader>
 
@@ -436,7 +509,20 @@ export default function RFQSummary() {
                   size="default"
                   className="text-sm"
                   onClick={function() {
-                    sendUserMessage("Identify all unidentified items in " + rfqId)
+                    var unidentifiedItems = items
+                      .filter(function(i) { return i.status === "unidentified" })
+                      .map(function(i) {
+                        return {
+                          line: i.line,
+                          description: i.input_description,
+                          part_number: i.part_number || i.input_code,
+                          brand: i.brand
+                        }
+                      })
+                    callAction({ name: "rfq_identify_items", payload: {
+                      rfq_id: rfqId,
+                      items: unidentifiedItems
+                    }})
                   }}
                 >
                   <Package className="h-4 w-4 mr-1.5" /> Identify items
