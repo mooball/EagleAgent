@@ -44,7 +44,7 @@ def get_embeddings_model():
     global _embeddings_model
     if _embeddings_model is None:
         embed_model_name = Config.EMBEDDINGS_MODEL
-        _embeddings_model = GoogleGenerativeAIEmbeddings(model=embed_model_name, output_dimensionality=256)
+        _embeddings_model = GoogleGenerativeAIEmbeddings(model=embed_model_name, location=Config.EMBEDDINGS_LOCATION, output_dimensionality=256)
     return _embeddings_model
 
 def _do_product_search(part_number: Optional[str] = None, 
@@ -785,3 +785,142 @@ async def search_purchase_history(
     return await asyncio.to_thread(
         _do_search_purchase_history, part_number, supplier, date_from, date_to, doc_number, limit
     )
+
+
+# ---------------------------------------------------------------------------
+# Structured DB helpers — return dicts with IDs for RFQ linking
+# ---------------------------------------------------------------------------
+
+def _find_product_exact(part_number: str, brand: str = None) -> Optional[dict]:
+    """Find a product by exact part number match. Returns dict with id, part_number, brand or None."""
+    session = get_session()
+    try:
+        query = session.query(Product).filter(Product.part_number.ilike(part_number))
+        if brand:
+            query = query.filter(Product.brand.ilike(brand))
+        product = query.first()
+        if product:
+            return {
+                "id": str(product.id),
+                "part_number": product.part_number,
+                "brand": product.brand,
+                "description": product.description,
+                "supplier_code": product.supplier_code,
+            }
+        return None
+    finally:
+        session.close()
+
+
+def _find_product_by_supplier_code(supplier_code: str, brand: str = None) -> Optional[dict]:
+    """Find a product by supplier code. Returns dict with id, part_number, brand or None."""
+    session = get_session()
+    try:
+        query = session.query(Product).filter(Product.supplier_code.ilike(supplier_code))
+        if brand:
+            query = query.filter(Product.brand.ilike(brand))
+        product = query.first()
+        if product:
+            return {
+                "id": str(product.id),
+                "part_number": product.part_number,
+                "brand": product.brand,
+                "description": product.description,
+                "supplier_code": product.supplier_code,
+            }
+        return None
+    finally:
+        session.close()
+
+
+def _find_purchase_history_for_part(part_number: str, limit: int = 20) -> list[dict]:
+    """Return structured purchase history per supplier for a part number.
+
+    Each dict: supplier_id, supplier_name, contacts, price, date, doc_number, order_count, total_qty
+    """
+    from sqlalchemy import func, desc, and_
+
+    session = get_session()
+    try:
+        products = session.query(Product).filter(
+            Product.part_number.ilike(part_number)
+        ).all()
+        if not products:
+            return []
+
+        product_ids = [p.id for p in products]
+
+        results = (
+            session.query(
+                Supplier.id.label("supplier_id"),
+                Supplier.name.label("supplier_name"),
+                Supplier.contacts.label("supplier_contacts"),
+                func.max(ProductSupplier.date).label("most_recent_date"),
+                func.sum(ProductSupplier.quantity).label("total_quantity"),
+                func.count(ProductSupplier.id).label("order_count"),
+            )
+            .join(Product, ProductSupplier.product_id == Product.id)
+            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
+            .filter(ProductSupplier.product_id.in_(product_ids))
+            .group_by(Supplier.id, Supplier.name, Supplier.contacts)
+            .order_by(desc("order_count"))
+            .limit(limit)
+            .all()
+        )
+
+        out = []
+        for row in results:
+            # Get latest price and doc_number
+            latest = (
+                session.query(ProductSupplier.price, ProductSupplier.doc_number)
+                .filter(
+                    and_(
+                        ProductSupplier.supplier_id == row.supplier_id,
+                        ProductSupplier.product_id.in_(product_ids),
+                    )
+                )
+                .order_by(ProductSupplier.date.desc().nulls_last())
+                .first()
+            )
+            contacts = []
+            if row.supplier_contacts and isinstance(row.supplier_contacts, list):
+                contacts = row.supplier_contacts
+
+            out.append({
+                "supplier_id": str(row.supplier_id),
+                "name": row.supplier_name,
+                "contacts": contacts,
+                "price": latest[0] if latest else None,
+                "doc_number": latest[1] if latest else None,
+                "date": row.most_recent_date.isoformat() if row.most_recent_date else None,
+                "order_count": row.order_count,
+                "total_quantity": float(row.total_quantity) if row.total_quantity else 0,
+            })
+        return out
+    finally:
+        session.close()
+
+
+def _find_suppliers_by_brand(brand: str, limit: int = 10) -> list[dict]:
+    """Find suppliers linked to a brand. Returns list of dicts with supplier_id, name, contacts."""
+    session = get_session()
+    try:
+        results = (
+            session.query(Supplier)
+            .join(SupplierBrand, SupplierBrand.supplier_id == Supplier.id)
+            .join(Brand, SupplierBrand.brand_id == Brand.id)
+            .filter(Brand.name.ilike(f"%{brand}%"), Brand.duplicate_of.is_(None))
+            .limit(limit)
+            .all()
+        )
+        out = []
+        for s in results:
+            contacts = s.contacts if isinstance(s.contacts, list) else []
+            out.append({
+                "supplier_id": str(s.id),
+                "name": s.name,
+                "contacts": contacts,
+            })
+        return out
+    finally:
+        session.close()

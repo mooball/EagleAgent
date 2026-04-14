@@ -54,7 +54,8 @@ class Config:
     
     # ==================== Model Configuration ====================
     # Set the Gemini Embeddings model string.
-    EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "models/gemini-embedding-2-preview")
+    EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "gemini-embedding-2-preview")
+    EMBEDDINGS_LOCATION = os.getenv("EMBEDDINGS_LOCATION", "us-central1")
     
     # Default LLM model to use
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini-3-flash-preview")
