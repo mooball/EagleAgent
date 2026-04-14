@@ -44,7 +44,7 @@ def get_embeddings_model():
     global _embeddings_model
     if _embeddings_model is None:
         embed_model_name = Config.EMBEDDINGS_MODEL
-        _embeddings_model = GoogleGenerativeAIEmbeddings(model=embed_model_name, output_dimensionality=256)
+        _embeddings_model = GoogleGenerativeAIEmbeddings(model=embed_model_name, location=Config.EMBEDDINGS_LOCATION, output_dimensionality=256)
     return _embeddings_model
 
 def _do_product_search(part_number: Optional[str] = None, 

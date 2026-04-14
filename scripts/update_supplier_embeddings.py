@@ -59,7 +59,7 @@ def main():
 
     embed_model_name = Config.EMBEDDINGS_MODEL
     print(f"Initializing Embeddings Model: {embed_model_name}")
-    embeddings_model = GoogleGenerativeAIEmbeddings(model=embed_model_name, output_dimensionality=256)
+    embeddings_model = GoogleGenerativeAIEmbeddings(model=embed_model_name, location=Config.EMBEDDINGS_LOCATION, output_dimensionality=256)
 
     with Session() as session:
         # Fetch suppliers that have notes but no embedding yet

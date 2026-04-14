@@ -2,9 +2,10 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-for m in ['text-embedding-004', 'models/text-embedding-004']:
+from config.settings import Config
+for m in ['gemini-embedding-2-preview', 'text-embedding-005']:
     try:
-        em = GoogleGenerativeAIEmbeddings(model=m)
+        em = GoogleGenerativeAIEmbeddings(model=m, location=Config.EMBEDDINGS_LOCATION)
         res = em.embed_documents(["hello"])
         print(f"SUCCESS: {m}, len: {len(res[0])}")
     except Exception as e:
