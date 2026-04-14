@@ -25,6 +25,10 @@ from includes.agents import BrowserAgent, GeneralAgent, ProcurementAgent, Superv
 from includes.job_runner import JobRunner
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from starlette.responses import RedirectResponse
+import asyncio
+
+# Import per-RFQ lock from quote_tools (single source of truth)
+from includes.tools.quote_tools import get_rfq_lock as _get_rfq_lock
 
 # Set up Chainlit static file serving for local file attachments
 import chainlit.server as cl_server
@@ -926,33 +930,34 @@ async def on_rfq_update_supplier(action: cl.Action):
     if not all([rfq_id, line, supplier_name, new_status, store]):
         return
 
-    item = await store.aget(NAMESPACE, rfq_id)
-    if not item:
-        return
-    rfq = item.value
+    async with _get_rfq_lock(rfq_id):
+        item = await store.aget(NAMESPACE, rfq_id)
+        if not item:
+            return
+        rfq = item.value
 
-    line_item = next((i for i in rfq.get("items", []) if i["line"] == line), None)
-    if not line_item:
-        return
+        line_item = next((i for i in rfq.get("items", []) if i["line"] == line), None)
+        if not line_item:
+            return
 
-    supplier = next(
-        (s for s in line_item.get("suppliers", []) if s["name"] == supplier_name),
-        None,
-    )
-    if not supplier:
-        return
+        supplier = next(
+            (s for s in line_item.get("suppliers", []) if s["name"] == supplier_name),
+            None,
+        )
+        if not supplier:
+            return
 
-    old_status = supplier.get("status", "candidate")
-    supplier["status"] = new_status
+        old_status = supplier.get("status", "candidate")
+        supplier["status"] = new_status
 
-    user_id = cl.user_session.get("user_id", "unknown")
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    rfq.setdefault("history", []).append({
-        "date": now, "user": user_id,
-        "action": f"Changed supplier '{supplier_name}' on line {line} from {old_status} to {new_status}",
-    })
+        user_id = cl.user_session.get("user_id", "unknown")
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        rfq.setdefault("history", []).append({
+            "date": now, "user": user_id,
+            "action": f"Changed supplier '{supplier_name}' on line {line} from {old_status} to {new_status}",
+        })
 
-    await store.aput(NAMESPACE, rfq_id, rfq)
+        await store.aput(NAMESPACE, rfq_id, rfq)
 
     # Update the sidebar element with new props
     await _send_rfq_element(rfq)
@@ -1031,26 +1036,27 @@ async def on_rfq_identify_items(action: cl.Action):
 
     # Update RFQ with matched items
     if matched and store:
-        item = await store.aget(NAMESPACE, rfq_id)
-        if item:
-            rfq = item.value
-            for m in matched:
-                line_item = next(
-                    (i for i in rfq.get("items", []) if i["line"] == m["line"]), None,
-                )
-                if line_item:
-                    line_item["part_number"] = m["part_number"]
-                    line_item["brand"] = m["brand"]
-                    line_item["product_id"] = m["product_id"]
-                    line_item["status"] = "confirmed"
-            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            user_id = cl.user_session.get("user_id", "unknown")
-            rfq.setdefault("history", []).append({
-                "date": now, "user": user_id,
-                "action": f"Auto-identified {len(matched)} item(s) from internal DB: lines {', '.join(str(m['line']) for m in matched)}",
-            })
-            await store.aput(NAMESPACE, rfq_id, rfq)
-            await _send_rfq_element(rfq)
+        async with _get_rfq_lock(rfq_id):
+            item = await store.aget(NAMESPACE, rfq_id)
+            if item:
+                rfq = item.value
+                for m in matched:
+                    line_item = next(
+                        (i for i in rfq.get("items", []) if i["line"] == m["line"]), None,
+                    )
+                    if line_item:
+                        line_item["part_number"] = m["part_number"]
+                        line_item["brand"] = m["brand"]
+                        line_item["product_id"] = m["product_id"]
+                        line_item["status"] = "confirmed"
+                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                user_id = cl.user_session.get("user_id", "unknown")
+                rfq.setdefault("history", []).append({
+                    "date": now, "user": user_id,
+                    "action": f"Auto-identified {len(matched)} item(s) from internal DB: lines {', '.join(str(m['line']) for m in matched)}",
+                })
+                await store.aput(NAMESPACE, rfq_id, rfq)
+                await _send_rfq_element(rfq)
 
     # Notify user of Phase 1 results
     if matched:
@@ -1167,42 +1173,43 @@ async def on_rfq_find_suppliers(action: cl.Action):
 
     # Add internal suppliers to the RFQ (with dedup)
     if internal_suppliers and store:
-        item = await store.aget(NAMESPACE, rfq_id)
-        if item:
-            rfq = item.value
-            line_item = next((i for i in rfq.get("items", []) if i["line"] == line), None)
-            if line_item:
-                existing_by_name = {
-                    s["name"].lower(): s for s in line_item.get("suppliers", [])
-                }
-                added = 0
-                updated = 0
-                for sup in internal_suppliers:
-                    existing = existing_by_name.get(sup["name"].lower())
-                    if existing:
-                        # Merge — update fields that have new data
-                        for key in ["supplier_id", "contacts", "price", "price_type",
-                                    "lead_time", "notes", "purchase_ref"]:
-                            val = sup.get(key)
-                            if val is not None and val != "" and val != []:
-                                existing[key] = val
-                        updated += 1
-                    else:
-                        line_item["suppliers"].append(sup)
-                        existing_by_name[sup["name"].lower()] = sup
-                        added += 1
-                action_parts = []
-                if added:
-                    action_parts.append(f"Added {added} supplier(s)")
-                if updated:
-                    action_parts.append(f"Updated {updated} existing supplier(s)")
-                rfq.setdefault("history", []).append({
-                    "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                    "user": cl.user_session.get("user_id", "unknown"),
-                    "action": f"Internal DB search on line {line}: {' | '.join(action_parts)}" if action_parts else f"No changes to line {line}",
-                })
-                await store.aput(NAMESPACE, rfq_id, rfq)
-                await _send_rfq_element(rfq)
+        async with _get_rfq_lock(rfq_id):
+            item = await store.aget(NAMESPACE, rfq_id)
+            if item:
+                rfq = item.value
+                line_item = next((i for i in rfq.get("items", []) if i["line"] == line), None)
+                if line_item:
+                    existing_by_name = {
+                        s["name"].lower(): s for s in line_item.get("suppliers", [])
+                    }
+                    added = 0
+                    updated = 0
+                    for sup in internal_suppliers:
+                        existing = existing_by_name.get(sup["name"].lower())
+                        if existing:
+                            # Merge — update fields that have new data
+                            for key in ["supplier_id", "contacts", "price", "price_type",
+                                        "lead_time", "notes", "purchase_ref"]:
+                                val = sup.get(key)
+                                if val is not None and val != "" and val != []:
+                                    existing[key] = val
+                            updated += 1
+                        else:
+                            line_item["suppliers"].append(sup)
+                            existing_by_name[sup["name"].lower()] = sup
+                            added += 1
+                    action_parts = []
+                    if added:
+                        action_parts.append(f"Added {added} supplier(s)")
+                    if updated:
+                        action_parts.append(f"Updated {updated} existing supplier(s)")
+                    rfq.setdefault("history", []).append({
+                        "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "user": cl.user_session.get("user_id", "unknown"),
+                        "action": f"Internal DB search on line {line}: {' | '.join(action_parts)}" if action_parts else f"No changes to line {line}",
+                    })
+                    await store.aput(NAMESPACE, rfq_id, rfq)
+                    await _send_rfq_element(rfq)
 
     # Notify user of Phase 1 results
     if internal_suppliers:
@@ -1436,52 +1443,53 @@ async def main(message: cl.Message):
             from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
             from datetime import datetime, timezone
             clear_rfq_id = _resolve_rfq_id(clear_rfq_match.group(1))
-            item = await store.aget(NAMESPACE, clear_rfq_id)
-            if item:
-                rfq = item.value
-                # Check if a specific line number was mentioned
-                line_match = re.search(r'\bline\s+(\d+)\b', msg_lower)
-                target_line = int(line_match.group(1)) if line_match else None
+            async with _get_rfq_lock(clear_rfq_id):
+                item = await store.aget(NAMESPACE, clear_rfq_id)
+                if item:
+                    rfq = item.value
+                    # Check if a specific line number was mentioned
+                    line_match = re.search(r'\bline\s+(\d+)\b', msg_lower)
+                    target_line = int(line_match.group(1)) if line_match else None
 
-                # Safety: require a specific line number or explicit "all" to clear everything
-                if target_line is None and "all" not in msg_lower:
-                    lines_with_suppliers = sum(
-                        1 for it in rfq.get("items", []) if it.get("suppliers")
-                    )
-                    await cl.Message(
-                        content=(
-                            f"**{clear_rfq_id}** has suppliers on {lines_with_suppliers} line(s). "
-                            "Please specify a line number (e.g. \"clear suppliers from line 3\") "
-                            "or say \"clear **all** suppliers\" to confirm."
-                        ),
-                        author="EagleAgent",
-                    ).send()
-                    return
+                    # Safety: require a specific line number or explicit "all" to clear everything
+                    if target_line is None and "all" not in msg_lower:
+                        lines_with_suppliers = sum(
+                            1 for it in rfq.get("items", []) if it.get("suppliers")
+                        )
+                        await cl.Message(
+                            content=(
+                                f"**{clear_rfq_id}** has suppliers on {lines_with_suppliers} line(s). "
+                                "Please specify a line number (e.g. \"clear suppliers from line 3\") "
+                                "or say \"clear **all** suppliers\" to confirm."
+                            ),
+                            author="EagleAgent",
+                        ).send()
+                        return
 
-                cleared = []
-                for line_item in rfq.get("items", []):
-                    if target_line is not None and line_item["line"] != target_line:
-                        continue
-                    count = len(line_item.get("suppliers", []))
-                    if count:
-                        line_item["suppliers"] = []
-                        cleared.append(f"line {line_item['line']} ({count})")
-                if cleared:
-                    rfq.setdefault("history", []).append({
-                        "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                        "user": user_id,
-                        "action": f"Cleared suppliers from {', '.join(cleared)}",
-                    })
-                    await store.aput(NAMESPACE, clear_rfq_id, rfq)
-                    await _send_rfq_element(rfq)
-                    scope = f"line {target_line}" if target_line else f"all {len(cleared)} line(s)"
-                    await cl.Message(
-                        content=f"Cleared suppliers from **{clear_rfq_id}** ({scope}).",
-                        author="EagleAgent",
-                    ).send()
-                else:
-                    scope = f"line {target_line}" if target_line else "any line"
-                    await cl.Message(content=f"No suppliers to clear on {scope} of **{clear_rfq_id}**.", author="EagleAgent").send()
+                    cleared = []
+                    for line_item in rfq.get("items", []):
+                        if target_line is not None and line_item["line"] != target_line:
+                            continue
+                        count = len(line_item.get("suppliers", []))
+                        if count:
+                            line_item["suppliers"] = []
+                            cleared.append(f"line {line_item['line']} ({count})")
+                    if cleared:
+                        rfq.setdefault("history", []).append({
+                            "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                            "user": user_id,
+                            "action": f"Cleared suppliers from {', '.join(cleared)}",
+                        })
+                        await store.aput(NAMESPACE, clear_rfq_id, rfq)
+                        await _send_rfq_element(rfq)
+                        scope = f"line {target_line}" if target_line else f"all {len(cleared)} line(s)"
+                        await cl.Message(
+                            content=f"Cleared suppliers from **{clear_rfq_id}** ({scope}).",
+                            author="EagleAgent",
+                        ).send()
+                    else:
+                        scope = f"line {target_line}" if target_line else "any line"
+                        await cl.Message(content=f"No suppliers to clear on {scope} of **{clear_rfq_id}**.", author="EagleAgent").send()
                 return
 
     graph_config = {
