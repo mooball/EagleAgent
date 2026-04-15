@@ -655,16 +655,14 @@ async def chat_profile(current_user: cl.User):
             icon="/public/avatars/EagleAgent.png",
             default=True,
         ),
+        cl.ChatProfile(
+            name="Research Agent",
+            markdown_description="Search the web for information and research topics.",
+            icon="/public/avatars/EagleAgent.png",
+        ),
     ]
 
     if is_admin:
-        profiles.append(
-            cl.ChatProfile(
-                name="Research Agent",
-                markdown_description="Search the web for information and research topics.",
-                icon="/public/avatars/EagleAgent.png",
-            )
-        )
         profiles.append(
             cl.ChatProfile(
                 name="System Admin",
