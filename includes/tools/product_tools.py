@@ -235,15 +235,44 @@ def _do_supplier_search(name: Optional[str] = None,
                         brand: Optional[str] = None,
                         country: Optional[str] = None,
                         query: Optional[str] = None,
-                        limit: int = 10) -> str:
+                        limit: int = 50) -> str:
     """Executes the supplier search synchronously."""
     import time
+    from sqlalchemy import func, desc
     t0 = time.monotonic()
     session = get_session()
     t_session = time.monotonic()
     logger.info(f"[TIMING] supplier_search: get_session took {t_session - t0:.3f}s")
     try:
-        base_query = session.query(Supplier)
+        # Build a subquery for purchase stats (order count + last date) per supplier
+        purchase_sub = (
+            session.query(
+                ProductSupplier.supplier_id,
+                func.count(ProductSupplier.id).label('purchase_count'),
+                func.max(ProductSupplier.date).label('last_purchase_date'),
+            )
+        )
+        if brand:
+            purchase_sub = (
+                purchase_sub
+                .join(Product, ProductSupplier.product_id == Product.id)
+                .filter(Product.brand.ilike(f"%{brand}%"))
+            )
+        purchase_sub = (
+            purchase_sub
+            .group_by(ProductSupplier.supplier_id)
+            .subquery()
+        )
+
+        # Base query: LEFT JOIN purchase stats so every supplier gets a count (0 if none)
+        base_query = (
+            session.query(
+                Supplier,
+                func.coalesce(purchase_sub.c.purchase_count, 0).label('purchase_count'),
+                purchase_sub.c.last_purchase_date,
+            )
+            .outerjoin(purchase_sub, Supplier.id == purchase_sub.c.supplier_id)
+        )
 
         if name:
             base_query = base_query.filter(Supplier.name.ilike(f"%{name}%"))
@@ -252,7 +281,6 @@ def _do_supplier_search(name: Optional[str] = None,
             base_query = base_query.filter(Supplier.country.ilike(f"%{country}%"))
 
         if brand:
-            # Join through supplier_brands to brands, including duplicate resolution
             base_query = (
                 base_query
                 .join(SupplierBrand, Supplier.id == SupplierBrand.supplier_id)
@@ -262,9 +290,9 @@ def _do_supplier_search(name: Optional[str] = None,
 
         results = []
         seen_ids = set()
-        text_match_count = 0  # Track original text matches for spell suggestion
+        text_match_count = 0
 
-        # Stage 1: Get ALL text matches (no limit) so we don't miss any
+        # Stage 1: Get text matches, sorted by purchase count desc
         t_stage1 = time.monotonic()
         if query:
             string_query = base_query.filter(
@@ -273,92 +301,38 @@ def _do_supplier_search(name: Optional[str] = None,
                     Supplier.notes.ilike(f"%{query}%"),
                     Supplier.city.ilike(f"%{query}%"),
                 )
-            )
+            ).order_by(desc('purchase_count'), Supplier.name)
             text_results = string_query.distinct().all()
             total = len(text_results)
             text_match_count = total
-            for r in text_results:
-                if r.id not in seen_ids:
-                    results.append(r)
-                    seen_ids.add(r.id)
+            for row in text_results:
+                s = row[0]
+                if s.id not in seen_ids:
+                    results.append(row)
+                    seen_ids.add(s.id)
         else:
             total = base_query.distinct().count()
-            results = base_query.distinct().limit(limit).all()
-            for r in results:
-                seen_ids.add(r.id)
+            rows = (
+                base_query
+                .order_by(desc('purchase_count'), Supplier.name)
+                .distinct()
+                .limit(limit)
+                .all()
+            )
+            for row in rows:
+                s = row[0]
+                results.append(row)
+                seen_ids.add(s.id)
         logger.info(f"[TIMING] supplier_search: stage1 query took {time.monotonic() - t_stage1:.3f}s (found {len(results)} results)")
 
-        # Stage 2: Rank text matches by weighted score
-        #   score = vector_distance - name_boost - purchase_boost
-        #   Lower score = better rank
-        if query and results:
+        # Stage 2: If we have a text query and still need more, add vector-only semantic matches
+        if query and len(results) < limit:
             try:
-                import math
                 t_embed = time.monotonic()
                 emb_model = get_embeddings_model()
                 query_vector = emb_model.embed_query(query)
-                logger.info(f"[TIMING] supplier_search: embedding generation took {time.monotonic() - t_embed:.3f}s")
-
+                logger.info(f"[TIMING] supplier_search: embedding (vector fill) took {time.monotonic() - t_embed:.3f}s")
                 t_vector = time.monotonic()
-                text_ids = [r.id for r in results]
-
-                # Fetch vector distances
-                from sqlalchemy import func as sa_func
-                dist_rows = (
-                    session.query(
-                        Supplier.id,
-                        Supplier.embedding.cosine_distance(query_vector).label("dist"),
-                    )
-                    .filter(
-                        Supplier.id.in_(text_ids),
-                        Supplier.embedding.isnot(None),
-                    )
-                    .all()
-                )
-                dist_map = {row.id: row.dist for row in dist_rows}
-
-                # Fetch purchase counts per supplier
-                purchase_rows = (
-                    session.query(
-                        ProductSupplier.supplier_id,
-                        sa_func.count(ProductSupplier.id).label("cnt"),
-                    )
-                    .filter(ProductSupplier.supplier_id.in_(text_ids))
-                    .group_by(ProductSupplier.supplier_id)
-                    .all()
-                )
-                purchase_map = {row.supplier_id: row.cnt for row in purchase_rows}
-
-                # Compute weighted score for each result
-                query_lower = query.lower()
-                scored = []
-                for r in results:
-                    base_dist = dist_map.get(r.id, 1.0)  # default high if no embedding
-                    # Name-match boost: 0.05 discount if query appears in supplier name
-                    name_boost = 0.05 if query_lower in (r.name or "").lower() else 0.0
-                    # Purchase boost: log-scaled, capped at 0.05
-                    purchases = purchase_map.get(r.id, 0)
-                    purchase_boost = min(0.05, math.log1p(purchases) / 100)
-                    score = base_dist - name_boost - purchase_boost
-                    scored.append((score, r))
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(f"  {r.name[:50]}: dist={base_dist:.4f} name_boost={name_boost:.4f} purchase_boost={purchase_boost:.4f} score={score:.4f}")
-
-                scored.sort(key=lambda x: x[0])
-                results = [r for _, r in scored]
-                seen_ids = {r.id for r in results}
-                logger.info(f"[TIMING] supplier_search: weighted ranking took {time.monotonic() - t_vector:.3f}s")
-            except Exception as e:
-                logger.error(f"Failed to compute weighted ranking for supplier search: {e}")
-
-        # Stage 3: If we still need more, add vector-only semantic matches
-        if query and len(results) < limit:
-            try:
-                t_embed2 = time.monotonic()
-                emb_model = get_embeddings_model()
-                query_vector = emb_model.embed_query(query)
-                logger.info(f"[TIMING] supplier_search: embedding (stage3) took {time.monotonic() - t_embed2:.3f}s")
-                t_vector2 = time.monotonic()
                 vector_results = (
                     base_query.filter(
                         Supplier.embedding.isnot(None),
@@ -368,27 +342,30 @@ def _do_supplier_search(name: Optional[str] = None,
                     .limit(limit - len(results))
                     .all()
                 )
-                logger.info(f"[TIMING] supplier_search: vector fill took {time.monotonic() - t_vector2:.3f}s")
-                for r in vector_results:
-                    if r.id not in seen_ids:
-                        results.append(r)
-                        seen_ids.add(r.id)
+                logger.info(f"[TIMING] supplier_search: vector fill took {time.monotonic() - t_vector:.3f}s")
+                for row in vector_results:
+                    s = row[0]
+                    if s.id not in seen_ids:
+                        results.append(row)
+                        seen_ids.add(s.id)
                         total += 1
             except Exception as e:
                 logger.error(f"Failed vector fill for supplier search: {e}")
 
         if not results:
-            # No results at all — check for spelling suggestions
             suggestion = _suggest_spelling(session, query) if query else None
             if suggestion:
                 return f"No suppliers found matching '{query}'. Did you mean **{suggestion}**?"
             return "No suppliers found matching those criteria."
 
+        # Sort all results by purchase count descending, then name
+        results.sort(key=lambda row: (-row[1], (row[0].name or "").lower()))
+
         # Apply display limit
         displayed = results[:limit]
 
         # Collect all supplier IDs we need metadata for
-        supplier_ids = [s.id for s in displayed]
+        supplier_ids = [row[0].id for row in displayed]
 
         # Fetch linked brand names for each supplier
         t_brands = time.monotonic()
@@ -403,36 +380,11 @@ def _do_supplier_search(name: Optional[str] = None,
         for sid, bname in brand_links:
             supplier_brands.setdefault(sid, []).append(bname)
 
-        # Fetch purchase stats per supplier
-        from sqlalchemy import func
-        t_purchase = time.monotonic()
-        purchase_stats_query = (
-            session.query(
-                ProductSupplier.supplier_id,
-                func.count(ProductSupplier.id).label('purchase_count'),
-                func.max(ProductSupplier.date).label('last_purchase_date'),
-            )
-            .filter(ProductSupplier.supplier_id.in_(supplier_ids))
-        )
-        if brand:
-            purchase_stats_query = (
-                purchase_stats_query
-                .join(Product, ProductSupplier.product_id == Product.id)
-                .filter(Product.brand.ilike(f"%{brand}%"))
-            )
-        purchase_stats_rows = (
-            purchase_stats_query
-            .group_by(ProductSupplier.supplier_id)
-            .all()
-        )
-        logger.info(f"[TIMING] supplier_search: purchase stats query took {time.monotonic() - t_purchase:.3f}s")
-        supplier_purchase_stats = {
-            row.supplier_id: (row.purchase_count, row.last_purchase_date)
-            for row in purchase_stats_rows
-        }
-
-        output_parts = [f"Found {total} matching supplier(s). Displaying {len(displayed)}:"]
-        for s in displayed:
+        output_parts = [f"Found {total} matching supplier(s). Displaying {len(displayed)}, sorted by purchase history (most purchases first):"]
+        for row in displayed:
+            s = row[0]
+            purchase_count = row[1]
+            last_purchase_date = row[2]
             item = f"- {s.name}"
             if s.city or s.country:
                 location = ", ".join(filter(None, [s.city, s.country]))
@@ -454,11 +406,9 @@ def _do_supplier_search(name: Optional[str] = None,
             brands = supplier_brands.get(s.id, [])
             if brands:
                 item += f" | Brands: {', '.join(sorted(brands))}"
-            stats = supplier_purchase_stats.get(s.id)
-            if stats:
-                count, last_date = stats
-                date_str = last_date.strftime("%-d %b %Y") if last_date else "N/A"
-                item += f" | Purchases: {count} | Last Purchase: {date_str}"
+            if purchase_count > 0:
+                date_str = last_purchase_date.strftime("%-d %b %Y") if last_purchase_date else "N/A"
+                item += f" | Purchases: {purchase_count} | Last Purchase: {date_str}"
             else:
                 item += f" | Purchases: 0"
             output_parts.append(item)
@@ -486,7 +436,7 @@ async def search_suppliers(name: Optional[str] = None,
                            brand: Optional[str] = None,
                            country: Optional[str] = None,
                            query: Optional[str] = None,
-                           limit: int = 10) -> str:
+                           limit: int = 50) -> str:
     """
     Search the suppliers database.
 
@@ -507,7 +457,7 @@ async def search_suppliers(name: Optional[str] = None,
         country: Country to filter by (e.g. 'Australia')
         query: Text and semantic search across name, notes, and city. Accepts natural language descriptions.
               Finds ALL keyword matches first, then ranks them by vector proximity.
-        limit: Maximum number of results to return (default: 10)
+        limit: Maximum number of results to return (default: 50)
     """
     return await asyncio.to_thread(_do_supplier_search, name, brand, country, query, limit)
 
@@ -901,7 +851,7 @@ def _find_purchase_history_for_part(part_number: str, limit: int = 20) -> list[d
         session.close()
 
 
-def _find_suppliers_by_brand(brand: str, limit: int = 10) -> list[dict]:
+def _find_suppliers_by_brand(brand: str, limit: int = 200) -> list[dict]:
     """Find suppliers linked to a brand. Returns list of dicts with supplier_id, name, contacts."""
     session = get_session()
     try:
