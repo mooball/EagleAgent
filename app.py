@@ -651,7 +651,7 @@ async def chat_profile(current_user: cl.User):
     profiles = [
         cl.ChatProfile(
             name="Eagle Agent",
-            markdown_description="General assistant for product procurement, supplier information, and web search.",
+            markdown_description="Supplier lookup agent — search our supplier database by name, brand, or description.",
             icon="/public/avatars/EagleAgent.png",
             default=True,
         ),
@@ -663,6 +663,13 @@ async def chat_profile(current_user: cl.User):
     ]
 
     if is_admin:
+        profiles.append(
+            cl.ChatProfile(
+                name="Internal Agent",
+                markdown_description="General assistant for product procurement, supplier information, and RFQs.",
+                icon="/public/avatars/EagleAgent.png",
+            )
+        )
         profiles.append(
             cl.ChatProfile(
                 name="System Admin",
@@ -728,11 +735,11 @@ async def start():
 
         await cl.context.emitter.set_commands(_SYSADMIN_COMMANDS)
         await cl.Message(content=welcome_msg).send()
-    else:
+    elif chat_profile_name == "Internal Agent":
         if is_first_visit and user_name:
-            welcome_msg = f"Welcome to Eagle Agent, {user_name}! I don't think we've met before. Is it OK to call you {user_name} or do you have a preferred name?"
+            welcome_msg = f"Welcome to Internal Agent, {user_name}! I don't think we've met before. Is it OK to call you {user_name} or do you have a preferred name?"
         elif is_first_visit:
-            welcome_msg = "Welcome to Eagle Agent! I don't think we've met before. What is your preferred name?"
+            welcome_msg = "Welcome to Internal Agent! I don't think we've met before. What is your preferred name?"
         elif user_name:
             welcome_msg = f"Hello {user_name}! I can help you search our internal database for historical records about products, brands and suppliers."
         else:
@@ -741,6 +748,18 @@ async def start():
         # Set procurement intent commands next to the chat input box
         from includes.prompts import INTENTS
         await cl.context.emitter.set_commands(_intents_to_commands(INTENTS))
+        await cl.Message(content=welcome_msg).send()
+    else:
+        # Eagle Agent — no command buttons, default behavior is supplier lookup
+        if is_first_visit and user_name:
+            welcome_msg = f"Welcome to Eagle Agent, {user_name}! I don't think we've met before. Is it OK to call you {user_name} or do you have a preferred name?"
+        elif is_first_visit:
+            welcome_msg = "Welcome to Eagle Agent! I don't think we've met before. What is your preferred name?"
+        elif user_name:
+            welcome_msg = f"Hello {user_name}! I can help you find suppliers. Give me a part number, brand name, supplier name, or description and I'll search our database."
+        else:
+            welcome_msg = "Hello! I can help you find suppliers. Give me a part number, brand name, supplier name, or description and I'll search our database."
+
         await cl.Message(content=welcome_msg).send()
 
 @cl.on_chat_resume
@@ -805,9 +824,15 @@ async def on_chat_resume(thread: ThreadDict):
                 content=f"Welcome back, {user_name}! Continuing System Admin session.",
                 author="EagleAgent",
             )
-        else:
+        elif chat_profile_name == "Internal Agent":
             from includes.prompts import INTENTS
             await cl.context.emitter.set_commands(_intents_to_commands(INTENTS))
+            msg = cl.Message(
+                content=f"Welcome back, {user_name}! Continuing our previous conversation.",
+                author="EagleAgent",
+            )
+        else:
+            # Eagle Agent — no command buttons
             msg = cl.Message(
                 content=f"Welcome back, {user_name}! Continuing our previous conversation.",
                 author="EagleAgent",
@@ -1560,6 +1585,9 @@ async def main(message: cl.Message):
         intent_context = get_intent_context(intent_name)
     if not intent_context:
         intent_context = cl.user_session.get("intent_context")
+    # Eagle Agent profile defaults to supplier lookup behavior
+    if not intent_context and cl.user_session.get("chat_profile") == "Eagle Agent":
+        intent_context = get_intent_context("find_supplier")
     inputs["intent_context"] = intent_context or ""
     
     if file_metadata:

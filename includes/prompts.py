@@ -220,8 +220,7 @@ INTENTS = {
             "appropriate parameters (name, country, query).\n"
             "If the input is ambiguous (could be a part number, brand, or supplier name), "
             "ask the user to clarify before searching. "
-            "Always present at least 10 suppliers if available, and tell the user how many "
-            "more exist beyond the displayed results."
+            "Always present all returned suppliers in the results."
         ),
     },
     "check_purchase_history": {
