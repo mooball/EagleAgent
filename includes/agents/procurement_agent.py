@@ -2,7 +2,8 @@
 Procurement Agent for product and supplier searches.
 """
 
-from typing import List
+from typing import List, Dict, Any, Optional
+from langchain_core.runnables.config import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.store.base import BaseStore
@@ -15,6 +16,9 @@ from includes.prompts import RFQ_WORKFLOW_PROMPT
 
 logger = logging.getLogger(__name__)
 
+# Intent keywords that indicate the user explicitly requested RFQ work
+_RFQ_INTENT_KEYWORDS = ("new_rfq", "RFQ", "Request for Quote", "manage_rfq")
+
 
 class ProcurementAgent(BaseSubAgent):
     """
@@ -23,10 +27,18 @@ class ProcurementAgent(BaseSubAgent):
     
     def __init__(self, model: ChatGoogleGenerativeAI, store: BaseStore = None):
         super().__init__("ProcurementAgent", model, store)
+        self._rfq_active = False
     
+    async def __call__(self, state: Dict[str, Any], config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
+        # Determine if RFQ workflow should be active based on the thread's intent
+        intent_context = state.get("intent_context") or ""
+        self._rfq_active = any(kw in intent_context for kw in _RFQ_INTENT_KEYWORDS)
+        return await super().__call__(state, config)
+
     def get_tools(self, user_id: str) -> List[BaseTool]:
         """
-        Provide procurement tools.
+        Provide procurement tools including RFQ tools (always available
+        so users can view/update existing RFQs).
         """
         tools = [search_products, search_brands, search_suppliers, part_purchase_history, search_purchase_history]
         if self.store:
@@ -109,4 +121,7 @@ When the user asks to find a supplier, first determine what kind of input they'v
 *If the user provides a supplier name, country, or description:*
 1. Call `search_suppliers` with the appropriate parameters (`name`, `country`, or `query`).
 
-""" + RFQ_WORKFLOW_PROMPT
+""" + (RFQ_WORKFLOW_PROMPT if self._rfq_active else """\n**RFQ Policy:**
+You have access to RFQ tools (`get_rfq`, `manage_rfq`) and should use them when the user asks to view, update, or manage an existing RFQ.
+
+**However, do NOT create new RFQs** in this session. If the user wants to create a new RFQ, tell them to use the **New RFQ** command button. Never proactively create an RFQ just because the user mentioned a list of products or parts — only do product/supplier lookups unless an RFQ creation is explicitly requested via the command button.""")
