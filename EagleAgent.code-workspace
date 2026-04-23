@@ -6,7 +6,8 @@
 	],
 	"settings": {
 		"chat.tools.terminal.autoApprove": {
-			"uv": true
+			"uv": true,
+			"git remote": true
 		}
 	}
 }
