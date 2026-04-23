@@ -7,7 +7,19 @@
 	"settings": {
 		"chat.tools.terminal.autoApprove": {
 			"uv": true,
-			"git remote": true
+			"git remote": true,
+			"/^sleep 30 && python3 -c \"import json; d=json\\.load\\(open\\('/Users/tom/src/EagleAgent/data/supplier_categories\\.json'\\)\\); print\\(f'\\{len\\(d\\)\\} results, last: \\{d\\[-1\\]\\[\\\\\"supplier_name\\\\\"\\]\\}'\\)\"$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"/^sleep 45 && python3 -c \"import json; d=json\\.load\\(open\\('/Users/tom/src/EagleAgent/data/supplier_categories\\.json'\\)\\); print\\(f'\\{len\\(d\\)\\} results, last: \\{d\\[-1\\]\\[\\\\\"supplier_name\\\\\"\\]\\}'\\)\"$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"/^sleep 60 && python3 -c \"import json; d=json\\.load\\(open\\('/Users/tom/src/EagleAgent/data/supplier_categories\\.json'\\)\\); print\\(f'\\{len\\(d\\)\\} results, last: \\{d\\[-1\\]\\[\\\\\"supplier_name\\\\\"\\]\\}'\\)\"$/": {
+				"approve": true,
+				"matchCommandLine": true
+			}
 		}
 	}
 }

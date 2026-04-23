@@ -31,6 +31,58 @@ def _is_transient_error(exc: Exception) -> bool:
     return any(code in err_str for code in ("429", "503", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded"))
 
 
+# Key used by langchain-google-genai to store thought signatures for tool calls
+_THOUGHT_SIGS_KEY = "__gemini_function_call_thought_signatures__"
+
+
+def _strip_thought_signatures(messages: list) -> list:
+    """Remove Gemini thought signatures from checkpointed messages.
+
+    Gemini 3+ models produce cryptographic ``thought_signature`` tokens that
+    are valid only for the original request.  When these messages are
+    replayed from a checkpoint the API returns 400 "Thought signature is not
+    valid".  This helper strips those signatures so the conversation can
+    continue across turns.
+    """
+    cleaned = []
+    for msg in messages:
+        if not isinstance(msg, AIMessage):
+            cleaned.append(msg)
+            continue
+
+        changed = False
+        new_content = msg.content
+        new_kwargs = msg.additional_kwargs
+
+        # 1. Strip thought blocks and signatures from content (list-of-dicts form)
+        if isinstance(new_content, list):
+            filtered = []
+            for block in new_content:
+                if isinstance(block, dict):
+                    if block.get("type") == "thinking":
+                        changed = True
+                        continue  # drop entire thinking block
+                    if "extras" in block and "signature" in block.get("extras", {}):
+                        block = {k: v for k, v in block.items() if k != "extras"}
+                        changed = True
+                filtered.append(block)
+            if changed:
+                new_content = filtered
+
+        # 2. Strip function-call thought signatures from additional_kwargs
+        if _THOUGHT_SIGS_KEY in new_kwargs:
+            new_kwargs = {k: v for k, v in new_kwargs.items() if k != _THOUGHT_SIGS_KEY}
+            changed = True
+
+        if changed:
+            msg = msg.model_copy(update={
+                "content": new_content,
+                "additional_kwargs": new_kwargs,
+            })
+        cleaned.append(msg)
+    return cleaned
+
+
 async def _notify_retry(agent_name: str, attempt: int, max_retries: int, delay: int) -> None:
     """Send a Chainlit status message to the user on transient API retries."""
     try:
@@ -198,6 +250,9 @@ class BaseSubAgent(ABC):
         """
         user_id = state.get("user_id", "")
         messages = state["messages"]
+        
+        # Strip Gemini thought signatures that are invalid when replayed
+        messages = _strip_thought_signatures(messages)
         
         logger.debug(f"{self.name} processing {len(messages)} messages")
         
