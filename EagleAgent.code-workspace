@@ -19,6 +19,10 @@
 			"/^sleep 60 && python3 -c \"import json; d=json\\.load\\(open\\('/Users/tom/src/EagleAgent/data/supplier_categories\\.json'\\)\\); print\\(f'\\{len\\(d\\)\\} results, last: \\{d\\[-1\\]\\[\\\\\"supplier_name\\\\\"\\]\\}'\\)\"$/": {
 				"approve": true,
 				"matchCommandLine": true
+			},
+			"/^cd /Users/tom/src/EagleAgent && python -c \"\nfrom includes\\.tools\\.product_tools import get_session\nfrom includes\\.db_models import Supplier, Product, ProductSupplier, SupplierBrand, Brand\nfrom sqlalchemy import func\n\nsession = get_session\\(\\)\n\n# Find Rema Tip Top\nsuppliers = session\\.query\\(Supplier\\)\\.filter\\(Supplier\\.name\\.ilike\\('%rema%tip%'\\)\\)\\.all\\(\\)\nfor s in suppliers:\n    print\\(f'=== SUPPLIER: \\{s\\.name\\} ==='\\)\n    print\\(f'ID: \\{s\\.id\\}'\\)\n    print\\(f'City: \\{s\\.city\\}, Country: \\{s\\.country\\}'\\)\n    print\\(f'Notes: \\{repr\\(s\\.notes\\[:500\\]\\) if s\\.notes else \\\\\"NULL\\\\\"\\}'\\)\n    print\\(f'Has embedding: \\{s\\.embedding is not None\\}'\\)\n    \n    # Check brands\n    brands = session\\.query\\(Brand\\.name\\)\\.join\\(SupplierBrand, Brand\\.id == SupplierBrand\\.brand_id\\)\\.filter\\(SupplierBrand\\.supplier_id == s\\.id\\)\\.all\\(\\)\n    print\\(f'Brands: \\{\\[b\\[0\\] for b in brands\\]\\}'\\)\n    \n    # Check purchase history\n    purchases = session\\.query\\(func\\.count\\(ProductSupplier\\.id\\)\\)\\.filter\\(ProductSupplier\\.supplier_id == s\\.id\\)\\.scalar\\(\\)\n    print\\(f'Purchase count: \\{purchases\\}'\\)\n    \n    # Check product names linked to this supplier\n    products = session\\.query\\(Product\\.part_number, Product\\.description, Product\\.brand\\)\\.join\\(ProductSupplier, Product\\.id == ProductSupplier\\.product_id\\)\\.filter\\(ProductSupplier\\.supplier_id == s\\.id\\)\\.limit\\(20\\)\\.all\\(\\)\n    print\\(f'Products \\(\\{len\\(products\\)\\} shown\\):'\\)\n    for p in products:\n        print\\(f'  \\{p\\[0\\]\\} \\| \\{p\\[1\\]\\} \\| \\{p\\[2\\]\\}'\\)\n\nsession\\.close\\(\\)\n\"\n$/": {
+				"approve": true,
+				"matchCommandLine": true
 			}
 		}
 	}

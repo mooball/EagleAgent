@@ -325,13 +325,60 @@ def _do_supplier_search(name: Optional[str] = None,
                 seen_ids.add(s.id)
         logger.info(f"[TIMING] supplier_search: stage1 query took {time.monotonic() - t_stage1:.3f}s (found {len(results)} results)")
 
-        # Stage 2: If we have a text query and still need more, add vector-only semantic matches
-        if query and len(results) < limit:
+        # We embed the query once and reuse for both product-vector and supplier-vector stages
+        query_vector = None
+        if query:
             try:
                 t_embed = time.monotonic()
                 emb_model = get_embeddings_model()
                 query_vector = emb_model.embed_query(query)
-                logger.info(f"[TIMING] supplier_search: embedding (vector fill) took {time.monotonic() - t_embed:.3f}s")
+                logger.info(f"[TIMING] supplier_search: embedding took {time.monotonic() - t_embed:.3f}s")
+            except Exception as e:
+                logger.error(f"Failed to compute query embedding: {e}")
+
+        # Stage 2: Product-vector search — find suppliers who have sold similar products
+        if query_vector and len(results) < limit:
+            try:
+                t_prod = time.monotonic()
+                product_limit = 20  # top N similar products to consider
+                similar_products = (
+                    session.query(Product.id)
+                    .filter(Product.embedding.isnot(None))
+                    .order_by(Product.embedding.cosine_distance(query_vector))
+                    .limit(product_limit)
+                    .all()
+                )
+                product_ids = [p[0] for p in similar_products]
+
+                if product_ids:
+                    # Find suppliers linked to these products, excluding already-seen suppliers
+                    product_supplier_query = (
+                        base_query.filter(
+                            Supplier.id.in_(
+                                session.query(ProductSupplier.supplier_id)
+                                .filter(ProductSupplier.product_id.in_(product_ids))
+                                .distinct()
+                            ),
+                            ~Supplier.id.in_(list(seen_ids)) if seen_ids else True,
+                        )
+                        .order_by(desc('purchase_count'), Supplier.name)
+                        .distinct()
+                        .limit(limit - len(results))
+                        .all()
+                    )
+                    for row in product_supplier_query:
+                        s = row[0]
+                        if s.id not in seen_ids:
+                            results.append(row)
+                            seen_ids.add(s.id)
+                            total += 1
+                logger.info(f"[TIMING] supplier_search: product-vector stage took {time.monotonic() - t_prod:.3f}s (now {len(results)} results)")
+            except Exception as e:
+                logger.error(f"Failed product-vector supplier search: {e}")
+
+        # Stage 3: Supplier-notes vector search — semantic match on supplier notes
+        if query_vector and len(results) < limit:
+            try:
                 t_vector = time.monotonic()
                 vector_results = (
                     base_query.filter(
@@ -342,7 +389,7 @@ def _do_supplier_search(name: Optional[str] = None,
                     .limit(limit - len(results))
                     .all()
                 )
-                logger.info(f"[TIMING] supplier_search: vector fill took {time.monotonic() - t_vector:.3f}s")
+                logger.info(f"[TIMING] supplier_search: supplier-notes vector fill took {time.monotonic() - t_vector:.3f}s")
                 for row in vector_results:
                     s = row[0]
                     if s.id not in seen_ids:
@@ -444,10 +491,12 @@ async def search_suppliers(name: Optional[str] = None,
     - name: partial match on the supplier name
     - brand: find suppliers that carry a specific brand
     - country: filter by country
-    - query: text + semantic search across supplier name, notes, and city.
+    - query: text + semantic search across supplier name, notes, city, AND purchase history.
       Supports natural language descriptions (e.g. 'heavy-duty conveyor components',
-      'industrial adhesives manufacturer'). String matches are tried first,
-      then vector similarity on supplier notes fills remaining results.
+      'tyre digital inflation gauge', 'industrial adhesives manufacturer').
+      String matches are tried first, then suppliers who have sold similar products
+      are found via product-vector search, then vector similarity on supplier notes
+      fills remaining results.
 
     Provide as many arguments as needed to narrow results.
 
@@ -455,8 +504,9 @@ async def search_suppliers(name: Optional[str] = None,
         name: Supplier name to search for (e.g. 'Acme')
         brand: Brand name to filter by (e.g. 'Hilti') — finds suppliers linked to that brand
         country: Country to filter by (e.g. 'Australia')
-        query: Text and semantic search across name, notes, and city. Accepts natural language descriptions.
-              Finds ALL keyword matches first, then ranks them by vector proximity.
+        query: Text and semantic search across name, notes, city, and purchase history.
+              Accepts natural language descriptions. Finds keyword matches first, then
+              suppliers who have sold similar products, then ranks by vector proximity.
         limit: Maximum number of results to return (default: 50)
     """
     return await asyncio.to_thread(_do_supplier_search, name, brand, country, query, limit)
