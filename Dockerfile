@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     gnupg \
     sqlite3 \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x LTS for MCP servers (npx) and agent-browser
@@ -47,7 +48,7 @@ COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
 # Create directories
-RUN mkdir -p /tmp/files /app/data
+RUN mkdir -p /tmp/files /app/data/attachments /app/data/browser_downloads
 
 # Create non-root user for security
 RUN useradd -m -u 1000 eagleagent && \
@@ -60,12 +61,9 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8080/ || exit 1
 
-# Copy and set startup script
-COPY start.sh ./
-RUN chmod +x start.sh
+# Copy and set startup scripts
+COPY start.sh entrypoint.sh ./
+RUN chmod +x start.sh entrypoint.sh
 
-# Switch to non-root user
-USER eagleagent
-
-# Run startup script
-CMD ["./start.sh"]
+# Entrypoint runs as root to fix volume permissions, then drops to eagleagent
+ENTRYPOINT ["./entrypoint.sh"]
