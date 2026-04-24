@@ -1,0 +1,1 @@
+See copilot-instructions.md in product root for instructions on how to use GitHub Copilot in this repository.
