@@ -427,7 +427,8 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
                 if not isinstance(contacts, list):
                     return False
                 return any(
-                    c.get("email") or c.get("phone") or c.get("url") or c.get("value")
+                    (c.get("email") or c.get("phone") or c.get("url") or c.get("value"))
+                    if isinstance(c, dict) else bool(c)
                     for c in contacts
                 )
 
