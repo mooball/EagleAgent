@@ -3,44 +3,10 @@
  *
  * When Chainlit runs inside the FastAPI dashboard iframe, the parent
  * frame provides its own auth UI, dark mode toggle, and header.
- * This script hides the redundant Chainlit header elements.
+ * Redundant header elements are hidden via public/stylesheet.css.
  */
 (function () {
   'use strict';
-
-  /** Selectors for elements to hide. Since all agent panel controls and
-   *  user/theme UI now live in the parent dashboard header, we hide the
-   *  entire Chainlit header bar. */
-  const SELECTORS = [
-    // The container holding readme, theme-toggle, and user-nav buttons
-    '#readme-button',
-    '#theme-toggle',
-    '#user-nav-button',
-  ];
-
-  function hideElements() {
-    for (const sel of SELECTORS) {
-      document.querySelectorAll(sel).forEach(function (el) {
-        el.style.display = 'none';
-      });
-    }
-    // Also hide the parent flex container that holds all three buttons
-    // so no empty space remains at the top
-    var readme = document.getElementById('readme-button');
-    if (readme && readme.parentElement) {
-      readme.parentElement.style.display = 'none';
-    }
-  }
-
-  // Run immediately for elements already in DOM
-  hideElements();
-
-  // Watch for late-rendered React elements
-  var observer = new MutationObserver(hideElements);
-  observer.observe(document.body, { childList: true, subtree: true });
-
-  // Stop observing after 10s to avoid unnecessary overhead
-  setTimeout(function () { observer.disconnect(); }, 10000);
 
   /** Theme sync: listen for messages from the parent dashboard frame. */
   function applyTheme(theme) {
@@ -70,7 +36,6 @@
   }
 
   window.addEventListener('message', function (event) {
-    // Only accept same-origin messages when embedded
     if (event.data && event.data.type === 'theme-change') {
       applyTheme(event.data.theme);
     }
@@ -80,9 +45,11 @@
     }
   });
 
+  // ---- Agent → Dashboard communication ----
+
   /**
    * Navigate the parent dashboard from inside the Chainlit iframe.
-   * Called by the navigate_dashboard tool via a Chainlit action.
+   * Called by embedded.js helpers or agent tools.
    */
   window.navigateDashboard = function (route) {
     window.parent.postMessage(
@@ -90,4 +57,29 @@
       window.location.origin
     );
   };
+
+  /**
+   * Ask the parent dashboard to refresh its current view.
+   * Useful after an action modifies data that the dashboard is displaying.
+   */
+  window.refreshDashboard = function () {
+    window.parent.postMessage(
+      { type: 'dashboard_refresh' },
+      window.location.origin
+    );
+  };
+
+  /**
+   * Intercept clicks on dashboard links (e.g. /suppliers/*, /products/*, /rfqs/*)
+   * inside the Chainlit iframe and navigate the parent dashboard instead.
+   */
+  document.addEventListener('click', function (e) {
+    var link = e.target.closest('a[href]');
+    if (!link) return;
+    var href = link.getAttribute('href');
+    if (href && /^\/(suppliers|products|rfqs)(\/|$)/.test(href)) {
+      e.preventDefault();
+      window.navigateDashboard(href);
+    }
+  });
 })();

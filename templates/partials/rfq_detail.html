@@ -1,0 +1,276 @@
+{% set items = rfq.get('items', []) %}
+<script id="rfq-data" type="application/json">{{ {
+    "rfqId": rfq.id,
+    "items": items,
+    "supplierLines": items | selectattr('suppliers') | map(attribute='line') | list,
+    "allLines": items | map(attribute='line') | list,
+    "unidentified": items | selectattr('status', 'equalto', 'unidentified') | list
+} | tojson }}</script>
+<div data-dashboard-context='{"view": "rfq_detail", "entity": "rfq", "id": "{{ rfq.id }}"}' class="pt-6"
+     x-data="rfqDetail()">
+    <!-- Breadcrumb -->
+    <nav class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 mb-4">
+        <a hx-get="/partial/rfqs" hx-target="#main-content" hx-push-url="/rfqs"
+           class="hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer">RFQs</a>
+        <span>›</span>
+        <span class="text-gray-900 dark:text-gray-100">{{ rfq.id }}</span>
+    </nav>
+
+    <!-- Header card -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5 mb-6">
+        <div class="flex items-start justify-between gap-4">
+            <div class="space-y-2 min-w-0">
+                <div class="flex items-center gap-3 flex-wrap">
+                    <h1 class="text-xl font-bold">{{ rfq.id }}</h1>
+                    <span class="text-gray-400">—</span>
+                    <span class="text-xl font-medium">{{ rfq.customer or 'Unknown' }}</span>
+                    {% set status = rfq.status or 'draft' %}
+                    {% if status == 'draft' %}
+                    <span class="text-xs px-2 py-0.5 rounded-full bg-gray-600 text-gray-100">Draft</span>
+                    {% elif status == 'in_progress' %}
+                    <span class="text-xs px-2 py-0.5 rounded-full bg-blue-600 text-blue-100">In Progress</span>
+                    {% elif status == 'awaiting_quotes' %}
+                    <span class="text-xs px-2 py-0.5 rounded-full bg-amber-600 text-amber-100">Awaiting Quotes</span>
+                    {% elif status == 'completed' %}
+                    <span class="text-xs px-2 py-0.5 rounded-full bg-green-600 text-green-100">Completed</span>
+                    {% elif status == 'cancelled' %}
+                    <span class="text-xs px-2 py-0.5 rounded-full bg-red-600 text-red-100">Cancelled</span>
+                    {% endif %}
+                </div>
+                <div class="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400 flex-wrap">
+                    <span>{{ rfq.assigned_to or 'Unassigned' }}</span>
+                    {% if rfq.created_date %}
+                    <span>{{ rfq.created_date }}</span>
+                    {% endif %}
+                    {% if rfq.reference %}
+                    <span>Ref: {{ rfq.reference }}</span>
+                    {% endif %}
+                </div>
+                {% set contact = rfq.customer_contact %}
+                {% if contact and (contact.name or contact.email or contact.phone) %}
+                <div class="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400 flex-wrap">
+                    {% if contact.name %}<span>{{ contact.name }}</span>{% endif %}
+                    {% if contact.email %}<span>{{ contact.email }}</span>{% endif %}
+                    {% if contact.phone %}<span>{{ contact.phone }}</span>{% endif %}
+                </div>
+                {% endif %}
+                {% if rfq.netsuite_opportunity or rfq.hubspot_deal %}
+                <div class="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
+                    {% if rfq.netsuite_opportunity %}<span>NetSuite: {{ rfq.netsuite_opportunity }}</span>{% endif %}
+                    {% if rfq.hubspot_deal %}<span>HubSpot: {{ rfq.hubspot_deal }}</span>{% endif %}
+                </div>
+                {% endif %}
+                {% if rfq.notes %}
+                <p class="text-xs text-gray-500 dark:text-gray-400 italic">{{ rfq.notes }}</p>
+                {% endif %}
+            </div>
+            <button hx-get="/partial/rfqs/{{ rfq.id }}" hx-target="#main-content"
+                    class="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 shrink-0" title="Refresh">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            </button>
+        </div>
+    </div>
+
+    {% set items = rfq.get('items', []) %}
+    {% set total_items = items | length %}
+    {% set confirmed = items | selectattr('status', 'equalto', 'confirmed') | list | length %}
+    {% set identified = items | selectattr('status', 'equalto', 'identified') | list | length %}
+    {% set unidentified = items | selectattr('status', 'equalto', 'unidentified') | list | length %}
+
+    {% if items %}
+    <!-- Summary bar -->
+    <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+            <span class="font-medium">{{ total_items }} items</span>
+            <span>·</span>
+            {% if confirmed %}<span>{{ confirmed }} confirmed</span>{% endif %}
+            {% if identified %}<span>{{ identified }} identified</span>{% endif %}
+            {% if unidentified %}<span class="text-amber-600">{{ unidentified }} unidentified</span>{% endif %}
+        </div>
+        <div class="flex items-center gap-1">
+            <button @click="allExpanded ? collapseAll() : expandAll()"
+                    class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700">
+                <span x-text="allExpanded ? 'Collapse all' : 'Expand all'"></span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Items table -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700">
+                <tr>
+                    <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-10">#</th>
+                    <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Description</th>
+                    <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Part Number</th>
+                    <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Brand</th>
+                    <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Qty</th>
+                    <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-16">Status</th>
+                    <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-16">Sup</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+                {% for item in items %}
+                {% set suppliers = item.suppliers or [] %}
+                {% set active_suppliers = [] %}
+                {% for s in suppliers %}{% if s.status != 'dropped' %}{% set _ = active_suppliers.append(s) %}{% endif %}{% endfor %}
+                <!-- Item row -->
+                <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
+                    @click="toggle({{ item.line }})">
+                    <td class="px-3 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
+                    <td class="px-3 py-2.5">
+                        <div class="flex items-center gap-1.5">
+                            {% if suppliers %}
+                            <svg x-show="expanded[{{ item.line }}]" class="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                            <svg x-show="!expanded[{{ item.line }}]" class="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                            {% else %}
+                            <span class="w-3.5 shrink-0"></span>
+                            {% endif %}
+                            <span>{{ item.input_description or '—' }}</span>
+                        </div>
+                    </td>
+                    <td class="px-3 py-2.5 font-mono">
+                        <span class="inline-flex items-center gap-1">
+                            {{ item.part_number or item.input_code or '—' }}
+                            {% if item.product_id %}
+                            <span class="text-[9px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300 font-medium font-sans">DB</span>
+                            {% endif %}
+                        </span>
+                    </td>
+                    <td class="px-3 py-2.5">{{ item.brand or '—' }}</td>
+                    <td class="px-3 py-2.5 text-center">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
+                    <td class="px-3 py-2.5 text-center">
+                        {% if item.status == 'confirmed' %}
+                        <span class="inline-block w-2.5 h-2.5 rounded-full bg-green-500" title="Confirmed"></span>
+                        {% elif item.status == 'identified' %}
+                        <span class="inline-block w-2.5 h-2.5 rounded-full bg-blue-500" title="Identified"></span>
+                        {% else %}
+                        <span class="inline-block w-2.5 h-2.5 rounded-full bg-gray-400" title="Unidentified"></span>
+                        {% endif %}
+                    </td>
+                    <td class="px-3 py-2.5 text-center">
+                        {% if suppliers %}
+                        <span class="tabular-nums">{{ active_suppliers | length }}</span>
+                        {% else %}
+                        <button class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+                                @click.stop="findSuppliers({{ item.line }})"
+                                title="Find suppliers">
+                            <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                        </button>
+                        {% endif %}
+                    </td>
+                </tr>
+                <!-- Expanded supplier sub-table -->
+                {% if suppliers %}
+                <tr x-show="expanded[{{ item.line }}]" x-cloak>
+                    <td></td>
+                    <td colspan="6" class="py-2 pl-8 pr-4">
+                        <div class="flex items-center gap-3 mb-2">
+                            <span class="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-medium">Suppliers</span>
+                            <button class="text-[10px] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
+                                    @click.stop="findSuppliers({{ item.line }})">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                                Find more
+                            </button>
+                        </div>
+                        <table class="w-full">
+                            <tbody>
+                                {% for s in suppliers %}
+                                {% set is_dropped = s.status == 'dropped' %}
+                                <tr class="border-b last:border-b-0 border-gray-100 dark:border-gray-700">
+                                    <td class="px-2 py-1.5 text-xs {{ 'line-through opacity-50' if is_dropped }}">
+                                        {% if s.supplier_id %}
+                                        <a href="/suppliers/{{ s.supplier_id }}"
+                                           hx-get="/partial/suppliers/{{ s.supplier_id }}" hx-target="#main-content" hx-push-url="/suppliers/{{ s.supplier_id }}"
+                                           class="hover:text-blue-600 dark:hover:text-blue-400 underline decoration-dotted underline-offset-2"
+                                           @click.stop>{{ s.name }}</a>
+                                        {% else %}
+                                        {{ s.name }}
+                                        {% endif %}
+                                    </td>
+                                    <td class="px-2 py-1.5 text-xs text-right font-medium whitespace-nowrap {{ 'line-through opacity-50' if is_dropped }}">
+                                        {% if s.price is not none %}
+                                        ${{ "%.2f" | format(s.price | float) }}
+                                        {% if s.price_type %}
+                                        <span class="text-[10px] opacity-50 ml-1">
+                                            {% if s.price_type == 'estimated' %}est{% elif s.price_type in ['previous_purchase', 'previous_quote'] %}prev{% elif s.price_type == 'quoted' %}quoted{% endif %}
+                                        </span>
+                                        {% endif %}
+                                        {% else %}
+                                        <span class="opacity-30">—</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="px-2 py-1.5 text-xs whitespace-nowrap {{ 'opacity-50' if is_dropped }}">
+                                        {{ s.lead_time or '' }}
+                                    </td>
+                                    <td class="px-2 py-1.5">
+                                        {% if s.status == 'candidate' %}
+                                        <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-200">Candidate</span>
+                                        {% elif s.status == 'shortlisted' %}
+                                        <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200">Shortlisted</span>
+                                        {% elif s.status == 'selected' %}
+                                        <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">Selected</span>
+                                        {% elif s.status == 'dropped' %}
+                                        <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200 line-through">Dropped</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="px-2 py-1.5 w-8">
+                                        {% if not is_dropped %}
+                                        <div class="relative" x-data="{ menuOpen: false }">
+                                            <button @click.stop="menuOpen = !menuOpen" class="p-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700">
+                                                <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                                            </button>
+                                            <div x-show="menuOpen" @click.outside="menuOpen = false" x-cloak
+                                                 class="absolute right-0 z-30 mt-1 w-32 bg-white dark:bg-gray-800 rounded-md shadow-lg border border-gray-200 dark:border-gray-700 py-1 text-xs">
+                                                {% if s.status != 'shortlisted' %}
+                                                <button class="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                                        data-supplier="{{ s.name | e }}"
+                                                        @click.stop="updateSupplier('{{ rfq.id }}', {{ item.line }}, $el.dataset.supplier, 'shortlisted'); menuOpen = false">
+                                                    ⭐ Shortlist
+                                                </button>
+                                                {% endif %}
+                                                {% if s.status != 'selected' %}
+                                                <button class="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                                        data-supplier="{{ s.name | e }}"
+                                                        @click.stop="updateSupplier('{{ rfq.id }}', {{ item.line }}, $el.dataset.supplier, 'selected'); menuOpen = false">
+                                                    ✅ Select
+                                                </button>
+                                                {% endif %}
+                                                <button class="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 text-red-600"
+                                                        data-supplier="{{ s.name | e }}"
+                                                        @click.stop="updateSupplier('{{ rfq.id }}', {{ item.line }}, $el.dataset.supplier, 'dropped'); menuOpen = false">
+                                                    ✕ Drop
+                                                </button>
+                                            </div>
+                                        </div>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="flex gap-2 mt-4">
+        {% if unidentified > 0 %}
+        <button @click="identifyItems()"
+                class="px-3 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-1.5">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+            Identify items
+        </button>
+        {% endif %}
+    </div>
+
+    {% else %}
+    <p class="text-sm text-gray-500 dark:text-gray-400 italic">No items yet.</p>
+    {% endif %}
+</div>
+
+

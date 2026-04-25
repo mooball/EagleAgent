@@ -1,0 +1,22 @@
+{% for s in suppliers %}
+<tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
+    hx-get="/partial/suppliers/{{ s.id }}" hx-target="#main-content" hx-push-url="/suppliers/{{ s.id }}">
+    <td class="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{{ s.name }}</td>
+    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ s.country or '—' }}</td>
+    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ s.city or '—' }}</td>
+    <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ s.purchase_count or 0 }}</td>
+</tr>
+{% endfor %}
+{% if has_more %}
+<!-- Sentinel row: triggers load when scrolled near bottom -->
+<tr id="supplier-sentinel"
+    hx-get="/partial/suppliers/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}"
+    hx-trigger="revealed"
+    hx-target="this"
+    hx-swap="outerHTML">
+    <td colspan="4" class="px-4 py-3 text-center text-gray-400 dark:text-gray-500">
+        <svg class="animate-spin inline-block w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+        Loading more…
+    </td>
+</tr>
+{% endif %}

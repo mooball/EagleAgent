@@ -62,7 +62,8 @@ AGENT_CONFIG = {
         "Be proactive in learning about the user",
         "Save important user information for future reference",
         "Maintain context across multiple conversation threads",
-        "IMPORTANT UI RULES: When tools capture or generate images (like browser screenshots), the platform natively embeds them into the chat UI. You MUST NOT attempt to output Markdown image links, JSON placeholders, or hallucinate URLs to display them. Simply acknowledge the action occurred."
+        "IMPORTANT UI RULES: When tools capture or generate images (like browser screenshots), the platform natively embeds them into the chat UI. You MUST NOT attempt to output Markdown image links, JSON placeholders, or hallucinate URLs to display them. Simply acknowledge the action occurred.",
+        "DASHBOARD LINKS: When tool results contain markdown links to suppliers, products or RFQs (e.g. [Supplier Name](/suppliers/id)), you MUST preserve these links in your response. They navigate the user to the dashboard view. Always use the exact link format from the tool output."
     ]
 }
 

@@ -43,12 +43,14 @@ google_sso = GoogleSSO(
 
 
 # ---------------------------------------------------------------------------
-# Lifespan — nothing async to initialise at the FastAPI level yet
-# (Chainlit's app.py handles its own async setup via setup_globals)
+# Lifespan — initialise shared async resources (pg pool, store, agents, etc.)
+# so that dashboard routes can access the store before any chat session starts.
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("FastAPI starting up")
+    from app import setup_globals
+    await setup_globals()
     yield
     logger.info("FastAPI shutting down")
 
@@ -260,6 +262,14 @@ async def update_dashboard_context(request: Request):
     logger.info(f"Dashboard context updated for {user['email']}: {body}")
     _set_dashboard_context(user["email"], body)
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Agent bridge (dashboard ↔ Chainlit action dispatch)
+# ---------------------------------------------------------------------------
+from includes.agent_bridge import handle_bridge_request
+
+app.post("/api/agent-bridge")(handle_bridge_request)
 
 
 @app.get("/api/dashboard-context")

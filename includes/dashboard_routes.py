@@ -127,7 +127,8 @@ def supplier_list(request: Request, user: dict = Depends(require_user),
         "q": q,
         "page": page,
         "total": total,
-        "total_pages": total_pages,
+        "has_more": page < total_pages,
+        "next_page": page + 1,
         "active_nav": "suppliers",
     }
     return _render(request, "suppliers.html", "partials/supplier_list.html", ctx, user)
@@ -228,7 +229,8 @@ def product_list(request: Request, user: dict = Depends(require_user),
         "q": q,
         "page": page,
         "total": total,
-        "total_pages": total_pages,
+        "has_more": page < total_pages,
+        "next_page": page + 1,
         "active_nav": "products",
     }
     return _render(request, "products.html", "partials/product_list.html", ctx, user)
@@ -328,7 +330,57 @@ def partial_supplier_list(request: Request, user: dict = Depends(require_user),
         "q": q,
         "page": page,
         "total": total,
-        "total_pages": total_pages,
+        "has_more": page < total_pages,
+        "next_page": page + 1,
+    })
+
+
+@router.get("/partial/suppliers/rows")
+def partial_supplier_rows(request: Request, user: dict = Depends(require_user),
+                          q: str = "", page: int = 1):
+    """Return just the <tr> rows + sentinel for infinite scroll."""
+    session = get_session()
+    try:
+        query = session.query(
+            Supplier,
+            func.count(ProductSupplier.id).label("purchase_count"),
+        ).outerjoin(
+            ProductSupplier, ProductSupplier.supplier_id == Supplier.id
+        ).group_by(Supplier.id)
+
+        if q:
+            query = query.filter(Supplier.name.ilike(f"%{q}%"))
+
+        total = query.count()
+        total_pages = max(1, math.ceil(total / PAGE_SIZE))
+        page = max(1, min(page, total_pages))
+
+        rows = (
+            query
+            .order_by(func.count(ProductSupplier.id).desc(), Supplier.name)
+            .offset((page - 1) * PAGE_SIZE)
+            .limit(PAGE_SIZE)
+            .all()
+        )
+
+        suppliers = []
+        for s, pc in rows:
+            suppliers.append({
+                "id": str(s.id),
+                "name": s.name,
+                "country": s.country,
+                "city": s.city,
+                "purchase_count": pc,
+            })
+    finally:
+        session.close()
+
+    return templates.TemplateResponse("partials/_supplier_rows.html", {
+        "request": request,
+        "suppliers": suppliers,
+        "q": q,
+        "has_more": page < total_pages,
+        "next_page": page + 1,
     })
 
 
@@ -423,7 +475,46 @@ def partial_product_list(request: Request, user: dict = Depends(require_user),
         "q": q,
         "page": page,
         "total": total,
-        "total_pages": total_pages,
+        "has_more": page < total_pages,
+        "next_page": page + 1,
+    })
+
+
+@router.get("/partial/products/rows")
+def partial_product_rows(request: Request, user: dict = Depends(require_user),
+                         q: str = "", page: int = 1):
+    """Return just the <tr> rows + sentinel for infinite scroll."""
+    session = get_session()
+    try:
+        query = session.query(Product)
+
+        if q:
+            query = query.filter(
+                Product.part_number.ilike(f"%{q}%")
+                | Product.brand.ilike(f"%{q}%")
+                | Product.description.ilike(f"%{q}%")
+            )
+
+        total = query.count()
+        total_pages = max(1, math.ceil(total / PAGE_SIZE))
+        page = max(1, min(page, total_pages))
+
+        products = (
+            query
+            .order_by(Product.brand, Product.part_number)
+            .offset((page - 1) * PAGE_SIZE)
+            .limit(PAGE_SIZE)
+            .all()
+        )
+    finally:
+        session.close()
+
+    return templates.TemplateResponse("partials/_product_rows.html", {
+        "request": request,
+        "products": products,
+        "q": q,
+        "has_more": page < total_pages,
+        "next_page": page + 1,
     })
 
 
@@ -464,4 +555,85 @@ def partial_product_detail(request: Request, product_id: str,
         "user": user,
         "product": product,
         "purchases": purchases,
+    })
+
+
+# ---------------------------------------------------------------------------
+# RFQs (data lives in LangGraph async store, so routes are async)
+# ---------------------------------------------------------------------------
+def _get_store():
+    """Lazily import the shared store instance from app.py."""
+    from app import store
+    return store
+
+
+@router.get("/rfqs")
+async def rfq_list(request: Request, user: dict = Depends(require_user)):
+    store = _get_store()
+    rfqs = []
+    if store:
+        from includes.tools.quote_tools import NAMESPACE
+        items = await store.asearch(NAMESPACE, limit=200)
+        for item in items:
+            rfqs.append(item.value)
+        rfqs.sort(key=lambda r: r.get("created_date", ""), reverse=True)
+
+    ctx = {
+        "rfqs": rfqs,
+        "active_nav": "rfqs",
+    }
+    return _render(request, "rfqs.html", "partials/rfq_list.html", ctx, user)
+
+
+@router.get("/rfqs/{rfq_id}")
+async def rfq_detail(request: Request, rfq_id: str,
+                     user: dict = Depends(require_user)):
+    store = _get_store()
+    if not store:
+        return RedirectResponse("/rfqs")
+    from includes.tools.quote_tools import NAMESPACE
+    item = await store.aget(NAMESPACE, rfq_id)
+    if not item:
+        return RedirectResponse("/rfqs")
+
+    ctx = {
+        "rfq": item.value,
+        "active_nav": "rfqs",
+    }
+    return _render(request, "rfq_detail.html", "partials/rfq_detail.html", ctx, user)
+
+
+@router.get("/partial/rfqs")
+async def partial_rfq_list(request: Request, user: dict = Depends(require_user)):
+    store = _get_store()
+    rfqs = []
+    if store:
+        from includes.tools.quote_tools import NAMESPACE
+        items = await store.asearch(NAMESPACE, limit=200)
+        for item in items:
+            rfqs.append(item.value)
+        rfqs.sort(key=lambda r: r.get("created_date", ""), reverse=True)
+
+    return templates.TemplateResponse("partials/rfq_list.html", {
+        "request": request,
+        "user": user,
+        "rfqs": rfqs,
+    })
+
+
+@router.get("/partial/rfqs/{rfq_id}")
+async def partial_rfq_detail(request: Request, rfq_id: str,
+                             user: dict = Depends(require_user)):
+    store = _get_store()
+    if not store:
+        return HTMLResponse("<p>Store not available.</p>")
+    from includes.tools.quote_tools import NAMESPACE
+    item = await store.aget(NAMESPACE, rfq_id)
+    if not item:
+        return HTMLResponse("<p>RFQ not found.</p>")
+
+    return templates.TemplateResponse("partials/rfq_detail.html", {
+        "request": request,
+        "user": user,
+        "rfq": item.value,
     })

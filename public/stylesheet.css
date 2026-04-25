@@ -21,3 +21,13 @@ table {
     display: block;
     overflow-x: auto;
 }
+
+/*
+ * Hide redundant Chainlit header controls when embedded in the dashboard.
+ * The parent frame provides its own auth UI, dark mode toggle, and header.
+ */
+#readme-button,
+#theme-toggle,
+#user-nav-button {
+    display: none !important;
+}

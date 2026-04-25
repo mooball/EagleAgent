@@ -898,25 +898,22 @@ async def on_action_cancel_job(action: cl.Action):
 
 @cl.action_callback("rfq_refresh")
 async def on_rfq_refresh(action: cl.Action):
-    """Re-send the RFQ sidebar element with latest data."""
-    from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+    """Refresh the dashboard RFQ view with latest data."""
+    from includes.agent_bridge import notify_dashboard
 
     payload = action.payload or {}
     rfq_id = payload.get("rfq_id")
     if not rfq_id or not store:
         return
 
-    item = await store.aget(NAMESPACE, rfq_id)
-    if not item:
-        return
-
-    await _send_rfq_element(item.value)
+    await notify_dashboard("dashboard_refresh")
 
 
 @cl.action_callback("rfq_update_supplier")
 async def on_rfq_update_supplier(action: cl.Action):
-    """Handle supplier status change from RFQ custom element."""
-    from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+    """Handle supplier status change from dashboard."""
+    from includes.agent_bridge import notify_dashboard
+    from includes.tools.quote_tools import NAMESPACE
 
     payload = action.payload or {}
     rfq_id = payload.get("rfq_id")
@@ -956,8 +953,8 @@ async def on_rfq_update_supplier(action: cl.Action):
 
         await store.aput(NAMESPACE, rfq_id, rfq)
 
-    # Update the sidebar element with new props
-    await _send_rfq_element(rfq)
+    # Refresh the dashboard view
+    await notify_dashboard("dashboard_refresh")
 
     status_label = new_status.replace("_", " ")
     await cl.Message(
@@ -977,7 +974,8 @@ async def on_rfq_identify_items(action: cl.Action):
              identification (must be 100% positive match).
     """
     import asyncio
-    from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+    from includes.agent_bridge import notify_dashboard
+    from includes.tools.quote_tools import NAMESPACE
     from includes.tools.product_tools import _find_product_exact, _find_product_by_supplier_code
 
     payload = action.payload or {}
@@ -1053,7 +1051,7 @@ async def on_rfq_identify_items(action: cl.Action):
                     "action": f"Auto-identified {len(matched)} item(s) from internal DB: lines {', '.join(str(m['line']) for m in matched)}",
                 })
                 await store.aput(NAMESPACE, rfq_id, rfq)
-                await _send_rfq_element(rfq)
+                await notify_dashboard("dashboard_refresh")
 
     # Notify user of Phase 1 results
     if matched:
@@ -1116,7 +1114,8 @@ async def on_rfq_find_suppliers(action: cl.Action):
              with full context of what was already found internally.
     """
     import asyncio
-    from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+    from includes.agent_bridge import notify_dashboard
+    from includes.tools.quote_tools import NAMESPACE
     from includes.tools.product_tools import (
         _find_purchase_history_for_part,
     )
@@ -1206,7 +1205,7 @@ async def on_rfq_find_suppliers(action: cl.Action):
                         "action": f"Internal DB search on line {line}: {' | '.join(action_parts)}" if action_parts else f"No changes to line {line}",
                     })
                     await store.aput(NAMESPACE, rfq_id, rfq)
-                    await _send_rfq_element(rfq)
+                    await notify_dashboard("dashboard_refresh")
 
     # Notify user of Phase 1 results
     if internal_suppliers:
@@ -1389,13 +1388,14 @@ async def main(message: cl.Message):
                 break
 
     if rfq_match and any(kw in msg_lower for kw in _rfq_load_keywords):
-        from includes.tools.quote_tools import NAMESPACE, _send_rfq_element, _render_rfq_summary
+        from includes.agent_bridge import notify_dashboard
+        from includes.tools.quote_tools import NAMESPACE, _render_rfq_summary
         rfq_id = _resolve_rfq_id(rfq_match.group(1))
         if store:
             item = await store.aget(NAMESPACE, rfq_id)
             if item:
-                await _send_rfq_element(item.value)
-                await cl.Message(content=f"Loaded **{rfq_id}** in the sidebar.", author="EagleAgent").send()
+                await notify_dashboard("agent_navigate", {"url": f"/rfqs/{rfq_id}"})
+                await cl.Message(content=f"Loaded **{rfq_id}** in the dashboard.", author="EagleAgent").send()
                 return
             else:
                 await cl.Message(content=f"RFQ **{rfq_id}** not found.", author="EagleAgent").send()
@@ -1437,7 +1437,8 @@ async def main(message: cl.Message):
                     clear_rfq_match = hist_match
                     break
         if clear_rfq_match and store:
-            from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+            from includes.agent_bridge import notify_dashboard
+            from includes.tools.quote_tools import NAMESPACE
             from datetime import datetime, timezone
             clear_rfq_id = _resolve_rfq_id(clear_rfq_match.group(1))
             async with _get_rfq_lock(clear_rfq_id):
@@ -1478,7 +1479,7 @@ async def main(message: cl.Message):
                             "action": f"Cleared suppliers from {', '.join(cleared)}",
                         })
                         await store.aput(NAMESPACE, clear_rfq_id, rfq)
-                        await _send_rfq_element(rfq)
+                        await notify_dashboard("dashboard_refresh")
                         scope = f"line {target_line}" if target_line else f"all {len(cleared)} line(s)"
                         await cl.Message(
                             content=f"Cleared suppliers from **{clear_rfq_id}** ({scope}).",

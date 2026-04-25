@@ -1,5 +1,5 @@
 <div data-dashboard-context='{"view": "supplier_list", "entity": "supplier"}'>
-    <div class="flex items-center justify-between mb-6">
+    <div class="sticky top-0 z-20 bg-gray-50 dark:bg-gray-900 -mx-6 px-6 pt-6 pb-4 flex items-center justify-between">
         <h1 class="text-2xl font-bold">Suppliers</h1>
         <div class="flex items-center gap-3">
             <form hx-get="/partial/suppliers" hx-target="#main-content" hx-push-url="true"
@@ -16,54 +16,23 @@
     </div>
 
     {% if suppliers %}
-    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
         <table class="w-full text-sm">
-            <thead class="bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700">
+            <thead class="border-b border-gray-200 dark:border-gray-700 sticky top-[72px] z-10">
                 <tr>
-                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Name</th>
-                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Country</th>
-                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">City</th>
-                    <th class="text-right px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Purchases</th>
+                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">Name</th>
+                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">Country</th>
+                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">City</th>
+                    <th class="text-right px-4 py-3 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">Purchases</th>
                 </tr>
             </thead>
-            <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
-                {% for s in suppliers %}
-                <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
-                    hx-get="/partial/suppliers/{{ s.id }}" hx-target="#main-content" hx-push-url="/suppliers/{{ s.id }}">
-                    <td class="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{{ s.name }}</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ s.country or '—' }}</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ s.city or '—' }}</td>
-                    <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ s.purchase_count or 0 }}</td>
-                </tr>
-                {% endfor %}
+            <tbody id="supplier-rows" class="divide-y divide-gray-100 dark:divide-gray-700">
+                {% include "partials/_supplier_rows.html" %}
             </tbody>
         </table>
     </div>
 
-    <!-- Pagination -->
-    {% if total_pages > 1 %}
-    <div class="flex items-center justify-between mt-4">
-        <span class="text-sm text-gray-500 dark:text-gray-400">
-            Page {{ page }} of {{ total_pages }} ({{ total }} suppliers)
-        </span>
-        <div class="flex gap-1">
-            {% if page > 1 %}
-            <a hx-get="/partial/suppliers?page={{ page - 1 }}{% if q %}&q={{ q }}{% endif %}"
-               hx-target="#main-content" hx-push-url="/suppliers?page={{ page - 1 }}{% if q %}&q={{ q }}{% endif %}"
-               class="px-3 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer">
-                Previous
-            </a>
-            {% endif %}
-            {% if page < total_pages %}
-            <a hx-get="/partial/suppliers?page={{ page + 1 }}{% if q %}&q={{ q }}{% endif %}"
-               hx-target="#main-content" hx-push-url="/suppliers?page={{ page + 1 }}{% if q %}&q={{ q }}{% endif %}"
-               class="px-3 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer">
-                Next
-            </a>
-            {% endif %}
-        </div>
-    </div>
-    {% endif %}
+    <p class="mt-3 text-xs text-gray-400 dark:text-gray-500">{{ total }} suppliers</p>
 
     {% else %}
     <div class="text-center py-12 text-gray-500 dark:text-gray-400">

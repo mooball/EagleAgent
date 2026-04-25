@@ -432,7 +432,7 @@ def _do_supplier_search(name: Optional[str] = None,
             s = row[0]
             purchase_count = row[1]
             last_purchase_date = row[2]
-            item = f"- {s.name}"
+            item = f"- [{s.name}](/suppliers/{s.id})"
             if s.city or s.country:
                 location = ", ".join(filter(None, [s.city, s.country]))
                 item += f" | Location: {location}"
@@ -596,7 +596,7 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
                     parts = [p for p in [c.get("name"), c.get("email"), c.get("phone")] if p]
                     contact_str = " | ".join(parts) if parts else "N/A"
             output_parts.append(
-                f"| {idx} | {row.supplier_id} | {row.supplier_name} | {location_str} | {contact_str} | {row.part_number} | {row.brand or 'N/A'} | {price_str} | {date_str} | {qty_str} | {row.order_count} |"
+                f"| {idx} | {row.supplier_id} | [{row.supplier_name}](/suppliers/{row.supplier_id}) | {location_str} | {contact_str} | {row.part_number} | {row.brand or 'N/A'} | {price_str} | {date_str} | {qty_str} | {row.order_count} |"
             )
 
         return "\n".join(output_parts)
@@ -649,6 +649,7 @@ def _do_search_purchase_history(
                 ProductSupplier.status,
                 Product.part_number.label('part_number'),
                 Product.brand.label('brand'),
+                Supplier.id.label('supplier_id'),
                 Supplier.name.label('supplier_name'),
             )
             .join(Product, ProductSupplier.product_id == Product.id)
@@ -738,7 +739,7 @@ def _do_search_purchase_history(
             price_str = f"${row.price:,.2f}" if row.price is not None else "N/A"
             qty_str = f"{row.quantity:,.0f}" if row.quantity is not None else "N/A"
             output.append(
-                f"| {idx} | {row.doc_number or 'N/A'} | {date_str} | {row.part_number} | {row.brand or 'N/A'} | {row.supplier_name} | {qty_str} | {price_str} | {row.status or 'N/A'} |"
+                f"| {idx} | {row.doc_number or 'N/A'} | {date_str} | {row.part_number} | {row.brand or 'N/A'} | [{row.supplier_name}](/suppliers/{row.supplier_id}) | {qty_str} | {price_str} | {row.status or 'N/A'} |"
             )
 
         if total_count > limit:
