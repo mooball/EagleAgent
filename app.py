@@ -4,7 +4,7 @@ import urllib.parse
 from chainlit.types import ThreadDict
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from datetime import datetime, timezone
-from langchain_core.messages import HumanMessage, BaseMessage
+from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -464,58 +464,32 @@ async def setup_globals():
 
     globals_initialized = True
 
-@cl.oauth_callback
-def oauth_callback(
-    provider_id: str,
-    token: str,
-    raw_user_data: Dict[str, str],
-    default_user: cl.User,
-) -> Optional[cl.User]:
+@cl.header_auth_callback
+async def header_auth_callback(headers) -> Optional[cl.User]:
+    """Authenticate users via headers injected by the FastAPI middleware.
+
+    The FastAPI app handles Google OAuth and stores user info in the session.
+    For requests to /chat, the middleware injects X-Chainlit-User-* headers.
+    This callback reads those headers and returns a Chainlit User object.
+
+    Falls back to the legacy @cl.oauth_callback flow if no header is present
+    (e.g. when running Chainlit standalone during development).
     """
-    OAuth callback to authenticate users via Google.
-    
-    Args:
-        provider_id: The OAuth provider (e.g., "google")
-        token: The OAuth token
-        raw_user_data: User data from the OAuth provider
-        default_user: Default user object created by Chainlit
-    
-    Returns:
-        cl.User if authentication successful, None otherwise
-    """
-    if provider_id == "google":
-        # Check if user's domain is in the allowed domains list
-        allowed_domains_str = config.OAUTH_ALLOWED_DOMAINS
-        if allowed_domains_str:
-            allowed_domains = [domain.strip() for domain in allowed_domains_str.split(",")]
-            user_domain = raw_user_data.get("hd")
-            
-            # Reject if no domain (personal Gmail) or domain not in allowed list
-            if not user_domain or user_domain not in allowed_domains:
-                logger.warning(f"Authentication rejected: domain '{user_domain}' not in allowed list: {allowed_domains}")
-                return None
-        
-        # Store all available user data from Google OAuth in metadata
-        # Google provides: name, given_name, family_name, email, picture, locale, hd
-        if raw_user_data.get("name"):
-            default_user.metadata["name"] = raw_user_data["name"]
-        if raw_user_data.get("given_name"):
-            default_user.metadata["given_name"] = raw_user_data["given_name"]
-        if raw_user_data.get("family_name"):
-            default_user.metadata["family_name"] = raw_user_data["family_name"]
-        if raw_user_data.get("email"):
-            default_user.metadata["email"] = raw_user_data["email"]
-        if raw_user_data.get("picture"):
-            default_user.metadata["picture"] = raw_user_data["picture"]
-        if raw_user_data.get("locale"):
-            default_user.metadata["locale"] = raw_user_data["locale"]
-        if raw_user_data.get("hd"):
-            default_user.metadata["hd"] = raw_user_data["hd"]
-        
-        # Authentication successful
-        return default_user
-    
-    return None
+    email = headers.get("x-chainlit-user-email", "").strip()
+    if not email:
+        # No header auth — user hasn't logged in via FastAPI yet
+        return None
+
+    user = cl.User(identifier=email)
+    user.metadata = {
+        "name": headers.get("x-chainlit-user-name", ""),
+        "given_name": headers.get("x-chainlit-user-given-name", ""),
+        "family_name": headers.get("x-chainlit-user-family-name", ""),
+        "email": email,
+        "picture": headers.get("x-chainlit-user-picture", ""),
+        "hd": headers.get("x-chainlit-user-hd", ""),
+    }
+    return user
 
 @cl.data_layer
 def get_data_layer():
@@ -1569,13 +1543,24 @@ async def main(message: cl.Message):
     # Create multimodal message content (text + files)
     message_content = create_multimodal_content(message.content, processed_files)
     
+    # Inject dashboard context so the agent knows what the user is viewing.
+    # Prepend to message_content (before HumanMessage is created) so it
+    # travels with the user turn and is visible to the supervisor and agents.
+    from includes.dashboard_context import format_context_for_prompt
+    dashboard_ctx = format_context_for_prompt(user_id)
+    if dashboard_ctx:
+        logger.info(f"Dashboard context for {user_id}: {dashboard_ctx}")
+        if isinstance(message_content, list):
+            # Multimodal: prepend as a text block
+            message_content = [{"type": "text", "text": dashboard_ctx + "\n\n"}] + message_content
+        else:
+            message_content = dashboard_ctx + "\n\n" + message_content
+
     # Run the graph with the new user message and user_id
     inputs = {
         "messages": [HumanMessage(content=message_content)],
         "user_id": user_id
     }
-    
-    # Inject procurement intent context if set by a command or action button.
     # Always include the key so the checkpointed graph state is overwritten
     # (otherwise a stale intent from a previous turn persists in the checkpoint).
     from includes.prompts import get_intent_context

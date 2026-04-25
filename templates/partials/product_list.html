@@ -1,0 +1,77 @@
+<div data-dashboard-context='{"view": "product_list", "entity": "product"}'>
+    <div class="flex items-center justify-between mb-6">
+        <h1 class="text-2xl font-bold">Products</h1>
+        <div class="flex items-center gap-3">
+            <form hx-get="/partial/products" hx-target="#main-content" hx-push-url="true"
+                  class="flex items-center gap-2">
+                <input type="text" name="q" value="{{ q or '' }}"
+                       placeholder="Search by part number, brand…"
+                       class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-64">
+                <button type="submit"
+                        class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                    Search
+                </button>
+            </form>
+        </div>
+    </div>
+
+    {% if products %}
+    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700">
+                <tr>
+                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Part Number</th>
+                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Brand</th>
+                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Description</th>
+                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Type</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+                {% for p in products %}
+                <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
+                    hx-get="/partial/products/{{ p.id }}" hx-target="#main-content" hx-push-url="/products/{{ p.id }}">
+                    <td class="px-4 py-3 font-mono text-gray-900 dark:text-gray-100">{{ p.part_number }}</td>
+                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ p.brand or '—' }}</td>
+                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400 max-w-md truncate">{{ p.description or '—' }}</td>
+                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ p.product_type or '—' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    {% if total_pages > 1 %}
+    <div class="flex items-center justify-between mt-4">
+        <span class="text-sm text-gray-500 dark:text-gray-400">
+            Page {{ page }} of {{ total_pages }} ({{ total }} products)
+        </span>
+        <div class="flex gap-1">
+            {% if page > 1 %}
+            <a hx-get="/partial/products?page={{ page - 1 }}{% if q %}&q={{ q }}{% endif %}"
+               hx-target="#main-content" hx-push-url="/products?page={{ page - 1 }}{% if q %}&q={{ q }}{% endif %}"
+               class="px-3 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer">
+                Previous
+            </a>
+            {% endif %}
+            {% if page < total_pages %}
+            <a hx-get="/partial/products?page={{ page + 1 }}{% if q %}&q={{ q }}{% endif %}"
+               hx-target="#main-content" hx-push-url="/products?page={{ page + 1 }}{% if q %}&q={{ q }}{% endif %}"
+               class="px-3 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer">
+                Next
+            </a>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    {% else %}
+    <div class="text-center py-12 text-gray-500 dark:text-gray-400">
+        {% if q %}
+        <p>No products found matching "{{ q }}".</p>
+        {% else %}
+        <p>No products in the database yet.</p>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>

@@ -1,0 +1,103 @@
+<div data-dashboard-context='{"view": "product_detail", "entity": "product", "id": "{{ product.part_number }}", "db_id": "{{ product.id }}"}'>
+    <!-- Breadcrumb -->
+    <nav class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 mb-4">
+        <a hx-get="/partial/products" hx-target="#main-content" hx-push-url="/products"
+           class="hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer">Products</a>
+        <span>/</span>
+        <span class="text-gray-900 dark:text-gray-100">{{ product.part_number }}</span>
+    </nav>
+
+    <h1 class="text-2xl font-bold mb-6">{{ product.part_number }}{% if product.brand %} — {{ product.brand }}{% endif %}</h1>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Details -->
+        <div class="lg:col-span-2 space-y-6">
+            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+                <h2 class="text-lg font-semibold mb-4">Details</h2>
+                <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                    {% if product.brand %}
+                    <dt class="text-gray-500 dark:text-gray-400">Brand</dt>
+                    <dd>{{ product.brand }}</dd>
+                    {% endif %}
+                    {% if product.supplier_code %}
+                    <dt class="text-gray-500 dark:text-gray-400">Supplier Code</dt>
+                    <dd class="font-mono">{{ product.supplier_code }}</dd>
+                    {% endif %}
+                    {% if product.netsuite_id %}
+                    <dt class="text-gray-500 dark:text-gray-400">NetSuite ID</dt>
+                    <dd>{{ product.netsuite_id }}</dd>
+                    {% endif %}
+                    {% if product.product_type %}
+                    <dt class="text-gray-500 dark:text-gray-400">Type</dt>
+                    <dd>{{ product.product_type }}</dd>
+                    {% endif %}
+                    {% if product.weight_kg %}
+                    <dt class="text-gray-500 dark:text-gray-400">Weight</dt>
+                    <dd>{{ product.weight_kg }} kg</dd>
+                    {% endif %}
+                    {% if product.length_m %}
+                    <dt class="text-gray-500 dark:text-gray-400">Length</dt>
+                    <dd>{{ product.length_m }} m</dd>
+                    {% endif %}
+                </dl>
+                {% if product.description %}
+                <div class="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                    <h3 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Description</h3>
+                    <p class="text-sm">{{ product.description }}</p>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Purchase history for this product -->
+            {% if purchases %}
+            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+                <h2 class="text-lg font-semibold mb-4">Purchase History</h2>
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b border-gray-200 dark:border-gray-700">
+                            <th class="text-left py-2 font-medium text-gray-500 dark:text-gray-400">Doc #</th>
+                            <th class="text-left py-2 font-medium text-gray-500 dark:text-gray-400">Date</th>
+                            <th class="text-left py-2 font-medium text-gray-500 dark:text-gray-400">Supplier</th>
+                            <th class="text-right py-2 font-medium text-gray-500 dark:text-gray-400">Qty</th>
+                            <th class="text-right py-2 font-medium text-gray-500 dark:text-gray-400">Price</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+                        {% for p in purchases %}
+                        <tr>
+                            <td class="py-2">{{ p.doc_number }}</td>
+                            <td class="py-2 text-gray-600 dark:text-gray-400">{{ p.date or '—' }}</td>
+                            <td class="py-2">
+                                <a hx-get="/partial/suppliers/{{ p.supplier_id }}" hx-target="#main-content"
+                                   hx-push-url="/suppliers/{{ p.supplier_id }}"
+                                   class="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer">
+                                    {{ p.supplier_name or '—' }}
+                                </a>
+                            </td>
+                            <td class="py-2 text-right">{{ p.quantity or '—' }}</td>
+                            <td class="py-2 text-right">{{ '${:,.2f}'.format(p.price) if p.price else '—' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Sidebar -->
+        <div class="space-y-6">
+            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+                <h2 class="text-lg font-semibold mb-3">Embedding</h2>
+                {% if product.embedding %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
+                    Indexed
+                </span>
+                {% else %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
+                    Not indexed
+                </span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>

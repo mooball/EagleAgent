@@ -38,13 +38,14 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Copy application code
-COPY app.py ./
+COPY app.py main.py ./
 COPY chainlit.md ./
 COPY .chainlit/ ./.chainlit/
 COPY includes/ ./includes/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
 COPY public/ ./public/
+COPY templates/ ./templates/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 

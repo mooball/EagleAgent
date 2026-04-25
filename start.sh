@@ -42,9 +42,9 @@ echo "✅ Database migrations complete"
 
 # Set default port if not provided (Railway usually provides PORT)
 PORT=${PORT:-8080}
-echo "🌐 Starting Chainlit on port $PORT"
+echo "🌐 Starting EagleAgent on port $PORT"
 
-# Start Chainlit in production mode
-exec uv run chainlit run app.py \
+# Start FastAPI app (Chainlit is mounted at /chat)
+exec uv run uvicorn main:app \
     --host 0.0.0.0 \
     --port $PORT
