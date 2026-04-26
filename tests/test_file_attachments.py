@@ -4,8 +4,8 @@ import os
 from PIL import Image
 from unittest.mock import patch, MagicMock
 
-from includes.local_storage_client import LocalStorageClient
-from includes.document_processing import process_image
+from includes.chat.local_storage_client import LocalStorageClient
+from includes.chat.document_processing import process_image
 
 class TestStorageIntegration:
     def test_local_storage_client_init(self, temp_storage_dir):

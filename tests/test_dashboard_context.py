@@ -1,6 +1,6 @@
 """Tests for the dashboard context in-memory store."""
 
-from includes.dashboard_context import set_context, get_context, format_context_for_prompt
+from includes.dashboard.context import set_context, get_context, format_context_for_prompt
 
 
 class TestSetAndGetContext:

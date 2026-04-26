@@ -22,7 +22,7 @@ from sqlalchemy.orm import sessionmaker
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 from config.settings import Config
-from includes.db_models import Product
+from includes.dashboard.models import Product
 
 def get_engine(is_prod: bool = False):
     db_url = Config.PROD_DATABASE_URL if is_prod else Config.DATABASE_URL

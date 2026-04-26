@@ -30,7 +30,7 @@ def _make_test_app():
     )
 
     # Mount dashboard routes
-    from includes.dashboard_routes import router
+    from includes.dashboard.routes import router
     app.include_router(router)
 
     # Utility endpoint to inject a user session (test-only)
@@ -115,8 +115,8 @@ class TestRequireUser:
 
     def test_authenticated_user_can_access_home(self, client):
         _login(client)
-        with patch("includes.dashboard_routes.get_session") as mock_gs, \
-             patch("includes.dashboard_routes._get_store", return_value=None):
+        with patch("includes.dashboard.routes.get_session") as mock_gs, \
+             patch("includes.dashboard.routes._get_store", return_value=None):
             session = MagicMock()
             session.query.return_value.scalar.return_value = 0
             mock_gs.return_value = session
@@ -129,14 +129,14 @@ class TestRequireUser:
 # ============================================================================
 
 class TestRequireRole:
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_admin_can_access_users(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         mock_config.TIMEZONE = "Australia/Brisbane"
         _login(client, email="admin@eagle.com")
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs, \
-             patch("includes.dashboard_routes._get_store", return_value=None):
+        with patch("includes.dashboard.routes.get_session") as mock_gs, \
+             patch("includes.dashboard.routes._get_store", return_value=None):
             session = MagicMock()
             # _USER_STATS_SQL returns rows
             session.execute.return_value.fetchall.return_value = []
@@ -144,36 +144,36 @@ class TestRequireRole:
             resp = client.get("/users")
             assert resp.status_code == 200
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_staff_cannot_access_users(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client, email="staff@eagle.com")
         resp = client.get("/users", follow_redirects=False)
         assert resp.status_code == 403
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_staff_cannot_access_rfqs(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client, email="staff@eagle.com")
         resp = client.get("/rfqs", follow_redirects=False)
         assert resp.status_code == 403
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_admin_can_access_rfqs(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client, email="admin@eagle.com")
 
-        with patch("includes.dashboard_routes._get_store", return_value=None):
+        with patch("includes.dashboard.routes._get_store", return_value=None):
             resp = client.get("/rfqs")
             assert resp.status_code == 200
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_staff_can_access_suppliers(self, mock_config, client):
         """Staff role should be able to access non-admin routes."""
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client, email="staff@eagle.com")
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs:
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             session.query.return_value.outerjoin.return_value.group_by.return_value = session.query.return_value
             session.query.return_value.count.return_value = 0
@@ -189,13 +189,13 @@ class TestRequireRole:
 # ============================================================================
 
 class TestHtmxRendering:
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_htmx_request_returns_partial(self, mock_config, client):
         """An HX-Request header should return the partial template."""
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs:
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             qm = session.query.return_value.outerjoin.return_value.group_by.return_value
             qm.count.return_value = 0
@@ -207,13 +207,13 @@ class TestHtmxRendering:
             # Partial should NOT contain <html> or base layout
             assert "<html" not in resp.text
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_full_page_request_returns_full_template(self, mock_config, client):
         """A normal request (no HX-Request) should return the full page."""
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs:
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             qm = session.query.return_value.outerjoin.return_value.group_by.return_value
             qm.count.return_value = 0
@@ -230,13 +230,13 @@ class TestHtmxRendering:
 # ============================================================================
 
 class TestDashboardHome:
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_home_renders_stats(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs, \
-             patch("includes.dashboard_routes._get_store", return_value=None):
+        with patch("includes.dashboard.routes.get_session") as mock_gs, \
+             patch("includes.dashboard.routes._get_store", return_value=None):
             session = MagicMock()
             # First call returns supplier count, second returns product count
             session.query.return_value.scalar.side_effect = [42, 100]
@@ -247,13 +247,13 @@ class TestDashboardHome:
             assert "42" in resp.text
             assert "100" in resp.text
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_home_zero_stats(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs, \
-             patch("includes.dashboard_routes._get_store", return_value=None):
+        with patch("includes.dashboard.routes.get_session") as mock_gs, \
+             patch("includes.dashboard.routes._get_store", return_value=None):
             session = MagicMock()
             session.query.return_value.scalar.return_value = 0
             mock_gs.return_value = session
@@ -267,12 +267,12 @@ class TestDashboardHome:
 # ============================================================================
 
 class TestSupplierRoutes:
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_supplier_list_empty(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs:
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             qm = session.query.return_value.outerjoin.return_value.group_by.return_value
             qm.count.return_value = 0
@@ -284,12 +284,12 @@ class TestSupplierRoutes:
             # Should show empty state
             assert "No suppliers" in resp.text or "suppliers" in resp.text.lower()
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_supplier_list_with_search(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs:
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             qm = session.query.return_value.outerjoin.return_value.group_by.return_value
             qm_filtered = qm.filter.return_value
@@ -300,12 +300,12 @@ class TestSupplierRoutes:
             resp = client.get("/suppliers?q=test")
             assert resp.status_code == 200
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_supplier_detail_not_found_redirects(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs:
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             session.query.return_value.filter.return_value.first.return_value = None
             mock_gs.return_value = session
@@ -314,14 +314,14 @@ class TestSupplierRoutes:
             assert resp.status_code == 307
             assert "/suppliers" in resp.headers.get("location", "")
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_supplier_detail_found(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
         supplier = _make_supplier(id=1, name="Acme Corp")
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs:
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             session.query.return_value.filter.return_value.first.return_value = supplier
 
@@ -345,12 +345,12 @@ class TestSupplierRoutes:
 # ============================================================================
 
 class TestProductRoutes:
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_product_list_empty(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs:
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             session.query.return_value.count.return_value = 0
             session.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
@@ -359,12 +359,12 @@ class TestProductRoutes:
             resp = client.get("/products")
             assert resp.status_code == 200
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_product_detail_not_found_redirects(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs:
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             session.query.return_value.filter.return_value.first.return_value = None
             mock_gs.return_value = session
@@ -379,12 +379,12 @@ class TestProductRoutes:
 # ============================================================================
 
 class TestPartialRoutes:
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_partial_suppliers_returns_html_fragment(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs:
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             qm = session.query.return_value.outerjoin.return_value.group_by.return_value
             qm.count.return_value = 0
@@ -395,12 +395,12 @@ class TestPartialRoutes:
             assert resp.status_code == 200
             assert "<html" not in resp.text  # should be a fragment
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_partial_products_returns_html_fragment(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs:
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             session.query.return_value.count.return_value = 0
             session.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
@@ -410,12 +410,12 @@ class TestPartialRoutes:
             assert resp.status_code == 200
             assert "<html" not in resp.text
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_partial_supplier_detail_not_found(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard_routes.get_session") as mock_gs:
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             session.query.return_value.filter.return_value.first.return_value = None
             mock_gs.return_value = session
@@ -424,14 +424,14 @@ class TestPartialRoutes:
             assert resp.status_code == 200
             assert "not found" in resp.text.lower()
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_partial_rfqs_admin_only(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client, email="staff@eagle.com")
         resp = client.get("/partial/rfqs", follow_redirects=False)
         assert resp.status_code == 403
 
-    @patch("includes.dashboard_routes.config")
+    @patch("includes.dashboard.routes.config")
     def test_partial_users_admin_only(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client, email="staff@eagle.com")

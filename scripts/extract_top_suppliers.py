@@ -19,7 +19,7 @@ from sqlalchemy import create_engine, func, desc
 from sqlalchemy.orm import sessionmaker
 
 from config.settings import Config
-from includes.db_models import Supplier, ProductSupplier
+from includes.dashboard.models import Supplier, ProductSupplier
 
 
 def get_engine(is_prod: bool = False):

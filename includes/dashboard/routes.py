@@ -14,9 +14,9 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
-from includes.database import get_session
+from includes.dashboard.database import get_session
 from config import config
-from includes.db_models import (
+from includes.dashboard.models import (
     Brand,
     Product,
     ProductSupplier,

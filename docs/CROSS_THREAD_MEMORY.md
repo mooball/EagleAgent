@@ -65,35 +65,7 @@ Just tell the agent information naturally and it will save it:
 - "I love Python" → Agent calls `remember_user_info("preferences", "loves Python")`
 - "I work at MooBall" → Agent calls `remember_user_info("facts", "works at MooBall")`
 
-### Manual Profile Management (Alternative)
-
-You can also manage profiles manually using the CLI script:
-
-```bash
-# Set user name
-uv run manage_user_profile.py set tom@mooball.net name "Tom"
-
-# Add preferences
-uv run manage_user_profile.py set tom@mooball.net preferences "loves Python"
-
-# Add facts
-uv run manage_user_profile.py set tom@mooball.net facts "works at MooBall"
-
-# View profile
-uv run manage_user_profile.py get tom@mooball.net
-```
-
-### 🚧 Future Enhancement: Agent Tools
-
-The `user_profile_tools.py` module provides tools for agent-driven profile updates:
-- `remember_user_info()` - Agent saves information when user shares it
-- `get_user_info()` - Agent retrieves stored information
-- `forget_user_info()` - Agent deletes specific information
-
-**To enable this**, you would need to:
-1. Bind tools to the model
-2. Add tool-calling logic to the graph
-3. Or use `create_react_agent()` prebuilt pattern
+The agent tools are the primary mechanism for profile management. There is no CLI script — all profile management happens through natural conversation with the agent or directly via the LangGraph Store API.
 
 ## Testing Cross-Thread Memory
 
@@ -104,34 +76,15 @@ The `user_profile_tools.py` module provides tools for agent-driven profile updat
    - Agent: (calls remember_user_info tools) "Nice to meet you Tom! I've noted that you love Python and AI."
 
 2. **Verify it was saved:**
-   ```bash
-   uv run manage_user_profile.py get tom@mooball.net
-   ```
-   Should show: `name: "Tom"`, `preferences: ["Python", "AI"]`
+   - Ask the agent: "What do you know about me?"
+   - Agent should mention your name and preferences
 
 3. **Start NEW conversation (Thread 2):**
    - You: "What's my name?"
    - Agent: "Your name is Tom!"
    - ✅ **Agent remembers across threads!**
 
-### Scenario 2: Manual Profile Management
-
-1. **Set your profile manually:**
-   ```bash
-   uv run manage_user_profile.py set tom@mooball.net name "Tom"
-   uv run manage_user_profile.py set tom@mooball.net preferences "loves AI and Python"
-   ```
-
-2. **Start conversation (Thread 1):**
-   - You: "Hello!"
-   - Agent: "Hello Tom! I see you love AI and Python. How can I help?"
-
-3. **Start NEW conversation (Thread 2):**
-   - You: "What do I like?"
-   - Agent: "You love AI and Python!"
-   - ✅ **Agent remembers across threads!**
-
-### Scenario 3: Testing Tool Calling
+### Scenario 2: Testing Tool Calling
 
 1. **Check terminal output** to see tool calls:
    ```bash
@@ -144,52 +97,8 @@ The `user_profile_tools.py` module provides tools for agent-driven profile updat
    - Watch for: `ToolCall(name='remember_user_info', args={'category': 'facts', 'information': 'works at MooBall'})`
 
 3. **Verify storage:**
-   ```bash
-   uv run manage_user_profile.py get tom@mooball.net
-   ```
-
-## Managing User Profiles
-
-### Set Profile Data
-
-```bash
-# Basic syntax
-uv run manage_user_profile.py set USER_EMAIL FIELD VALUE
-
-# Examples
-uv run manage_user_profile.py set tom@mooball.net name "Tom"
-uv run manage_user_profile.py set tom@mooball.net job "AI Engineer"
-uv run manage_user_profile.py set tom@mooball.net location "San Francisco"
-uv run manage_user_profile.py set tom@mooball.net preferences "Python programming"
-uv run manage_user_profile.py set tom@mooball.net facts "has a dog named Max"
-```
-
-**Note:** `preferences` and `facts` are treated as lists - you can add multiple items:
-```bash
-uv run manage_user_profile.py set tom@mooball.net preferences "Python"
-uv run manage_user_profile.py set tom@mooball.net preferences "AI"
-# Result: preferences: ["Python", "AI"]
-```
-
-### View Profile Data
-
-```bash
-# View entire profile
-uv run manage_user_profile.py get tom@mooball.net
-
-# View specific field
-uv run manage_user_profile.py get tom@mooball.net name
-
-# List all user profiles
-uv run manage_user_profile.py list
-```
-
-### Delete Profile Data
-
-```bash
-# Delete entire profile
-uv run manage_user_profile.py delete tom@mooball.net
-```
+   - Start a new chat thread and ask: "What do you know about me?"
+   - Agent should mention that you work at MooBall
 
 ## Profile Data Structure
 
@@ -208,31 +117,25 @@ User profiles are stored as JSON with flexible schema:
 
 **Fields are arbitrary** - you can add any field name you want!
 
-## Files Created
+## Key Files
 
 ### Core Implementation
-- **`native Postgres PostgresStore`** - LangGraph BaseStore implementation for PostgreSQL
+- **`AsyncPostgresStore`** — LangGraph's built-in PostgreSQL Store implementation
   - Handles get/put/delete/search operations
   - Namespace-based document organization
   - Async-compatible interface
 
-### Management Tools
-- **`manage_user_profile.py`** - CLI tool for profile management
-  - Set, get, delete profile data
-  - List all user profiles
-  - Used for manual profile management
+### Agent Tools
+- **`includes/tools/user_profile.py`** — Agent tools for automated profile updates
+  - `remember_user_info()` — Save user information
+  - `get_user_info()` — Retrieve user information
+  - `forget_user_info()` — Delete user information
 
-### Future Tools (Not Yet Integrated)
-- **`user_profile_tools.py`** - Agent tools for automated profile updates
-  - `remember_user_info()` - Save user information
-  - `get_user_info()` - Retrieve user information
-  - `forget_user_info()` - Delete user information
-
-### Updated Files
+### Integration Points
 - **`app.py`**:
-  - Added `user_id` to `AgentState`
+  - Added `user_id` to `SupervisorState`
   - Integrated `AsyncPostgresStore` with graph compilation
-  - Updated `call_model()` to load and inject user profile
+  - Profile loaded and injected via `_ensure_user_profile()`
   - Set `user_id` in `on_chat_start` and `on_chat_resume`
 
 ## Technical Details
@@ -269,24 +172,13 @@ Examples:
 
 ## Future Enhancements
 
-1. **Agent Tool Integration**
-   - Bind profile tools to the model
-   - Agent autonomously updates profiles during conversation
-   - Example: User says "My name is Tom" → Agent calls `remember_user_info("name", "Tom")`
-
-2. **Auto-Detection**
-   - NLP-based extraction of user information
-   - Automatic profile updates without explicit commands
-   - Smart categorization of information
-
-3. **Profile UI**
-   - Chainlit sidebar for viewing/editing profile
+1. **Profile UI**
+   - Dashboard sidebar for viewing/editing profile
    - Visual profile management
    - History of profile changes
 
-4. **Advanced Features**
+2. **Advanced Features**
    - Profile versioning
-   - Profile sharing across workspaces
    - Privacy controls
    - Profile export/import
 

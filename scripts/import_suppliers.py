@@ -37,7 +37,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.dialects.postgresql import insert
 
 from config.settings import Config
-from includes.db_models import Supplier, Brand, SupplierBrand
+from includes.dashboard.models import Supplier, Brand, SupplierBrand
 
 logger = logging.getLogger(__name__)
 

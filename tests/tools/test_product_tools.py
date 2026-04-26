@@ -2,7 +2,7 @@ import pytest
 from datetime import date
 from unittest.mock import MagicMock, patch
 from includes.tools.product_tools import _do_product_search, _do_part_purchase_history, _do_search_purchase_history, search_products, part_purchase_history, search_purchase_history
-from includes.db_models import Product, Supplier, ProductSupplier
+from includes.dashboard.models import Product, Supplier, ProductSupplier
 
 @pytest.fixture
 def mock_session():

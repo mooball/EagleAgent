@@ -101,9 +101,9 @@ class BaseSubAgent(ABC):
     
     Sub-agents are specialized agents that handle specific domains like:
     - Browser automation (BrowserAgent)
-    - Code generation (CodeAgent)  
-    - Data analysis (DataAgent)
-    - etc.
+    - Procurement workflows (ProcurementAgent)
+    - General Q&A (GeneralAgent)
+    - Research (ResearchAgent)
     
     Each sub-agent:
     1. Has domain-specific tools (via get_tools or get_tools_async)

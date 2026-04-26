@@ -30,7 +30,7 @@ if config.config_file_name is not None:
 
 # add your model's MetaData object here
 # for 'autogenerate' support
-from includes.db_models import Base
+from includes.dashboard.models import Base
 target_metadata = Base.metadata
 
 # Tables managed externally (Chainlit data layer / LangGraph checkpointer).

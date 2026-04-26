@@ -35,8 +35,8 @@ Copy the generated secret and add it to your `.env` file as `CHAINLIT_AUTH_SECRE
    - **Application type**: Web application
    - **Name**: EagleAgent (or any name you prefer)
    - **Authorized redirect URIs**: 
-     - For local development: `http://localhost:8000/auth/oauth/google/callback`
-     - For production: `https://yourdomain.com/auth/oauth/google/callback`
+     - For local development: `http://localhost:8000/auth/google/callback`
+     - For production: `https://yourdomain.com/auth/google/callback`
    - Click **Create**
 
 6. Copy the **Client ID** and **Client Secret** that are displayed
@@ -116,15 +116,12 @@ When deploying to Railway, you need to update the OAuth redirect URIs to include
 
 ### Getting Your Railway URL
 
-After deploying (see [CLOUD_RUN_DEPLOYMENT.md](CLOUD_RUN_DEPLOYMENT.md)):
+After deploying to Railway:
 
-```bash
-# Get your Railway service URL
-  --region=australia-southeast1 \
-  --format='value(status.url)'
-
-# Example output: https://eagleagent-abc123xyz-ts.a.run.app
-```
+1. Go to your Railway project dashboard
+2. Click on the EagleAgent service
+3. Find the service URL under "Settings" → "Networking" → "Public Networking"
+4. Example: `https://eagleagent-production.up.railway.app`
 
 ### Update OAuth Redirect URIs
 
@@ -132,7 +129,7 @@ After deploying (see [CLOUD_RUN_DEPLOYMENT.md](CLOUD_RUN_DEPLOYMENT.md)):
 2. Click on your OAuth 2.0 Client ID
 3. Under **Authorized redirect URIs**, add:
    ```
-   https://eagleagent-abc123xyz-ts.a.run.app/auth/oauth/google/callback
+   https://your-railway-url.up.railway.app/auth/google/callback
    ```
    Replace with your actual Railway URL
 
@@ -146,16 +143,13 @@ After deploying (see [CLOUD_RUN_DEPLOYMENT.md](CLOUD_RUN_DEPLOYMENT.md)):
 
 If you map a custom domain to Railway:
 
-```bash
-# Map custom domain
-  --service eagleagent \
-  --domain app.yourdomain.com \
-  --region australia-southeast1
-```
+1. Go to Railway → Service → Settings → Networking → Custom Domain
+2. Add your domain (e.g., `app.yourdomain.com`)
+3. Configure DNS as directed by Railway
 
 Add the custom domain redirect URI:
 ```
-https://app.yourdomain.com/auth/oauth/google/callback
+https://app.yourdomain.com/auth/google/callback
 ```
 
 ### Environment Variables for Railway
@@ -163,20 +157,20 @@ https://app.yourdomain.com/auth/oauth/google/callback
 Ensure these are set in Railway:
 
 ```bash
-CHAINLIT_URL=https://eagleagent-abc123xyz-ts.a.run.app
+CHAINLIT_URL=https://your-railway-url.up.railway.app
 OAUTH_GOOGLE_CLIENT_ID=your_client_id
 OAUTH_GOOGLE_CLIENT_SECRET=your_client_secret
 OAUTH_ALLOWED_DOMAINS=yourdomain.com
 ```
 
-See [CLOUD_RUN_DEPLOYMENT.md](CLOUD_RUN_DEPLOYMENT.md) for complete deployment instructions including Secret Manager setup.
+See the [Development Workflow](DEVELOPMENT_WORKFLOW.md) for deployment instructions.
 
 ## Troubleshooting
 
 ### "Redirect URI mismatch" error
-- Make sure the redirect URI in Google Console exactly matches your Chainlit URL
-- For local development: `http://localhost:8000/auth/oauth/google/callback`
-- Don't forget the `/auth/oauth/google/callback` path
+- Make sure the redirect URI in Google Console exactly matches your app URL
+- For local development: `http://localhost:8000/auth/google/callback`
+- Don't forget the `/auth/google/callback` path
 
 ### "Access blocked: This app's request is invalid"
 - Check that you've configured the OAuth consent screen
@@ -191,7 +185,7 @@ See [CLOUD_RUN_DEPLOYMENT.md](CLOUD_RUN_DEPLOYMENT.md) for complete deployment i
 
 ### Users can't see chat history
 - Chat history requires both authentication AND a data layer
-- See `CHAINLIT_DATA_LAYER_SETUP.md` for data layer setup
+- The PostgreSQL data layer is configured automatically via `app.py`
 
 ## Next Steps
 

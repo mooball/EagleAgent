@@ -490,7 +490,7 @@ def _build_action_awareness(profile_data: Optional[Dict[str, Any]] = None) -> st
     Filters actions based on the user's role in *profile_data*.
     """
     try:
-        from includes.actions import get_actions_for_user, _registry
+        from includes.chat.actions import get_actions_for_user, _registry
     except ImportError:
         return ""
 

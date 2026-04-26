@@ -30,9 +30,9 @@ EagleAgent now supports connecting to MCP servers to extend its capabilities wit
    - Global `mcp_client` variable (similar to `store`)
    - Graceful error handling if initialization fails
 
-3. **Tool Integration** ([app.py](app.py))
-   - `call_model()`: Fetches MCP tools + profile tools, binds to model
-   - `call_tools()`: Executes both MCP and profile tools via ToolNode
+3. **Tool Integration** ([includes/agents/general_agent.py](includes/agents/general_agent.py))
+   - `GeneralAgent.get_tools_async()` fetches MCP tools + profile tools
+   - Tools are bound to the model via `create_react_agent`
    - Tools are fetched on each invocation (allows dynamic server updates)
 
 ### Data Flow
@@ -45,15 +45,10 @@ Startup:
     → mcp_client (global)
 
 Per Message:
-  call_model():
+  GeneralAgent.get_tools_async():
     → mcp_client.get_tools()
-    → merge with profile_tools
-    → model.bind_tools(all_tools)
-  
-  call_tools():
-    → mcp_client.get_tools()  
-    → merge with profile_tools
-    → ToolNode(all_tools).ainvoke(state)
+    → merge with profile_tools + action_tools
+    → create_react_agent(model, all_tools)
 ```
 
 ## Configuration
@@ -236,10 +231,7 @@ Invalid server configs are skipped automatically:
 Run the test suite:
 
 ```bash
-# Simple integration test
-uv run python test_mcp_simple.py
-
-# Full test suite (requires PostgreSQL emulator)
+# Full test suite
 uv run pytest tests/test_mcp_integration.py -v
 ```
 
@@ -319,20 +311,20 @@ Building a custom MCP client was considered but rejected because:
 
 ## Files Changed
 
-- **app.py**: Added MCP client initialization and tool integration
+- **app.py**: MCP client initialization in `setup_globals()`
+- **includes/agents/general_agent.py**: MCP tool integration in `get_tools_async()`
 - **includes/mcp_config.py**: New config loader utility (226 lines)
 - **config/mcp_servers.yaml**: Runtime config (excluded from git)
 - **config/mcp_servers.yaml.example**: Documentation and examples
 - **.gitignore**: Added `config/mcp_servers.yaml` to exclude secrets
 - **pyproject.toml**: Added `langchain-mcp-adapters==0.2.1` dependency
-- **tests/test_mcp_integration.py**: Comprehensive test suite (260 lines)
-- **test_mcp_simple.py**: Quick validation script
+- **tests/test_mcp_integration.py**: Comprehensive test suite
 
 ## Next Steps
 
 1. **Add MCP Server Configs**: Edit `config/mcp_servers.yaml` with desired servers
 2. **Set Credentials**: Add tokens/secrets to `.env` file  
-3. **Test**: Run `uv run python test_mcp_simple.py`
+3. **Test**: Run `uv run pytest tests/test_mcp_integration.py -v`
 4. **Deploy**: Start agent with `./run.sh`
 5. **Monitor**: Check logs for successful MCP tool discovery
 

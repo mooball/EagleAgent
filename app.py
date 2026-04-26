@@ -16,10 +16,10 @@ from config import config
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres import AsyncPostgresStore
-from includes.commands import handle_deleteall_command
-from includes.actions import dispatch_action, get_actions_for_user, is_help_request, send_action_buttons
-from includes.document_processing import process_file, create_multimodal_content
-from includes.local_storage_client import LocalStorageClient
+from includes.chat.commands import handle_deleteall_command
+from includes.chat.actions import dispatch_action, get_actions_for_user, is_help_request, send_action_buttons
+from includes.chat.document_processing import process_file, create_multimodal_content
+from includes.chat.local_storage_client import LocalStorageClient
 from includes.mcp_config import load_mcp_config
 from includes.agents import BrowserAgent, GeneralAgent, ProcurementAgent, Supervisor, SysAdminAgent
 from includes.job_runner import JobRunner
@@ -1316,7 +1316,7 @@ async def _handle_list_available_scripts():
 
 async def _handle_run_script(script_name: str):
     """Run a script by name via the job runner."""
-    from includes.job_progress import monitor_job
+    from includes.chat.job_progress import monitor_job
     thread_id = cl.user_session.get("thread_id", "")
     try:
         job = await job_runner.run_script(script_name, [], thread_id=thread_id)
@@ -1554,7 +1554,7 @@ async def main(message: cl.Message):
     # Inject dashboard context so the agent knows what the user is viewing.
     # Prepend to message_content (before HumanMessage is created) so it
     # travels with the user turn and is visible to the supervisor and agents.
-    from includes.dashboard_context import format_context_for_prompt
+    from includes.dashboard.context import format_context_for_prompt
     dashboard_ctx = format_context_for_prompt(user_id)
     if dashboard_ctx:
         logger.info(f"Dashboard context for {user_id}: {dashboard_ctx}")

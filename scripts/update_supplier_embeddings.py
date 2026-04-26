@@ -22,7 +22,7 @@ from sqlalchemy.orm import sessionmaker
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 from config.settings import Config
-from includes.db_models import Supplier
+from includes.dashboard.models import Supplier
 
 
 def get_engine(is_prod: bool = False):

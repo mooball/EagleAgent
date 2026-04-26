@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from unittest.mock import patch
 
-from includes.dashboard_routes import _humanize_timestamp
+from includes.dashboard.routes import _humanize_timestamp
 
 
 # Helper: build an ISO UTC timestamp for "now minus delta" in the configured tz

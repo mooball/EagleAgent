@@ -25,7 +25,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.dialects.postgresql import insert
 
 from config.settings import Config
-from includes.db_models import Brand
+from includes.dashboard.models import Brand
 
 
 def get_engine(is_prod: bool = False):

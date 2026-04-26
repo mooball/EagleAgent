@@ -15,7 +15,7 @@ import pytest
 # Add parent directory to path to import project modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from includes.local_storage_client import LocalStorageClient
+from includes.chat.local_storage_client import LocalStorageClient
 
 # ============================================================================
 # Environment Detection

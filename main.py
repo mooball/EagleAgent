@@ -241,7 +241,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Dashboard routes
 # ---------------------------------------------------------------------------
-from includes.dashboard_routes import router as dashboard_router
+from includes.dashboard.routes import router as dashboard_router
 
 app.include_router(dashboard_router)
 
@@ -249,7 +249,7 @@ app.include_router(dashboard_router)
 # ---------------------------------------------------------------------------
 # Dashboard context API (called by embedded.js in the Chainlit iframe)
 # ---------------------------------------------------------------------------
-from includes.dashboard_context import set_context as _set_dashboard_context
+from includes.dashboard.context import set_context as _set_dashboard_context
 
 
 @app.post("/api/dashboard-context")
@@ -278,9 +278,9 @@ async def get_dashboard_context(request: Request):
     user = get_current_user(request)
     if not user:
         return Response(status_code=401)
-    from includes.dashboard_context import get_context
+    from includes.dashboard.context import get_context
     ctx = get_context(user["email"])
-    from includes.dashboard_context import format_context_for_prompt
+    from includes.dashboard.context import format_context_for_prompt
     formatted = format_context_for_prompt(user["email"])
     import json
     return Response(

@@ -181,7 +181,7 @@ class TestSessionFlow:
 
 def _make_context_api_app():
     """App with the dashboard-context POST/GET endpoints."""
-    from includes.dashboard_context import set_context, get_context, format_context_for_prompt
+    from includes.dashboard.context import set_context, get_context, format_context_for_prompt
 
     app = FastAPI()
     app.add_middleware(
