@@ -45,6 +45,10 @@ PORT=${PORT:-8080}
 echo "🌐 Starting EagleAgent on port $PORT"
 
 # Start FastAPI app (Chainlit is mounted at /chat)
+# --proxy-headers: trust X-Forwarded-Proto from the reverse proxy so that
+#   request.base_url reflects https:// (needed for OAuth redirect_uri).
 exec uv run uvicorn main:app \
     --host 0.0.0.0 \
-    --port $PORT
+    --port $PORT \
+    --proxy-headers \
+    --forwarded-allow-ips='*'
