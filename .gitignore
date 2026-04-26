@@ -22,3 +22,7 @@ config/mcp_servers.yaml
 
 # Docker artifacts should NOT be ignored
 # Dockerfile, .dockerignore, start-cloudrun.sh are tracked
+
+# Tailwind — generated CSS and standalone CLI binary
+public/tailwind.min.css
+tailwindcss

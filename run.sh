@@ -7,6 +7,6 @@ echo "🐘 Checking local PostgreSQL container..."
 # Load environment variables
 source .env 2>/dev/null || true
 
-# Run Chainlit with watch mode
-echo "🚀 Starting Chainlit locally..."
-uv run chainlit run app.py -w
+# Run FastAPI + Chainlit with reload mode
+echo "🚀 Starting EagleAgent locally..."
+uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000

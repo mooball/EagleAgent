@@ -1,0 +1,44 @@
+{% from "components.html" import page_header, table_wrapper, th, badge, row_count, empty_state %}
+<div data-dashboard-context='{"view": "user_list", "entity": "user"}'>
+    {{ page_header("Users") }}
+
+    {% if users %}
+    {% call table_wrapper() %}
+        <thead class="border-b border-gray-200 dark:border-gray-700">
+            <tr>
+                {{ th("User") }}
+                {{ th("Role") }}
+                {{ th("Threads", "right") }}
+                {{ th("Messages", "right") }}
+                {{ th("Last Active") }}
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+            {% for u in users %}
+            <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                <td class="px-4 py-3">
+                    <div class="font-medium text-gray-900 dark:text-gray-100">{{ u.display_name or u.identifier }}</div>
+                    {% if u.display_name %}
+                    <div class="text-xs text-gray-400 dark:text-gray-500">{{ u.identifier }}</div>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    {{ badge(u.role, "purple" if u.role == "Admin" else "gray") }}
+                </td>
+                <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-300">{{ u.thread_count }}</td>
+                <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-300">{{ u.message_count }}</td>
+                <td class="px-4 py-3 text-gray-500 dark:text-gray-400"
+                    {% if u.last_active_exact %}title="{{ u.last_active_exact }}"{% endif %}>
+                    {{ u.last_active }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    {% endcall %}
+
+    {{ row_count(users | length, "users") }}
+
+    {% else %}
+    {{ empty_state("No users found.") }}
+    {% endif %}
+</div>

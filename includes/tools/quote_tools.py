@@ -195,22 +195,10 @@ def _render_rfq_summary(rfq: dict) -> str:
     return "\n".join(lines)
 
 
-async def _send_rfq_element(rfq: dict) -> None:
-    """Send or update an interactive RFQ custom element in the sidebar.
-
-    Shows the RFQ summary as a persistent sidebar panel that updates
-    in place as work progresses, keeping the chat area clean.
-    """
-    try:
-        import time
-        rfq_id = rfq.get("id", "???")
-        element = cl.CustomElement(name="RFQSummary", props=rfq, display="side")
-        await cl.ElementSidebar.set_title(f"RFQ {rfq_id}")
-        # Use a unique key each time to force Chainlit to replace the element
-        await cl.ElementSidebar.set_elements([element], key=f"rfq-{rfq_id}-{time.monotonic()}")
-    except Exception:
-        # If custom element fails (e.g. in tests), silently skip
-        logger.debug("Custom element send skipped (not in Chainlit context)")
+async def _notify_rfq_updated() -> None:
+    """Notify the dashboard to refresh after RFQ data changes."""
+    from includes.agent_bridge import notify_dashboard
+    await notify_dashboard("dashboard_refresh")
 
 
 def _render_rfq_list(rfqs: list[dict]) -> str:
@@ -231,7 +219,7 @@ def _render_rfq_list(rfqs: list[dict]) -> str:
         assigned = rfq.get("assigned_to", "—")
         created = rfq.get("created_date", "")
         lines.append(
-            f"| {rfq_id} | {customer} | {status} | {confirmed}/{total} confirmed | {assigned} | {created} |"
+            f"| [{rfq_id}](/rfqs/{rfq_id}) | {customer} | {status} | {confirmed}/{total} confirmed | {assigned} | {created} |"
         )
     lines.append("")
     lines.append(f"**{len(rfqs)} RFQs total**")
@@ -349,7 +337,7 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
 
             await store.aput(NAMESPACE, new_id, rfq)
             logger.info(f"Created {new_id} for {customer} with {len(raw_items)} items")
-            await _send_rfq_element(rfq)
+            await _notify_rfq_updated()
             return _render_rfq_summary(rfq)
 
         # ---- All other actions require rfq_id ----
@@ -590,7 +578,7 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
 
         rfq["updated_date"] = _today()
         await store.aput(NAMESPACE, rfq["id"], rfq)
-        await _send_rfq_element(rfq)
+        await _notify_rfq_updated()
         return _render_rfq_summary(rfq)
 
     @tool
@@ -619,7 +607,7 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
             item = await store.aget(NAMESPACE, rfq_id)
             if not item:
                 return f"RFQ '{rfq_id}' not found."
-            await _send_rfq_element(item.value)
+            await _notify_rfq_updated()
             return _render_rfq_summary(item.value)
 
         # List / filter mode

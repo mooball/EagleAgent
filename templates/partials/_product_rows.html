@@ -1,0 +1,21 @@
+{% for p in products %}
+<tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
+    hx-get="/partial/products/{{ p.id }}" hx-target="#main-content" hx-push-url="/products/{{ p.id }}">
+    <td class="px-4 py-3 font-mono text-gray-900 dark:text-gray-100">{{ p.part_number }}</td>
+    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ p.brand or '—' }}</td>
+    <td class="px-4 py-3 text-gray-600 dark:text-gray-400 max-w-md truncate">{{ p.description or '—' }}</td>
+    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ p.product_type or '—' }}</td>
+</tr>
+{% endfor %}
+{% if has_more %}
+<tr id="product-sentinel"
+    hx-get="/partial/products/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}"
+    hx-trigger="revealed"
+    hx-target="this"
+    hx-swap="outerHTML">
+    <td colspan="4" class="px-4 py-3 text-center text-gray-400 dark:text-gray-500">
+        <svg class="animate-spin inline-block w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+        Loading more…
+    </td>
+</tr>
+{% endif %}

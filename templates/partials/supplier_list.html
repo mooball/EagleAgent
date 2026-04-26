@@ -1,0 +1,31 @@
+{% from "components.html" import page_header, search_form, table_wrapper, th, row_count, empty_state %}
+<div data-dashboard-context='{"view": "supplier_list", "entity": "supplier"}'>
+    {% call page_header("Suppliers") %}
+        {{ search_form("/partial/suppliers", "Search suppliers…", q or '') }}
+    {% endcall %}
+
+    {% if suppliers %}
+    {% call table_wrapper() %}
+        <thead class="border-b border-gray-200 dark:border-gray-700 sticky top-[72px] z-10">
+            <tr>
+                {{ th("Name") }}
+                {{ th("Country") }}
+                {{ th("City") }}
+                {{ th("Purchases", "right") }}
+            </tr>
+        </thead>
+        <tbody id="supplier-rows" class="divide-y divide-gray-100 dark:divide-gray-700">
+            {% include "partials/_supplier_rows.html" %}
+        </tbody>
+    {% endcall %}
+
+    {{ row_count(total, "suppliers") }}
+
+    {% else %}
+    {% if q %}
+    {{ empty_state('No suppliers found matching "' ~ q ~ '".') }}
+    {% else %}
+    {{ empty_state("No suppliers in the database yet.") }}
+    {% endif %}
+    {% endif %}
+</div>

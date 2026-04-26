@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "components.html" import tile_card %}
+
+{% block title %}Dashboard — EagleAgent{% endblock %}
+
+{% block content %}
+<div data-dashboard-context='{"view": "dashboard"}' class="pt-6">
+    <h1 class="text-2xl font-bold mb-6">Dashboard</h1>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {% set supplier_icon %}
+            <svg class="w-5 h-5 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+            </svg>
+        {% endset %}
+        {{ tile_card("/suppliers", "/partial/suppliers", "Suppliers",
+            "Browse supplier directory, contacts, brands, and purchase history.",
+            supplier_icon, color="blue", stat=stats.suppliers if stats and stats.suppliers else none) }}
+
+        {% set product_icon %}
+            <svg class="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+            </svg>
+        {% endset %}
+        {{ tile_card("/products", "/partial/products", "Products",
+            "Product catalogue with part numbers, brands, and descriptions.",
+            product_icon, color="green", stat=stats.products if stats and stats.products else none) }}
+
+        {% set rfq_icon %}
+            <svg class="w-5 h-5 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+        {% endset %}
+        {{ tile_card("/rfqs", "/partial/rfqs", "RFQs",
+            "Manage requests for quotes, supplier sourcing, and pricing.",
+            rfq_icon, color="purple", stat=stats.rfqs if stats and stats.rfqs is not none else none) }}
+    </div>
+</div>
+{% endblock %}

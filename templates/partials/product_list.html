@@ -1,0 +1,31 @@
+{% from "components.html" import page_header, search_form, table_wrapper, th, row_count, empty_state %}
+<div data-dashboard-context='{"view": "product_list", "entity": "product"}'>
+    {% call page_header("Products") %}
+        {{ search_form("/partial/products", "Search by part number, brand…", q or '') }}
+    {% endcall %}
+
+    {% if products %}
+    {% call table_wrapper() %}
+        <thead class="border-b border-gray-200 dark:border-gray-700 sticky top-[72px] z-10">
+            <tr>
+                {{ th("Part Number") }}
+                {{ th("Brand") }}
+                {{ th("Description") }}
+                {{ th("Type") }}
+            </tr>
+        </thead>
+        <tbody id="product-rows" class="divide-y divide-gray-100 dark:divide-gray-700">
+            {% include "partials/_product_rows.html" %}
+        </tbody>
+    {% endcall %}
+
+    {{ row_count(total, "products") }}
+
+    {% else %}
+    {% if q %}
+    {{ empty_state('No products found matching "' ~ q ~ '".') }}
+    {% else %}
+    {{ empty_state("No products in the database yet.") }}
+    {% endif %}
+    {% endif %}
+</div>

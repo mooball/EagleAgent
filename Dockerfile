@@ -38,15 +38,25 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Copy application code
-COPY app.py ./
+COPY app.py main.py ./
 COPY chainlit.md ./
 COPY .chainlit/ ./.chainlit/
 COPY includes/ ./includes/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
 COPY public/ ./public/
+COPY templates/ ./templates/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
+
+# Build Tailwind CSS using the standalone CLI (no Node dependency needed)
+COPY input.css tailwind.config.js ./
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then TW_ARCH="linux-arm64"; else TW_ARCH="linux-x64"; fi && \
+    curl -sLo /usr/local/bin/tailwindcss \
+      "https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-${TW_ARCH}" && \
+    chmod +x /usr/local/bin/tailwindcss && \
+    tailwindcss -i input.css -o public/tailwind.min.css --minify
 
 # Create directories
 RUN mkdir -p /tmp/files /app/data/attachments /app/data/browser_downloads

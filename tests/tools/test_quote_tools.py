@@ -5,7 +5,7 @@ note appending, external linking, and query/filter via the LangGraph Store.
 """
 
 import pytest
-from includes.tools.quote_tools import create_quote_tools, NAMESPACE, _send_rfq_element
+from includes.tools.quote_tools import create_quote_tools, NAMESPACE, _notify_rfq_updated
 
 
 @pytest.fixture
@@ -501,8 +501,7 @@ class TestRendering:
         assert "John Smith" in result
         assert "john@acme.com.au" in result
 
-    async def test_send_rfq_element_no_chainlit_context(self):
-        """_send_rfq_element gracefully skips when not in a Chainlit session."""
-        rfq = {"id": "RFQ-2026-0001", "customer": "Test", "items": [], "status": "draft"}
+    async def test_notify_rfq_updated_no_chainlit_context(self):
+        """_notify_rfq_updated gracefully skips when not in a Chainlit session."""
         # Should not raise even without a Chainlit context
-        await _send_rfq_element(rfq)
+        await _notify_rfq_updated()

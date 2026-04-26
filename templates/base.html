@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}EagleAgent{% endblock %}</title>
+    <!-- Tailwind CSS: use pre-built file in prod, fall back to CDN for local dev -->
+    <link rel="stylesheet" href="/public/tailwind.min.css"
+          onerror="if(!window.__twFallback){window.__twFallback=1;var s=document.createElement('script');s.src='https://cdn.tailwindcss.com';document.head.appendChild(s);var c=document.createElement('script');c.textContent='tailwind.config={darkMode:\u0022class\u0022}';document.head.appendChild(c)}">
+    <script>
+        // Restore theme before paint to prevent flash
+        if (localStorage.theme === 'dark' || (!localStorage.theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+        }
+    </script>
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script>htmx.config.allowScriptTags = true;</script>
+</head>
+<body class="h-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+      x-data="dashboard()" x-init="init()">
+
+    <!-- Header -->
+    <header class="h-14 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 shadow-sm relative z-50">
+        <div class="flex items-center gap-2">
+            <a href="/" class="flex items-center gap-2 text-lg font-bold text-gray-800 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400">
+                <img src="/public/eagle-icon.png" alt="" class="w-7 h-7">
+                EagleAgent
+            </a>
+        </div>
+
+        <nav class="hidden md:flex items-center gap-1 text-sm font-medium">
+            <a href="/suppliers"
+               hx-get="/partial/suppliers" hx-target="#main-content" hx-push-url="/suppliers"
+               class="nav-link px-3 py-1.5 rounded-md transition-colors
+                      {% if active_nav == 'suppliers' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
+                Suppliers
+            </a>
+            <a href="/products"
+               hx-get="/partial/products" hx-target="#main-content" hx-push-url="/products"
+               class="nav-link px-3 py-1.5 rounded-md transition-colors
+                      {% if active_nav == 'products' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
+                Products
+            </a>
+            {% if user and user.role == 'Admin' %}
+            <a href="/rfqs"
+               hx-get="/partial/rfqs" hx-target="#main-content" hx-push-url="/rfqs"
+               class="nav-link px-3 py-1.5 rounded-md transition-colors
+                      {% if active_nav == 'rfqs' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
+                RFQs
+            </a>
+            {% endif %}
+            {% if user and user.role == 'Admin' %}
+            <a href="/users"
+               hx-get="/partial/users" hx-target="#main-content" hx-push-url="/users"
+               class="nav-link px-3 py-1.5 rounded-md transition-colors
+                      {% if active_nav == 'users' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
+                Users
+            </a>
+            {% endif %}
+        </nav>
+
+        <div class="flex items-center gap-1">
+            <!-- Agent panel controls -->
+            <div class="flex items-center gap-0.5 mr-2">
+                <!-- Toggle chat (open/close) -->
+                <button @click="agentState = agentState === 'closed' ? 'panel' : 'closed'"
+                        :class="agentState !== 'closed' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'"
+                        class="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700" title="Toggle chat">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                    </svg>
+                </button>
+                <!-- Sidebar mode -->
+                <button x-show="agentState !== 'closed'"
+                        @click="agentState = 'panel'" title="Sidebar"
+                        :class="agentState === 'panel' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'"
+                        class="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="2"/><line x1="15" y1="3" x2="15" y2="21" stroke-width="2"/></svg>
+                </button>
+                <!-- Expand mode -->
+                <button x-show="agentState !== 'closed'"
+                        @click="agentState = 'expanded'" title="Expand"
+                        :class="agentState === 'expanded' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'"
+                        class="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="2"/></svg>
+                </button>
+            </div>
+
+            <div class="w-px h-6 bg-gray-200 dark:bg-gray-700 mx-1"></div>
+
+            <!-- Dark mode toggle -->
+            <button @click="toggleTheme()" class="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400" title="Toggle dark mode">
+                <svg class="w-5 h-5 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+                </svg>
+                <svg class="w-5 h-5 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+                </svg>
+            </button>
+
+            <!-- User menu dropdown -->
+            <div class="relative ml-2" x-data="{ userMenuOpen: false }">
+                <button @click="userMenuOpen = !userMenuOpen" @click.outside="userMenuOpen = false"
+                        class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+                    {% if user.picture %}
+                    <img src="/avatar" alt="" class="w-8 h-8 rounded-full">
+                    {% else %}
+                    <div class="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-medium">
+                        {{ (user.given_name or user.email)[0] | upper }}
+                    </div>
+                    {% endif %}
+                    <span class="text-sm text-gray-700 dark:text-gray-300 hidden sm:inline">{{ user.given_name or user.email }}</span>
+                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                    </svg>
+                </button>
+                <!-- Dropdown -->
+                <div x-show="userMenuOpen"
+                     x-transition:enter="transition ease-out duration-100"
+                     x-transition:enter-start="opacity-0 scale-95"
+                     x-transition:enter-end="opacity-100 scale-100"
+                     x-transition:leave="transition ease-in duration-75"
+                     x-transition:leave-start="opacity-100 scale-100"
+                     x-transition:leave-end="opacity-0 scale-95"
+                     class="absolute right-0 mt-1 w-48 bg-white dark:bg-gray-800 rounded-md shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
+                    <div class="px-3 py-2 border-b border-gray-100 dark:border-gray-700">
+                        <p class="text-sm font-medium">{{ user.given_name or user.email }}</p>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ user.email }}</p>
+                    </div>
+                    <a href="/logout"
+                       class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        Sign out
+                    </a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Body: main content + agent panel -->
+    <div class="h-[calc(100vh-3.5rem)] relative overflow-hidden">
+
+        <!-- Main content area -->
+        <main id="main-content"
+              class="h-full overflow-y-auto transition-panel px-6 pb-6"
+              :class="{
+                  'hidden': agentState === 'expanded'
+              }"
+              :style="agentState === 'panel' ? 'margin-right:' + panelWidth + 'px' : ''">
+            {% block content %}{% endblock %}
+        </main>
+
+        <!-- Agent chat panel (right sidebar or full-width) -->
+        <aside x-show="agentState !== 'closed'"
+               x-transition:enter="transition ease-out duration-200"
+               x-transition:enter-start="translate-x-full"
+               x-transition:enter-end="translate-x-0"
+               x-transition:leave="transition ease-in duration-150"
+               x-transition:leave-start="translate-x-0"
+               x-transition:leave-end="translate-x-full"
+               :class="{ 'inset-x-0': agentState === 'expanded' }"
+               :style="agentState === 'panel' ? 'width:' + panelWidth + 'px' : ''"
+               class="fixed top-14 right-0 bottom-0 z-40 bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-700 shadow-xl flex flex-col">
+
+            <!-- Drag handle for resizing -->
+            <div x-show="agentState === 'panel'"
+                 @mousedown="startResize($event)"
+                 class="drag-handle absolute left-0 top-0 bottom-0 w-1.5 z-50"
+                 :class="{ 'dragging': isResizing }"></div>
+
+            <!-- Overlay to prevent iframe from stealing mouse events during resize -->
+            <div x-show="isResizing" class="absolute inset-0 z-40"></div>
+
+            <!-- Chat iframe — never destroyed, only hidden -->
+            <iframe id="agent-iframe" src="/chat" class="flex-1 w-full border-0"></iframe>
+        </aside>
+    </div>
+
+    <script>
+        function dashboard() {
+            return {
+                agentState: localStorage.getItem('agentState') || 'panel',
+                panelWidth: parseInt(localStorage.getItem('panelWidth') || '420', 10),
+                isResizing: false,
+                currentContext: {},
+
+                init() {
+                    // Sync initial theme to iframe once it loads
+                    const iframe = document.getElementById('agent-iframe');
+                    if (iframe) {
+                        iframe.addEventListener('load', () => {
+                            this.syncThemeToIframe();
+                            this.pushContext();
+                        });
+                    }
+
+                    // Watch for agent state changes and persist
+                    this.$watch('agentState', (val) => {
+                        localStorage.setItem('agentState', val);
+                    });
+
+                    // Listen for navigation/refresh commands from the agent iframe
+                    window.addEventListener('message', (event) => {
+                        if (event.origin !== window.location.origin) return;
+                        if (event.data?.type === 'agent_navigate') {
+                            const url = event.data.payload?.url;
+                            if (url) {
+                                htmx.ajax('GET', '/partial' + url, {
+                                    target: '#main-content',
+                                    swap: 'innerHTML'
+                                });
+                                history.pushState({}, '', url);
+                                if (this.agentState === 'expanded') {
+                                    this.agentState = 'panel';
+                                }
+                            }
+                        }
+                        if (event.data?.type === 'dashboard_refresh') {
+                            // Re-fetch the current partial to refresh displayed data
+                            const path = window.location.pathname;
+                            htmx.ajax('GET', '/partial' + path, {
+                                target: '#main-content',
+                                swap: 'innerHTML'
+                            });
+                        }
+                        if (event.data?.type === 'thread_id' && event.data.threadId) {
+                            sessionStorage.setItem('cl_thread_id', event.data.threadId);
+                        }
+                    });
+
+                    // Resume last chat thread on page reload (if available)
+                    const lastThread = sessionStorage.getItem('cl_thread_id');
+                    if (lastThread) {
+                        const iframe = document.getElementById('agent-iframe');
+                        if (iframe) {
+                            iframe.src = '/chat/thread/' + lastThread;
+                        }
+                    }
+
+                    // Set initial context from the page
+                    this.updateContext();
+
+                    // Infinite scroll: fire 'revealed' on sentinel when scrolled near bottom
+                    const mainEl = document.getElementById('main-content');
+                    mainEl.addEventListener('scroll', () => {
+                        if (mainEl.scrollTop + mainEl.clientHeight >= mainEl.scrollHeight - 200) {
+                            const sentinel = mainEl.querySelector('[hx-trigger="revealed"]');
+                            if (sentinel && !sentinel.classList.contains('htmx-request')) {
+                                htmx.trigger(sentinel, 'revealed');
+                            }
+                        }
+                    });
+
+                    // Listen for HTMX page swaps to update context
+                    document.body.addEventListener('htmx:afterSwap', (event) => {
+                        this.updateContext();
+                        this.updateActiveNav();
+                        // Re-initialize Alpine components in swapped content
+                        if (window.Alpine && event.detail && event.detail.target) {
+                            Alpine.initTree(event.detail.target);
+                        }
+                    });
+                },
+
+                /* ---- Panel resize ---- */
+                startResize(e) {
+                    e.preventDefault();
+                    this.isResizing = true;
+                    const main = document.getElementById('main-content');
+                    main.classList.add('no-transition');
+
+                    const onMove = (ev) => {
+                        const newWidth = Math.max(300, Math.min(window.innerWidth - 200, window.innerWidth - ev.clientX));
+                        this.panelWidth = newWidth;
+                    };
+                    const onUp = () => {
+                        this.isResizing = false;
+                        main.classList.remove('no-transition');
+                        localStorage.setItem('panelWidth', String(this.panelWidth));
+                        document.removeEventListener('mousemove', onMove);
+                        document.removeEventListener('mouseup', onUp);
+                    };
+                    document.addEventListener('mousemove', onMove);
+                    document.addEventListener('mouseup', onUp);
+                },
+
+                toggleTheme() {
+                    const html = document.documentElement;
+                    if (html.classList.contains('dark')) {
+                        html.classList.remove('dark');
+                        localStorage.theme = 'light';
+                    } else {
+                        html.classList.add('dark');
+                        localStorage.theme = 'dark';
+                    }
+                    this.syncThemeToIframe();
+                },
+
+                syncThemeToIframe() {
+                    const iframe = document.getElementById('agent-iframe');
+                    const theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+                    if (iframe?.contentWindow) {
+                        iframe.contentWindow.postMessage({ type: 'theme-change', theme: theme }, '*');
+                    }
+                },
+
+                updateContext() {
+                    // Read context from a data attribute on #main-content or its first child
+                    const el = document.querySelector('[data-dashboard-context]');
+                    if (el) {
+                        try {
+                            const newCtx = JSON.parse(el.dataset.dashboardContext);
+                            const newJson = JSON.stringify(newCtx);
+                            // Only push when the context actually changed
+                            if (newJson === this._lastContextJson) return;
+                            this._lastContextJson = newJson;
+                            this.currentContext = newCtx;
+                        } catch (e) {
+                            this.currentContext = {};
+                        }
+                    }
+                    this.pushContext();
+                },
+
+                pushContext() {
+                    // Unwrap Alpine proxy to a plain object for postMessage/fetch
+                    const ctx = JSON.parse(JSON.stringify(this.currentContext));
+                    const iframe = document.getElementById('agent-iframe');
+                    if (iframe?.contentWindow) {
+                        iframe.contentWindow.postMessage({
+                            type: 'dashboard_context',
+                            payload: ctx
+                        }, window.location.origin);
+                    }
+                    // The iframe listener (embedded.js) will push to the server,
+                    // so we don't need to duplicate the POST here.
+                },
+
+                updateActiveNav() {
+                    // Highlight active nav link based on current URL
+                    const path = window.location.pathname;
+                    document.querySelectorAll('.nav-link').forEach(link => {
+                        const href = link.getAttribute('href');
+                        const isActive = path === href || path.startsWith(href + '/');
+                        link.classList.toggle('bg-blue-50', isActive);
+                        link.classList.toggle('text-blue-700', isActive);
+                        link.classList.toggle('dark:bg-blue-900/30', isActive);
+                        link.classList.toggle('dark:text-blue-300', isActive);
+                        link.classList.toggle('text-gray-500', !isActive);
+                        link.classList.toggle('hover:text-gray-700', !isActive);
+                        link.classList.toggle('hover:bg-gray-100', !isActive);
+                        link.classList.toggle('dark:text-gray-400', !isActive);
+                        link.classList.toggle('dark:hover:text-gray-200', !isActive);
+                        link.classList.toggle('dark:hover:bg-gray-700', !isActive);
+                    });
+                }
+            };
+        }
+
+        function rfqDetail() {
+            return {
+                expanded: {},
+                allExpanded: false,
+                rfqId: '',
+                _allLines: [],
+                _items: {},
+                _unidentifiedItems: [],
+                init() {
+                    var dataEl = document.getElementById('rfq-data');
+                    var data = dataEl ? JSON.parse(dataEl.textContent) : {};
+                    this.rfqId = data.rfqId || '';
+                    this._allLines = data.allLines || [];
+                    this._unidentifiedItems = data.unidentified || [];
+                    // Index items by line number for quick lookup
+                    (data.items || []).forEach(i => this._items[i.line] = i);
+                    var supplierLines = data.supplierLines || [];
+                    supplierLines.forEach(l => this.expanded[l] = false);
+                    console.log('[rfqDetail] init, rfqId:', this.rfqId, 'items:', Object.keys(this._items).length);
+                },
+                toggle(line) {
+                    this.expanded[line] = !this.expanded[line];
+                    this.checkAllExpanded();
+                },
+                expandAll() {
+                    this._allLines.forEach(l => this.expanded[l] = true);
+                    this.allExpanded = true;
+                },
+                collapseAll() {
+                    this._allLines.forEach(l => this.expanded[l] = false);
+                    this.allExpanded = false;
+                },
+                checkAllExpanded() {
+                    var keys = Object.keys(this.expanded);
+                    this.allExpanded = keys.length > 0 && keys.every(k => this.expanded[k]);
+                },
+                _sendAction(action, refreshAfter) {
+                    var rfqId = this.rfqId;
+                    console.log('[bridge] sending action', action.name);
+                    fetch('/api/agent-bridge', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ action: action }),
+                    }).then(function(resp) {
+                        if (!resp.ok) resp.json().then(function(d) { console.error('[bridge]', d.error); });
+                        else if (refreshAfter) {
+                            htmx.ajax('GET', '/partial/rfqs/' + rfqId, { target: '#main-content' });
+                        }
+                    }).catch(function(err) {
+                        console.error('[bridge]', err);
+                    });
+                },
+                updateSupplier(rfqId, line, supplierName, status) {
+                    this._sendAction({
+                        name: 'rfq_update_supplier',
+                        payload: { rfq_id: rfqId, line: line, supplier_name: supplierName, status: status }
+                    }, true);
+                },
+                identifyItems() {
+                    var payload = {
+                        rfq_id: this.rfqId,
+                        items: this._unidentifiedItems.map(function(i) {
+                            return {
+                                line: i.line,
+                                description: i.input_description,
+                                part_number: i.part_number || i.input_code,
+                                brand: i.brand
+                            };
+                        })
+                    };
+                    this._sendAction({ name: 'rfq_identify_items', payload: payload });
+                },
+                findSuppliers(line) {
+                    var item = this._items[line];
+                    if (!item) { console.error('[rfqDetail] item not found for line', line); return; }
+                    var suppliers = (item.suppliers || []).filter(function(s) { return s.status !== 'dropped'; }).map(function(s) { return s.name; });
+                    var payload = {
+                        rfq_id: this.rfqId,
+                        line: item.line,
+                        description: item.input_description,
+                        part_number: item.part_number || item.input_code,
+                        brand: item.brand,
+                        quantity: item.quantity,
+                        uom: item.uom,
+                        existing_suppliers: suppliers
+                    };
+                    this._sendAction({ name: 'rfq_find_suppliers', payload: payload });
+                }
+            };
+        }
+    </script>
+</body>
+</html>

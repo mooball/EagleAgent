@@ -4,7 +4,7 @@ import urllib.parse
 from chainlit.types import ThreadDict
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from datetime import datetime, timezone
-from langchain_core.messages import HumanMessage, BaseMessage
+from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -464,58 +464,32 @@ async def setup_globals():
 
     globals_initialized = True
 
-@cl.oauth_callback
-def oauth_callback(
-    provider_id: str,
-    token: str,
-    raw_user_data: Dict[str, str],
-    default_user: cl.User,
-) -> Optional[cl.User]:
+@cl.header_auth_callback
+async def header_auth_callback(headers) -> Optional[cl.User]:
+    """Authenticate users via headers injected by the FastAPI middleware.
+
+    The FastAPI app handles Google OAuth and stores user info in the session.
+    For requests to /chat, the middleware injects X-Chainlit-User-* headers.
+    This callback reads those headers and returns a Chainlit User object.
+
+    Falls back to the legacy @cl.oauth_callback flow if no header is present
+    (e.g. when running Chainlit standalone during development).
     """
-    OAuth callback to authenticate users via Google.
-    
-    Args:
-        provider_id: The OAuth provider (e.g., "google")
-        token: The OAuth token
-        raw_user_data: User data from the OAuth provider
-        default_user: Default user object created by Chainlit
-    
-    Returns:
-        cl.User if authentication successful, None otherwise
-    """
-    if provider_id == "google":
-        # Check if user's domain is in the allowed domains list
-        allowed_domains_str = config.OAUTH_ALLOWED_DOMAINS
-        if allowed_domains_str:
-            allowed_domains = [domain.strip() for domain in allowed_domains_str.split(",")]
-            user_domain = raw_user_data.get("hd")
-            
-            # Reject if no domain (personal Gmail) or domain not in allowed list
-            if not user_domain or user_domain not in allowed_domains:
-                logger.warning(f"Authentication rejected: domain '{user_domain}' not in allowed list: {allowed_domains}")
-                return None
-        
-        # Store all available user data from Google OAuth in metadata
-        # Google provides: name, given_name, family_name, email, picture, locale, hd
-        if raw_user_data.get("name"):
-            default_user.metadata["name"] = raw_user_data["name"]
-        if raw_user_data.get("given_name"):
-            default_user.metadata["given_name"] = raw_user_data["given_name"]
-        if raw_user_data.get("family_name"):
-            default_user.metadata["family_name"] = raw_user_data["family_name"]
-        if raw_user_data.get("email"):
-            default_user.metadata["email"] = raw_user_data["email"]
-        if raw_user_data.get("picture"):
-            default_user.metadata["picture"] = raw_user_data["picture"]
-        if raw_user_data.get("locale"):
-            default_user.metadata["locale"] = raw_user_data["locale"]
-        if raw_user_data.get("hd"):
-            default_user.metadata["hd"] = raw_user_data["hd"]
-        
-        # Authentication successful
-        return default_user
-    
-    return None
+    email = headers.get("x-chainlit-user-email", "").strip()
+    if not email:
+        # No header auth — user hasn't logged in via FastAPI yet
+        return None
+
+    user = cl.User(identifier=email)
+    user.metadata = {
+        "name": headers.get("x-chainlit-user-name", ""),
+        "given_name": headers.get("x-chainlit-user-given-name", ""),
+        "family_name": headers.get("x-chainlit-user-family-name", ""),
+        "email": email,
+        "picture": headers.get("x-chainlit-user-picture", ""),
+        "hd": headers.get("x-chainlit-user-hd", ""),
+    }
+    return user
 
 @cl.data_layer
 def get_data_layer():
@@ -762,6 +736,13 @@ async def start():
 
         await cl.Message(content=welcome_msg).send()
 
+    # Notify the parent dashboard frame of the active thread ID
+    # so it can resume this thread on page reload
+    try:
+        await cl.send_window_message({"type": "thread_id", "threadId": thread_id})
+    except Exception:
+        pass
+
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
     """
@@ -839,6 +820,12 @@ async def on_chat_resume(thread: ThreadDict):
             )
         msg.persisted = True  # skip DB write — display only
         await msg.send()
+
+    # Notify the parent dashboard frame of the active thread ID
+    try:
+        await cl.send_window_message({"type": "thread_id", "threadId": thread_id})
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -924,25 +911,22 @@ async def on_action_cancel_job(action: cl.Action):
 
 @cl.action_callback("rfq_refresh")
 async def on_rfq_refresh(action: cl.Action):
-    """Re-send the RFQ sidebar element with latest data."""
-    from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+    """Refresh the dashboard RFQ view with latest data."""
+    from includes.agent_bridge import notify_dashboard
 
     payload = action.payload or {}
     rfq_id = payload.get("rfq_id")
     if not rfq_id or not store:
         return
 
-    item = await store.aget(NAMESPACE, rfq_id)
-    if not item:
-        return
-
-    await _send_rfq_element(item.value)
+    await notify_dashboard("dashboard_refresh")
 
 
 @cl.action_callback("rfq_update_supplier")
 async def on_rfq_update_supplier(action: cl.Action):
-    """Handle supplier status change from RFQ custom element."""
-    from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+    """Handle supplier status change from dashboard."""
+    from includes.agent_bridge import notify_dashboard
+    from includes.tools.quote_tools import NAMESPACE
 
     payload = action.payload or {}
     rfq_id = payload.get("rfq_id")
@@ -982,8 +966,8 @@ async def on_rfq_update_supplier(action: cl.Action):
 
         await store.aput(NAMESPACE, rfq_id, rfq)
 
-    # Update the sidebar element with new props
-    await _send_rfq_element(rfq)
+    # Refresh the dashboard view
+    await notify_dashboard("dashboard_refresh")
 
     status_label = new_status.replace("_", " ")
     await cl.Message(
@@ -1003,7 +987,8 @@ async def on_rfq_identify_items(action: cl.Action):
              identification (must be 100% positive match).
     """
     import asyncio
-    from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+    from includes.agent_bridge import notify_dashboard
+    from includes.tools.quote_tools import NAMESPACE
     from includes.tools.product_tools import _find_product_exact, _find_product_by_supplier_code
 
     payload = action.payload or {}
@@ -1079,7 +1064,7 @@ async def on_rfq_identify_items(action: cl.Action):
                     "action": f"Auto-identified {len(matched)} item(s) from internal DB: lines {', '.join(str(m['line']) for m in matched)}",
                 })
                 await store.aput(NAMESPACE, rfq_id, rfq)
-                await _send_rfq_element(rfq)
+                await notify_dashboard("dashboard_refresh")
 
     # Notify user of Phase 1 results
     if matched:
@@ -1142,7 +1127,8 @@ async def on_rfq_find_suppliers(action: cl.Action):
              with full context of what was already found internally.
     """
     import asyncio
-    from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+    from includes.agent_bridge import notify_dashboard
+    from includes.tools.quote_tools import NAMESPACE
     from includes.tools.product_tools import (
         _find_purchase_history_for_part,
     )
@@ -1232,7 +1218,7 @@ async def on_rfq_find_suppliers(action: cl.Action):
                         "action": f"Internal DB search on line {line}: {' | '.join(action_parts)}" if action_parts else f"No changes to line {line}",
                     })
                     await store.aput(NAMESPACE, rfq_id, rfq)
-                    await _send_rfq_element(rfq)
+                    await notify_dashboard("dashboard_refresh")
 
     # Notify user of Phase 1 results
     if internal_suppliers:
@@ -1415,13 +1401,14 @@ async def main(message: cl.Message):
                 break
 
     if rfq_match and any(kw in msg_lower for kw in _rfq_load_keywords):
-        from includes.tools.quote_tools import NAMESPACE, _send_rfq_element, _render_rfq_summary
+        from includes.agent_bridge import notify_dashboard
+        from includes.tools.quote_tools import NAMESPACE, _render_rfq_summary
         rfq_id = _resolve_rfq_id(rfq_match.group(1))
         if store:
             item = await store.aget(NAMESPACE, rfq_id)
             if item:
-                await _send_rfq_element(item.value)
-                await cl.Message(content=f"Loaded **{rfq_id}** in the sidebar.", author="EagleAgent").send()
+                await notify_dashboard("agent_navigate", {"url": f"/rfqs/{rfq_id}"})
+                await cl.Message(content=f"Loaded **{rfq_id}** in the dashboard.", author="EagleAgent").send()
                 return
             else:
                 await cl.Message(content=f"RFQ **{rfq_id}** not found.", author="EagleAgent").send()
@@ -1429,19 +1416,13 @@ async def main(message: cl.Message):
 
     # Direct "list all RFQs" intercept
     if "rfq" in msg_lower and any(kw in msg_lower for kw in _rfq_list_keywords) and not rfq_match:
-        from includes.tools.quote_tools import NAMESPACE
+        from includes.tools.quote_tools import NAMESPACE, _render_rfq_list
         if store:
             results = await store.asearch(NAMESPACE, limit=200)
             if results:
-                lines = []
-                for r in results:
-                    rfq = r.value
-                    status = rfq.get("status", "draft")
-                    customer = rfq.get("customer", "Unknown")
-                    item_count = len(rfq.get("items", []))
-                    lines.append(f"- **{rfq['id']}** — {customer} ({item_count} items, {status})")
+                rfqs = [r.value for r in results]
                 await cl.Message(
-                    content=f"Found {len(results)} RFQ(s):\n\n" + "\n".join(sorted(lines)),
+                    content=_render_rfq_list(rfqs),
                     author="EagleAgent",
                 ).send()
             else:
@@ -1463,7 +1444,8 @@ async def main(message: cl.Message):
                     clear_rfq_match = hist_match
                     break
         if clear_rfq_match and store:
-            from includes.tools.quote_tools import NAMESPACE, _send_rfq_element
+            from includes.agent_bridge import notify_dashboard
+            from includes.tools.quote_tools import NAMESPACE
             from datetime import datetime, timezone
             clear_rfq_id = _resolve_rfq_id(clear_rfq_match.group(1))
             async with _get_rfq_lock(clear_rfq_id):
@@ -1504,7 +1486,7 @@ async def main(message: cl.Message):
                             "action": f"Cleared suppliers from {', '.join(cleared)}",
                         })
                         await store.aput(NAMESPACE, clear_rfq_id, rfq)
-                        await _send_rfq_element(rfq)
+                        await notify_dashboard("dashboard_refresh")
                         scope = f"line {target_line}" if target_line else f"all {len(cleared)} line(s)"
                         await cl.Message(
                             content=f"Cleared suppliers from **{clear_rfq_id}** ({scope}).",
@@ -1569,13 +1551,24 @@ async def main(message: cl.Message):
     # Create multimodal message content (text + files)
     message_content = create_multimodal_content(message.content, processed_files)
     
+    # Inject dashboard context so the agent knows what the user is viewing.
+    # Prepend to message_content (before HumanMessage is created) so it
+    # travels with the user turn and is visible to the supervisor and agents.
+    from includes.dashboard_context import format_context_for_prompt
+    dashboard_ctx = format_context_for_prompt(user_id)
+    if dashboard_ctx:
+        logger.info(f"Dashboard context for {user_id}: {dashboard_ctx}")
+        if isinstance(message_content, list):
+            # Multimodal: prepend as a text block
+            message_content = [{"type": "text", "text": dashboard_ctx + "\n\n"}] + message_content
+        else:
+            message_content = dashboard_ctx + "\n\n" + message_content
+
     # Run the graph with the new user message and user_id
     inputs = {
         "messages": [HumanMessage(content=message_content)],
         "user_id": user_id
     }
-    
-    # Inject procurement intent context if set by a command or action button.
     # Always include the key so the checkpointed graph state is overwritten
     # (otherwise a stale intent from a previous turn persists in the checkpoint).
     from includes.prompts import get_intent_context

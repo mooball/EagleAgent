@@ -434,19 +434,36 @@ export default function RFQSummary() {
               <p className="text-xs text-muted-foreground italic">{notes}</p>
             )}
           </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                className="p-1.5 rounded hover:bg-muted cursor-pointer shrink-0"
-                onClick={function() {
-                  callAction({ name: "rfq_refresh", payload: { rfq_id: rfqId } })
-                }}
-              >
-                <RefreshCw className="h-4 w-4 opacity-50" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>Refresh</TooltipContent>
-          </Tooltip>
+          <div className="flex items-center gap-1 shrink-0">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  className="p-1.5 rounded hover:bg-muted cursor-pointer"
+                  onClick={function() {
+                    if (window.navigateDashboard) {
+                      window.navigateDashboard('/rfqs/' + rfqId)
+                    }
+                  }}
+                >
+                  <ExternalLink className="h-4 w-4 opacity-50" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>View in Dashboard</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  className="p-1.5 rounded hover:bg-muted cursor-pointer"
+                  onClick={function() {
+                    callAction({ name: "rfq_refresh", payload: { rfq_id: rfqId } })
+                  }}
+                >
+                  <RefreshCw className="h-4 w-4 opacity-50" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Refresh</TooltipContent>
+            </Tooltip>
+          </div>
         </div>
       </CardHeader>
 
