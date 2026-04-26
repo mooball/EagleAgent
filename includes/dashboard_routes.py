@@ -11,10 +11,11 @@ import logging
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from includes.database import get_session
+from config import config
 from includes.db_models import (
     Brand,
     Product,
@@ -32,14 +33,44 @@ PAGE_SIZE = 50
 
 
 # ---------------------------------------------------------------------------
-# Auth dependency (same check as main.py — imported at wire-up time)
+# Auth dependencies
 # ---------------------------------------------------------------------------
 def require_user(request: Request) -> dict:
+    """Ensure a logged-in user; redirect to /login otherwise."""
     user = request.session.get("user")
     if not user:
         from fastapi import HTTPException
         raise HTTPException(status_code=303, headers={"Location": "/login"})
+    # Attach computed role so templates/downstream code can use it
+    user["role"] = (
+        "Admin"
+        if user.get("email", "").lower() in config.get_admin_emails()
+        else "Staff"
+    )
     return user
+
+
+def require_role(*allowed_roles: str):
+    """Dependency factory: restrict a route to users with one of the given roles.
+
+    Usage:
+        @router.get("/users")
+        def user_list(user: dict = Depends(require_role("Admin"))):
+            ...
+    """
+    def _guard(request: Request) -> dict:
+        user = require_user(request)
+        if user["role"] not in allowed_roles:
+            from fastapi import HTTPException
+            if _is_htmx(request):
+                raise HTTPException(status_code=403)
+            raise HTTPException(status_code=403)
+        return user
+    return Depends(_guard)
+
+
+# Convenience alias for the most common guard
+require_admin = require_role("Admin")
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +94,7 @@ def _render(request: Request, full_template: str, partial_template: str,
 # Dashboard home
 # ---------------------------------------------------------------------------
 @router.get("/")
-def dashboard_home(request: Request, user: dict = Depends(require_user)):
+async def dashboard_home(request: Request, user: dict = Depends(require_user)):
     session = get_session()
     try:
         stats = {
@@ -72,6 +103,16 @@ def dashboard_home(request: Request, user: dict = Depends(require_user)):
         }
     finally:
         session.close()
+
+    # RFQ count from async store
+    store = _get_store()
+    if store:
+        from includes.tools.quote_tools import NAMESPACE
+        items = await store.asearch(NAMESPACE, limit=1000)
+        stats["rfqs"] = len(items)
+    else:
+        stats["rfqs"] = 0
+
     return templates.TemplateResponse("home.html", {
         "request": request,
         "user": user,
@@ -568,7 +609,7 @@ def _get_store():
 
 
 @router.get("/rfqs")
-async def rfq_list(request: Request, user: dict = Depends(require_user)):
+async def rfq_list(request: Request, user: dict = require_admin):
     store = _get_store()
     rfqs = []
     if store:
@@ -587,7 +628,7 @@ async def rfq_list(request: Request, user: dict = Depends(require_user)):
 
 @router.get("/rfqs/{rfq_id}")
 async def rfq_detail(request: Request, rfq_id: str,
-                     user: dict = Depends(require_user)):
+                     user: dict = require_admin):
     store = _get_store()
     if not store:
         return RedirectResponse("/rfqs")
@@ -604,7 +645,7 @@ async def rfq_detail(request: Request, rfq_id: str,
 
 
 @router.get("/partial/rfqs")
-async def partial_rfq_list(request: Request, user: dict = Depends(require_user)):
+async def partial_rfq_list(request: Request, user: dict = require_admin):
     store = _get_store()
     rfqs = []
     if store:
@@ -623,7 +664,7 @@ async def partial_rfq_list(request: Request, user: dict = Depends(require_user))
 
 @router.get("/partial/rfqs/{rfq_id}")
 async def partial_rfq_detail(request: Request, rfq_id: str,
-                             user: dict = Depends(require_user)):
+                             user: dict = require_admin):
     store = _get_store()
     if not store:
         return HTMLResponse("<p>Store not available.</p>")
@@ -636,4 +677,132 @@ async def partial_rfq_detail(request: Request, rfq_id: str,
         "request": request,
         "user": user,
         "rfq": item.value,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Users
+# ---------------------------------------------------------------------------
+_USER_STATS_SQL = text("""
+    SELECT
+        u.id,
+        u.identifier,
+        COUNT(DISTINCT t.id)  AS thread_count,
+        COUNT(s.id)           AS message_count,
+        MAX(s."createdAt")    AS last_active
+    FROM users u
+    LEFT JOIN threads t ON t."userId" = u.id
+    LEFT JOIN steps s   ON s."threadId" = t.id
+    GROUP BY u.id, u.identifier
+    ORDER BY last_active DESC NULLS LAST
+""")
+
+
+def _humanize_timestamp(iso_str: str | None) -> tuple[str, str]:
+    """Convert an ISO timestamp to (human_label, exact_datetime).
+
+    Returns e.g. ("Today 9:04 AM", "2026-04-26 09:04:32") or
+    ("3 days ago", "2026-04-23 14:12:05").
+    """
+    if not iso_str:
+        return ("—", "")
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    try:
+        local_tz = ZoneInfo(config.TIMEZONE)
+        # Chainlit stores ISO strings like "2026-04-26T09:04:32.123456+00:00"
+        raw = iso_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt_local = dt.astimezone(local_tz)
+        now = datetime.now(local_tz)
+        exact = dt_local.strftime("%Y-%m-%d %H:%M:%S")
+        time_fmt = dt_local.strftime("%-I:%M %p")
+
+        delta = now - dt_local
+        days = delta.days
+
+        if days == 0:
+            label = f"Today {time_fmt}"
+        elif days == 1:
+            label = f"Yesterday {time_fmt}"
+        elif days < 7:
+            label = f"{days} days ago"
+        elif days < 14:
+            label = "Last week"
+        elif days < 30:
+            weeks = days // 7
+            label = f"{weeks} weeks ago"
+        elif days < 365:
+            months = days // 30
+            label = f"{months} month{'s' if months != 1 else ''} ago"
+        else:
+            label = dt.strftime("%b %Y")
+
+        return (label, exact)
+    except (ValueError, TypeError):
+        return (iso_str[:16].replace("T", " ") if len(iso_str) > 16 else iso_str, iso_str)
+
+
+def _query_users(session):
+    rows = session.execute(_USER_STATS_SQL).fetchall()
+    users = []
+    for row in rows:
+        human, exact = _humanize_timestamp(row.last_active)
+        users.append({
+            "id": row.id,
+            "identifier": row.identifier,
+            "thread_count": row.thread_count,
+            "message_count": row.message_count,
+            "last_active": human,
+            "last_active_exact": exact,
+        })
+    return users
+
+
+async def _query_users_with_roles(session):
+    """Query user stats and enrich with role + display name."""
+    users = _query_users(session)
+    admin_emails = config.get_admin_emails()
+    store = _get_store()
+    for u in users:
+        email = u["identifier"]
+        u["role"] = "Admin" if email.lower() in admin_emails else "Staff"
+        u["display_name"] = None
+        if store:
+            profile = await store.aget(("users",), email)
+            if profile and profile.value:
+                u["display_name"] = (
+                    profile.value.get("preferred_name")
+                    or profile.value.get("full_name")
+                    or profile.value.get("first_name")
+                )
+    return users
+
+
+@router.get("/users")
+async def user_list(request: Request, user: dict = require_admin):
+    session = get_session()
+    try:
+        users = await _query_users_with_roles(session)
+    finally:
+        session.close()
+
+    ctx = {"users": users, "active_nav": "users"}
+    return _render(request, "users.html", "partials/user_list.html", ctx, user)
+
+
+@router.get("/partial/users")
+async def partial_user_list(request: Request, user: dict = require_admin):
+    session = get_session()
+    try:
+        users = await _query_users_with_roles(session)
+    finally:
+        session.close()
+
+    return templates.TemplateResponse("partials/user_list.html", {
+        "request": request,
+        "user": user,
+        "users": users,
     })

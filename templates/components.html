@@ -1,0 +1,96 @@
+{#
+  Reusable UI component macros for the EagleAgent dashboard.
+  Import in templates with: {% from "components.html" import tile_card, page_header, ... %}
+#}
+
+
+{# ── Dashboard Tile Card ─────────────────────────────────────── #}
+{% macro tile_card(href, hx_get, title, description, icon_svg, color="blue", stat=none) %}
+<a href="{{ href }}"
+   hx-get="{{ hx_get }}" hx-target="#main-content" hx-push-url="{{ href }}"
+   class="block bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6 hover:shadow-md transition-shadow">
+    <div class="flex items-center gap-3 mb-2">
+        <div class="w-10 h-10 bg-{{ color }}-100 dark:bg-{{ color }}-900/30 rounded-lg flex items-center justify-center">
+            {{ icon_svg }}
+        </div>
+        <h2 class="text-lg font-semibold">{{ title }}</h2>
+    </div>
+    <p class="text-sm text-gray-500 dark:text-gray-400">{{ description }}</p>
+    {% if stat is not none %}
+    <p class="mt-3 text-2xl font-bold text-{{ color }}-600 dark:text-{{ color }}-400">{{ stat }}</p>
+    {% endif %}
+</a>
+{% endmacro %}
+
+
+{# ── List Page Header (sticky bar with title + optional search) ── #}
+{% macro page_header(title) %}
+<div class="sticky top-0 z-20 bg-gray-50 dark:bg-gray-900 -mx-6 px-6 pt-6 pb-4 flex items-center justify-between">
+    <h1 class="text-2xl font-bold">{{ title }}</h1>
+    {% if caller %}
+    <div class="flex items-center gap-3">
+        {{ caller() }}
+    </div>
+    {% endif %}
+</div>
+{% endmacro %}
+
+
+{# ── Search Form ─────────────────────────────────────────────── #}
+{% macro search_form(action, placeholder="Search…", q="") %}
+<form hx-get="{{ action }}" hx-target="#main-content" hx-push-url="true"
+      class="flex items-center gap-2">
+    <input type="text" name="q" value="{{ q }}"
+           placeholder="{{ placeholder }}"
+           class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-64">
+    <button type="submit"
+            class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">
+        Search
+    </button>
+</form>
+{% endmacro %}
+
+
+{# ── Data Table Wrapper ──────────────────────────────────────── #}
+{% macro table_wrapper() %}
+<div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+    <table class="w-full text-sm">
+        {{ caller() }}
+    </table>
+</div>
+{% endmacro %}
+
+
+{# ── Table Header Cell ───────────────────────────────────────── #}
+{% macro th(label, align="left") %}
+<th class="text-{{ align }} px-4 py-3 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">{{ label }}</th>
+{% endmacro %}
+
+
+{# ── Table Data Cell ──────────────────────────────────────────── #}
+{% macro td(align="left", class="") %}
+<td class="px-4 py-3 text-{{ align }} {{ class }}">{{ caller() }}</td>
+{% endmacro %}
+
+
+{# ── Row Count Footer ────────────────────────────────────────── #}
+{% macro row_count(count, label) %}
+<p class="mt-3 text-xs text-gray-400 dark:text-gray-500">{{ count }} {{ label }}</p>
+{% endmacro %}
+
+
+{# ── Empty State ──────────────────────────────────────────────── #}
+{% macro empty_state(message) %}
+<div class="text-center py-12 text-gray-500 dark:text-gray-400">
+    <p>{{ message }}</p>
+</div>
+{% endmacro %}
+
+
+{# ── Status Badge ─────────────────────────────────────────────── #}
+{% macro badge(label, color="gray") %}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+    bg-{{ color }}-100 text-{{ color }}-800 dark:bg-{{ color }}-900/30 dark:text-{{ color }}-300">
+    {{ label }}
+</span>
+{% endmacro %}

@@ -1,46 +1,31 @@
+{% from "components.html" import page_header, search_form, table_wrapper, th, row_count, empty_state %}
 <div data-dashboard-context='{"view": "supplier_list", "entity": "supplier"}'>
-    <div class="sticky top-0 z-20 bg-gray-50 dark:bg-gray-900 -mx-6 px-6 pt-6 pb-4 flex items-center justify-between">
-        <h1 class="text-2xl font-bold">Suppliers</h1>
-        <div class="flex items-center gap-3">
-            <form hx-get="/partial/suppliers" hx-target="#main-content" hx-push-url="true"
-                  class="flex items-center gap-2">
-                <input type="text" name="q" value="{{ q or '' }}"
-                       placeholder="Search suppliers…"
-                       class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-64">
-                <button type="submit"
-                        class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">
-                    Search
-                </button>
-            </form>
-        </div>
-    </div>
+    {% call page_header("Suppliers") %}
+        {{ search_form("/partial/suppliers", "Search suppliers…", q or '') }}
+    {% endcall %}
 
     {% if suppliers %}
-    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-        <table class="w-full text-sm">
-            <thead class="border-b border-gray-200 dark:border-gray-700 sticky top-[72px] z-10">
-                <tr>
-                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">Name</th>
-                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">Country</th>
-                    <th class="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">City</th>
-                    <th class="text-right px-4 py-3 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">Purchases</th>
-                </tr>
-            </thead>
-            <tbody id="supplier-rows" class="divide-y divide-gray-100 dark:divide-gray-700">
-                {% include "partials/_supplier_rows.html" %}
-            </tbody>
-        </table>
-    </div>
+    {% call table_wrapper() %}
+        <thead class="border-b border-gray-200 dark:border-gray-700 sticky top-[72px] z-10">
+            <tr>
+                {{ th("Name") }}
+                {{ th("Country") }}
+                {{ th("City") }}
+                {{ th("Purchases", "right") }}
+            </tr>
+        </thead>
+        <tbody id="supplier-rows" class="divide-y divide-gray-100 dark:divide-gray-700">
+            {% include "partials/_supplier_rows.html" %}
+        </tbody>
+    {% endcall %}
 
-    <p class="mt-3 text-xs text-gray-400 dark:text-gray-500">{{ total }} suppliers</p>
+    {{ row_count(total, "suppliers") }}
 
     {% else %}
-    <div class="text-center py-12 text-gray-500 dark:text-gray-400">
-        {% if q %}
-        <p>No suppliers found matching "{{ q }}".</p>
-        {% else %}
-        <p>No suppliers in the database yet.</p>
-        {% endif %}
-    </div>
+    {% if q %}
+    {{ empty_state('No suppliers found matching "' ~ q ~ '".') }}
+    {% else %}
+    {{ empty_state("No suppliers in the database yet.") }}
+    {% endif %}
     {% endif %}
 </div>

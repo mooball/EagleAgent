@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---- Custom (non-Tailwind) styles ---- */
+
+/* Smooth transitions for panel resize */
+.transition-panel { transition: margin-right 0.25s ease; }
+/* Disable transition while dragging */
+.no-transition { transition: none !important; }
+/* HTMX loading indicator */
+.htmx-indicator { opacity: 0; transition: opacity 0.2s ease-in; }
+.htmx-request .htmx-indicator { opacity: 1; }
+/* Prevent iframe flash on load */
+#agent-iframe { background: inherit; }
+/* Drag handle cursor */
+.drag-handle { cursor: col-resize; }
+.drag-handle:hover, .drag-handle.dragging { background: rgba(59,130,246,0.3); }

@@ -736,6 +736,13 @@ async def start():
 
         await cl.Message(content=welcome_msg).send()
 
+    # Notify the parent dashboard frame of the active thread ID
+    # so it can resume this thread on page reload
+    try:
+        await cl.send_window_message({"type": "thread_id", "threadId": thread_id})
+    except Exception:
+        pass
+
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
     """
@@ -813,6 +820,12 @@ async def on_chat_resume(thread: ThreadDict):
             )
         msg.persisted = True  # skip DB write — display only
         await msg.send()
+
+    # Notify the parent dashboard frame of the active thread ID
+    try:
+        await cl.send_window_message({"type": "thread_id", "threadId": thread_id})
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1403,19 +1416,13 @@ async def main(message: cl.Message):
 
     # Direct "list all RFQs" intercept
     if "rfq" in msg_lower and any(kw in msg_lower for kw in _rfq_list_keywords) and not rfq_match:
-        from includes.tools.quote_tools import NAMESPACE
+        from includes.tools.quote_tools import NAMESPACE, _render_rfq_list
         if store:
             results = await store.asearch(NAMESPACE, limit=200)
             if results:
-                lines = []
-                for r in results:
-                    rfq = r.value
-                    status = rfq.get("status", "draft")
-                    customer = rfq.get("customer", "Unknown")
-                    item_count = len(rfq.get("items", []))
-                    lines.append(f"- **{rfq['id']}** — {customer} ({item_count} items, {status})")
+                rfqs = [r.value for r in results]
                 await cl.Message(
-                    content=f"Found {len(results)} RFQ(s):\n\n" + "\n".join(sorted(lines)),
+                    content=_render_rfq_list(rfqs),
                     author="EagleAgent",
                 ).send()
             else:

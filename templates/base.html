@@ -4,10 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}EagleAgent{% endblock %}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = { darkMode: 'class' };
-    </script>
+    <!-- Tailwind CSS: use pre-built file in prod, fall back to CDN for local dev -->
+    <link rel="stylesheet" href="/public/tailwind.min.css"
+          onerror="if(!window.__twFallback){window.__twFallback=1;var s=document.createElement('script');s.src='https://cdn.tailwindcss.com';document.head.appendChild(s);var c=document.createElement('script');c.textContent='tailwind.config={darkMode:\u0022class\u0022}';document.head.appendChild(c)}">
     <script>
         // Restore theme before paint to prevent flash
         if (localStorage.theme === 'dark' || (!localStorage.theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
@@ -19,20 +18,6 @@
     <!-- HTMX -->
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script>htmx.config.allowScriptTags = true;</script>
-    <style>
-        /* Smooth transitions for panel resize */
-        .transition-panel { transition: margin-right 0.25s ease; }
-        /* Disable transition while dragging */
-        .no-transition { transition: none !important; }
-        /* HTMX loading indicator */
-        .htmx-indicator { opacity: 0; transition: opacity 0.2s ease-in; }
-        .htmx-request .htmx-indicator { opacity: 1; }
-        /* Prevent iframe flash on load */
-        #agent-iframe { background: inherit; }
-        /* Drag handle cursor */
-        .drag-handle { cursor: col-resize; }
-        .drag-handle:hover, .drag-handle.dragging { background: rgba(59,130,246,0.3); }
-    </style>
 </head>
 <body class="h-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100"
       x-data="dashboard()" x-init="init()">
@@ -40,7 +25,10 @@
     <!-- Header -->
     <header class="h-14 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 shadow-sm relative z-50">
         <div class="flex items-center gap-2">
-            <a href="/" class="text-lg font-bold text-gray-800 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400">EagleAgent</a>
+            <a href="/" class="flex items-center gap-2 text-lg font-bold text-gray-800 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400">
+                <img src="/public/eagle-icon.png" alt="" class="w-7 h-7">
+                EagleAgent
+            </a>
         </div>
 
         <nav class="hidden md:flex items-center gap-1 text-sm font-medium">
@@ -56,13 +44,22 @@
                       {% if active_nav == 'products' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
                 Products
             </a>
+            {% if user and user.role == 'Admin' %}
             <a href="/rfqs"
                hx-get="/partial/rfqs" hx-target="#main-content" hx-push-url="/rfqs"
                class="nav-link px-3 py-1.5 rounded-md transition-colors
                       {% if active_nav == 'rfqs' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
                 RFQs
             </a>
-            <span class="px-3 py-1.5 text-gray-300 dark:text-gray-600 cursor-default">Quotes</span>
+            {% endif %}
+            {% if user and user.role == 'Admin' %}
+            <a href="/users"
+               hx-get="/partial/users" hx-target="#main-content" hx-push-url="/users"
+               class="nav-link px-3 py-1.5 rounded-md transition-colors
+                      {% if active_nav == 'users' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
+                Users
+            </a>
+            {% endif %}
         </nav>
 
         <div class="flex items-center gap-1">
@@ -228,7 +225,19 @@
                                 swap: 'innerHTML'
                             });
                         }
+                        if (event.data?.type === 'thread_id' && event.data.threadId) {
+                            sessionStorage.setItem('cl_thread_id', event.data.threadId);
+                        }
                     });
+
+                    // Resume last chat thread on page reload (if available)
+                    const lastThread = sessionStorage.getItem('cl_thread_id');
+                    if (lastThread) {
+                        const iframe = document.getElementById('agent-iframe');
+                        if (iframe) {
+                            iframe.src = '/chat/thread/' + lastThread;
+                        }
+                    }
 
                     // Set initial context from the page
                     this.updateContext();
@@ -302,7 +311,12 @@
                     const el = document.querySelector('[data-dashboard-context]');
                     if (el) {
                         try {
-                            this.currentContext = JSON.parse(el.dataset.dashboardContext);
+                            const newCtx = JSON.parse(el.dataset.dashboardContext);
+                            const newJson = JSON.stringify(newCtx);
+                            // Only push when the context actually changed
+                            if (newJson === this._lastContextJson) return;
+                            this._lastContextJson = newJson;
+                            this.currentContext = newCtx;
                         } catch (e) {
                             this.currentContext = {};
                         }
@@ -320,16 +334,8 @@
                             payload: ctx
                         }, window.location.origin);
                     }
-                    // Also push directly to the server so the agent has it
-                    // even if the iframe hasn't loaded its listener yet
-                    if (ctx && ctx.view) {
-                        fetch('/api/dashboard-context', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(ctx),
-                            credentials: 'same-origin',
-                        }).catch(function () {});
-                    }
+                    // The iframe listener (embedded.js) will push to the server,
+                    // so we don't need to duplicate the POST here.
                 },
 
                 updateActiveNav() {

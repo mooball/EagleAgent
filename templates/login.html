@@ -4,10 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EagleAgent — Login</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = { darkMode: 'class' };
-    </script>
+    <!-- Tailwind CSS: use pre-built file in prod, fall back to CDN for local dev -->
+    <link rel="stylesheet" href="/public/tailwind.min.css"
+          onerror="if(!window.__twFallback){window.__twFallback=1;var s=document.createElement('script');s.src='https://cdn.tailwindcss.com';document.head.appendChild(s);var c=document.createElement('script');c.textContent='tailwind.config={darkMode:\u0022class\u0022}';document.head.appendChild(c)}">
     <script>
         if (localStorage.theme === 'dark' || (!localStorage.theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
             document.documentElement.classList.add('dark');

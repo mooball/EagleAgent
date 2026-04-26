@@ -219,7 +219,7 @@ def _render_rfq_list(rfqs: list[dict]) -> str:
         assigned = rfq.get("assigned_to", "—")
         created = rfq.get("created_date", "")
         lines.append(
-            f"| {rfq_id} | {customer} | {status} | {confirmed}/{total} confirmed | {assigned} | {created} |"
+            f"| [{rfq_id}](/rfqs/{rfq_id}) | {customer} | {status} | {confirmed}/{total} confirmed | {assigned} | {created} |"
         )
     lines.append("")
     lines.append(f"**{len(rfqs)} RFQs total**")
