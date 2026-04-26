@@ -89,7 +89,14 @@
                         <tr>
                             <td class="py-2">{{ p.doc_number }}</td>
                             <td class="py-2 text-gray-600 dark:text-gray-400">{{ p.date or '—' }}</td>
-                            <td class="py-2">{{ p.product_part or '—' }}</td>
+                            <td class="py-2">
+                                {% if p.product_id and p.product_part %}
+                                <a hx-get="/partial/products/{{ p.product_id }}" hx-target="#main-content" hx-push-url="/products/{{ p.product_id }}"
+                                   class="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer">{{ p.product_part }}</a>
+                                {% else %}
+                                {{ p.product_part or '—' }}
+                                {% endif %}
+                            </td>
                             <td class="py-2 text-right">{{ p.quantity or '—' }}</td>
                             <td class="py-2 text-right">{{ '${:,.2f}'.format(p.price) if p.price else '—' }}</td>
                         </tr>
