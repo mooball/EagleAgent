@@ -247,7 +247,7 @@ INTENTS = {
             "I'll create a new Request for Quote. Please provide the **Customer Name** "
             "along with a **list of products**. Ideally include product names, brands, "
             "and part numbers.\n\n"
-            "You can type the details, or upload an **image**, **PDF**, **spreadsheet**, or **text file** of the parts list."
+            "You can type the details, or upload an **image** (PNG, JPG), **PDF**, **text file** (TXT, CSV), or **spreadsheet** (XLS, XLSX) of the parts list."
         ),
         "context": (
             "The user wants to create a new RFQ (Request for Quote). "

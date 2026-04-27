@@ -85,6 +85,8 @@ def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
 def merge_supplier_contacts(sup: dict, db_contacts: list) -> None:
     """Merge DB contacts into a supplier dict, preserving existing data."""
     existing = sup.get("contacts") or []
+    if not isinstance(existing, list):
+        existing = []
     existing_emails = {
         c.get("email") for c in existing if isinstance(c, dict) and c.get("email")
     }

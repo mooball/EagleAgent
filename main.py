@@ -68,6 +68,14 @@ templates = Jinja2Templates(directory="templates")
 # Chainlit itself is mounted at /chat.
 app.mount("/public", StaticFiles(directory="public"), name="public")
 
+# Serve uploaded file attachments at /files so Chainlit UI can display
+# images and other uploads when resuming a conversation.
+app.mount(
+    "/files",
+    StaticFiles(directory=os.path.join(config.DATA_DIR, "attachments")),
+    name="files",
+)
+
 
 # ---------------------------------------------------------------------------
 # Auth helpers

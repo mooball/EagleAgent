@@ -30,9 +30,8 @@ import asyncio
 # Import per-RFQ lock from quote_tools (single source of truth)
 from includes.tools.quote_tools import get_rfq_lock as _get_rfq_lock
 
-# Set up Chainlit static file serving for local file attachments
+# Set up Chainlit server reference for middleware patching
 import chainlit.server as cl_server
-from fastapi.staticfiles import StaticFiles
 
 # Create the data directory if it doesn't exist
 os.makedirs(os.path.join(config.DATA_DIR, "attachments"), exist_ok=True)
@@ -194,24 +193,7 @@ class OAuthErrorRedirectMiddleware:
 if not getattr(cl_server.app, "_eagleagent_patched", False):
     cl_server.app._eagleagent_patched = True
 
-    # Mount the local data directory to the /files route so Chainlit UI can load images
-    cl_server.app.mount(
-        "/files",
-        StaticFiles(directory=os.path.join(config.DATA_DIR, "attachments")),
-        name="files",
-    )
-
     cl_server.app.add_middleware(OAuthErrorRedirectMiddleware)
-
-    # FIX: Chainlit has a catch-all route `/{full_path:path}` that intercepts
-    # `/files` if our mount is at the end. Move our mount BEFORE the catch-all.
-    routes = cl_server.app.router.routes
-    files_mount = routes.pop()
-    catch_all_idx = next(
-        (i for i, r in enumerate(routes) if getattr(r, 'path', '') == '/{full_path:path}'),
-        len(routes),
-    )
-    routes.insert(catch_all_idx, files_mount)
 
 # Load environment variables (Vertex AI config, OAuth secrets, etc.)
 load_dotenv()
@@ -735,7 +717,8 @@ async def start():
             welcome_msg = "Hello! I can help you find suppliers. Give me a part number, brand name, supplier name, or description and I'll search our database."
 
         from includes.prompts import INTENTS
-        await cl.context.emitter.set_commands(_intents_to_commands(INTENTS))
+        eagle_commands = {k: v for k, v in INTENTS.items() if k == "new_rfq"}
+        await cl.context.emitter.set_commands(_intents_to_commands(eagle_commands))
         await cl.Message(content=welcome_msg).send()
 
 @cl.on_chat_resume
@@ -808,9 +791,10 @@ async def on_chat_resume(thread: ThreadDict):
                 author="EagleAgent",
             )
         else:
-            # Eagle Agent — set command buttons
+            # Eagle Agent — only New RFQ command button
             from includes.prompts import INTENTS
-            await cl.context.emitter.set_commands(_intents_to_commands(INTENTS))
+            eagle_commands = {k: v for k, v in INTENTS.items() if k == "new_rfq"}
+            await cl.context.emitter.set_commands(_intents_to_commands(eagle_commands))
             msg = cl.Message(
                 content=f"Welcome back, {user_name}! Continuing our previous conversation.",
                 author="EagleAgent",
@@ -1366,7 +1350,6 @@ async def main(message: cl.Message):
     # Direct RFQ loading — intercept "load/show/open RFQ" before the graph runs
     import re
     _rfq_load_keywords = ["load", "show", "open", "display", "get", "view", "pull up", "see"]
-    _rfq_list_keywords = ["list", "show", "all"]
     msg_lower = message.content.lower()
 
     # Flexible RFQ ID matching: "RFQ-2026-0001", "RFQ 0001", "RFQ-0001", "rfq 2026-0001"
@@ -1404,21 +1387,6 @@ async def main(message: cl.Message):
             else:
                 await cl.Message(content=f"RFQ **{rfq_id}** not found.", author="EagleAgent").send()
                 return
-
-    # Direct "list all RFQs" intercept
-    if "rfq" in msg_lower and any(kw in msg_lower for kw in _rfq_list_keywords) and not rfq_match:
-        from includes.tools.quote_tools import NAMESPACE, _render_rfq_list
-        if store:
-            results = await store.asearch(NAMESPACE, limit=200)
-            if results:
-                rfqs = [r.value for r in results]
-                await cl.Message(
-                    content=_render_rfq_list(rfqs),
-                    author="EagleAgent",
-                ).send()
-            else:
-                await cl.Message(content="No RFQs found.", author="EagleAgent").send()
-            return
 
     # Direct supplier clearing — intercept "clear/strip/remove suppliers" requests
     _clear_keywords = ["clear", "strip", "remove", "delete", "reset", "wipe"]
@@ -1593,6 +1561,9 @@ async def main(message: cl.Message):
     
     # Track active cl.Step for tool progress display
     active_step = None
+    # Collapse repeated tool calls into a single step with a counter
+    last_tool_name = None
+    tool_call_count = 0
     
     # Fallback: capture last AI response text for non-streaming model calls
     last_ai_text = ""
@@ -1630,6 +1601,10 @@ async def main(message: cl.Message):
             continue
             
         if kind == "on_chat_model_stream":
+            # Tool sequence is over — reset tracking
+            if active_step:
+                active_step = None
+                last_tool_name = None
             content = event["data"]["chunk"].content
             if content:
                 # Handle list of content parts (e.g. from Gemini experimental models)
@@ -1646,13 +1621,22 @@ async def main(message: cl.Message):
                     await msg.stream_token(content)
 
         elif kind == "on_tool_start":
-            # Show a progress step in the UI while the tool runs
+            # Collapse consecutive calls to the same tool into one step
             friendly = name.replace("_", " ").title()
-            active_step = cl.Step(name=friendly, type="tool")
-            await active_step.send()
+            if name == last_tool_name and active_step:
+                # Same tool again — increment counter and update label
+                tool_call_count += 1
+                active_step.name = f"{friendly} (\u00d7{tool_call_count})"
+                await active_step.update()
+            else:
+                # Different tool — start a new step
+                last_tool_name = name
+                tool_call_count = 1
+                active_step = cl.Step(name=friendly, type="tool")
+                await active_step.send()
 
         elif kind == "on_tool_end":
-            # Close the progress step
+            # Close the progress step (only if next event is a different tool)
             if active_step:
                 data = event.get("data", {})
                 output = data.get("output")
@@ -1667,7 +1651,8 @@ async def main(message: cl.Message):
                     output_str = str(output)
                 active_step.output = output_str[:2000] if len(output_str) > 2000 else output_str
                 await active_step.update()
-                active_step = None
+                # Don't clear active_step yet — next on_tool_start
+                # will reuse it if it's the same tool
 
         elif kind == "on_chat_model_end":
             # Accumulate token usage — footer is emitted once after the stream

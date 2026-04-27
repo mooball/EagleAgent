@@ -636,6 +636,39 @@ def _get_store():
     return store
 
 
+def _normalize_rfq_suppliers(rfq: dict) -> None:
+    """Ensure every supplier dict in the RFQ has all expected keys with safe defaults.
+
+    This guards against old/inconsistent data that may be missing keys the
+    templates expect (price, status, lead_time, contacts, etc.).
+    """
+    _SUPPLIER_DEFAULTS = {
+        "name": "",
+        "price": None,
+        "price_type": None,
+        "lead_time": None,
+        "status": "candidate",
+        "notes": None,
+        "supplier_id": None,
+        "contacts": [],
+    }
+    for item in rfq.get("items", []):
+        suppliers = item.get("suppliers", [])
+        # Filter out non-dict entries (e.g. bare strings from old data)
+        cleaned = []
+        for sup in suppliers:
+            if isinstance(sup, str):
+                cleaned.append({**_SUPPLIER_DEFAULTS, "name": sup})
+            elif isinstance(sup, dict):
+                for key, default in _SUPPLIER_DEFAULTS.items():
+                    sup.setdefault(key, default)
+                # Fix contacts that got stored as a non-list
+                if not isinstance(sup["contacts"], list):
+                    sup["contacts"] = []
+                cleaned.append(sup)
+        item["suppliers"] = cleaned
+
+
 def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
     """Back-fill missing supplier contacts from the DB for display.
 
@@ -648,6 +681,9 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
         match_supplier_by_name,
         merge_supplier_contacts,
     )
+
+    # First normalize all supplier dicts to ensure expected keys exist
+    _normalize_rfq_suppliers(rfq)
 
     def _contacts_need_enrichment(contacts: list) -> bool:
         """True if contacts are empty or have no email."""
