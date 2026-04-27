@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 from abc import ABC, abstractmethod
 from langchain_core.runnables.config import RunnableConfig
 from langchain_core.tools import BaseTool
-from langchain_core.messages import SystemMessage, AIMessage, trim_messages, RemoveMessage
+from langchain_core.messages import SystemMessage, AIMessage, HumanMessage, trim_messages, RemoveMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.store.base import BaseStore
 import asyncio
@@ -359,6 +359,44 @@ class BaseSubAgent(ABC):
                         raise
             
             response = result["messages"][-1]
+
+            # Guard against empty responses (e.g. model produced only thinking
+            # tokens).  Fall back to a direct model call without tools to
+            # force a textual reply.
+            _resp_content = getattr(response, "content", None)
+            _has_text = bool(
+                _resp_content
+                and (
+                    (isinstance(_resp_content, str) and _resp_content.strip())
+                    or (isinstance(_resp_content, list) and any(
+                        (isinstance(b, str) and b.strip())
+                        or (isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip())
+                        for b in _resp_content
+                    ))
+                )
+            )
+            if not _has_text and not getattr(response, "tool_calls", None):
+                _finish = getattr(response, "response_metadata", {}).get("finish_reason")
+                logger.warning(
+                    f"{self.name} returned empty response (finish_reason={_finish}) "
+                    f"— retrying via ReAct agent"
+                )
+                # Re-run the full ReAct agent. Gemini thinking models
+                # occasionally produce only thinking tokens; a simple retry
+                # usually succeeds.
+                try:
+                    result2 = await sub_agent_graph.ainvoke(
+                        {"messages": trimmed_messages}, config=invoke_config
+                    )
+                    response = result2["messages"][-1]
+                    _rc2 = getattr(response, "content", None)
+                    logger.info(
+                        f"{self.name} retry response: "
+                        f"content_type={type(_rc2).__name__} "
+                        f"len={len(_rc2) if isinstance(_rc2, (str, list)) else 'N/A'}"
+                    )
+                except Exception as retry_err:
+                    logger.error(f"{self.name} retry also failed: {retry_err}")
         else:
             for attempt in range(1, MAX_RETRIES + 1):
                 try:

@@ -1,0 +1,35 @@
+{% from "components.html" import page_header, search_form, table_wrapper, th, row_count, empty_state %}
+<div data-dashboard-context='{"view": "purchase_list", "entity": "purchase"}'>
+    {% call page_header("Purchases") %}
+        {{ search_form("/partial/purchases", "Search by doc #, supplier, part…", q or '') }}
+    {% endcall %}
+
+    {% if purchases %}
+    {% call table_wrapper() %}
+        <thead class="border-b border-gray-200 dark:border-gray-700 sticky top-[72px] z-10">
+            <tr>
+                {{ th("Doc #") }}
+                {{ th("Date") }}
+                {{ th("Supplier") }}
+                {{ th("Part Number") }}
+                {{ th("Brand") }}
+                {{ th("Qty", "right") }}
+                {{ th("Price", "right") }}
+                {{ th("Status") }}
+            </tr>
+        </thead>
+        <tbody id="purchase-rows" class="divide-y divide-gray-100 dark:divide-gray-700">
+            {% include "partials/_purchase_rows.html" %}
+        </tbody>
+    {% endcall %}
+
+    {{ row_count(total, "purchases") }}
+
+    {% else %}
+    {% if q %}
+    {{ empty_state('No purchases found matching "' ~ q ~ '".') }}
+    {% else %}
+    {{ empty_state("No purchase history in the database yet.") }}
+    {% endif %}
+    {% endif %}
+</div>

@@ -63,8 +63,8 @@ reaction_on_message_received = false
     # 3. For specific file extensions:
     #    accept = { "application/octet-stream" = [".xyz", ".pdb"] }
     # Note: Using "*/*" is not recommended as it may cause browser warnings
-    # Restricted to common document types: images, PDFs, text files, audio
-    accept = ["image/*", "application/pdf", "text/*", "audio/*"]
+    # Restricted to common document types: images, PDFs, text files, audio, spreadsheets
+    accept = ["image/*", "application/pdf", "text/*", "audio/*", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"]
     max_files = 20
     max_size_mb = 50
 
@@ -95,7 +95,7 @@ reaction_on_message_received = false
 # Name of the assistant.
 name = "EagleAgent"
 
-# default_theme = "dark"
+default_theme = "light"
 
 # Force a specific language for all users (e.g., "en-US", "he-IL", "fr-FR")
 # If not set, the browser's language will be used

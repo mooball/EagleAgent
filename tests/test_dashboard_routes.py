@@ -152,11 +152,13 @@ class TestRequireRole:
         assert resp.status_code == 403
 
     @patch("includes.dashboard.routes.config")
-    def test_staff_cannot_access_rfqs(self, mock_config, client):
+    def test_staff_can_access_rfqs(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client, email="staff@eagle.com")
-        resp = client.get("/rfqs", follow_redirects=False)
-        assert resp.status_code == 403
+
+        with patch("includes.dashboard.routes._get_store", return_value=None):
+            resp = client.get("/rfqs")
+            assert resp.status_code == 200
 
     @patch("includes.dashboard.routes.config")
     def test_admin_can_access_rfqs(self, mock_config, client):
@@ -238,8 +240,8 @@ class TestDashboardHome:
         with patch("includes.dashboard.routes.get_session") as mock_gs, \
              patch("includes.dashboard.routes._get_store", return_value=None):
             session = MagicMock()
-            # First call returns supplier count, second returns product count
-            session.query.return_value.scalar.side_effect = [42, 100]
+            # First call returns supplier count, second product count, third purchase count
+            session.query.return_value.scalar.side_effect = [42, 100, 55]
             mock_gs.return_value = session
 
             resp = client.get("/")
@@ -425,11 +427,12 @@ class TestPartialRoutes:
             assert "not found" in resp.text.lower()
 
     @patch("includes.dashboard.routes.config")
-    def test_partial_rfqs_admin_only(self, mock_config, client):
+    def test_partial_rfqs_accessible_to_staff(self, mock_config, client):
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client, email="staff@eagle.com")
-        resp = client.get("/partial/rfqs", follow_redirects=False)
-        assert resp.status_code == 403
+        with patch("includes.dashboard.routes._get_store", return_value=None):
+            resp = client.get("/partial/rfqs")
+            assert resp.status_code == 200
 
     @patch("includes.dashboard.routes.config")
     def test_partial_users_admin_only(self, mock_config, client):

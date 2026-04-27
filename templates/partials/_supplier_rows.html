@@ -11,7 +11,7 @@
 <!-- Sentinel row: triggers load when scrolled near bottom -->
 <tr id="supplier-sentinel"
     hx-get="/partial/suppliers/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}"
-    hx-trigger="revealed"
+    hx-trigger="intersect"
     hx-target="this"
     hx-swap="outerHTML">
     <td colspan="4" class="px-4 py-3 text-center text-gray-400 dark:text-gray-500">

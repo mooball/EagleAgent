@@ -244,8 +244,10 @@ INTENTS = {
         "icon": "📋",
         "description": "Create a new Request for Quote",
         "follow_up": (
-            "I'll create a new Request for Quote. Who is the customer, and do "
-            "you have a parts list (screenshot, text, or document)?"
+            "I'll create a new Request for Quote. Please provide the **Customer Name** "
+            "along with a **list of products**. Ideally include product names, brands, "
+            "and part numbers.\n\n"
+            "You can type the details, or upload an **image**, **PDF**, **spreadsheet**, or **text file** of the parts list."
         ),
         "context": (
             "The user wants to create a new RFQ (Request for Quote). "

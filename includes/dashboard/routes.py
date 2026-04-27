@@ -9,7 +9,7 @@ import math
 import logging
 
 from fastapi import APIRouter, Request, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
@@ -91,6 +91,31 @@ def _render(request: Request, full_template: str, partial_template: str,
 
 
 # ---------------------------------------------------------------------------
+# Latest thread (for iframe resume on page reload)
+# ---------------------------------------------------------------------------
+@router.get("/api/latest-thread")
+def latest_thread(user: dict = Depends(require_user)):
+    """Return the user's most recently active Chainlit thread ID."""
+    session = get_session()
+    try:
+        row = session.execute(
+            text("""
+                SELECT t."id"
+                FROM threads t
+                LEFT JOIN steps s ON t."id" = s."threadId"
+                WHERE t."userIdentifier" = :email
+                GROUP BY t."id"
+                ORDER BY COALESCE(MAX(s."createdAt"), t."createdAt") DESC
+                LIMIT 1
+            """),
+            {"email": user["email"]},
+        ).fetchone()
+    finally:
+        session.close()
+    return JSONResponse({"thread_id": row[0] if row else None})
+
+
+# ---------------------------------------------------------------------------
 # Dashboard home
 # ---------------------------------------------------------------------------
 @router.get("/")
@@ -100,6 +125,7 @@ async def dashboard_home(request: Request, user: dict = Depends(require_user)):
         stats = {
             "suppliers": session.query(func.count(Supplier.id)).scalar(),
             "products": session.query(func.count(Product.id)).scalar(),
+            "purchases": session.query(func.count(ProductSupplier.id)).scalar(),
         }
     finally:
         session.close()
@@ -610,19 +636,317 @@ def _get_store():
     return store
 
 
-@router.get("/rfqs")
-async def rfq_list(request: Request, user: dict = require_admin):
+def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
+    """Back-fill missing supplier contacts from the DB for display.
+
+    When a supplier was added to an RFQ, the contacts snapshot may have been
+    empty or missing email/phone.  This looks up current DB contacts for
+    suppliers that either have a supplier_id or can be matched by name,
+    and merges in any missing email/phone fields.
+    """
+    from includes.dashboard.database import (
+        match_supplier_by_name,
+        merge_supplier_contacts,
+    )
+
+    def _contacts_need_enrichment(contacts: list) -> bool:
+        """True if contacts are empty or have no email."""
+        if not contacts:
+            return True
+        return not any(c.get("email") for c in contacts if isinstance(c, dict))
+
+    # Pass 1: collect suppliers needing enrichment, grouped by id / name
+    by_id: dict[str, list[dict]] = {}
+    by_name: dict[str, list[dict]] = {}   # lowercased name -> supplier dicts
+    for item in rfq.get("items", []):
+        for sup in item.get("suppliers", []):
+            if not _contacts_need_enrichment(sup.get("contacts", [])):
+                continue
+            sid = sup.get("supplier_id")
+            if sid:
+                by_id.setdefault(sid, []).append(sup)
+            else:
+                name = (sup.get("name") or "").strip().lower()
+                if name:
+                    by_name.setdefault(name, []).append(sup)
+
+    if not by_id and not by_name:
+        return
+
+    session = get_session()
+    try:
+        from includes.dashboard.models import Supplier
+
+        # Enrich by supplier_id
+        if by_id:
+            rows = session.query(Supplier.id, Supplier.contacts).filter(
+                Supplier.id.in_(list(by_id.keys()))
+            ).all()
+            for row in rows:
+                sid = str(row.id)
+                if row.contacts and sid in by_id:
+                    for sup in by_id[sid]:
+                        merge_supplier_contacts(sup, row.contacts)
+
+        # Enrich by name using shared matching
+        if by_name:
+            for name_lower, sup_list in by_name.items():
+                matched = match_supplier_by_name(name_lower, session=session)
+                if matched and matched.contacts:
+                    for sup in sup_list:
+                        merge_supplier_contacts(sup, matched.contacts)
+                        if not sup.get("supplier_id"):
+                            sup["supplier_id"] = str(matched.id)
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Purchases (ProductSupplier table — purchase & quote history)
+# ---------------------------------------------------------------------------
+@router.get("/purchases")
+def purchase_list(request: Request, user: dict = Depends(require_user),
+                  q: str = "", page: int = 1):
+    session = get_session()
+    try:
+        query = (
+            session.query(ProductSupplier, Supplier.name, Product.part_number, Product.brand)
+            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
+            .join(Product, ProductSupplier.product_id == Product.id)
+        )
+
+        if q:
+            query = query.filter(
+                ProductSupplier.doc_number.ilike(f"%{q}%")
+                | Supplier.name.ilike(f"%{q}%")
+                | Product.part_number.ilike(f"%{q}%")
+                | Product.brand.ilike(f"%{q}%")
+            )
+
+        total = query.count()
+        total_pages = max(1, math.ceil(total / PAGE_SIZE))
+        page = max(1, min(page, total_pages))
+
+        rows = (
+            query
+            .order_by(ProductSupplier.date.desc().nullslast(), ProductSupplier.doc_number)
+            .offset((page - 1) * PAGE_SIZE)
+            .limit(PAGE_SIZE)
+            .all()
+        )
+
+        purchases = []
+        for ps, sup_name, part_number, brand in rows:
+            purchases.append({
+                "id": str(ps.id),
+                "doc_number": ps.doc_number,
+                "date": str(ps.date) if ps.date else None,
+                "supplier_name": sup_name,
+                "supplier_id": str(ps.supplier_id),
+                "product_part": part_number,
+                "product_brand": brand,
+                "product_id": str(ps.product_id),
+                "quantity": ps.quantity,
+                "price": ps.price,
+                "status": ps.status,
+            })
+    finally:
+        session.close()
+
+    ctx = {
+        "purchases": purchases,
+        "q": q,
+        "page": page,
+        "total": total,
+        "has_more": page < total_pages,
+        "next_page": page + 1,
+        "active_nav": "purchases",
+    }
+    return _render(request, "purchases.html", "partials/purchase_list.html", ctx, user)
+
+
+@router.get("/partial/purchases")
+def partial_purchase_list(request: Request, user: dict = Depends(require_user),
+                          q: str = "", page: int = 1):
+    session = get_session()
+    try:
+        query = (
+            session.query(ProductSupplier, Supplier.name, Product.part_number, Product.brand)
+            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
+            .join(Product, ProductSupplier.product_id == Product.id)
+        )
+
+        if q:
+            query = query.filter(
+                ProductSupplier.doc_number.ilike(f"%{q}%")
+                | Supplier.name.ilike(f"%{q}%")
+                | Product.part_number.ilike(f"%{q}%")
+                | Product.brand.ilike(f"%{q}%")
+            )
+
+        total = query.count()
+        total_pages = max(1, math.ceil(total / PAGE_SIZE))
+        page = max(1, min(page, total_pages))
+
+        rows = (
+            query
+            .order_by(ProductSupplier.date.desc().nullslast(), ProductSupplier.doc_number)
+            .offset((page - 1) * PAGE_SIZE)
+            .limit(PAGE_SIZE)
+            .all()
+        )
+
+        purchases = []
+        for ps, sup_name, part_number, brand in rows:
+            purchases.append({
+                "id": str(ps.id),
+                "doc_number": ps.doc_number,
+                "date": str(ps.date) if ps.date else None,
+                "supplier_name": sup_name,
+                "supplier_id": str(ps.supplier_id),
+                "product_part": part_number,
+                "product_brand": brand,
+                "product_id": str(ps.product_id),
+                "quantity": ps.quantity,
+                "price": ps.price,
+                "status": ps.status,
+            })
+    finally:
+        session.close()
+
+    return templates.TemplateResponse("partials/purchase_list.html", {
+        "request": request,
+        "user": user,
+        "purchases": purchases,
+        "q": q,
+        "page": page,
+        "total": total,
+        "has_more": page < total_pages,
+        "next_page": page + 1,
+    })
+
+
+@router.get("/partial/purchases/rows")
+def partial_purchase_rows(request: Request, user: dict = Depends(require_user),
+                          q: str = "", page: int = 1):
+    """Return just the <tr> rows + sentinel for infinite scroll."""
+    session = get_session()
+    try:
+        query = (
+            session.query(ProductSupplier, Supplier.name, Product.part_number, Product.brand)
+            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
+            .join(Product, ProductSupplier.product_id == Product.id)
+        )
+
+        if q:
+            query = query.filter(
+                ProductSupplier.doc_number.ilike(f"%{q}%")
+                | Supplier.name.ilike(f"%{q}%")
+                | Product.part_number.ilike(f"%{q}%")
+                | Product.brand.ilike(f"%{q}%")
+            )
+
+        total = query.count()
+        total_pages = max(1, math.ceil(total / PAGE_SIZE))
+        page = max(1, min(page, total_pages))
+
+        rows = (
+            query
+            .order_by(ProductSupplier.date.desc().nullslast(), ProductSupplier.doc_number)
+            .offset((page - 1) * PAGE_SIZE)
+            .limit(PAGE_SIZE)
+            .all()
+        )
+
+        purchases = []
+        for ps, sup_name, part_number, brand in rows:
+            purchases.append({
+                "id": str(ps.id),
+                "doc_number": ps.doc_number,
+                "date": str(ps.date) if ps.date else None,
+                "supplier_name": sup_name,
+                "supplier_id": str(ps.supplier_id),
+                "product_part": part_number,
+                "product_brand": brand,
+                "product_id": str(ps.product_id),
+                "quantity": ps.quantity,
+                "price": ps.price,
+                "status": ps.status,
+            })
+    finally:
+        session.close()
+
+    return templates.TemplateResponse("partials/_purchase_rows.html", {
+        "request": request,
+        "purchases": purchases,
+        "q": q,
+        "has_more": page < total_pages,
+        "next_page": page + 1,
+    })
+
+
+RFQ_PAGE_SIZE = 25
+
+
+async def _fetch_rfqs(q: str = "", page: int = 1):
+    """Fetch RFQs from LangGraph store with optional text search and pagination.
+
+    Returns (rfqs_page, total, has_more, next_page).
+    """
     store = _get_store()
     rfqs = []
     if store:
         from includes.tools.quote_tools import NAMESPACE
-        items = await store.asearch(NAMESPACE, limit=200)
+        items = await store.asearch(NAMESPACE, limit=1000)
         for item in items:
             rfqs.append(item.value)
         rfqs.sort(key=lambda r: r.get("created_date", ""), reverse=True)
 
+    # Client-side text filter (LangGraph store has no full-text search)
+    if q:
+        q_lower = q.lower()
+        filtered = []
+        for r in rfqs:
+            searchable = " ".join(filter(None, [
+                str(r.get("id", "")),
+                r.get("customer", ""),
+                r.get("reference", ""),
+                r.get("assigned_to", ""),
+                r.get("status", ""),
+            ])).lower()
+            # Also search item descriptions
+            for item in r.get("items", []):
+                searchable += " " + " ".join(filter(None, [
+                    item.get("description", ""),
+                    item.get("part_number", ""),
+                    item.get("brand", ""),
+                ])).lower()
+            if q_lower in searchable:
+                filtered.append(r)
+        rfqs = filtered
+
+    total = len(rfqs)
+    total_pages = max(1, math.ceil(total / RFQ_PAGE_SIZE))
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * RFQ_PAGE_SIZE
+    rfqs_page = rfqs[start:start + RFQ_PAGE_SIZE]
+    has_more = page < total_pages
+
+    return rfqs_page, total, has_more, page + 1
+
+
+@router.get("/rfqs")
+async def rfq_list(request: Request, user: dict = Depends(require_user),
+                   q: str = "", page: int = 1):
+    rfqs, total, has_more, next_page = await _fetch_rfqs(q, page)
+
     ctx = {
         "rfqs": rfqs,
+        "q": q,
+        "page": page,
+        "total": total,
+        "has_more": has_more,
+        "next_page": next_page,
         "active_nav": "rfqs",
     }
     return _render(request, "rfqs.html", "partials/rfq_list.html", ctx, user)
@@ -630,7 +954,7 @@ async def rfq_list(request: Request, user: dict = require_admin):
 
 @router.get("/rfqs/{rfq_id}")
 async def rfq_detail(request: Request, rfq_id: str,
-                     user: dict = require_admin):
+                     user: dict = Depends(require_user)):
     store = _get_store()
     if not store:
         return RedirectResponse("/rfqs")
@@ -638,6 +962,7 @@ async def rfq_detail(request: Request, rfq_id: str,
     item = await store.aget(NAMESPACE, rfq_id)
     if not item:
         return RedirectResponse("/rfqs")
+    _enrich_rfq_supplier_contacts(item.value)
 
     ctx = {
         "rfq": item.value,
@@ -647,26 +972,40 @@ async def rfq_detail(request: Request, rfq_id: str,
 
 
 @router.get("/partial/rfqs")
-async def partial_rfq_list(request: Request, user: dict = require_admin):
-    store = _get_store()
-    rfqs = []
-    if store:
-        from includes.tools.quote_tools import NAMESPACE
-        items = await store.asearch(NAMESPACE, limit=200)
-        for item in items:
-            rfqs.append(item.value)
-        rfqs.sort(key=lambda r: r.get("created_date", ""), reverse=True)
+async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
+                           q: str = "", page: int = 1):
+    rfqs, total, has_more, next_page = await _fetch_rfqs(q, page)
 
     return templates.TemplateResponse("partials/rfq_list.html", {
         "request": request,
         "user": user,
         "rfqs": rfqs,
+        "q": q,
+        "page": page,
+        "total": total,
+        "has_more": has_more,
+        "next_page": next_page,
+    })
+
+
+@router.get("/partial/rfqs/rows")
+async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
+                           q: str = "", page: int = 1):
+    """Return just the RFQ card rows + sentinel for infinite scroll."""
+    rfqs, total, has_more, next_page = await _fetch_rfqs(q, page)
+
+    return templates.TemplateResponse("partials/_rfq_rows.html", {
+        "request": request,
+        "rfqs": rfqs,
+        "q": q,
+        "has_more": has_more,
+        "next_page": next_page,
     })
 
 
 @router.get("/partial/rfqs/{rfq_id}")
 async def partial_rfq_detail(request: Request, rfq_id: str,
-                             user: dict = require_admin):
+                             user: dict = Depends(require_user)):
     store = _get_store()
     if not store:
         return HTMLResponse("<p>Store not available.</p>")
@@ -674,11 +1013,189 @@ async def partial_rfq_detail(request: Request, rfq_id: str,
     item = await store.aget(NAMESPACE, rfq_id)
     if not item:
         return HTMLResponse("<p>RFQ not found.</p>")
+    _enrich_rfq_supplier_contacts(item.value)
 
     return templates.TemplateResponse("partials/rfq_detail.html", {
         "request": request,
         "user": user,
         "rfq": item.value,
+    })
+
+
+@router.post("/partial/rfqs/{rfq_id}/update")
+async def partial_rfq_update(request: Request, rfq_id: str,
+                             user: dict = Depends(require_user)):
+    """Update RFQ header properties (customer, netsuite, hubspot, notes)."""
+    store = _get_store()
+    if not store:
+        return HTMLResponse("<p>Store not available.</p>", status_code=500)
+    from includes.tools.quote_tools import NAMESPACE
+    item = await store.aget(NAMESPACE, rfq_id)
+    if not item:
+        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+
+    form = await request.form()
+    rfq = item.value
+    updatable = ["customer", "reference", "notes", "netsuite_opportunity", "hubspot_deal"]
+    changes = []
+    for key in updatable:
+        val = form.get(key)
+        if val is not None:
+            rfq[key] = val.strip() if val.strip() else None
+            changes.append(key)
+
+    if changes:
+        from datetime import datetime, timezone
+        rfq.setdefault("history", []).append({
+            "date": datetime.now(timezone.utc).isoformat(),
+            "user": user.get("identifier", "dashboard"),
+            "action": f"Updated: {', '.join(changes)}",
+        })
+        await store.aput(NAMESPACE, rfq_id, rfq)
+
+    _enrich_rfq_supplier_contacts(rfq)
+    return templates.TemplateResponse("partials/rfq_detail.html", {
+        "request": request, "user": user, "rfq": rfq,
+    })
+
+
+@router.post("/partial/rfqs/{rfq_id}/update-item")
+async def partial_rfq_update_item(request: Request, rfq_id: str,
+                                  user: dict = Depends(require_user)):
+    """Update a single RFQ line item."""
+    store = _get_store()
+    if not store:
+        return HTMLResponse("<p>Store not available.</p>", status_code=500)
+    from includes.tools.quote_tools import NAMESPACE
+    item = await store.aget(NAMESPACE, rfq_id)
+    if not item:
+        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+
+    form = await request.form()
+    rfq = item.value
+    try:
+        line_num = int(form.get("line", 0))
+    except (TypeError, ValueError):
+        return HTMLResponse("<p>Invalid line number.</p>", status_code=400)
+
+    line_item = next((i for i in rfq.get("items", []) if i["line"] == line_num), None)
+    if not line_item:
+        return HTMLResponse(f"<p>Line {line_num} not found.</p>", status_code=404)
+
+    updatable = ["input_description", "part_number", "brand", "quantity", "uom"]
+    changes = []
+    for key in updatable:
+        val = form.get(key)
+        if val is not None:
+            val = val.strip()
+            if key == "quantity":
+                try:
+                    val = int(val) if val else None
+                except ValueError:
+                    val = line_item.get("quantity")
+            line_item[key] = val if val else None
+            changes.append(key)
+
+    if changes:
+        from datetime import datetime, timezone
+        rfq.setdefault("history", []).append({
+            "date": datetime.now(timezone.utc).isoformat(),
+            "user": user.get("identifier", "dashboard"),
+            "action": f"Updated line {line_num}: {', '.join(changes)}",
+        })
+        await store.aput(NAMESPACE, rfq_id, rfq)
+
+    _enrich_rfq_supplier_contacts(rfq)
+    return templates.TemplateResponse("partials/rfq_detail.html", {
+        "request": request, "user": user, "rfq": rfq,
+    })
+
+
+@router.post("/partial/rfqs/{rfq_id}/add-item")
+async def partial_rfq_add_item(request: Request, rfq_id: str,
+                               user: dict = Depends(require_user)):
+    """Add a new line item to the RFQ."""
+    store = _get_store()
+    if not store:
+        return HTMLResponse("<p>Store not available.</p>", status_code=500)
+    from includes.tools.quote_tools import NAMESPACE
+    item = await store.aget(NAMESPACE, rfq_id)
+    if not item:
+        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+
+    form = await request.form()
+    rfq = item.value
+    items = rfq.get("items", [])
+    next_line = max((i["line"] for i in items), default=0) + 1
+
+    qty = form.get("quantity", "").strip()
+    try:
+        qty = int(qty) if qty else None
+    except ValueError:
+        qty = None
+
+    new_item = {
+        "line": next_line,
+        "input_description": (form.get("input_description") or "").strip(),
+        "input_code": "",
+        "part_number": (form.get("part_number") or "").strip() or None,
+        "brand": (form.get("brand") or "").strip() or None,
+        "product_id": None,
+        "quantity": qty,
+        "uom": (form.get("uom") or "").strip() or "ea",
+        "status": "unidentified",
+        "suppliers": [],
+    }
+    items.append(new_item)
+    rfq["items"] = items
+
+    from datetime import datetime, timezone
+    rfq.setdefault("history", []).append({
+        "date": datetime.now(timezone.utc).isoformat(),
+        "user": user.get("identifier", "dashboard"),
+        "action": f"Added line {next_line}: {new_item['input_description'] or new_item['part_number'] or 'new item'}",
+    })
+    await store.aput(NAMESPACE, rfq_id, rfq)
+
+    _enrich_rfq_supplier_contacts(rfq)
+    return templates.TemplateResponse("partials/rfq_detail.html", {
+        "request": request, "user": user, "rfq": rfq,
+    })
+
+
+@router.post("/partial/rfqs/{rfq_id}/clear-suppliers")
+async def partial_rfq_clear_suppliers(request: Request, rfq_id: str,
+                                     line: int = 0,
+                                     user: dict = Depends(require_user)):
+    """Remove all suppliers from a specific line item."""
+    store = _get_store()
+    if not store:
+        return HTMLResponse("<p>Store not available.</p>", status_code=500)
+    from includes.tools.quote_tools import NAMESPACE
+    item = await store.aget(NAMESPACE, rfq_id)
+    if not item:
+        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+
+    rfq = item.value
+    line_item = next((i for i in rfq.get("items", []) if i["line"] == line), None)
+    if not line_item:
+        return HTMLResponse(f"<p>Line {line} not found.</p>", status_code=404)
+
+    count = len(line_item.get("suppliers", []))
+    line_item["suppliers"] = []
+
+    if count:
+        from datetime import datetime, timezone
+        rfq.setdefault("history", []).append({
+            "date": datetime.now(timezone.utc).isoformat(),
+            "user": user.get("identifier", "dashboard"),
+            "action": f"Cleared {count} suppliers from line {line}",
+        })
+        await store.aput(NAMESPACE, rfq_id, rfq)
+
+    _enrich_rfq_supplier_contacts(rfq)
+    return templates.TemplateResponse("partials/rfq_detail.html", {
+        "request": request, "user": user, "rfq": rfq,
     })
 
 

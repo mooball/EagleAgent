@@ -73,6 +73,52 @@ async def _next_rfq_number(store: BaseStore) -> str:
     return f"{prefix}{max_seq + 1:04d}"
 
 
+def _match_suppliers_to_db(suppliers: list[dict]) -> None:
+    """Fuzzy-match supplier names against the DB and enrich with supplier_id + contacts.
+
+    Uses the shared match_supplier_by_name() two-pass strategy.
+    Mutates supplier dicts in-place.
+    """
+    # Collect names that need matching (no supplier_id yet)
+    names_to_match = {}  # lower name -> list of supplier dicts
+    for sup in suppliers:
+        if sup.get("supplier_id"):
+            continue
+        name = (sup.get("name") or "").strip()
+        if name:
+            names_to_match.setdefault(name.lower(), []).append(sup)
+
+    if not names_to_match:
+        return
+
+    try:
+        from includes.dashboard.database import (
+            get_session,
+            match_supplier_by_name,
+            merge_supplier_contacts,
+        )
+    except ImportError:
+        logger.warning("Cannot import DB models for supplier matching")
+        return
+
+    session = get_session()
+    try:
+        for name_lower, sup_list in names_to_match.items():
+            row = match_supplier_by_name(name_lower, session=session)
+            if row:
+                logger.info(
+                    f"[supplier-match] '{name_lower}' → '{row.name}' (id={row.id})"
+                )
+                for sup in sup_list:
+                    sup["supplier_id"] = str(row.id)
+                    if row.contacts:
+                        merge_supplier_contacts(sup, row.contacts)
+    except Exception as e:
+        logger.warning(f"Supplier DB matching failed: {e}")
+    finally:
+        session.close()
+
+
 def _render_rfq_summary(rfq: dict) -> str:
     """Render a single RFQ as a markdown summary block."""
     status_display = rfq.get("status", "draft").replace("_", " ").title()
@@ -430,6 +476,10 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
                     skipped_names.append(name or "Unknown")
                 else:
                     valid_suppliers.append(sup)
+
+            # Fuzzy-match supplier names against DB to link supplier_id
+            # and enrich contacts (email/phone) from our records.
+            _match_suppliers_to_db(valid_suppliers)
 
             added_names = []
             updated_names = []

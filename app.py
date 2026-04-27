@@ -724,7 +724,7 @@ async def start():
         await cl.context.emitter.set_commands(_intents_to_commands(INTENTS))
         await cl.Message(content=welcome_msg).send()
     else:
-        # Eagle Agent — no command buttons, default behavior is supplier lookup
+        # Eagle Agent — default supplier lookup profile with command buttons
         if is_first_visit and user_name:
             welcome_msg = f"Welcome to Eagle Agent, {user_name}! I don't think we've met before. Is it OK to call you {user_name} or do you have a preferred name?"
         elif is_first_visit:
@@ -734,14 +734,9 @@ async def start():
         else:
             welcome_msg = "Hello! I can help you find suppliers. Give me a part number, brand name, supplier name, or description and I'll search our database."
 
+        from includes.prompts import INTENTS
+        await cl.context.emitter.set_commands(_intents_to_commands(INTENTS))
         await cl.Message(content=welcome_msg).send()
-
-    # Notify the parent dashboard frame of the active thread ID
-    # so it can resume this thread on page reload
-    try:
-        await cl.send_window_message({"type": "thread_id", "threadId": thread_id})
-    except Exception:
-        pass
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
@@ -813,19 +808,15 @@ async def on_chat_resume(thread: ThreadDict):
                 author="EagleAgent",
             )
         else:
-            # Eagle Agent — no command buttons
+            # Eagle Agent — set command buttons
+            from includes.prompts import INTENTS
+            await cl.context.emitter.set_commands(_intents_to_commands(INTENTS))
             msg = cl.Message(
                 content=f"Welcome back, {user_name}! Continuing our previous conversation.",
                 author="EagleAgent",
             )
         msg.persisted = True  # skip DB write — display only
         await msg.send()
-
-    # Notify the parent dashboard frame of the active thread ID
-    try:
-        await cl.send_window_message({"type": "thread_id", "threadId": thread_id})
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1603,6 +1594,9 @@ async def main(message: cl.Message):
     # Track active cl.Step for tool progress display
     active_step = None
     
+    # Fallback: capture last AI response text for non-streaming model calls
+    last_ai_text = ""
+    
     active_graph = cl.user_session.get("active_graph", graph)
     last_event_time = request_start
     try:
@@ -1678,6 +1672,45 @@ async def main(message: cl.Message):
         elif kind == "on_chat_model_end":
             # Accumulate token usage — footer is emitted once after the stream
             output = event.get("data", {}).get("output")
+
+            # Capture text content as fallback for non-streaming model calls.
+            # When _should_stream() returns False (e.g. callbacks don't propagate
+            # the streaming handler into sub-graphs), on_chat_model_stream events
+            # never fire.  Grab the text from the final model output so we can
+            # display it after the event loop if nothing was streamed.
+            _ai_text = ""
+            if hasattr(output, "content"):
+                _c = output.content
+                if isinstance(_c, str):
+                    _ai_text = _c
+                elif isinstance(_c, list):
+                    _ai_text = "".join(
+                        p.get("text", "") if isinstance(p, dict) and p.get("type") == "text"
+                        else p if isinstance(p, str) else ""
+                        for p in _c
+                    )
+            # Also try ChatResult / LLMResult format (generations list)
+            if not _ai_text and hasattr(output, "generations"):
+                for gen_list in output.generations:
+                    for gen in (gen_list if isinstance(gen_list, list) else [gen_list]):
+                        gen_msg = getattr(gen, "message", None)
+                        if gen_msg and hasattr(gen_msg, "content"):
+                            gc = gen_msg.content
+                            if isinstance(gc, str) and gc.strip():
+                                _ai_text = gc
+                            elif isinstance(gc, list):
+                                _ai_text = "".join(
+                                    p.get("text", "") if isinstance(p, dict) and p.get("type") == "text"
+                                    else p if isinstance(p, str) else ""
+                                    for p in gc
+                                )
+                        if _ai_text:
+                            break
+                    if _ai_text:
+                        break
+            if _ai_text:
+                last_ai_text = _ai_text
+
             usage = None
             if hasattr(output, "usage_metadata") and output.usage_metadata:
                 usage = output.usage_metadata
@@ -1706,6 +1739,36 @@ async def main(message: cl.Message):
             await msg.stream_token("\n\nSorry, the AI model is temporarily overloaded. Please try again in a moment.")
         else:
             await msg.stream_token("\n\nSorry, an unexpected error occurred. Please try again.")
+
+    # Fallback: if no text was streamed but the model DID produce a response,
+    # display it now.  This covers cases where on_chat_model_stream events
+    # weren't emitted (e.g. non-streaming model call path).
+    if not msg.content.strip() and last_ai_text.strip():
+        logger.warning("No streaming output captured — using fallback response text")
+        await msg.stream_token(last_ai_text)
+
+    # Second fallback: if still empty, read the last message from checkpointed state
+    if not msg.content.strip():
+        try:
+            final_state = await active_graph.aget_state(graph_config)
+            if final_state and final_state.values.get("messages"):
+                last_msg = final_state.values["messages"][-1]
+                if hasattr(last_msg, "content") and last_msg.content:
+                    _fc = last_msg.content
+                    _fallback2 = ""
+                    if isinstance(_fc, str):
+                        _fallback2 = _fc
+                    elif isinstance(_fc, list):
+                        _fallback2 = "".join(
+                            p.get("text", "") if isinstance(p, dict) and p.get("type") == "text"
+                            else p if isinstance(p, str) else ""
+                            for p in _fc
+                        )
+                    if _fallback2.strip():
+                        logger.warning(f"No streaming output — using fallback from graph state (last msg type={type(last_msg).__name__})")
+                        await msg.stream_token(_fallback2)
+        except Exception as fb_err:
+            logger.debug(f"State fallback failed: {fb_err}")
 
     # Emit a single token-usage footer after the full response
     if total_all_tokens > 0:
