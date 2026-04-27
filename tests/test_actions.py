@@ -6,7 +6,7 @@ import pytest
 import uuid
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from includes.actions import (
+from includes.chat.actions import (
     _registry,
     get_actions_for_user,
     get_action,
@@ -51,7 +51,7 @@ class TestActionRegistry:
 class TestRoleFiltering:
     """Test that get_actions_for_user filters by role correctly."""
 
-    @patch("includes.actions.config")
+    @patch("includes.chat.actions.config")
     def test_non_admin_sees_only_public_actions(self, mock_config):
         mock_config.get_admin_emails.return_value = ["admin@example.com"]
         actions = get_actions_for_user("staff@example.com")
@@ -59,7 +59,7 @@ class TestRoleFiltering:
         assert "new_conversation" in names
         assert "delete_all_data" not in names
 
-    @patch("includes.actions.config")
+    @patch("includes.chat.actions.config")
     def test_admin_sees_all_actions(self, mock_config):
         mock_config.get_admin_emails.return_value = ["admin@example.com"]
         actions = get_actions_for_user("admin@example.com")
@@ -67,7 +67,7 @@ class TestRoleFiltering:
         assert "new_conversation" in names
         assert "delete_all_data" in names
 
-    @patch("includes.actions.config")
+    @patch("includes.chat.actions.config")
     def test_empty_user_id_sees_public_only(self, mock_config):
         mock_config.get_admin_emails.return_value = ["admin@example.com"]
         actions = get_actions_for_user("")
@@ -118,11 +118,11 @@ class TestDispatchAction:
             await dispatch_action("does_not_exist")
 
     @pytest.mark.asyncio
-    @patch("includes.actions.config")
+    @patch("includes.chat.actions.config")
     async def test_dispatch_admin_action_denied_for_staff(self, mock_config):
         mock_config.get_admin_emails.return_value = ["admin@example.com"]
 
-        import includes.actions as actions_mod
+        import includes.chat.actions as actions_mod
         original_session = actions_mod.cl.user_session
 
         mock_session = MagicMock()
@@ -165,7 +165,7 @@ class TestActionTools:
         assert "delete_all_user_data" in names
 
     @pytest.mark.asyncio
-    @patch("includes.actions.config")
+    @patch("includes.chat.actions.config")
     async def test_list_available_actions_tool(self, mock_config):
         mock_config.get_admin_emails.return_value = []
         from includes.tools.action_tools import create_action_tools

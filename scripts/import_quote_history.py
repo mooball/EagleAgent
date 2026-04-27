@@ -28,7 +28,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from config.settings import Config
-from includes.db_models import Product, Supplier, ProductSupplier
+from includes.dashboard.models import Product, Supplier, ProductSupplier
 
 BATCH_SIZE = 200
 

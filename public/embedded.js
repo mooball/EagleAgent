@@ -17,7 +17,8 @@
       root.classList.remove('dark');
     }
     // Persist so Chainlit's own code stays in sync on next render
-    try { localStorage.setItem('chainlit-theme', theme); } catch (_) {}
+    // Chainlit uses 'vite-ui-theme' as its storage key
+    try { localStorage.setItem('vite-ui-theme', theme); } catch (_) {}
   }
 
   /**

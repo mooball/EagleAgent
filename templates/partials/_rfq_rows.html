@@ -1,0 +1,46 @@
+{% for rfq in rfqs %}
+{% set items = rfq.get('items', []) %}
+{% set status = rfq.status or 'draft' %}
+<a hx-get="/partial/rfqs/{{ rfq.id }}" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}"
+   class="block bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md transition-shadow cursor-pointer">
+    <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <span class="font-bold text-gray-900 dark:text-gray-100">{{ rfq.id }}</span>
+            <span class="text-gray-400">—</span>
+            <span class="font-medium">{{ rfq.customer or 'Unknown' }}</span>
+            {% if status == 'draft' %}
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-gray-600 text-gray-100">Draft</span>
+            {% elif status == 'in_progress' %}
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-blue-600 text-blue-100">In Progress</span>
+            {% elif status == 'awaiting_quotes' %}
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-600 text-amber-100">Awaiting Quotes</span>
+            {% elif status == 'completed' %}
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-green-600 text-green-100">Completed</span>
+            {% elif status == 'cancelled' %}
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-red-600 text-red-100">Cancelled</span>
+            {% endif %}
+        </div>
+        <div class="text-xs text-gray-500 dark:text-gray-400">
+            {{ items | length }} items · {{ rfq.created_date or '' }}
+        </div>
+    </div>
+    {% if rfq.assigned_to or rfq.reference %}
+    <div class="flex items-center gap-3 mt-1 text-xs text-gray-500 dark:text-gray-400">
+        {% if rfq.assigned_to %}<span>{{ rfq.assigned_to }}</span>{% endif %}
+        {% if rfq.reference %}<span>Ref: {{ rfq.reference }}</span>{% endif %}
+    </div>
+    {% endif %}
+</a>
+{% endfor %}
+{% if has_more %}
+<!-- Sentinel: triggers load when scrolled near bottom -->
+<div id="rfq-sentinel"
+     hx-get="/partial/rfqs/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}"
+     hx-trigger="intersect"
+     hx-target="this"
+     hx-swap="outerHTML"
+     class="text-center py-3 text-gray-400 dark:text-gray-500 text-sm">
+    <svg class="animate-spin inline-block w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+    Loading more…
+</div>
+{% endif %}

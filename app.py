@@ -16,10 +16,10 @@ from config import config
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres import AsyncPostgresStore
-from includes.commands import handle_deleteall_command
-from includes.actions import dispatch_action, get_actions_for_user, is_help_request, send_action_buttons
-from includes.document_processing import process_file, create_multimodal_content
-from includes.local_storage_client import LocalStorageClient
+from includes.chat.commands import handle_deleteall_command
+from includes.chat.actions import dispatch_action, get_actions_for_user, is_help_request, send_action_buttons
+from includes.chat.document_processing import process_file, create_multimodal_content
+from includes.chat.local_storage_client import LocalStorageClient
 from includes.mcp_config import load_mcp_config
 from includes.agents import BrowserAgent, GeneralAgent, ProcurementAgent, Supervisor, SysAdminAgent
 from includes.job_runner import JobRunner
@@ -30,9 +30,8 @@ import asyncio
 # Import per-RFQ lock from quote_tools (single source of truth)
 from includes.tools.quote_tools import get_rfq_lock as _get_rfq_lock
 
-# Set up Chainlit static file serving for local file attachments
+# Set up Chainlit server reference for middleware patching
 import chainlit.server as cl_server
-from fastapi.staticfiles import StaticFiles
 
 # Create the data directory if it doesn't exist
 os.makedirs(os.path.join(config.DATA_DIR, "attachments"), exist_ok=True)
@@ -194,24 +193,7 @@ class OAuthErrorRedirectMiddleware:
 if not getattr(cl_server.app, "_eagleagent_patched", False):
     cl_server.app._eagleagent_patched = True
 
-    # Mount the local data directory to the /files route so Chainlit UI can load images
-    cl_server.app.mount(
-        "/files",
-        StaticFiles(directory=os.path.join(config.DATA_DIR, "attachments")),
-        name="files",
-    )
-
     cl_server.app.add_middleware(OAuthErrorRedirectMiddleware)
-
-    # FIX: Chainlit has a catch-all route `/{full_path:path}` that intercepts
-    # `/files` if our mount is at the end. Move our mount BEFORE the catch-all.
-    routes = cl_server.app.router.routes
-    files_mount = routes.pop()
-    catch_all_idx = next(
-        (i for i, r in enumerate(routes) if getattr(r, 'path', '') == '/{full_path:path}'),
-        len(routes),
-    )
-    routes.insert(catch_all_idx, files_mount)
 
 # Load environment variables (Vertex AI config, OAuth secrets, etc.)
 load_dotenv()
@@ -724,7 +706,7 @@ async def start():
         await cl.context.emitter.set_commands(_intents_to_commands(INTENTS))
         await cl.Message(content=welcome_msg).send()
     else:
-        # Eagle Agent — no command buttons, default behavior is supplier lookup
+        # Eagle Agent — default supplier lookup profile with command buttons
         if is_first_visit and user_name:
             welcome_msg = f"Welcome to Eagle Agent, {user_name}! I don't think we've met before. Is it OK to call you {user_name} or do you have a preferred name?"
         elif is_first_visit:
@@ -734,14 +716,10 @@ async def start():
         else:
             welcome_msg = "Hello! I can help you find suppliers. Give me a part number, brand name, supplier name, or description and I'll search our database."
 
+        from includes.prompts import INTENTS
+        eagle_commands = {k: v for k, v in INTENTS.items() if k == "new_rfq"}
+        await cl.context.emitter.set_commands(_intents_to_commands(eagle_commands))
         await cl.Message(content=welcome_msg).send()
-
-    # Notify the parent dashboard frame of the active thread ID
-    # so it can resume this thread on page reload
-    try:
-        await cl.send_window_message({"type": "thread_id", "threadId": thread_id})
-    except Exception:
-        pass
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
@@ -813,19 +791,16 @@ async def on_chat_resume(thread: ThreadDict):
                 author="EagleAgent",
             )
         else:
-            # Eagle Agent — no command buttons
+            # Eagle Agent — only New RFQ command button
+            from includes.prompts import INTENTS
+            eagle_commands = {k: v for k, v in INTENTS.items() if k == "new_rfq"}
+            await cl.context.emitter.set_commands(_intents_to_commands(eagle_commands))
             msg = cl.Message(
                 content=f"Welcome back, {user_name}! Continuing our previous conversation.",
                 author="EagleAgent",
             )
         msg.persisted = True  # skip DB write — display only
         await msg.send()
-
-    # Notify the parent dashboard frame of the active thread ID
-    try:
-        await cl.send_window_message({"type": "thread_id", "threadId": thread_id})
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1316,7 +1291,7 @@ async def _handle_list_available_scripts():
 
 async def _handle_run_script(script_name: str):
     """Run a script by name via the job runner."""
-    from includes.job_progress import monitor_job
+    from includes.chat.job_progress import monitor_job
     thread_id = cl.user_session.get("thread_id", "")
     try:
         job = await job_runner.run_script(script_name, [], thread_id=thread_id)
@@ -1375,7 +1350,6 @@ async def main(message: cl.Message):
     # Direct RFQ loading — intercept "load/show/open RFQ" before the graph runs
     import re
     _rfq_load_keywords = ["load", "show", "open", "display", "get", "view", "pull up", "see"]
-    _rfq_list_keywords = ["list", "show", "all"]
     msg_lower = message.content.lower()
 
     # Flexible RFQ ID matching: "RFQ-2026-0001", "RFQ 0001", "RFQ-0001", "rfq 2026-0001"
@@ -1413,21 +1387,6 @@ async def main(message: cl.Message):
             else:
                 await cl.Message(content=f"RFQ **{rfq_id}** not found.", author="EagleAgent").send()
                 return
-
-    # Direct "list all RFQs" intercept
-    if "rfq" in msg_lower and any(kw in msg_lower for kw in _rfq_list_keywords) and not rfq_match:
-        from includes.tools.quote_tools import NAMESPACE, _render_rfq_list
-        if store:
-            results = await store.asearch(NAMESPACE, limit=200)
-            if results:
-                rfqs = [r.value for r in results]
-                await cl.Message(
-                    content=_render_rfq_list(rfqs),
-                    author="EagleAgent",
-                ).send()
-            else:
-                await cl.Message(content="No RFQs found.", author="EagleAgent").send()
-            return
 
     # Direct supplier clearing — intercept "clear/strip/remove suppliers" requests
     _clear_keywords = ["clear", "strip", "remove", "delete", "reset", "wipe"]
@@ -1554,7 +1513,7 @@ async def main(message: cl.Message):
     # Inject dashboard context so the agent knows what the user is viewing.
     # Prepend to message_content (before HumanMessage is created) so it
     # travels with the user turn and is visible to the supervisor and agents.
-    from includes.dashboard_context import format_context_for_prompt
+    from includes.dashboard.context import format_context_for_prompt
     dashboard_ctx = format_context_for_prompt(user_id)
     if dashboard_ctx:
         logger.info(f"Dashboard context for {user_id}: {dashboard_ctx}")
@@ -1602,6 +1561,12 @@ async def main(message: cl.Message):
     
     # Track active cl.Step for tool progress display
     active_step = None
+    # Collapse repeated tool calls into a single step with a counter
+    last_tool_name = None
+    tool_call_count = 0
+    
+    # Fallback: capture last AI response text for non-streaming model calls
+    last_ai_text = ""
     
     active_graph = cl.user_session.get("active_graph", graph)
     last_event_time = request_start
@@ -1636,6 +1601,10 @@ async def main(message: cl.Message):
             continue
             
         if kind == "on_chat_model_stream":
+            # Tool sequence is over — reset tracking
+            if active_step:
+                active_step = None
+                last_tool_name = None
             content = event["data"]["chunk"].content
             if content:
                 # Handle list of content parts (e.g. from Gemini experimental models)
@@ -1652,13 +1621,22 @@ async def main(message: cl.Message):
                     await msg.stream_token(content)
 
         elif kind == "on_tool_start":
-            # Show a progress step in the UI while the tool runs
+            # Collapse consecutive calls to the same tool into one step
             friendly = name.replace("_", " ").title()
-            active_step = cl.Step(name=friendly, type="tool")
-            await active_step.send()
+            if name == last_tool_name and active_step:
+                # Same tool again — increment counter and update label
+                tool_call_count += 1
+                active_step.name = f"{friendly} (\u00d7{tool_call_count})"
+                await active_step.update()
+            else:
+                # Different tool — start a new step
+                last_tool_name = name
+                tool_call_count = 1
+                active_step = cl.Step(name=friendly, type="tool")
+                await active_step.send()
 
         elif kind == "on_tool_end":
-            # Close the progress step
+            # Close the progress step (only if next event is a different tool)
             if active_step:
                 data = event.get("data", {})
                 output = data.get("output")
@@ -1673,11 +1651,51 @@ async def main(message: cl.Message):
                     output_str = str(output)
                 active_step.output = output_str[:2000] if len(output_str) > 2000 else output_str
                 await active_step.update()
-                active_step = None
+                # Don't clear active_step yet — next on_tool_start
+                # will reuse it if it's the same tool
 
         elif kind == "on_chat_model_end":
             # Accumulate token usage — footer is emitted once after the stream
             output = event.get("data", {}).get("output")
+
+            # Capture text content as fallback for non-streaming model calls.
+            # When _should_stream() returns False (e.g. callbacks don't propagate
+            # the streaming handler into sub-graphs), on_chat_model_stream events
+            # never fire.  Grab the text from the final model output so we can
+            # display it after the event loop if nothing was streamed.
+            _ai_text = ""
+            if hasattr(output, "content"):
+                _c = output.content
+                if isinstance(_c, str):
+                    _ai_text = _c
+                elif isinstance(_c, list):
+                    _ai_text = "".join(
+                        p.get("text", "") if isinstance(p, dict) and p.get("type") == "text"
+                        else p if isinstance(p, str) else ""
+                        for p in _c
+                    )
+            # Also try ChatResult / LLMResult format (generations list)
+            if not _ai_text and hasattr(output, "generations"):
+                for gen_list in output.generations:
+                    for gen in (gen_list if isinstance(gen_list, list) else [gen_list]):
+                        gen_msg = getattr(gen, "message", None)
+                        if gen_msg and hasattr(gen_msg, "content"):
+                            gc = gen_msg.content
+                            if isinstance(gc, str) and gc.strip():
+                                _ai_text = gc
+                            elif isinstance(gc, list):
+                                _ai_text = "".join(
+                                    p.get("text", "") if isinstance(p, dict) and p.get("type") == "text"
+                                    else p if isinstance(p, str) else ""
+                                    for p in gc
+                                )
+                        if _ai_text:
+                            break
+                    if _ai_text:
+                        break
+            if _ai_text:
+                last_ai_text = _ai_text
+
             usage = None
             if hasattr(output, "usage_metadata") and output.usage_metadata:
                 usage = output.usage_metadata
@@ -1706,6 +1724,36 @@ async def main(message: cl.Message):
             await msg.stream_token("\n\nSorry, the AI model is temporarily overloaded. Please try again in a moment.")
         else:
             await msg.stream_token("\n\nSorry, an unexpected error occurred. Please try again.")
+
+    # Fallback: if no text was streamed but the model DID produce a response,
+    # display it now.  This covers cases where on_chat_model_stream events
+    # weren't emitted (e.g. non-streaming model call path).
+    if not msg.content.strip() and last_ai_text.strip():
+        logger.warning("No streaming output captured — using fallback response text")
+        await msg.stream_token(last_ai_text)
+
+    # Second fallback: if still empty, read the last message from checkpointed state
+    if not msg.content.strip():
+        try:
+            final_state = await active_graph.aget_state(graph_config)
+            if final_state and final_state.values.get("messages"):
+                last_msg = final_state.values["messages"][-1]
+                if hasattr(last_msg, "content") and last_msg.content:
+                    _fc = last_msg.content
+                    _fallback2 = ""
+                    if isinstance(_fc, str):
+                        _fallback2 = _fc
+                    elif isinstance(_fc, list):
+                        _fallback2 = "".join(
+                            p.get("text", "") if isinstance(p, dict) and p.get("type") == "text"
+                            else p if isinstance(p, str) else ""
+                            for p in _fc
+                        )
+                    if _fallback2.strip():
+                        logger.warning(f"No streaming output — using fallback from graph state (last msg type={type(last_msg).__name__})")
+                        await msg.stream_token(_fallback2)
+        except Exception as fb_err:
+            logger.debug(f"State fallback failed: {fb_err}")
 
     # Emit a single token-usage footer after the full response
     if total_all_tokens > 0:

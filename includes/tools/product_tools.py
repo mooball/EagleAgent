@@ -14,7 +14,7 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import asyncio
 
 from config.settings import Config
-from includes.db_models import Product, Brand, Supplier, SupplierBrand, ProductSupplier
+from includes.dashboard.models import Product, Brand, Supplier, SupplierBrand, ProductSupplier
 
 logger = logging.getLogger(__name__)
 

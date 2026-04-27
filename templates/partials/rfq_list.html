@@ -1,48 +1,35 @@
-<div data-dashboard-context='{"view": "rfq_list", "entity": "rfq"}' class="pt-6">
-    <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold">Requests for Quote</h1>
-    </div>
+{% from "components.html" import page_header, search_form, row_count, empty_state %}
+<div data-dashboard-context='{"view": "rfq_list", "entity": "rfq"}'>
+    {% call page_header("Requests for Quote") %}
+        <button type="button"
+                @click="
+                    fetch('/api/agent-bridge', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ action: { name: 'new_rfq', payload: {} } })
+                    });
+                    if ($store.dashboard) { $store.dashboard.agentState = 'panel'; }
+                    else if (agentState === 'closed') { agentState = 'panel'; }
+                "
+                class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 whitespace-nowrap">
+            + New RFQ
+        </button>
+        {{ search_form("/partial/rfqs", "Search RFQs…", q or '') }}
+    {% endcall %}
 
     {% if rfqs %}
-    <div class="grid gap-4">
-        {% for rfq in rfqs %}
-        {% set items = rfq.get('items', []) %}
-        {% set status = rfq.status or 'draft' %}
-        <a hx-get="/partial/rfqs/{{ rfq.id }}" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}"
-           class="block bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md transition-shadow cursor-pointer">
-            <div class="flex items-center justify-between">
-                <div class="flex items-center gap-3">
-                    <span class="font-bold text-gray-900 dark:text-gray-100">{{ rfq.id }}</span>
-                    <span class="text-gray-400">—</span>
-                    <span class="font-medium">{{ rfq.customer or 'Unknown' }}</span>
-                    {% if status == 'draft' %}
-                    <span class="text-[10px] px-2 py-0.5 rounded-full bg-gray-600 text-gray-100">Draft</span>
-                    {% elif status == 'in_progress' %}
-                    <span class="text-[10px] px-2 py-0.5 rounded-full bg-blue-600 text-blue-100">In Progress</span>
-                    {% elif status == 'awaiting_quotes' %}
-                    <span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-600 text-amber-100">Awaiting Quotes</span>
-                    {% elif status == 'completed' %}
-                    <span class="text-[10px] px-2 py-0.5 rounded-full bg-green-600 text-green-100">Completed</span>
-                    {% elif status == 'cancelled' %}
-                    <span class="text-[10px] px-2 py-0.5 rounded-full bg-red-600 text-red-100">Cancelled</span>
-                    {% endif %}
-                </div>
-                <div class="text-xs text-gray-500 dark:text-gray-400">
-                    {{ items | length }} items · {{ rfq.created_date or '' }}
-                </div>
-            </div>
-            {% if rfq.assigned_to or rfq.reference %}
-            <div class="flex items-center gap-3 mt-1 text-xs text-gray-500 dark:text-gray-400">
-                {% if rfq.assigned_to %}<span>{{ rfq.assigned_to }}</span>{% endif %}
-                {% if rfq.reference %}<span>Ref: {{ rfq.reference }}</span>{% endif %}
-            </div>
-            {% endif %}
-        </a>
-        {% endfor %}
+    <div id="rfq-rows" class="grid gap-3">
+        {% include "partials/_rfq_rows.html" %}
     </div>
+
+    {{ row_count(total, "RFQs") }}
+
     {% else %}
-    <div class="text-center py-12 text-gray-500 dark:text-gray-400">
-        <p>No RFQs yet. Use the agent to create one.</p>
-    </div>
+    {% if q %}
+    {{ empty_state('No RFQs found matching "' ~ q ~ '".') }}
+    {% else %}
+    {{ empty_state("No RFQs yet. Use the agent to create one.") }}
+    {% endif %}
     {% endif %}
 </div>

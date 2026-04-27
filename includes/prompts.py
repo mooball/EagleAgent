@@ -244,8 +244,10 @@ INTENTS = {
         "icon": "📋",
         "description": "Create a new Request for Quote",
         "follow_up": (
-            "I'll create a new Request for Quote. Who is the customer, and do "
-            "you have a parts list (screenshot, text, or document)?"
+            "I'll create a new Request for Quote. Please provide the **Customer Name** "
+            "along with a **list of products**. Ideally include product names, brands, "
+            "and part numbers.\n\n"
+            "You can type the details, or upload an **image** (PNG, JPG), **PDF**, **text file** (TXT, CSV), or **spreadsheet** (XLS, XLSX) of the parts list."
         ),
         "context": (
             "The user wants to create a new RFQ (Request for Quote). "
@@ -490,7 +492,7 @@ def _build_action_awareness(profile_data: Optional[Dict[str, Any]] = None) -> st
     Filters actions based on the user's role in *profile_data*.
     """
     try:
-        from includes.actions import get_actions_for_user, _registry
+        from includes.chat.actions import get_actions_for_user, _registry
     except ImportError:
         return ""
 

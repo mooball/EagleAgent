@@ -35,12 +35,13 @@ EagleAgent uses LangChain's message types from `langchain_core.messages`:
 
 ### SystemMessage
 **Purpose**: Provide instructions, context, and behavioral guidelines to the LLM  
-**Constructed**: Dynamically in `call_model()` using [`includes/prompts.py`](includes/prompts.py)  
-**Frequency**: Created fresh on each LLM invocation (not persisted in conversation history)  
+**Constructed**: Dynamically by each sub-agent's `get_system_prompt()` / `get_system_prompt_async()` using [`includes/prompts.py`](includes/prompts.py)  
+**Frequency**: Created fresh on each agent invocation (not persisted in conversation history)  
 **Contents**:
 - User profile information (if available)
 - Tool usage instructions
-- (Future) Agent identity and personality
+- Dashboard context (what page/entity the user is viewing)
+- Agent identity and role-specific instructions
 
 **Example**:
 ```
@@ -105,9 +106,11 @@ Here's the complete flow from user message to LLM response:
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 2. @cl.on_message handler                                      │
+│ 2. @cl.on_message handler (app.py)                             │
 │    - Retrieves thread_id from session                          │
 │    - Retrieves user_id from session                            │
+│    - Processes file attachments (if any)                       │
+│    - Injects dashboard context (what page user is viewing)     │
 │    - Creates HumanMessage from message.content                 │
 │    - Prepares graph inputs: {messages: [...], user_id: ...}    │
 └────────────────────┬────────────────────────────────────────────┘
@@ -124,67 +127,54 @@ Here's the complete flow from user message to LLM response:
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 4. call_model() node execution                                 │
+│ 4. Supervisor node execution                                    │
+│    - Hybrid routing: keyword rules first, LLM fallback         │
+│    - Returns RouteDecision: next_agent name or "FINISH"        │
+│    - Routes to: GeneralAgent, ProcurementAgent, or             │
+│      ResearchAgent                                              │
+└────────────────────┬────────────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 5. Sub-agent execution (BaseSubAgent.__call__)                 │
 │                                                                 │
-│    Step 4a: Load user profile from cross-thread store          │
+│    Step 5a: Trim messages (max 30, configurable)               │
+│                                                                 │
+│    Step 5b: Build system prompt                                │
 │    ┌─────────────────────────────────────────────────┐         │
-│    │ user_profile = await store.aget(                │         │
-│    │     ("users",),                                 │         │
-│    │     user_id                                     │         │
-│    │ )                                               │         │
+│    │ get_system_prompt_async() or get_system_prompt()│         │
+│    │ → calls includes/prompts.py build_system_prompt │         │
+│    │ → includes user profile, dashboard context,     │         │
+│    │   available actions, tool instructions           │         │
 │    └─────────────────────────────────────────────────┘         │
 │                                                                 │
-│    Step 4b: Build system prompt                                │
+│    Step 5c: Load tools                                         │
 │    ┌─────────────────────────────────────────────────┐         │
-│    │ from includes.prompts import build_system_prompt│         │
-│    │                                                 │         │
-│    │ if user_profile and user_profile.value:        │         │
-│    │     system_content = build_system_prompt(      │         │
-│    │         user_profile.value                     │         │
-│    │     )                                           │         │
-│    │ else:                                           │         │
-│    │     system_content = build_system_prompt(None) │         │
+│    │ get_tools_async() or get_tools()                │         │
+│    │ → agent-specific tools + MCP tools (if any)    │         │
 │    └─────────────────────────────────────────────────┘         │
 │                                                                 │
-│    Step 4c: Construct message sequence                         │
+│    Step 5d: Create react agent and invoke                      │
 │    ┌─────────────────────────────────────────────────┐         │
-│    │ enhanced_messages = [                           │         │
-│    │     SystemMessage(content=system_content),     │         │
-│    │     ...state["messages"]  # History + current  │         │
-│    │ ]                                               │         │
-│    └─────────────────────────────────────────────────┘         │
-│                                                                 │
-│    Step 4d: Create user-specific tools                         │
-│    ┌─────────────────────────────────────────────────┐         │
-│    │ tools = create_profile_tools(store, user_id)   │         │
-│    │ model_with_tools = base_model.bind_tools(tools)│         │
-│    └─────────────────────────────────────────────────┘         │
-│                                                                 │
-│    Step 4e: Invoke LLM                                         │
-│    ┌─────────────────────────────────────────────────┐         │
-│    │ response = await model_with_tools.ainvoke(     │         │
-│    │     enhanced_messages                           │         │
-│    │ )                                               │         │
+│    │ create_react_agent(model, tools)                │         │
+│    │ → handles tool calls internally in a loop      │         │
+│    │ → returns final messages                        │         │
 │    └─────────────────────────────────────────────────┘         │
 └────────────────────┬────────────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 5. Routing decision (should_continue)                          │
-│    - If response contains tool_calls → route to "tools" node   │
-│    - Otherwise → END                                            │
+│ 6. Back to Supervisor                                           │
+│    - Evaluates if task is complete                              │
+│    - Routes to another agent or returns "FINISH"               │
+│    - Graph loops: Supervisor → Agent → Supervisor → ...        │
 └────────────────────┬────────────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 6a. Tool execution (if tool calls present)                     │
-│     - ToolNode executes each tool call                         │
-│     - Returns ToolMessages with results                        │
-│     - Graph loops back to call_model() with tool results       │
-│                                                                 │
-│ 6b. Response streaming (if no tool calls)                      │
-│     - Stream response tokens to Chainlit UI                    │
-│     - Save final response to checkpointer                      │
+│ 7. Response streaming                                           │
+│    - Stream response tokens to Chainlit UI                     │
+│    - Save final state to checkpointer                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -436,15 +426,15 @@ Understanding where different types of configuration live:
 **File**: [`app.py`](app.py)  
 **Contents**:
 - Graph structure (nodes, edges)
-- State schema (`AgentState`)
+- State schema (`SupervisorState`)
 - Model initialization
-- Routing logic
+- Supervisor routing and agent node wiring
 
-**When to modify**: Adding new nodes, changing conversation flow, modifying state
+**When to modify**: Adding new agent nodes, changing conversation flow, modifying state
 
 ### Tool Definitions
-**File**: [`includes/user_profile_tools.py`](includes/user_profile_tools.py)  
-**Contents**: Tool schemas and implementations
+**File**: [`includes/tools/`](includes/tools/)  
+**Contents**: Tool schemas and implementations (`user_profile.py`, `product_tools.py`, `quote_tools.py`, `action_tools.py`, `job_tools.py`, `browser_tools.py`)
 
 **When to modify**: Adding new tools, changing tool behavior
 
@@ -489,7 +479,7 @@ Understanding where different types of configuration live:
 ✅ **DO**: Let LangGraph manage message accumulation  
 ❌ **DON'T**: Manually manipulate `state["messages"]`
 
-✅ **DO**: Use `operator.add` for message sequence in `AgentState`  
+✅ **DO**: Use `operator.add` for message sequence in `SupervisorState`  
 ❌ **DON'T**: Try to merge messages manually
 
 ### 6. Debugging Context
@@ -526,25 +516,25 @@ When ready to migrate prompts to YAML:
 ### Agent doesn't use preferred name
 
 **Check**:
-1. Is profile saved? `uv run scripts/manage_user_profile.py view <email>`
+1. Is profile saved? Check via the agent: ask "What do you know about me?"
 2. Is `preferred_name` field present in profile?
 3. Is system prompt being constructed with profile data? (Add logging)
-4. Is user_id being passed to `call_model()`?
+4. Is user_id being passed correctly in the graph state?
 
 ### Profile information not persisting
 
 **Check**:
-1. Is PostgreSQL emulator running? (production) or emulator host set?
+1. Is PostgreSQL running?
 2. Is `user_id` being set in `@cl.on_chat_start` and `@cl.on_chat_resume`?
-3. Is store initialized correctly? Check [`app.py`](app.py) line 22
+3. Is store initialized correctly? Check `app.py` `setup_globals()`
 4. Are tool calls executing successfully? Check tool message content
 
 ### System prompt seems stale
 
 **Check**:
-- System prompt is constructed fresh on each `call_model()` invocation
+- System prompt is constructed fresh on each agent invocation via `get_system_prompt_async()`
 - If profile changed but prompt didn't update → check store.aget() is returning updated data
-- Clear PostgreSQL cache if using emulator (restart emulator)
+- Dashboard context is injected per-message in `@cl.on_message`
 
 ### Conversation history not loading on resume
 

@@ -4,6 +4,7 @@ Document processing utilities for extracting content from various file types.
 Supports:
 - Images: Base64 encoding for vision models
 - PDFs: Text extraction
+- Spreadsheets: Excel (.xlsx, .xls) via pandas/openpyxl
 - Text files: Direct reading
 - Audio: Placeholder for future transcription
 """
@@ -140,6 +141,53 @@ def extract_text_from_file(file_bytes: bytes, mime_type: str, filename: str = ""
         return f"[Error extracting text: {str(e)}]"
 
 
+SPREADSHEET_MIME_TYPES = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+}
+
+SPREADSHEET_EXTENSIONS = (".xlsx", ".xls")
+
+
+def extract_spreadsheet_text(file_bytes: bytes, filename: str = "") -> str:
+    """
+    Extract text content from an Excel spreadsheet.
+
+    Reads all sheets and converts to a readable text representation.
+
+    Args:
+        file_bytes: Spreadsheet file content as bytes
+        filename: Original filename
+
+    Returns:
+        str: Extracted text with one section per sheet
+    """
+    import pandas as pd
+
+    try:
+        sheets = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None, dtype=str)
+        parts: list[str] = []
+
+        for sheet_name, df in sheets.items():
+            df = df.dropna(how="all")
+            if df.empty:
+                continue
+            header = f"--- Sheet: {sheet_name} ---"
+            table = df.to_csv(index=False)
+            parts.append(f"{header}\n{table}")
+
+        full_text = "\n\n".join(parts)
+        logger.info(
+            f"Extracted spreadsheet: {len(full_text)} chars, "
+            f"{len(parts)} sheet(s) from {filename}"
+        )
+        return full_text if full_text else "[Spreadsheet contains no data]"
+
+    except Exception as e:
+        logger.error(f"Failed to extract spreadsheet text: {e}")
+        return f"[Error extracting spreadsheet: {str(e)}]"
+
+
 def process_audio(file_bytes: bytes, mime_type: str) -> Dict[str, Any]:
     """
     Process an audio file (placeholder for future transcription support).
@@ -220,6 +268,12 @@ def process_file(
             result["processed_type"] = "text"
             result["content"] = text
             
+        # Process spreadsheets
+        elif mime_type in SPREADSHEET_MIME_TYPES or filename.lower().endswith(SPREADSHEET_EXTENSIONS):
+            text = extract_spreadsheet_text(file_bytes, filename)
+            result["processed_type"] = "spreadsheet"
+            result["content"] = text
+
         # Process audio files
         elif mime_type.startswith("audio/"):
             audio_data = process_audio(file_bytes, mime_type)
@@ -283,7 +337,7 @@ def create_multimodal_content(text: str, processed_files: list[Dict[str, Any]]) 
                 "image_url": f"data:{mime_type};base64,{base64_data}"
             })
             
-        elif processed_type in ("pdf", "text"):
+        elif processed_type in ("pdf", "text", "spreadsheet"):
             # Add extracted text to the text content
             extracted_text = file_data["content"]
             filename = file_data["filename"]

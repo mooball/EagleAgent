@@ -44,14 +44,18 @@
                       {% if active_nav == 'products' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
                 Products
             </a>
-            {% if user and user.role == 'Admin' %}
+            <a href="/purchases"
+               hx-get="/partial/purchases" hx-target="#main-content" hx-push-url="/purchases"
+               class="nav-link px-3 py-1.5 rounded-md transition-colors
+                      {% if active_nav == 'purchases' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
+                Purchases
+            </a>
             <a href="/rfqs"
                hx-get="/partial/rfqs" hx-target="#main-content" hx-push-url="/rfqs"
                class="nav-link px-3 py-1.5 rounded-md transition-colors
                       {% if active_nav == 'rfqs' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
                 RFQs
             </a>
-            {% endif %}
             {% if user and user.role == 'Admin' %}
             <a href="/users"
                hx-get="/partial/users" hx-target="#main-content" hx-push-url="/users"
@@ -187,7 +191,12 @@
                 currentContext: {},
 
                 init() {
-                    // Sync initial theme to iframe once it loads
+                    // Pre-set the iframe's theme in localStorage before it loads,
+                    // so Chainlit renders with the correct theme immediately
+                    const currentTheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+                    try { localStorage.setItem('vite-ui-theme', currentTheme); } catch (_) {}
+
+                    // Also send via postMessage once iframe finishes loading
                     const iframe = document.getElementById('agent-iframe');
                     if (iframe) {
                         iframe.addEventListener('load', () => {
@@ -226,29 +235,35 @@
                             });
                         }
                         if (event.data?.type === 'thread_id' && event.data.threadId) {
-                            sessionStorage.setItem('cl_thread_id', event.data.threadId);
+                            // Track the active thread so we don't overwrite on reload
+                            this._activeThreadId = event.data.threadId;
                         }
                     });
 
-                    // Resume last chat thread on page reload (if available)
-                    const lastThread = sessionStorage.getItem('cl_thread_id');
-                    if (lastThread) {
-                        const iframe = document.getElementById('agent-iframe');
-                        if (iframe) {
-                            iframe.src = '/chat/thread/' + lastThread;
-                        }
-                    }
+                    // Resume the user's most recent persisted thread (server-side lookup)
+                    fetch('/api/latest-thread', { credentials: 'same-origin' })
+                        .then(r => r.json())
+                        .then(data => {
+                            if (data.thread_id) {
+                                const iframe = document.getElementById('agent-iframe');
+                                if (iframe) {
+                                    iframe.src = '/chat/thread/' + data.thread_id;
+                                }
+                            }
+                        })
+                        .catch(() => {});
 
                     // Set initial context from the page
                     this.updateContext();
 
-                    // Infinite scroll: fire 'revealed' on sentinel when scrolled near bottom
+                    // Infinite scroll: fire 'intersect' on sentinel when scrolled near bottom
+                    // (backup for containers where IntersectionObserver root differs)
                     const mainEl = document.getElementById('main-content');
                     mainEl.addEventListener('scroll', () => {
                         if (mainEl.scrollTop + mainEl.clientHeight >= mainEl.scrollHeight - 200) {
-                            const sentinel = mainEl.querySelector('[hx-trigger="revealed"]');
+                            const sentinel = mainEl.querySelector('[hx-trigger="intersect"]');
                             if (sentinel && !sentinel.classList.contains('htmx-request')) {
-                                htmx.trigger(sentinel, 'revealed');
+                                htmx.trigger(sentinel, 'intersect');
                             }
                         }
                     });
@@ -288,13 +303,17 @@
 
                 toggleTheme() {
                     const html = document.documentElement;
+                    var theme;
                     if (html.classList.contains('dark')) {
                         html.classList.remove('dark');
-                        localStorage.theme = 'light';
+                        theme = 'light';
                     } else {
                         html.classList.add('dark');
-                        localStorage.theme = 'dark';
+                        theme = 'dark';
                     }
+                    localStorage.theme = theme;
+                    // Keep Chainlit's own key in sync (shared localStorage)
+                    try { localStorage.setItem('vite-ui-theme', theme); } catch (_) {}
                     this.syncThemeToIframe();
                 },
 
@@ -363,6 +382,10 @@
             return {
                 expanded: {},
                 allExpanded: false,
+                openPopover: null,
+                editingHeader: false,
+                editingItem: null,
+                addingItem: false,
                 rfqId: '',
                 _allLines: [],
                 _items: {},

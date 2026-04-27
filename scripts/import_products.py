@@ -26,7 +26,7 @@ from sqlalchemy import create_engine, or_
 from sqlalchemy.orm import sessionmaker
 
 from config.settings import Config
-from includes.db_models import Base, Product
+from includes.dashboard.models import Base, Product
 
 def _safe_float(val) -> float | None:
     """Convert to float, returning None for missing or unparseable values."""

@@ -7,7 +7,7 @@ via natural language (e.g. "start a new conversation").
 
 from langchain_core.tools import tool
 
-from includes.actions import get_actions_for_user, dispatch_action
+from includes.chat.actions import get_actions_for_user, dispatch_action
 
 
 def create_action_tools(user_id: str):

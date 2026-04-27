@@ -37,6 +37,8 @@ VALID_CATEGORIES = [
     "Online Distributor",
     "Service Exchange (SX) Provider",
     "Sourcing Broker",
+    "B2C Retailer",
+    "Hardware / Big Box",
 ]
 
 VALID_TIERS = ["A", "B", "C", "D"]
@@ -84,6 +86,8 @@ into one of the roles defined in the taxonomy below.
    - Online Distributor
    - Service Exchange (SX) Provider
    - Sourcing Broker
+   - B2C Retailer
+   - Hardware / Big Box
 5. Assign the tier letter (A, B, C, or D).
 6. Provide a confidence score from 1-5 per the scoring rubric.
 7. Provide brief reasoning (2-3 sentences) explaining your classification.

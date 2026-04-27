@@ -1,14 +1,15 @@
 # EagleAgent
 
-EagleAgent is a sophisticated AI agent built using LangGraph, integrated with a React-based conversational UI via Chainlit. With persistent memory and user profiles, EagleAgent supports multiple complex browser and code-based operations.
+EagleAgent is a sophisticated AI agent built using LangGraph, integrated with a React-based conversational UI via Chainlit and a FastAPI dashboard for supplier/product management. With persistent memory and user profiles, EagleAgent supports multiple complex procurement, research, and administrative operations.
 
-The current architecture exclusively uses PostgreSQL for both application state (Chainlit) and LangGraph checkpointing/memory storage, simplifying deployment and ensuring efficient long-term operations on Railway.
+The architecture uses a dual-app pattern: **FastAPI** (`main.py`) handles Google OAuth, session management, and serves the HTMX dashboard, while **Chainlit** (`app.py`) provides the chat UI with LangGraph multi-agent orchestration. Both share a single PostgreSQL database for checkpointing, memory, and application data.
 
 ## Key Features
 
 - 🧠 **Persistent Memory**: Uses PostgreSQL for maintaining cross-session memory, user profiles, and LangGraph state.
 - 🎨 **Web-based UI**: Powered by Chainlit for beautiful, interactive, and responsive chat.
-- 🔐 **Authentication**: Direct Google OAuth 2.0 integration, restricted to allowed domains.
+- 📊 **Dashboard**: FastAPI/HTMX dashboard for suppliers, products, RFQs, and user management.
+- 🔐 **Authentication**: Google OAuth 2.0 via FastAPI, with session injection into Chainlit.
 - 🌐 **Web Interaction**: Headless Chromium (Playwright via agent-browser) for automated web browsing, scraping, and form-filling.
 - 🛠️ **MCP Tools**: Built-in support for Model Context Protocol (MCP) integrations using custom configs.
 - 🚀 **Railway Ready**: Optimized dockerization, natively configured for deployment on Railway's App Platform.
@@ -17,13 +18,17 @@ The current architecture exclusively uses PostgreSQL for both application state 
 
 ![Architecture Diagram](https://img.shields.io/badge/Architecture-Component_Overview-blue.svg)
 
-1. **Chainlit UI (Front-end)**: The user interface where users interact with the agents. Features real-time token tracking and agent-state routing visibility.
-2. **LangGraph Supervisor Pattern (Back-end Orchestration)**: A scalable multi-agent architecture where a central `Supervisor` node evaluates user requests and dynamically routes them to specialized modular sub-agents:
-   - **GeneralAgent**: Handles general conversation, context aggregation, memory retrieval, task planning, and document summarization.
-   - **BrowserAgent**: Specialized for web search, web automation, opening URLs, taking headless Playwright screenshots, and scraping live data.
-   - *(Extensible design prepared for future sub-agents like CodeAgent, DataAgent, etc.)*
-3. **Storage & Databases** (PostgreSQL & Native File Mount):
-   - **PostgreSQL Database**: Holds Chainlit user sessions (`users`, `threads`, `steps`, `elements` tables) as well as the LangGraph checkpointing states directly.
+1. **FastAPI App (`main.py`)**: The ASGI entry point. Handles Google OAuth authentication, session middleware, serves the HTMX dashboard (suppliers, products, RFQs, users), and mounts Chainlit at `/chat`.
+2. **Chainlit UI (`app.py`)**: The chat interface where users interact with agents. Features real-time token streaming, chat profiles, and action buttons.
+3. **LangGraph Supervisor Pattern (Back-end Orchestration)**: A multi-agent architecture where a central `Supervisor` node evaluates user requests and routes them to specialized sub-agents:
+   - **GeneralAgent**: Handles general conversation, context aggregation, memory retrieval, and MCP tool integration.
+   - **ProcurementAgent**: Supplier/product database search, purchase history, brand lookup.
+   - **ResearchAgent**: Google Search grounding for web research, optional RFQ tools.
+   - **SysAdminAgent**: Administrative script execution and job management (admin-only).
+   - **BrowserAgent**: Web automation via headless Playwright (available but disabled in main graph).
+4. **Dashboard ↔ Chat Bridge** (`includes/agent_bridge.py`): Bidirectional communication — the dashboard can dispatch messages to the agent, and agents can notify the dashboard to refresh.
+5. **Storage & Databases** (PostgreSQL & Local File Mount):
+   - **PostgreSQL Database**: Holds Chainlit user sessions, LangGraph checkpointing states, cross-thread user profiles, and application data (suppliers, products, brands, RFQs).
    - **Local File Storage**: Uses `/app/data/attachments` (or local equivalent) for fast read/writes without the overhead of external providers.
 
 ## Getting Started
@@ -89,14 +94,14 @@ uv run alembic upgrade head
 
 ### 4. Running the App
 
-Start the application using Chainlit's standard run syntax:
+Start the application using the run script:
 
 ```bash
-uv run run.sh
-# OR manually
-uv run chainlit run app.py -w
+./run.sh
+# OR manually via uvicorn (main.py is the ASGI entry point)
+uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
-Navigate your browser to `http://localhost:8000` to interact.
+Navigate your browser to `http://localhost:8000` to access the dashboard and chat.
 
 ## Deployment on Railway
 
@@ -110,11 +115,15 @@ Deploying EagleAgent on Railway simply involves binding a PostgreSQL database to
 
 ## Documentation
 
-- [File Attachments](./docs/FILE_ATTACHMENTS.md): Overview on how files, metadata, and images route seamlessly.
-- [Cross-Thread Memory](./docs/CROSS_THREAD_MEMORY.md): Dive into persisting long-term profiling parameters.
-- [Server Scripts](./docs/SERVER_SCRIPTS.md): Admin script execution from the chat UI — embedding updates, imports, and more.
-- [Testing Guide](./docs/TESTING.md): Run Python tests and manage graph verification nodes.
-- [Context Architecture](./docs/CONTEXT_ARCHITECTURE.md): Structural information about component binding logic.
+- [Agent Bridge](./docs/AGENT_BRIDGE.md): Dashboard ↔ Chainlit bidirectional communication architecture.
+- [Context Architecture](./docs/CONTEXT_ARCHITECTURE.md): How context and messages flow through the multi-agent system.
+- [Cross-Thread Memory](./docs/CROSS_THREAD_MEMORY.md): Persistent user profiles across conversation threads.
+- [Development Workflow](./docs/DEVELOPMENT_WORKFLOW.md): Daily dev cycle, database migrations, deployment.
+- [File Attachments](./docs/FILE_ATTACHMENTS.md): File upload, processing, and storage.
+- [Google OAuth Setup](./docs/GOOGLE_OAUTH_SETUP.md): Setting up Google OAuth authentication.
+- [MCP Integration](./docs/MCP_INTEGRATION.md): Model Context Protocol server integration.
+- [Server Scripts](./docs/SERVER_SCRIPTS.md): Admin script execution from the chat UI.
+- [Testing Guide](./docs/TESTING.md): Running tests and writing new ones.
 
 ## License
 MIT

@@ -7,11 +7,16 @@
         <span class="text-gray-900 dark:text-gray-100">{{ product.part_number }}</span>
     </nav>
 
-    <h1 class="text-2xl font-bold mb-6">{{ product.part_number }}{% if product.brand %} — {{ product.brand }}{% endif %}</h1>
+    <div class="flex items-center gap-3 mb-6">
+        <h1 class="text-2xl font-bold">{{ product.part_number }}{% if product.brand %} — {{ product.brand }}{% endif %}</h1>
+        {% if product.embedding is not none %}
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">Indexed</span>
+        {% else %}
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400">Not indexed</span>
+        {% endif %}
+    </div>
 
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <!-- Details -->
-        <div class="lg:col-span-2 space-y-6">
+    <div class="space-y-6">
             <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
                 <h2 class="text-lg font-semibold mb-4">Details</h2>
                 <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
@@ -82,22 +87,5 @@
                 </table>
             </div>
             {% endif %}
-        </div>
-
-        <!-- Sidebar -->
-        <div class="space-y-6">
-            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
-                <h2 class="text-lg font-semibold mb-3">Embedding</h2>
-                {% if product.embedding %}
-                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
-                    Indexed
-                </span>
-                {% else %}
-                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
-                    Not indexed
-                </span>
-                {% endif %}
-            </div>
-        </div>
     </div>
 </div>

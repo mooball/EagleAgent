@@ -90,17 +90,28 @@ async def dispatch_action(
     init_ws_context(session)
 
     callback = config.code.action_callbacks.get(action_name)
-    if not callback:
-        logger.warning(f"[agent_bridge] No callback for action: {action_name}")
-        return {"error": f"Unknown action: {action_name}"}
+    if callback:
+        # Native @cl.action_callback
+        try:
+            action = Action(name=action_name, payload=payload)
+            await callback(action)
+            return {"success": True}
+        except Exception as e:
+            logger.exception(f"[agent_bridge] Action {action_name} failed")
+            return {"error": str(e)}
 
-    try:
-        action = Action(name=action_name, payload=payload)
-        await callback(action)
-        return {"success": True}
-    except Exception as e:
-        logger.exception(f"[agent_bridge] Action {action_name} failed")
-        return {"error": str(e)}
+    # Fall back to custom action registry (includes/chat/actions.py)
+    from includes.chat.actions import dispatch_action as dispatch_custom_action, get_action
+    if get_action(action_name):
+        try:
+            await dispatch_custom_action(action_name, **payload)
+            return {"success": True}
+        except Exception as e:
+            logger.exception(f"[agent_bridge] Action {action_name} failed")
+            return {"error": str(e)}
+
+    logger.warning(f"[agent_bridge] No callback for action: {action_name}")
+    return {"error": f"Unknown action: {action_name}"}
 
 
 async def handle_bridge_request(request: Request) -> Response:

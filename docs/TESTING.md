@@ -37,20 +37,31 @@ uv run pytest -m "not slow"      # Skip slow tests
 
 ```
 tests/
-├── conftest.py                    # Shared fixtures (stores, storage, user data)
+├── conftest.py                    # Shared fixtures (stores, storage, user data, postgres pool)
 ├── test_smoke.py                  # Basic sanity tests
 ├── test_graph_wiring.py           # LangGraph wiring with stub model
 ├── test_prompts.py                # System prompt building
 ├── test_roles.py                  # Role-based access control
+├── test_settings.py               # Config/settings validation
+├── test_actions.py                # Action button registry/dispatcher
 ├── test_file_attachments.py       # File upload/processing
 ├── test_mcp_integration.py        # MCP tool integration
 ├── test_integration.py            # End-to-end scenarios
+├── test_job_runner.py             # Background job runner
+├── test_job_tools.py              # Job management LangGraph tools
+├── test_humanize_timestamp.py     # Timestamp formatting for dashboard
+├── test_dashboard_context.py      # Dashboard context store
+├── test_dashboard_routes.py       # Dashboard route handlers
+├── test_main_auth.py              # FastAPI OAuth & session tests
 ├── agents/
 │   ├── test_browser_agent.py      # BrowserAgent + browser tools
 │   ├── test_general_agent.py      # GeneralAgent (tools, prompts, execution)
+│   ├── test_procurement_agent.py  # ProcurementAgent tools and routing
 │   └── test_supervisor.py         # Supervisor routing logic
 └── tools/
-    └── test_user_profile.py       # User profile management tools
+    ├── test_user_profile.py       # User profile management tools
+    ├── test_product_tools.py      # Product/supplier search tools
+    └── test_quote_tools.py        # RFQ/quote workflow tools
 ```
 
 ### Test Categories
@@ -58,15 +69,26 @@ tests/
 **Unit Tests** (fast, isolated):
 - `test_prompts.py` — Prompt building and templating
 - `test_roles.py` — Admin/staff role logic
+- `test_settings.py` — Config/settings validation
+- `test_actions.py` — Action button registry and dispatcher
+- `test_humanize_timestamp.py` — Dashboard timestamp formatting
+- `test_dashboard_context.py` — Dashboard context store
 - `agents/test_general_agent.py` — GeneralAgent tools, prompts, execution
 - `agents/test_browser_agent.py` — BrowserAgent and browser tool mocking
+- `agents/test_procurement_agent.py` — ProcurementAgent tools
 - `agents/test_supervisor.py` — Routing decisions
 - `tools/test_user_profile.py` — Profile tool behavior
+- `tools/test_product_tools.py` — Product/supplier search tools
+- `tools/test_quote_tools.py` — RFQ/quote workflow tools
 
 **Integration Tests** (slower, cross-component):
 - `test_integration.py` — Complete graph workflows
 - `test_graph_wiring.py` — LangGraph compilation and wiring
 - `test_mcp_integration.py` — MCP server tool loading
+- `test_dashboard_routes.py` — Dashboard route handlers (requires test app)
+- `test_main_auth.py` — FastAPI OAuth and session middleware
+- `test_job_runner.py` — Background job subprocess management
+- `test_job_tools.py` — Job management tools
 - Marked with `@pytest.mark.integration`
 
 **Slow Tests** (performance/stress):
@@ -93,8 +115,9 @@ async def test_example(test_store):
 ```
 
 #### `test_postgres_pool` / `test_checkpointer`
-- Requires a running PostgreSQL instance (`POSTGRES_DB_URI` env var)
-- Only used for database-specific integration tests
+- Requires a running PostgreSQL instance (local or via `./start_postgres.sh`)
+- Used by most tests via `conftest.py`
+- Pool connects to `localhost:5432` by default
 
 ### Storage Fixtures
 

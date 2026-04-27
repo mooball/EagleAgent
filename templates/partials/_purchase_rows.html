@@ -1,0 +1,32 @@
+{% for p in purchases %}
+<tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+    <td class="px-4 py-3 font-mono text-gray-900 dark:text-gray-100">{{ p.doc_number }}</td>
+    <td class="px-4 py-3 text-gray-600 dark:text-gray-400 whitespace-nowrap">{{ p.date or '—' }}</td>
+    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">
+        <a href="/suppliers/{{ p.supplier_id }}"
+           hx-get="/partial/suppliers/{{ p.supplier_id }}" hx-target="#main-content" hx-push-url="/suppliers/{{ p.supplier_id }}"
+           class="text-blue-600 dark:text-blue-400 hover:underline">{{ p.supplier_name }}</a>
+    </td>
+    <td class="px-4 py-3 font-mono text-gray-600 dark:text-gray-400">
+        <a href="/products/{{ p.product_id }}"
+           hx-get="/partial/products/{{ p.product_id }}" hx-target="#main-content" hx-push-url="/products/{{ p.product_id }}"
+           class="text-blue-600 dark:text-blue-400 hover:underline">{{ p.product_part }}</a>
+    </td>
+    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ p.product_brand or '—' }}</td>
+    <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ p.quantity if p.quantity is not none else '—' }}</td>
+    <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ '%.2f'|format(p.price) if p.price is not none else '—' }}</td>
+    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ p.status or '—' }}</td>
+</tr>
+{% endfor %}
+{% if has_more %}
+<tr id="purchase-sentinel"
+    hx-get="/partial/purchases/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}"
+    hx-trigger="intersect"
+    hx-target="this"
+    hx-swap="outerHTML">
+    <td colspan="8" class="px-4 py-3 text-center text-gray-400 dark:text-gray-500">
+        <svg class="animate-spin inline-block w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+        Loading more…
+    </td>
+</tr>
+{% endif %}

@@ -3,14 +3,10 @@
 ## 🎯 Quick Test (2 minutes)
 
 ### Test 1: Save Information Naturally
-1. **Go to**: http://localhost:8000
+1. **Go to**: http://localhost:8000/chat
 2. **Say**: "My name is Tom and I love Python programming"
 3. **Expected**: Agent acknowledges and saves this information
-4. **Verify**:
-   ```bash
-   uv run manage_user_profile.py get tom@mooball.net
-   ```
-   Should show your name and preference
+4. **Verify**: Ask "What do you know about me?" — agent should mention your name and preference
 
 ### Test 2: Cross-Thread Memory
 1. **Click**: "New Chat" (start a new conversation thread)
@@ -22,11 +18,7 @@
 ### Test 3: Update Information
 1. **Say**: "Actually, I also love AI and machine learning"
 2. **Expected**: Agent saves additional preferences
-3. **Verify**:
-   ```bash
-   uv run manage_user_profile.py get tom@mooball.net
-   ```
-   Should show both Python and AI/ML in preferences
+3. **Verify**: Start a new chat and ask "What are my interests?" — should mention both Python and AI/ML
 
 ## 🔍 Debug: See Tool Calls in Action
 
@@ -34,7 +26,7 @@ If you want to watch the agent call tools in real-time:
 
 ```bash
 # In another terminal
-./kill.sh
+./kill-8000.sh
 ./run.sh  # Run in foreground to see logs
 ```
 
@@ -50,7 +42,6 @@ ToolCall(name='remember_user_info', args={'category': 'preferences', 'informatio
 ### ✅ Success Indicators:
 - Agent acknowledges saving information ("I'll remember that", "Got it", etc.)
 - New threads have your information loaded
-- Verify command shows stored data
 - Tool calls visible in logs (if running in foreground)
 
 ### ❌ If It's Not Working:
@@ -58,12 +49,7 @@ ToolCall(name='remember_user_info', args={'category': 'preferences', 'informatio
 2. **Check you're logged in**: Should see your email in top-right
 3. **Try more explicit phrasing**: "Remember that my name is Tom"
 4. **Check terminal for errors**: Look for tool_call or error messages
-5. **Test manual management**:
-   ```bash
-   # If auto-save isn't working, manual should still work
-   uv run manage_user_profile.py set YOUR_EMAIL name "Tom"
-   uv run manage_user_profile.py get YOUR_EMAIL
-   ```
+5. **Check PostgreSQL is running**: `./start_postgres.sh`
 
 ## 📝 Example Conversation
 
@@ -84,22 +70,6 @@ Agent: Your name is Tom, and you're interested in Python programming and AI.
 
 You: What's my name?
 Agent: Your name is Tom!
-```
-
-## 🛠 Manual Commands Reference
-
-```bash
-# View your profile
-uv run manage_user_profile.py get YOUR_EMAIL
-
-# Set data manually
-uv run manage_user_profile.py set YOUR_EMAIL name "Tom"
-
-# Delete specific field
-uv run manage_user_profile.py delete YOUR_EMAIL name
-
-# List all profiles
-uv run manage_user_profile.py list
 ```
 
 ## 🎓 Information Categories
