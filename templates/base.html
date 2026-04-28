@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}EagleAgent{% endblock %}</title>
     <!-- Tailwind CSS: use pre-built file in prod, fall back to CDN for local dev -->
-    <link rel="stylesheet" href="/public/tailwind.min.css"
+    <link rel="stylesheet" href="/public/tailwind.min.css?v={{ css_version | default('dev') }}"
           onerror="if(!window.__twFallback){window.__twFallback=1;var s=document.createElement('script');s.src='https://cdn.tailwindcss.com';document.head.appendChild(s);var c=document.createElement('script');c.textContent='tailwind.config={darkMode:\u0022class\u0022}';document.head.appendChild(c)}">
     <script>
         // Restore theme before paint to prevent flash

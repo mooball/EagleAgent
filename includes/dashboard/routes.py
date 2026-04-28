@@ -7,6 +7,8 @@ and the home dashboard.
 
 import math
 import logging
+import os
+import hashlib
 
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -26,6 +28,17 @@ from includes.dashboard.models import (
 
 logger = logging.getLogger(__name__)
 templates = Jinja2Templates(directory="templates")
+
+# Cache-busting hash for static assets (computed once at startup)
+def _css_hash() -> str:
+    css_path = os.path.join("public", "tailwind.min.css")
+    try:
+        with open(css_path, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()[:8]
+    except FileNotFoundError:
+        return "dev"
+
+templates.env.globals["css_version"] = _css_hash()
 
 router = APIRouter()
 
