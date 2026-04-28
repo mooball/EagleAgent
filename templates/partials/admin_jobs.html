@@ -1,0 +1,57 @@
+{% from "components.html" import badge %}
+{% if jobs %}
+<div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+    <table class="w-full text-sm">
+        <thead class="border-b border-gray-200 dark:border-gray-700">
+            <tr>
+                <th class="text-left px-4 py-2 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">Script</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">Status</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">Started</th>
+                <th class="text-left px-4 py-2 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">Duration</th>
+                <th class="text-right px-4 py-2 font-medium text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800">Actions</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+            {% for j in jobs %}
+            <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                <td class="px-4 py-2 font-medium text-gray-900 dark:text-gray-100">{{ j.script_name }}</td>
+                <td class="px-4 py-2">
+                    {% if j.status == 'running' %}
+                    {{ badge("running", "blue") }}
+                    {% elif j.status == 'completed' %}
+                    {{ badge("completed", "green") }}
+                    {% elif j.status == 'failed' %}
+                    {{ badge("failed", "red") }}
+                    {% elif j.status == 'cancelled' %}
+                    {{ badge("cancelled", "yellow") }}
+                    {% else %}
+                    {{ badge(j.status, "gray") }}
+                    {% endif %}
+                </td>
+                <td class="px-4 py-2 text-gray-500 dark:text-gray-400">{{ j.started_at.strftime('%H:%M:%S') }}</td>
+                <td class="px-4 py-2 text-gray-500 dark:text-gray-400">{{ j.duration }}</td>
+                <td class="px-4 py-2 text-right">
+                    {% if j.status == 'running' %}
+                    <button hx-post="/admin/cancel-job" hx-vals='{"job_id": "{{ j.id }}"}'
+                            hx-target="#admin-jobs" hx-swap="innerHTML"
+                            class="text-xs text-red-600 dark:text-red-400 hover:underline">
+                        Cancel
+                    </button>
+                    {% endif %}
+                    {% if j.last_output %}
+                    <button data-script="{{ j.script_name }}"
+                            data-output="{{ j.last_output | e }}"
+                            onclick="window.dispatchEvent(new CustomEvent('show-output', { detail: { script: this.dataset.script, text: this.dataset.output } }))"
+                            class="text-xs text-blue-600 dark:text-blue-400 hover:underline ml-2">
+                        Output
+                    </button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-sm text-gray-400 dark:text-gray-500">No jobs have been run yet.</p>
+{% endif %}

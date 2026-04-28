@@ -51,6 +51,12 @@ SCRIPT_REGISTRY: dict[str, dict] = {
         "args_allowed": [],
         "long_running": False,
     },
+    "categorize_suppliers": {
+        "command": ["uv", "run", "python", "-m", "scripts.categorize_suppliers_job"],
+        "description": "Categorize suppliers using search-grounded Gemini (default: uncategorized only)",
+        "args_allowed": ["--force", "--limit", "--model", "--delay", "--dry-run"],
+        "long_running": True,
+    },
 }
 
 

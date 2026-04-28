@@ -109,6 +109,55 @@ class Config:
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     
     
+    # ==================== Supply Chain Taxonomy ====================
+    
+    # Ordered list of (tier, tier_label, category) tuples.
+    # The categorization script and dashboard UI both derive their options from this.
+    # NOTE: If you add/rename categories here, also update
+    #       docs/supplier-categorization-taxonomy.md (the LLM prompt source of truth).
+    SUPPLY_CHAIN_TAXONOMY = [
+        ("A", "Primary Sources", "OEM"),
+        ("A", "Primary Sources", "Aftermarket Manufacturer"),
+        ("B", "Industrial Trade Partners", "Trade Wholesaler"),
+        ("B", "Industrial Trade Partners", "Authorized Dealer"),
+        ("B", "Industrial Trade Partners", "Machine Dismantler / Workshop / Parts"),
+        ("C", "General Commercial", "Retail / Trade Outlet"),
+        ("C", "General Commercial", "Online Distributor"),
+        ("C", "General Commercial", "Sourcing Broker"),
+        ("D", "Retail Outlets", "B2C Retailer"),
+        ("D", "Retail Outlets", "Hardware / Big Box"),
+    ]
+
+    @classmethod
+    def get_supply_chain_options(cls) -> list[dict]:
+        """Return taxonomy as a list of {value, label} dicts for dropdowns."""
+        return [
+            {
+                "value": f"{tier}|{category}",
+                "label": f"Tier {tier} — {category}",
+                "tier": tier,
+                "category": category,
+            }
+            for tier, _tier_label, category in cls.SUPPLY_CHAIN_TAXONOMY
+        ]
+
+    @classmethod
+    def get_valid_categories(cls) -> list[str]:
+        """Return flat list of valid category names."""
+        return [cat for _, _, cat in cls.SUPPLY_CHAIN_TAXONOMY]
+
+    @classmethod
+    def get_valid_tiers(cls) -> list[str]:
+        """Return deduplicated ordered list of tier letters."""
+        seen = set()
+        tiers = []
+        for t, _, _ in cls.SUPPLY_CHAIN_TAXONOMY:
+            if t not in seen:
+                seen.add(t)
+                tiers.append(t)
+        return tiers
+
+    
     # ==================== Helper Methods ====================
     
     @classmethod

@@ -2,8 +2,8 @@
 <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
     hx-get="/partial/suppliers/{{ s.id }}" hx-target="#main-content" hx-push-url="/suppliers/{{ s.id }}">
     <td class="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{{ s.name }}</td>
-    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ s.country or '—' }}</td>
-    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ s.city or '—' }}</td>
+    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ s.location or '—' }}</td>
+    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ s.supply_chain or '—' }}</td>
     <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ s.purchase_count or 0 }}</td>
 </tr>
 {% endfor %}

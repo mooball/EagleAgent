@@ -1,11 +1,10 @@
 """
 categorize_suppliers.py
 
-Uses a search-grounded Gemini LLM to categorize suppliers according to
-the supply chain taxonomy defined in docs/supplier-categorization-taxonomy.md.
+CLI tool to categorize suppliers from a JSON file using search-grounded Gemini.
+Outputs results to a JSON file. Useful for R&D / batch testing.
 
-Reads a JSON list of suppliers (from extract_top_suppliers.py) and outputs
-categorization results.
+For DB-integrated categorization, use: scripts/categorize_suppliers_job.py
 
 Usage:
   uv run python -m scripts.categorize_suppliers
@@ -18,138 +17,16 @@ import os
 import json
 import time
 import argparse
-from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
 from google import genai
-from google.genai import types
 
-
-TAXONOMY_PATH = Path(__file__).parent.parent / "docs" / "supplier-categorization-taxonomy.md"
-
-VALID_CATEGORIES = [
-    "OEM",
-    "Aftermarket Manufacturer",
-    "Trade Wholesaler",
-    "Authorized Dealer",
-    "Retail / Trade Outlet",
-    "Online Distributor",
-    "Service Exchange (SX) Provider",
-    "Sourcing Broker",
-    "B2C Retailer",
-    "Hardware / Big Box",
-]
-
-VALID_TIERS = ["A", "B", "C", "D"]
-
-
-def load_taxonomy() -> str:
-    """Load the taxonomy markdown file."""
-    with open(TAXONOMY_PATH, "r") as f:
-        return f.read()
-
-
-def build_prompt(taxonomy: str, supplier: dict) -> str:
-    """Build the categorization prompt for a single supplier."""
-    name = supplier["name"]
-    url = supplier.get("url") or "No URL available"
-    city = supplier.get("city") or "Unknown"
-    country = supplier.get("country") or "Unknown"
-    purchase_count = supplier.get("purchase_count", 0)
-
-    return f"""You are an industrial procurement analyst. Your task is to categorize a supplier
-into one of the roles defined in the taxonomy below.
-
-## Taxonomy
-
-{taxonomy}
-
-## Supplier to Categorize
-
-- **Name:** {name}
-- **Website:** {url}
-- **Location:** {city}, {country}
-- **Purchase history:** {purchase_count} transactions in our records
-
-## Instructions
-
-1. Search the web for this supplier's website and any available information about them.
-2. Analyze their website, products, pricing model, and business model.
-3. Apply the categorization decision logic from the taxonomy step by step.
-4. Assign exactly ONE category from this list:
-   - OEM
-   - Aftermarket Manufacturer
-   - Trade Wholesaler
-   - Authorized Dealer
-   - Retail / Trade Outlet
-   - Online Distributor
-   - Service Exchange (SX) Provider
-   - Sourcing Broker
-   - B2C Retailer
-   - Hardware / Big Box
-5. Assign the tier letter (A, B, C, or D).
-6. Provide a confidence score from 1-5 per the scoring rubric.
-7. Provide brief reasoning (2-3 sentences) explaining your classification.
-
-## Required Output Format
-
-Respond with ONLY a JSON object (no markdown fences, no extra text):
-{{
-  "category": "<one of the 8 categories above>",
-  "tier": "<A, B, C, or D>",
-  "confidence": <1-5>,
-  "reasoning": "<2-3 sentence explanation>"
-}}"""
-
-
-def parse_response(text: str) -> dict:
-    """Parse the LLM response, handling markdown fences if present."""
-    text = text.strip()
-    # Strip markdown code fences
-    if text.startswith("```"):
-        lines = text.split("\n")
-        # Remove first and last lines (fences)
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        text = "\n".join(lines).strip()
-    return json.loads(text)
-
-
-def categorize_supplier(client: genai.Client, model: str, taxonomy: str, supplier: dict) -> dict:
-    """Send a categorization request to Gemini with Google Search grounding."""
-    prompt = build_prompt(taxonomy, supplier)
-
-    response = client.models.generate_content(
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-            temperature=0.2,
-        ),
-    )
-
-    raw_text = response.text
-    try:
-        result = parse_response(raw_text)
-    except (json.JSONDecodeError, KeyError) as e:
-        result = {
-            "category": "PARSE_ERROR",
-            "tier": "?",
-            "confidence": 0,
-            "reasoning": f"Failed to parse LLM response: {e}. Raw: {raw_text[:500]}",
-        }
-
-    # Validate category
-    if result.get("category") not in VALID_CATEGORIES and result.get("category") != "PARSE_ERROR":
-        result["reasoning"] = f"WARNING: Invalid category '{result.get('category')}'. " + result.get("reasoning", "")
-
-    # Attach supplier metadata
-    result["supplier_id"] = supplier["id"]
-    result["supplier_name"] = supplier["name"]
-    result["supplier_url"] = supplier.get("url")
-    result["model"] = model
-
-    return result
+from includes.supplier_categorization import (
+    build_prompt,
+    categorize_supplier,
+    load_taxonomy,
+)
 
 
 def main():

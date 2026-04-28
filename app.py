@@ -563,42 +563,12 @@ def _command_to_intent_name(command_label: str) -> str | None:
     return None
 
 
-# System Admin commands (not driven by INTENTS, defined directly)
-_SYSADMIN_COMMANDS = [
-    {
-        "id": "Check Running Jobs",
-        "description": "List all running and recent jobs",
-        "icon": "clipboard-list",
-        "button": True,
-        "persistent": False,
-    },
-    {
-        "id": "List Available Scripts",
-        "description": "Show all scripts that can be run",
-        "icon": "scroll-text",
-        "button": True,
-        "persistent": False,
-    },
-    {
-        "id": "Update Product Embeddings",
-        "description": "Regenerate missing product vector embeddings",
-        "icon": "database",
-        "button": True,
-        "persistent": False,
-    },
-    {
-        "id": "Update Supplier Embeddings",
-        "description": "Regenerate missing supplier vector embeddings",
-        "icon": "database",
-        "button": True,
-        "persistent": False,
-    },
-]
+
 
 
 @cl.set_chat_profiles
 async def chat_profile(current_user: cl.User):
-    """Define available chat profiles. Admin users see the System Admin profile."""
+    """Define available chat profiles. Admin users see the Internal Agent profile."""
     is_admin = (
         current_user
         and current_user.identifier.lower() in config.get_admin_emails()
@@ -623,13 +593,6 @@ async def chat_profile(current_user: cl.User):
             cl.ChatProfile(
                 name="Internal Agent",
                 markdown_description="General assistant for product procurement, supplier information, and RFQs.",
-                icon="/public/avatars/EagleAgent.png",
-            )
-        )
-        profiles.append(
-            cl.ChatProfile(
-                name="System Admin",
-                markdown_description="Administrative tools for system configuration and maintenance.",
                 icon="/public/avatars/EagleAgent.png",
             )
         )
@@ -662,9 +625,7 @@ async def start():
     
     # Select graph based on chosen chat profile
     chat_profile_name = cl.user_session.get("chat_profile")
-    if chat_profile_name == "System Admin":
-        cl.user_session.set("active_graph", sysadmin_graph)
-    elif chat_profile_name == "Research Agent":
+    if chat_profile_name == "Research Agent":
         cl.user_session.set("active_graph", research_graph)
     else:
         cl.user_session.set("active_graph", graph)
@@ -682,14 +643,6 @@ async def start():
 
         from includes.prompts import RESEARCH_INTENTS
         await cl.context.emitter.set_commands(_intents_to_commands(RESEARCH_INTENTS))
-        await cl.Message(content=welcome_msg).send()
-    elif chat_profile_name == "System Admin":
-        if user_name:
-            welcome_msg = f"Welcome to System Admin mode, {user_name}. I can run scripts, check background jobs, and manage system tasks."
-        else:
-            welcome_msg = "Welcome to System Admin mode. I can run scripts, check background jobs, and manage system tasks."
-
-        await cl.context.emitter.set_commands(_SYSADMIN_COMMANDS)
         await cl.Message(content=welcome_msg).send()
     elif chat_profile_name == "Internal Agent":
         if is_first_visit and user_name:
@@ -744,17 +697,15 @@ async def on_chat_resume(thread: ThreadDict):
     if user:
         cl.user_session.set("user_id", user.identifier)
 
-    # Normalize legacy chat profile names (EagleAgent → Eagle Agent)
+    # Normalize legacy chat profile names (EagleAgent → Eagle Agent, System Admin → Eagle Agent)
     chat_profile_name = cl.user_session.get("chat_profile")
-    if chat_profile_name == "EagleAgent":
+    if chat_profile_name in ("EagleAgent", "System Admin"):
         chat_profile_name = "Eagle Agent"
         cl.user_session.set("chat_profile", chat_profile_name)
 
     # Select graph based on chat profile (persisted with thread)
     chat_profile_name = cl.user_session.get("chat_profile")
-    if chat_profile_name == "System Admin":
-        cl.user_session.set("active_graph", sysadmin_graph)
-    elif chat_profile_name == "Research Agent":
+    if chat_profile_name == "Research Agent":
         cl.user_session.set("active_graph", research_graph)
     else:
         cl.user_session.set("active_graph", graph)
@@ -775,12 +726,6 @@ async def on_chat_resume(thread: ThreadDict):
             await cl.context.emitter.set_commands(_intents_to_commands(RESEARCH_INTENTS))
             msg = cl.Message(
                 content=f"Welcome back, {user_name}! Continuing your research session.",
-                author="EagleAgent",
-            )
-        elif chat_profile_name == "System Admin":
-            await cl.context.emitter.set_commands(_SYSADMIN_COMMANDS)
-            msg = cl.Message(
-                content=f"Welcome back, {user_name}! Continuing System Admin session.",
                 author="EagleAgent",
             )
         elif chat_profile_name == "Internal Agent":
@@ -1248,64 +1193,6 @@ async def on_rfq_find_suppliers(action: cl.Action):
     await main(synthetic)
 
 
-# ---------------------------------------------------------------------------
-# System Admin command handlers (invoked from on_message when command is set)
-# ---------------------------------------------------------------------------
-
-async def _handle_list_running_jobs():
-    """Show all tracked jobs (running + recent completed/failed)."""
-    jobs = job_runner.list_jobs()
-    if not jobs:
-        await cl.Message(content="No jobs have been run yet.", author="EagleAgent").send()
-        return
-
-    from datetime import datetime, timezone
-    lines = ["| Script | Status | Started | Duration | Job ID |",
-             "|--------|--------|---------|----------|--------|"]
-    for j in jobs:
-        started = j.started_at.strftime("%H:%M:%S")
-        if j.finished_at:
-            delta = j.finished_at - j.started_at
-            duration = str(delta).split(".")[0]
-        elif j.status == "running":
-            delta = datetime.now(timezone.utc) - j.started_at
-            duration = str(delta).split(".")[0] + " (running)"
-        else:
-            duration = "—"
-        lines.append(f"| {j.script_name} | {j.status} | {started} | {duration} | `{j.id[:8]}` |")
-    await cl.Message(content="\n".join(lines), author="EagleAgent").send()
-
-
-async def _handle_list_available_scripts():
-    """Show all registered scripts that can be run."""
-    from config.scripts import list_scripts
-    registry = list_scripts()
-    if not registry:
-        await cl.Message(content="No scripts are registered.", author="EagleAgent").send()
-        return
-    lines = []
-    for name, info in registry.items():
-        lines.append(f"- **{name}**: {info['description']}")
-    await cl.Message(content="\n".join(lines), author="EagleAgent").send()
-
-
-async def _handle_run_script(script_name: str):
-    """Run a script by name via the job runner."""
-    from includes.chat.job_progress import monitor_job
-    thread_id = cl.user_session.get("thread_id", "")
-    try:
-        job = await job_runner.run_script(script_name, [], thread_id=thread_id)
-    except ValueError as e:
-        await cl.Message(
-            content=f"Could not start `{script_name}`: {e}",
-            author="EagleAgent",
-        ).send()
-        return
-
-    import asyncio
-    asyncio.create_task(monitor_job(job_runner, job))
-
-
 @cl.on_message
 async def main(message: cl.Message):
     # Gemini requires at least one content part. If a command button was
@@ -1326,26 +1213,6 @@ async def main(message: cl.Message):
     if is_help_request(message.content):
         await send_action_buttons(user_id)
         return
-
-    # Handle System Admin commands (self-contained, don't go through the graph)
-    if message.command:
-        _sysadmin_handlers = {
-            "Check Running Jobs": "_list_running_jobs",
-            "List Available Scripts": "_list_available_scripts",
-            "Update Product Embeddings": "_run_script:update_product_embeddings",
-            "Update Supplier Embeddings": "_run_script:update_supplier_embeddings",
-        }
-        handler_key = _sysadmin_handlers.get(message.command)
-        if handler_key == "_list_running_jobs":
-            await _handle_list_running_jobs()
-            return
-        elif handler_key == "_list_available_scripts":
-            await _handle_list_available_scripts()
-            return
-        elif handler_key and handler_key.startswith("_run_script:"):
-            script_name = handler_key.split(":", 1)[1]
-            await _handle_run_script(script_name)
-            return
 
     # Direct RFQ loading — intercept "load/show/open RFQ" before the graph runs
     import re
@@ -1626,7 +1493,7 @@ async def main(message: cl.Message):
             if name == last_tool_name and active_step:
                 # Same tool again — increment counter and update label
                 tool_call_count += 1
-                active_step.name = f"{friendly} (\u00d7{tool_call_count})"
+                active_step.name = f"{friendly} (x{tool_call_count})"
                 await active_step.update()
             else:
                 # Different tool — start a new step

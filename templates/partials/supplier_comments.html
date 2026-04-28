@@ -1,0 +1,29 @@
+<div id="supplier-comments" class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+    <h2 class="text-lg font-semibold mb-4">Comments</h2>
+    {% set comments = comments or supplier.comments or [] %}
+    {% if comments %}
+    <div class="space-y-3 mb-4">
+        {% for c in comments %}
+        <div class="text-sm border-b border-gray-100 dark:border-gray-700 pb-3 last:border-0">
+            <div class="flex items-center gap-2 mb-1">
+                <span class="font-medium">{{ c.author or 'Unknown' }}</span>
+                {% if c.ts %}
+                <span class="text-xs text-gray-400 dark:text-gray-500">{{ c.ts }}</span>
+                {% endif %}
+            </div>
+            <p class="text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{{ c.comment }}</p>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-400 dark:text-gray-500 mb-4">No comments yet.</p>
+    {% endif %}
+    <form hx-post="/partial/suppliers/{{ supplier.id }}/comments"
+          hx-target="#supplier-comments" hx-swap="outerHTML"
+          class="flex gap-2">
+        <input type="text" name="comment" placeholder="Add a comment…" required
+               class="flex-1 px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+        <button type="submit"
+                class="px-3 py-1.5 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700 shrink-0">Add</button>
+    </form>
+</div>

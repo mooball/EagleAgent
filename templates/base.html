@@ -134,6 +134,14 @@
                         <p class="text-sm font-medium">{{ user.given_name or user.email }}</p>
                         <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ user.email }}</p>
                     </div>
+                    {% if user and user.role == 'Admin' %}
+                    <a href="/admin"
+                       hx-get="/partial/admin" hx-target="#main-content" hx-push-url="/admin"
+                       @click="userMenuOpen = false"
+                       class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        System Admin
+                    </a>
+                    {% endif %}
                     <a href="/logout"
                        class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                         Sign out
@@ -440,6 +448,14 @@
                         name: 'rfq_update_supplier',
                         payload: { rfq_id: rfqId, line: line, supplier_name: supplierName, status: status }
                     }, true);
+                },
+                setSupplierStatus(line, supplierName, newStatus) {
+                    fetch('/partial/rfqs/' + this.rfqId + '/update-supplier-status', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        credentials: 'same-origin',
+                        body: 'line=' + line + '&supplier_name=' + encodeURIComponent(supplierName) + '&status=' + newStatus
+                    }).catch(function(err) { console.error('[supplier-status]', err); });
                 },
                 identifyItems() {
                     var payload = {

@@ -2,6 +2,10 @@
 
 **Industrial Procurement & Supply Chain Taxonomy (v1.0)**
 
+> **Cross-reference:** The tier/category list used by the dashboard UI and
+> validation lives in `config/settings.py → SUPPLY_CHAIN_TAXONOMY`.
+> If you add or rename categories here, update that list too.
+
 ## 1. Objective
 
 This skill defines the logic for categorizing industrial suppliers based on their commercial persona, pricing structures, and position within the supply chain. It is optimized for use in procurement houses identifying partners in the mining, construction, and heavy industry sectors.
@@ -21,6 +25,7 @@ This skill defines the logic for categorizing industrial suppliers based on thei
 |---|---|---|---|---|
 | **Trade Wholesaler** | High-volume stockists. No public storefront. Requires a credit application to view prices. | "Trade Account Required", "B2B Only", Login to view price. | Sells many brands. Requires a login to see prices. No physical shopfront for the public. | No (Login Req.) |
 | **Authorized Dealer** | Third-party business with a direct contract to an OEM. Regional focus. | "Authorized Partner", "Service Center", OEM branding used. | A middleman with a direct contract to the OEM. Uses the OEM's branding heavily. | No (Quote only) |
+| **Machine Dismantler / Workshop / Parts** | Supply of new, used, and reconditioned heavy machinery components. Owns physical part cores and dismantling/workshop facilities. | "Breaking for parts", "Used/Tested", "Workshop Refurbished", "Inventory of Component Cores", "Wrecking Yard", "Dismantling Facility". | Has physical assets: a wrecking yard, dismantling facility, or workshop. Sells used, reconditioned, or remanufactured components from their own stock. Distinguished from Brokers by owning the physical part cores. If a supplier mentions "Core Charges" or "Reman" AND has a physical yard/workshop, classify here (not as a Broker). | No (Quote only) |
 
 ### Tier C: General Commercial Sellers & Specialists
 
@@ -28,8 +33,7 @@ This skill defines the logic for categorizing industrial suppliers based on thei
 |---|---|---|---|---|
 | **Retail / Trade Outlet** | Physical stores with a trade desk. Sells to anyone. High convenience, high price. | "Add to Cart", "Guest Checkout", Store locator. | Has a physical store (e.g., Grainger). Has an "Add to Cart" button for anyone. Also offers trade accounts. | Yes (Visible) |
 | **Online Distributor** | Digital platforms (e.g. RS Components). Visible fixed pricing for everyone. | E-commerce interface, Clear list pricing, Credit card accepted. | Digital-first. Massive range. Fixed pricing is visible, but offers "Business Accounts." | Yes (Visible) |
-| **Service Exchange (SX) Provider** | Specializes in refurbished/rebuilt heavy components. Exchange based. | "Core Charge", "Reman", "Exchange Basis". | Only sells refurbished/rebuilt heavy components. Mentions "Core Charges." | No (Quote only) |
-| **Sourcing Broker** | Does not hold stock. Acts as an intermediary for a commission. | "Procurement Services", "Global Sourcing", No warehouse address. | Does not hold stock. Mentions "procurement services" or "finding parts." | No (Quote only) |
+| **Sourcing Broker** | Does not hold stock. Acts as an intermediary for a commission. May facilitate exchange of third-party refurbished goods but owns no physical assets. | "Procurement Services", "Global Sourcing", No warehouse address. | Does not hold stock. Mentions "procurement services" or "finding parts." If they mention "Core Charges" or "Exchange" but have NO physical yard or workshop, classify as Broker (not Dismantler). | No (Quote only) |
 
 ### Tier D: Retail Outlets (B2C / Full Price)
 
@@ -72,17 +76,19 @@ Sellers focusing on the general public or small tradesmen with zero to negligibl
 - If they emphasize OEM warranty and official partnership status: **Authorized Dealer**.
   - Key signal: sells only one brand (e.g. only Caterpillar parts) but is NOT the brand owner. Uses the OEM's branding heavily, mentions "Authorized Partner" or "Service Center".
 
-### Step 5: Check Asset Model
+### Step 5: Check Physical Assets (Dismantler vs Broker)
 
-- If they mention "Core Returns" or "sending back your old unit": **Service Exchange**.
-  - Key signal: "Core Charge", "Reman", "Exchange Basis", refurbished/rebuilt heavy components.
-- If they have no physical stock and offer "Finding services": **Sourcing Broker**.
+- If they mention "Wrecking Yard", "Dismantling Facility", "Workshop", or hold physical part cores: **Machine Dismantler / Workshop / Parts** (Tier B).
+  - Key signal: "Breaking for parts", "Used/Tested", "Workshop Refurbished", "Inventory of Component Cores". They own the physical assets.
+  - Note: Suppliers previously classified as "Service Exchange (SX)" who have a physical yard/workshop belong here.
+- If they mention "Core Returns" or "Exchange" but have NO physical yard — they merely facilitate exchange of third-party goods: **Sourcing Broker** (Tier C).
+- If they have no physical stock and offer "Finding services": **Sourcing Broker** (Tier C).
   - Key signal: "Procurement Services", "Global Sourcing", no warehouse address.
 
 ## 4. Confidence Scoring
 
 When using an LLM to categorize, ensure it provides a confidence score (1-5) based on the evidence available on the supplier's website.
 
-- **Score 5:** Clear "Terms of Sale" confirming role (e.g., Wholesaler).
-- **Score 3:** Assumed role based on "Request Quote" buttons only.
-- **Score 1:** Generic website with conflicting clues.
+- **Score 5:** Clear match for only one category. No possible ambiguity.
+- **Score 3:** May be in more than one category, difficult to distinguish primary category.
+- **Score 1:** Generic website with conflicting clues. Hard to find even one matching category

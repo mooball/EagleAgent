@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
-from includes.dashboard.database import get_session
+from includes.dashboard.database import get_session, update_supplier, add_supplier_comment
 from config import config
 from includes.dashboard.models import (
     Brand,
@@ -179,11 +179,12 @@ def supplier_list(request: Request, user: dict = Depends(require_user),
 
         suppliers = []
         for s, pc in rows:
+            scp = s.supply_chain_position or {}
             suppliers.append({
                 "id": str(s.id),
                 "name": s.name,
-                "country": s.country,
-                "city": s.city,
+                "location": ", ".join(filter(None, [s.city, s.country])) or None,
+                "supply_chain": ", ".join(filter(None, [scp.get("tier"), scp.get("category")])) or None,
                 "purchase_count": pc,
             })
     finally:
@@ -256,6 +257,7 @@ def supplier_detail(request: Request, supplier_id: str,
         "contacts": contacts,
         "brands": brands,
         "purchases": purchases,
+        "scp_options": config.get_supply_chain_options(),
         "active_nav": "suppliers",
     }
     return _render(request, "supplier_detail.html", "partials/supplier_detail.html", ctx, user)
@@ -381,11 +383,12 @@ def partial_supplier_list(request: Request, user: dict = Depends(require_user),
 
         suppliers = []
         for s, pc in rows:
+            scp = s.supply_chain_position or {}
             suppliers.append({
                 "id": str(s.id),
                 "name": s.name,
-                "country": s.country,
-                "city": s.city,
+                "location": ", ".join(filter(None, [s.city, s.country])) or None,
+                "supply_chain": ", ".join(filter(None, [scp.get("tier"), scp.get("category")])) or None,
                 "purchase_count": pc,
             })
     finally:
@@ -433,11 +436,12 @@ def partial_supplier_rows(request: Request, user: dict = Depends(require_user),
 
         suppliers = []
         for s, pc in rows:
+            scp = s.supply_chain_position or {}
             suppliers.append({
                 "id": str(s.id),
                 "name": s.name,
-                "country": s.country,
-                "city": s.city,
+                "location": ", ".join(filter(None, [s.city, s.country])) or None,
+                "supply_chain": ", ".join(filter(None, [scp.get("tier"), scp.get("category")])) or None,
                 "purchase_count": pc,
             })
     finally:
@@ -506,6 +510,114 @@ def partial_supplier_detail(request: Request, supplier_id: str,
         "contacts": contacts,
         "brands": brands,
         "purchases": purchases,
+        "scp_options": config.get_supply_chain_options(),
+    })
+
+
+@router.post("/partial/suppliers/{supplier_id}/update")
+def partial_supplier_update(request: Request, supplier_id: str,
+                            user: dict = Depends(require_user)):
+    import asyncio
+    loop = asyncio.new_event_loop()
+    form = loop.run_until_complete(request.form())
+    loop.close()
+
+    updates = {k: v for k, v in form.items() if k != "request"}
+
+    # Build supply_chain_position JSONB from combined scp_position field ("tier|category")
+    scp_position = updates.pop("scp_position", "")
+    updates.pop("scp_category", None)  # clean up legacy field names
+    updates.pop("scp_tier", None)
+    if scp_position and "|" in scp_position:
+        tier, category = scp_position.split("|", 1)
+        updates["supply_chain_position"] = {
+            "category": category or None,
+            "tier": tier or None,
+        }
+    else:
+        updates["supply_chain_position"] = None
+
+    author = user.get("name") or user.get("email", "unknown")
+    supplier = update_supplier(supplier_id, updates, f"user:{author}")
+    if not supplier:
+        return HTMLResponse("<p>Supplier not found.</p>")
+
+    # Re-fetch full context for the detail partial
+    session = get_session()
+    try:
+        contacts = []
+        if supplier.contacts:
+            for c in supplier.contacts:
+                if isinstance(c, dict):
+                    contacts.append(c)
+
+        brands = (
+            session.query(Brand)
+            .join(SupplierBrand, SupplierBrand.brand_id == Brand.id)
+            .filter(SupplierBrand.supplier_id == supplier.id)
+            .filter(Brand.duplicate_of.is_(None))
+            .order_by(Brand.name)
+            .all()
+        )
+
+        purchases_raw = (
+            session.query(ProductSupplier, Product)
+            .join(Product, ProductSupplier.product_id == Product.id)
+            .filter(ProductSupplier.supplier_id == supplier.id)
+            .order_by(ProductSupplier.date.desc().nullslast())
+            .limit(50)
+            .all()
+        )
+        purchases = []
+        for ps, prod in purchases_raw:
+            purchases.append({
+                "doc_number": ps.doc_number,
+                "date": str(ps.date) if ps.date else None,
+                "product_id": str(prod.id),
+                "product_part": prod.part_number,
+                "quantity": ps.quantity,
+                "price": ps.price,
+            })
+    finally:
+        session.close()
+
+    return templates.TemplateResponse("partials/supplier_detail.html", {
+        "request": request,
+        "user": user,
+        "supplier": supplier,
+        "contacts": contacts,
+        "brands": brands,
+        "purchases": purchases,
+        "scp_options": config.get_supply_chain_options(),
+    })
+
+
+@router.post("/partial/suppliers/{supplier_id}/comments")
+def partial_supplier_add_comment(request: Request, supplier_id: str,
+                                 user: dict = Depends(require_user)):
+    import asyncio
+    loop = asyncio.new_event_loop()
+    form = loop.run_until_complete(request.form())
+    loop.close()
+
+    comment_text = form.get("comment", "").strip()
+    if not comment_text:
+        return HTMLResponse("<p>Comment cannot be empty.</p>", status_code=400)
+
+    author = user.get("name") or user.get("email", "unknown")
+    comments = add_supplier_comment(supplier_id, author, comment_text)
+
+    # Re-fetch supplier to render the comments section
+    session = get_session()
+    try:
+        supplier = session.query(Supplier).filter(Supplier.id == supplier_id).first()
+    finally:
+        session.close()
+
+    return templates.TemplateResponse("partials/supplier_comments.html", {
+        "request": request,
+        "supplier": supplier,
+        "comments": comments,
     })
 
 
@@ -715,24 +827,32 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
 
         # Enrich by supplier_id
         if by_id:
-            rows = session.query(Supplier.id, Supplier.contacts).filter(
+            rows = session.query(Supplier.id, Supplier.contacts, Supplier.supply_chain_position).filter(
                 Supplier.id.in_(list(by_id.keys()))
             ).all()
             for row in rows:
                 sid = str(row.id)
-                if row.contacts and sid in by_id:
+                if sid in by_id:
+                    scp = row.supply_chain_position or {}
                     for sup in by_id[sid]:
-                        merge_supplier_contacts(sup, row.contacts)
+                        if row.contacts:
+                            merge_supplier_contacts(sup, row.contacts)
+                        if scp.get("tier"):
+                            sup["tier"] = scp["tier"]
 
         # Enrich by name using shared matching
         if by_name:
             for name_lower, sup_list in by_name.items():
                 matched = match_supplier_by_name(name_lower, session=session)
-                if matched and matched.contacts:
+                if matched:
+                    scp = matched.supply_chain_position or {}
                     for sup in sup_list:
-                        merge_supplier_contacts(sup, matched.contacts)
+                        if matched.contacts:
+                            merge_supplier_contacts(sup, matched.contacts)
                         if not sup.get("supplier_id"):
                             sup["supplier_id"] = str(matched.id)
+                        if scp.get("tier"):
+                            sup["tier"] = scp["tier"]
     finally:
         session.close()
 
@@ -924,7 +1044,7 @@ def partial_purchase_rows(request: Request, user: dict = Depends(require_user),
 RFQ_PAGE_SIZE = 25
 
 
-async def _fetch_rfqs(q: str = "", page: int = 1):
+async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: str = ""):
     """Fetch RFQs from LangGraph store with optional text search and pagination.
 
     Returns (rfqs_page, total, has_more, next_page).
@@ -937,6 +1057,11 @@ async def _fetch_rfqs(q: str = "", page: int = 1):
         for item in items:
             rfqs.append(item.value)
         rfqs.sort(key=lambda r: r.get("created_date", ""), reverse=True)
+
+    # Filter to current user's RFQs if requested
+    if mine == "1" and user_email:
+        email_lower = user_email.lower()
+        rfqs = [r for r in rfqs if (r.get("assigned_to") or "").lower() == email_lower]
 
     # Client-side text filter (LangGraph store has no full-text search)
     if q:
@@ -973,8 +1098,9 @@ async def _fetch_rfqs(q: str = "", page: int = 1):
 
 @router.get("/rfqs")
 async def rfq_list(request: Request, user: dict = Depends(require_user),
-                   q: str = "", page: int = 1):
-    rfqs, total, has_more, next_page = await _fetch_rfqs(q, page)
+                   q: str = "", page: int = 1, mine: str = "1"):
+    rfqs, total, has_more, next_page = await _fetch_rfqs(
+        q, page, mine=mine, user_email=user.get("email", ""))
 
     ctx = {
         "rfqs": rfqs,
@@ -984,6 +1110,7 @@ async def rfq_list(request: Request, user: dict = Depends(require_user),
         "has_more": has_more,
         "next_page": next_page,
         "active_nav": "rfqs",
+        "mine": mine,
     }
     return _render(request, "rfqs.html", "partials/rfq_list.html", ctx, user)
 
@@ -1009,8 +1136,9 @@ async def rfq_detail(request: Request, rfq_id: str,
 
 @router.get("/partial/rfqs")
 async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
-                           q: str = "", page: int = 1):
-    rfqs, total, has_more, next_page = await _fetch_rfqs(q, page)
+                           q: str = "", page: int = 1, mine: str = "1"):
+    rfqs, total, has_more, next_page = await _fetch_rfqs(
+        q, page, mine=mine, user_email=user.get("email", ""))
 
     return templates.TemplateResponse("partials/rfq_list.html", {
         "request": request,
@@ -1021,14 +1149,16 @@ async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
         "total": total,
         "has_more": has_more,
         "next_page": next_page,
+        "mine": mine,
     })
 
 
 @router.get("/partial/rfqs/rows")
 async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
-                           q: str = "", page: int = 1):
+                           q: str = "", page: int = 1, mine: str = "1"):
     """Return just the RFQ card rows + sentinel for infinite scroll."""
-    rfqs, total, has_more, next_page = await _fetch_rfqs(q, page)
+    rfqs, total, has_more, next_page = await _fetch_rfqs(
+        q, page, mine=mine, user_email=user.get("email", ""))
 
     return templates.TemplateResponse("partials/_rfq_rows.html", {
         "request": request,
@@ -1036,6 +1166,7 @@ async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
         "q": q,
         "has_more": has_more,
         "next_page": next_page,
+        "mine": mine,
     })
 
 
@@ -1235,6 +1366,64 @@ async def partial_rfq_clear_suppliers(request: Request, rfq_id: str,
     })
 
 
+@router.post("/partial/rfqs/{rfq_id}/update-supplier-status")
+async def partial_rfq_update_supplier_status(
+    request: Request, rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Update a single supplier's status directly (shortlisted / selected / dropped)."""
+    store = _get_store()
+    if not store:
+        return HTMLResponse("<p>Store not available.</p>", status_code=500)
+    from includes.tools.quote_tools import NAMESPACE
+
+    item = await store.aget(NAMESPACE, rfq_id)
+    if not item:
+        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+
+    form = await request.form()
+    rfq = item.value
+    try:
+        line_num = int(form.get("line", 0))
+    except (TypeError, ValueError):
+        return HTMLResponse("<p>Invalid line number.</p>", status_code=400)
+
+    supplier_name = (form.get("supplier_name") or "").strip()
+    new_status = (form.get("status") or "").strip()
+    if not supplier_name or new_status not in ("shortlisted", "selected", "dropped"):
+        return HTMLResponse("<p>Invalid parameters.</p>", status_code=400)
+
+    line_item = next((i for i in rfq.get("items", []) if i["line"] == line_num), None)
+    if not line_item:
+        return HTMLResponse(f"<p>Line {line_num} not found.</p>", status_code=404)
+
+    supplier = next(
+        (s for s in line_item.get("suppliers", [])
+         if isinstance(s, dict) and s.get("name") == supplier_name),
+        None,
+    )
+    if not supplier:
+        return HTMLResponse(f"<p>Supplier not found.</p>", status_code=404)
+
+    from starlette.responses import Response
+
+    old_status = supplier.get("status", "candidate")
+    if old_status == new_status:
+        return Response(status_code=204)
+
+    supplier["status"] = new_status
+
+    from datetime import datetime, timezone
+    rfq.setdefault("history", []).append({
+        "date": datetime.now(timezone.utc).isoformat(),
+        "user": user.get("identifier", "dashboard"),
+        "action": f"Changed supplier '{supplier_name}' on line {line_num} from {old_status} to {new_status}",
+    })
+    await store.aput(NAMESPACE, rfq_id, rfq)
+
+    return Response(status_code=204)
+
+
 # ---------------------------------------------------------------------------
 # Users
 # ---------------------------------------------------------------------------
@@ -1360,4 +1549,101 @@ async def partial_user_list(request: Request, user: dict = require_admin):
         "request": request,
         "user": user,
         "users": users,
+    })
+
+
+# ---------------------------------------------------------------------------
+# System Admin
+# ---------------------------------------------------------------------------
+
+def _job_to_dict(job) -> dict:
+    """Convert a Job dataclass to a template-friendly dict."""
+    from datetime import datetime, timezone
+    if job.finished_at:
+        delta = job.finished_at - job.started_at
+        duration = str(delta).split(".")[0]
+    elif job.status == "running":
+        delta = datetime.now(timezone.utc) - job.started_at
+        duration = str(delta).split(".")[0]
+    else:
+        duration = "—"
+    return {
+        "id": job.id,
+        "script_name": job.script_name,
+        "status": job.status,
+        "started_at": job.started_at,
+        "duration": duration,
+        "last_output": "\n".join(list(job.output)[-10:]) if job.output else "",
+    }
+
+
+@router.get("/admin")
+async def admin_page(request: Request, user: dict = require_admin):
+    from config.scripts import list_scripts
+    ctx = {
+        "scripts": list_scripts(),
+        "active_nav": "admin",
+    }
+    return _render(request, "admin.html", "partials/admin.html", ctx, user)
+
+
+@router.get("/partial/admin")
+async def partial_admin(request: Request, user: dict = require_admin):
+    from config.scripts import list_scripts
+    return templates.TemplateResponse("partials/admin.html", {
+        "request": request,
+        "user": user,
+        "scripts": list_scripts(),
+    })
+
+
+@router.get("/partial/admin/jobs")
+async def partial_admin_jobs(request: Request, user: dict = require_admin):
+    from app import job_runner
+    jobs = [_job_to_dict(j) for j in reversed(job_runner.list_jobs())]
+    return templates.TemplateResponse("partials/admin_jobs.html", {
+        "request": request,
+        "jobs": jobs,
+    })
+
+
+@router.post("/admin/run-script")
+async def admin_run_script(request: Request, user: dict = require_admin):
+    from app import job_runner
+    from config.scripts import validate_args
+
+    form = await request.form()
+    script_name = form.get("script_name", "")
+    raw_args = form.get("args", "").strip()
+    args = raw_args.split() if raw_args else []
+
+    try:
+        validate_args(script_name, args)
+        await job_runner.run_script(script_name, args)
+    except ValueError as e:
+        logger.warning(f"Admin run-script error: {e}")
+
+    jobs = [_job_to_dict(j) for j in reversed(job_runner.list_jobs())]
+    return templates.TemplateResponse("partials/admin_jobs.html", {
+        "request": request,
+        "jobs": jobs,
+    })
+
+
+@router.post("/admin/cancel-job")
+async def admin_cancel_job(request: Request, user: dict = require_admin):
+    from app import job_runner
+
+    form = await request.form()
+    job_id = form.get("job_id", "")
+
+    try:
+        await job_runner.cancel(job_id)
+    except ValueError as e:
+        logger.warning(f"Admin cancel-job error: {e}")
+
+    jobs = [_job_to_dict(j) for j in reversed(job_runner.list_jobs())]
+    return templates.TemplateResponse("partials/admin_jobs.html", {
+        "request": request,
+        "jobs": jobs,
     })

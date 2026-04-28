@@ -1,4 +1,5 @@
-<div data-dashboard-context='{"view": "supplier_detail", "entity": "supplier", "id": "{{ supplier.name }}", "db_id": "{{ supplier.id }}"}' class="pt-6">
+<div data-dashboard-context='{"view": "supplier_detail", "entity": "supplier", "id": "{{ supplier.name }}", "db_id": "{{ supplier.id }}"}' class="pt-6"
+     x-data="{ editing: false }">
     <!-- Breadcrumb -->
     <nav class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 mb-4">
         <a hx-get="/partial/suppliers" hx-target="#main-content" hx-push-url="/suppliers"
@@ -8,19 +9,40 @@
     </nav>
 
     <div class="flex items-start justify-between mb-6">
-        <h1 class="text-2xl font-bold">{{ supplier.name }}</h1>
-        {% if supplier.url %}
-        <a href="{{ supplier.url }}" target="_blank" rel="noopener"
-           class="text-sm text-blue-600 dark:text-blue-400 hover:underline">
-            {{ supplier.url }}
-        </a>
-        {% endif %}
+        <div class="flex items-center gap-3 min-w-0">
+            <h1 class="text-2xl font-bold">{{ supplier.name }}</h1>
+            {% if supplier.supply_chain_position and supplier.supply_chain_position.category %}
+            {% set scp = supplier.supply_chain_position %}
+            <span class="text-xs px-2 py-0.5 rounded-full
+                {% if scp.tier == 'A' %}bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200
+                {% elif scp.tier == 'B' %}bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
+                {% elif scp.tier == 'C' %}bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200
+                {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}"
+                title="{{ scp.reasoning or '' }}">
+                {% if scp.tier %}Tier {{ scp.tier }} · {% endif %}{{ scp.category }}
+                {% if scp.confidence %}<span class="opacity-60 ml-1">({{ scp.confidence }}/5)</span>{% endif %}
+            </span>
+            {% endif %}
+        </div>
+        <div class="flex items-center gap-1 shrink-0">
+            {% if supplier.url %}
+            <a href="{{ supplier.url }}" target="_blank" rel="noopener"
+               class="text-sm text-blue-600 dark:text-blue-400 hover:underline mr-2">
+                {{ supplier.url }}
+            </a>
+            {% endif %}
+            <button x-show="!editing" @click="editing = true"
+                    class="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400" title="Edit">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            </button>
+        </div>
     </div>
 
     <div class="flex flex-col lg:flex-row gap-6">
         <!-- Details card -->
         <div class="flex-1 min-w-0 space-y-6">
-            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+            <!-- Display mode -->
+            <div x-show="!editing" class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
                 <h2 class="text-lg font-semibold mb-4">Details</h2>
                 <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
                     {% if supplier.netsuite_id %}
@@ -39,6 +61,31 @@
                     <dt class="text-gray-500 dark:text-gray-400">Address</dt>
                     <dd>{{ supplier.address_1 }}</dd>
                     {% endif %}
+                    {% if supplier.terms %}
+                    <dt class="text-gray-500 dark:text-gray-400">Terms</dt>
+                    <dd>{{ supplier.terms }}</dd>
+                    {% endif %}
+                    <dt class="text-gray-500 dark:text-gray-400">Supply Chain Position</dt>
+                    <dd>
+                        {% if supplier.supply_chain_position %}
+                        {% set scp = supplier.supply_chain_position %}
+                        <span class="inline-flex items-center gap-1">
+                            <span class="text-xs px-1.5 py-0.5 rounded
+                                {% if scp.tier == 'A' %}bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200
+                                {% elif scp.tier == 'B' %}bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
+                                {% elif scp.tier == 'C' %}bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200
+                                {% elif scp.tier == 'D' %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200
+                                {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}"
+                                title="{{ scp.reasoning or '' }}">
+                                Tier {{ scp.tier }}
+                            </span>
+                            {{ scp.category }}
+                            {% if scp.confidence %}<span class="text-xs text-gray-400">({{ scp.confidence }}/5)</span>{% endif %}
+                        </span>
+                        {% else %}
+                        <span class="text-gray-400">—</span>
+                        {% endif %}
+                    </dd>
                 </dl>
                 {% if supplier.notes %}
                 <div class="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
@@ -46,6 +93,108 @@
                     <p class="text-sm whitespace-pre-wrap">{{ supplier.notes }}</p>
                 </div>
                 {% endif %}
+                {% if supplier.modified_at %}
+                <div class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700">
+                    <p class="text-xs text-gray-400 dark:text-gray-500">
+                        Last modified {{ supplier.modified_at.strftime('%d %b %Y %H:%M') }}
+                        {% if supplier.modified_by %} by {{ supplier.modified_by }}{% endif %}
+                    </p>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Edit mode -->
+            <form x-show="editing" x-cloak
+                  hx-post="/partial/suppliers/{{ supplier.id }}/update" hx-target="#main-content"
+                  class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+                <h2 class="text-lg font-semibold mb-4">Edit Details</h2>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Name</label>
+                        <input type="text" name="name" value="{{ supplier.name or '' }}"
+                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">URL</label>
+                        <input type="url" name="url" value="{{ supplier.url or '' }}"
+                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Country</label>
+                        <input type="text" name="country" value="{{ supplier.country or '' }}"
+                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">City</label>
+                        <input type="text" name="city" value="{{ supplier.city or '' }}"
+                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Address</label>
+                        <input type="text" name="address_1" value="{{ supplier.address_1 or '' }}"
+                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Terms</label>
+                        <input type="text" name="terms" value="{{ supplier.terms or '' }}"
+                               placeholder="e.g. 30 days, COD, Net 60"
+                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Supply Chain Position</label>
+                        {% set scp = supplier.supply_chain_position or {} %}
+                        {% set current_scp = (scp.tier or '') ~ '|' ~ (scp.category or '') %}
+                        <select name="scp_position"
+                                class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                            <option value="">— Not set —</option>
+                            {% for opt in scp_options %}
+                            <option value="{{ opt.value }}" {% if opt.value == current_scp %}selected{% endif %}>{{ opt.label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Notes</label>
+                    <textarea name="notes" rows="3"
+                              class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">{{ supplier.notes or '' }}</textarea>
+                </div>
+                <div class="flex items-center gap-2 pt-3">
+                    <button type="submit"
+                            class="px-3 py-1.5 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700">Save</button>
+                    <button type="button" @click="editing = false"
+                            class="px-3 py-1.5 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700">Cancel</button>
+                </div>
+            </form>
+
+            <!-- Comments -->
+            <div id="supplier-comments" class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+                <h2 class="text-lg font-semibold mb-4">Comments</h2>
+                {% set comments = supplier.comments or [] %}
+                {% if comments %}
+                <div class="space-y-3 mb-4">
+                    {% for c in comments %}
+                    <div class="text-sm border-b border-gray-100 dark:border-gray-700 pb-3 last:border-0">
+                        <div class="flex items-center gap-2 mb-1">
+                            <span class="font-medium">{{ c.author or 'Unknown' }}</span>
+                            {% if c.ts %}
+                            <span class="text-xs text-gray-400 dark:text-gray-500">{{ c.ts }}</span>
+                            {% endif %}
+                        </div>
+                        <p class="text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{{ c.comment }}</p>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-sm text-gray-400 dark:text-gray-500 mb-4">No comments yet.</p>
+                {% endif %}
+                <form hx-post="/partial/suppliers/{{ supplier.id }}/comments"
+                      hx-target="#supplier-comments" hx-swap="outerHTML"
+                      class="flex gap-2">
+                    <input type="text" name="comment" placeholder="Add a comment…" required
+                           class="flex-1 px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                    <button type="submit"
+                            class="px-3 py-1.5 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700 shrink-0">Add</button>
+                </form>
             </div>
 
             <!-- Contacts -->

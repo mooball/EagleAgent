@@ -107,3 +107,74 @@ def merge_supplier_contacts(sup: dict, db_contacts: list) -> None:
             if phone:
                 existing_phones.add(phone)
     sup["contacts"] = existing
+
+
+# --- Supplier update helpers ---------------------------------------------------
+
+# Fields that can be edited through the UI form
+_SUPPLIER_EDITABLE = {"name", "url", "address_1", "city", "country", "notes", "terms", "supply_chain_position"}
+
+
+def update_supplier(supplier_id: str, updates: dict, modified_by: str):
+    """Update allowed supplier fields and set modified_at/modified_by.
+
+    Returns the updated Supplier row or None if not found.
+    """
+    from datetime import datetime, timezone
+    from includes.dashboard.models import Supplier
+
+    session = get_session()
+    try:
+        supplier = session.query(Supplier).filter(Supplier.id == supplier_id).first()
+        if not supplier:
+            return None
+        for key, value in updates.items():
+            if key in _SUPPLIER_EDITABLE:
+                if key == "supply_chain_position" and isinstance(value, dict):
+                    # Merge with existing JSONB to preserve AI-set fields
+                    existing = dict(supplier.supply_chain_position or {})
+                    existing.update(value)
+                    setattr(supplier, key, existing)
+                else:
+                    setattr(supplier, key, value or None)
+        supplier.modified_at = datetime.now(timezone.utc)
+        supplier.modified_by = modified_by
+        session.commit()
+        session.refresh(supplier)
+        return supplier
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def add_supplier_comment(supplier_id: str, author: str, comment: str) -> list:
+    """Append a comment to the supplier's comments JSONB list.
+
+    Returns the updated comments list.
+    """
+    from datetime import datetime, timezone
+    from includes.dashboard.models import Supplier
+
+    session = get_session()
+    try:
+        supplier = session.query(Supplier).filter(Supplier.id == supplier_id).first()
+        if not supplier:
+            return []
+        existing = list(supplier.comments or [])
+        existing.append({
+            "author": author,
+            "comment": comment,
+            "ts": datetime.now(timezone.utc).strftime("%d %b %Y %H:%M"),
+        })
+        supplier.comments = existing
+        supplier.modified_at = datetime.now(timezone.utc)
+        supplier.modified_by = f"user:{author}"
+        session.commit()
+        return existing
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

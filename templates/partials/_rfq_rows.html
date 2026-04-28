@@ -35,7 +35,7 @@
 {% if has_more %}
 <!-- Sentinel: triggers load when scrolled near bottom -->
 <div id="rfq-sentinel"
-     hx-get="/partial/rfqs/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}"
+     hx-get="/partial/rfqs/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}{% if mine %}&mine={{ mine }}{% endif %}"
      hx-trigger="intersect"
      hx-target="this"
      hx-swap="outerHTML"

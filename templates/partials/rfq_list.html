@@ -18,6 +18,21 @@
         {{ search_form("/partial/rfqs", "Search RFQs…", q or '') }}
     {% endcall %}
 
+    <div class="flex items-center gap-1 mb-3 text-xs">
+        <a hx-get="/partial/rfqs?mine=1{% if q %}&q={{ q }}{% endif %}"
+           hx-target="#main-content" hx-push-url="/rfqs?mine=1{% if q %}&q={{ q }}{% endif %}"
+           class="px-2.5 py-1 rounded-full cursor-pointer transition-colors
+                  {% if mine == '1' %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
+            My RFQs
+        </a>
+        <a hx-get="/partial/rfqs?mine=0{% if q %}&q={{ q }}{% endif %}"
+           hx-target="#main-content" hx-push-url="/rfqs?mine=0{% if q %}&q={{ q }}{% endif %}"
+           class="px-2.5 py-1 rounded-full cursor-pointer transition-colors
+                  {% if mine != '1' %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
+            All RFQs
+        </a>
+    </div>
+
     {% if rfqs %}
     <div id="rfq-rows" class="grid gap-3">
         {% include "partials/_rfq_rows.html" %}

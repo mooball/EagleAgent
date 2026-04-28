@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Text, Float, Date, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, Text, Float, Date, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base
 from pgvector.sqlalchemy import Vector
@@ -18,6 +18,11 @@ class Supplier(Base):
     country = Column(String, nullable=True)
     notes = Column(Text, nullable=True)
     contacts = Column(JSONB, nullable=True)
+    comments = Column(JSONB, nullable=True)                    # [{author, comment, ts}]
+    supply_chain_position = Column(JSONB, nullable=True)       # {category, tier, confidence, reasoning}
+    terms = Column(String, nullable=True)                      # e.g. "30 days", "COD"
+    modified_at = Column(DateTime(timezone=True), nullable=True)
+    modified_by = Column(String, nullable=True)                # "user:tom", "netsuite", "ai:categorizer"
 
     # 256 dimensions for Gemini embedding-2-preview (notes only)
     embedding = Column(Vector(256), nullable=True)

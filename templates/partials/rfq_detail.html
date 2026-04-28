@@ -156,7 +156,7 @@
     </div>
 
     <!-- Items table -->
-    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-x-auto">
         <table class="w-full text-sm">
             <thead class="bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700">
                 <tr>
@@ -193,7 +193,7 @@
                     </td>
                     <td class="px-3 py-2.5 font-mono">
                         <span class="inline-flex items-center gap-1">
-                            {{ item.part_number or item.input_code or '—' }}
+                            {{ item.part_number or '—' }}
                             {% if item.product_id %}
                             <span class="text-[9px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300 font-medium font-sans">DB</span>
                             {% endif %}
@@ -231,37 +231,33 @@
                 </tr>
                 <!-- Item row (edit mode) -->
                 <tr x-show="editingItem === {{ item.line }}" x-cloak class="bg-amber-50 dark:bg-amber-950">
-                    <td colspan="7" class="px-3 py-3">
-                        <form hx-post="/partial/rfqs/{{ rfq.id }}/update-item" hx-target="#main-content"
-                              class="flex items-end gap-2 flex-wrap">
+                    <td class="px-3 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
+                    <td class="px-3 py-2.5">
+                        <form id="edit-item-{{ item.line }}" hx-post="/partial/rfqs/{{ rfq.id }}/update-item" hx-target="#main-content">
                             <input type="hidden" name="line" value="{{ item.line }}">
-                            <div class="flex-1 min-w-[200px]">
-                                <label class="block text-[10px] font-medium text-gray-500 dark:text-gray-400 mb-0.5">Description</label>
-                                <input type="text" name="input_description" value="{{ item.input_description or '' }}"
-                                       class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
-                            </div>
-                            <div class="w-36">
-                                <label class="block text-[10px] font-medium text-gray-500 dark:text-gray-400 mb-0.5">Part Number</label>
-                                <input type="text" name="part_number" value="{{ item.part_number or '' }}"
-                                       class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 font-mono">
-                            </div>
-                            <div class="w-28">
-                                <label class="block text-[10px] font-medium text-gray-500 dark:text-gray-400 mb-0.5">Brand</label>
-                                <input type="text" name="brand" value="{{ item.brand or '' }}"
-                                       class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
-                            </div>
-                            <div class="w-16">
-                                <label class="block text-[10px] font-medium text-gray-500 dark:text-gray-400 mb-0.5">Qty</label>
-                                <input type="text" name="quantity" value="{{ item.quantity or '' }}"
-                                       class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 text-center">
-                            </div>
-                            <div class="flex items-center gap-1">
-                                <button type="submit"
-                                        class="px-2.5 py-1 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700">Save</button>
-                                <button type="button" @click="editingItem = null"
-                                        class="px-2.5 py-1 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700">Cancel</button>
-                            </div>
+                            <input type="text" name="input_description" value="{{ item.input_description or '' }}"
+                                   class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
                         </form>
+                    </td>
+                    <td class="px-3 py-2.5">
+                        <input type="text" name="part_number" value="{{ item.part_number or '' }}" form="edit-item-{{ item.line }}"
+                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 font-mono">
+                    </td>
+                    <td class="px-3 py-2.5">
+                        <input type="text" name="brand" value="{{ item.brand or '' }}" form="edit-item-{{ item.line }}"
+                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
+                    </td>
+                    <td class="px-3 py-2.5 text-center">
+                        <input type="text" name="quantity" value="{{ item.quantity or '' }}" form="edit-item-{{ item.line }}"
+                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 text-center">
+                    </td>
+                    <td colspan="2" class="px-3 py-2.5 text-center">
+                        <div class="flex items-center justify-center gap-1">
+                            <button type="submit" form="edit-item-{{ item.line }}"
+                                    class="px-2.5 py-1 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700">Save</button>
+                            <button type="button" @click="editingItem = null"
+                                    class="px-2.5 py-1 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700">Cancel</button>
+                        </div>
                     </td>
                 </tr>
                 <!-- Expanded supplier sub-table -->
@@ -290,14 +286,21 @@
                                 {% set contacts = s.contacts or [] %}
                                 {% set purchase_ref = s.purchase_ref %}
                                 {% set has_details = contacts | length > 0 or s.lead_time or s.notes or s.supplier_id or purchase_ref %}
-                                <tr class="border-b last:border-b-0 border-gray-100 dark:border-gray-700">
-                                    <td class="px-2 py-1.5 text-xs {{ 'line-through opacity-50' if is_dropped }}">
+                                <tr x-data="{ supStatus: '{{ s.status }}' }" class="border-b last:border-b-0 border-gray-100 dark:border-gray-700">
+                                    <td class="px-2 py-1.5 text-xs" :class="supStatus === 'dropped' && 'line-through opacity-50'">
                                         {% if has_details %}
                                         {% set popover_key = 'sup-' ~ item.line ~ '-' ~ loop.index %}
                                         <div class="relative">
                                             <button @click.stop="openPopover = (openPopover === '{{ popover_key }}') ? null : '{{ popover_key }}'"
                                                     class="text-left cursor-pointer flex items-center gap-1 underline decoration-dotted underline-offset-2 decoration-gray-400/50 hover:text-blue-600 dark:hover:text-blue-400">
                                                 {{ s.name }}
+                                                {% if s.tier %}
+                                                <span class="no-underline text-[9px] px-1 py-0.5 rounded font-medium
+                                                    {% if s.tier == 'A' %}bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200
+                                                    {% elif s.tier == 'B' %}bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
+                                                    {% elif s.tier == 'C' %}bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200
+                                                    {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}">{{ s.tier }}</span>
+                                                {% endif %}
                                                 <svg class="w-3 h-3 opacity-30 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                                             </button>
                                             <div x-show="openPopover === '{{ popover_key }}'" @click.outside="openPopover = null" x-cloak
@@ -370,9 +373,21 @@
                                         </div>
                                         {% else %}
                                         {{ s.name }}
+                                        {% if s.tier %}
+                                        <span class="text-[9px] px-1 py-0.5 rounded font-medium
+                                            {% if s.tier == 'A' %}bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200
+                                            {% elif s.tier == 'B' %}bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
+                                            {% elif s.tier == 'C' %}bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200
+                                            {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}">{{ s.tier }}</span>
+                                        {% endif %}
                                         {% endif %}
                                     </td>
-                                    <td class="px-2 py-1.5 text-xs text-right font-medium whitespace-nowrap {{ 'line-through opacity-50' if is_dropped }}">
+                                    <td class="px-2 py-1.5 text-xs text-right whitespace-nowrap text-gray-500 dark:text-gray-400" :class="supStatus === 'dropped' && 'opacity-50'">
+                                        {% if purchase_ref and purchase_ref.date %}
+                                        {{ purchase_ref.date }}
+                                        {% endif %}
+                                    </td>
+                                    <td class="px-2 py-1.5 text-xs text-right font-medium whitespace-nowrap" :class="supStatus === 'dropped' && 'line-through opacity-50'">
                                         {% if s.price is not none %}
                                         ${{ "%.2f" | format(s.price | float) }}
                                         {% if s.price_type %}
@@ -384,50 +399,39 @@
                                         <span class="opacity-30">—</span>
                                         {% endif %}
                                     </td>
-                                    <td class="px-2 py-1.5 text-xs whitespace-nowrap {{ 'opacity-50' if is_dropped }}">
+                                    <td class="px-2 py-1.5 text-xs whitespace-nowrap" :class="supStatus === 'dropped' && 'opacity-50'">
                                         {{ s.lead_time or '' }}
                                     </td>
                                     <td class="px-2 py-1.5">
-                                        {% if s.status == 'candidate' %}
-                                        <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-200">Candidate</span>
-                                        {% elif s.status == 'shortlisted' %}
-                                        <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200">Shortlisted</span>
-                                        {% elif s.status == 'selected' %}
-                                        <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">Selected</span>
-                                        {% elif s.status == 'dropped' %}
-                                        <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200 line-through">Dropped</span>
-                                        {% endif %}
+                                        <span x-show="supStatus === 'candidate'" {% if s.status != 'candidate' %}style="display:none"{% endif %} class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-200">Candidate</span>
+                                        <span x-show="supStatus === 'shortlisted'" {% if s.status != 'shortlisted' %}style="display:none"{% endif %} class="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200">Shortlisted</span>
+                                        <span x-show="supStatus === 'selected'" {% if s.status != 'selected' %}style="display:none"{% endif %} class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">Selected</span>
+                                        <span x-show="supStatus === 'dropped'" {% if s.status != 'dropped' %}style="display:none"{% endif %} class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200 line-through">Dropped</span>
                                     </td>
                                     <td class="px-2 py-1.5 w-8">
-                                        {% if not is_dropped %}
-                                        <div class="relative" x-data="{ menuOpen: false }">
+                                        <div x-show="supStatus !== 'dropped'" {% if s.status == 'dropped' %}style="display:none"{% endif %} class="relative" x-data="{ menuOpen: false }">
                                             <button @click.stop="menuOpen = !menuOpen" class="p-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700">
                                                 <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
                                             </button>
                                             <div x-show="menuOpen" @click.outside="menuOpen = false" x-cloak
                                                  class="absolute right-0 z-30 mt-1 w-32 bg-white dark:bg-gray-800 rounded-md shadow-lg border border-gray-200 dark:border-gray-700 py-1 text-xs">
-                                                {% if s.status != 'shortlisted' %}
-                                                <button class="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                                <button x-show="supStatus !== 'shortlisted'" class="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700"
                                                         data-supplier="{{ s.name | e }}"
-                                                        @click.stop="updateSupplier('{{ rfq.id }}', {{ item.line }}, $el.dataset.supplier, 'shortlisted'); menuOpen = false">
+                                                        @click.stop="supStatus = 'shortlisted'; menuOpen = false; setSupplierStatus({{ item.line }}, $el.dataset.supplier, 'shortlisted')">
                                                     ⭐ Shortlist
                                                 </button>
-                                                {% endif %}
-                                                {% if s.status != 'selected' %}
-                                                <button class="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                                <button x-show="supStatus !== 'selected'" class="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700"
                                                         data-supplier="{{ s.name | e }}"
-                                                        @click.stop="updateSupplier('{{ rfq.id }}', {{ item.line }}, $el.dataset.supplier, 'selected'); menuOpen = false">
+                                                        @click.stop="supStatus = 'selected'; menuOpen = false; setSupplierStatus({{ item.line }}, $el.dataset.supplier, 'selected')">
                                                     ✅ Select
                                                 </button>
-                                                {% endif %}
                                                 <button class="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 text-red-600"
                                                         data-supplier="{{ s.name | e }}"
-                                                        @click.stop="updateSupplier('{{ rfq.id }}', {{ item.line }}, $el.dataset.supplier, 'dropped'); menuOpen = false">
+                                                        @click.stop="supStatus = 'dropped'; menuOpen = false; setSupplierStatus({{ item.line }}, $el.dataset.supplier, 'dropped')">
                                                     ✕ Drop
                                                 </button>
                                             </div>
                                         </div>
-                                        {% endif %}
                                     </td>
                                 </tr>
                                 {% endfor %}
@@ -439,36 +443,32 @@
                 {% endfor %}
                 <!-- Add item row -->
                 <tr x-show="addingItem" x-cloak class="bg-green-50 dark:bg-green-950">
-                    <td colspan="7" class="px-3 py-3">
-                        <form hx-post="/partial/rfqs/{{ rfq.id }}/add-item" hx-target="#main-content"
-                              class="flex items-end gap-2 flex-wrap">
-                            <div class="flex-1 min-w-[200px]">
-                                <label class="block text-[10px] font-medium text-gray-500 dark:text-gray-400 mb-0.5">Description</label>
-                                <input type="text" name="input_description" placeholder="Item description"
-                                       class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
-                            </div>
-                            <div class="w-36">
-                                <label class="block text-[10px] font-medium text-gray-500 dark:text-gray-400 mb-0.5">Part Number</label>
-                                <input type="text" name="part_number" placeholder="Part #"
-                                       class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 font-mono">
-                            </div>
-                            <div class="w-28">
-                                <label class="block text-[10px] font-medium text-gray-500 dark:text-gray-400 mb-0.5">Brand</label>
-                                <input type="text" name="brand" placeholder="Brand"
-                                       class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
-                            </div>
-                            <div class="w-16">
-                                <label class="block text-[10px] font-medium text-gray-500 dark:text-gray-400 mb-0.5">Qty</label>
-                                <input type="text" name="quantity" placeholder="1"
-                                       class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 text-center">
-                            </div>
-                            <div class="flex items-center gap-1">
-                                <button type="submit"
-                                        class="px-2.5 py-1 text-xs font-medium rounded bg-green-600 text-white hover:bg-green-700">Add</button>
-                                <button type="button" @click="addingItem = false"
-                                        class="px-2.5 py-1 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700">Cancel</button>
-                            </div>
+                    <td class="px-3 py-2.5 text-center font-mono text-xs text-gray-400">+</td>
+                    <td class="px-3 py-2.5">
+                        <form id="add-item-form" hx-post="/partial/rfqs/{{ rfq.id }}/add-item" hx-target="#main-content">
+                            <input type="text" name="input_description" placeholder="Item description"
+                                   class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
                         </form>
+                    </td>
+                    <td class="px-3 py-2.5">
+                        <input type="text" name="part_number" placeholder="Part #" form="add-item-form"
+                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 font-mono">
+                    </td>
+                    <td class="px-3 py-2.5">
+                        <input type="text" name="brand" placeholder="Brand" form="add-item-form"
+                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
+                    </td>
+                    <td class="px-3 py-2.5 text-center">
+                        <input type="text" name="quantity" placeholder="1" form="add-item-form"
+                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 text-center">
+                    </td>
+                    <td colspan="2" class="px-3 py-2.5 text-center">
+                        <div class="flex items-center justify-center gap-1">
+                            <button type="submit" form="add-item-form"
+                                    class="px-2.5 py-1 text-xs font-medium rounded bg-green-600 text-white hover:bg-green-700">Add</button>
+                            <button type="button" @click="addingItem = false"
+                                    class="px-2.5 py-1 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700">Cancel</button>
+                        </div>
                     </td>
                 </tr>
             </tbody>
