@@ -4,7 +4,7 @@
     "items": items,
     "supplierLines": items | selectattr('suppliers') | map(attribute='line') | list,
     "allLines": items | map(attribute='line') | list,
-    "unidentified": items | selectattr('status', 'equalto', 'unidentified') | list
+    "unidentified": items | rejectattr('status', 'equalto', 'confirmed') | list
 } | tojson }}</script>
 <div data-dashboard-context='{"view": "rfq_detail", "entity": "rfq", "id": "{{ rfq.id }}"}' class="pt-6"
      x-data="rfqDetail()">
@@ -135,6 +135,7 @@
     {% set total_items = items | length %}
     {% set confirmed = items | selectattr('status', 'equalto', 'confirmed') | list | length %}
     {% set identified = items | selectattr('status', 'equalto', 'identified') | list | length %}
+    {% set review = items | selectattr('status', 'equalto', 'review') | list | length %}
     {% set unidentified = items | selectattr('status', 'equalto', 'unidentified') | list | length %}
 
     {% if items %}
@@ -145,6 +146,7 @@
             <span>·</span>
             {% if confirmed %}<span>{{ confirmed }} confirmed</span>{% endif %}
             {% if identified %}<span>{{ identified }} identified</span>{% endif %}
+            {% if review %}<span class="text-amber-600">{{ review }} needs review</span>{% endif %}
             {% if unidentified %}<span class="text-amber-600">{{ unidentified }} unidentified</span>{% endif %}
         </div>
         <div class="flex items-center gap-1">
@@ -206,6 +208,11 @@
                         <span class="inline-block w-2.5 h-2.5 rounded-full bg-green-500" title="Confirmed"></span>
                         {% elif item.status == 'identified' %}
                         <span class="inline-block w-2.5 h-2.5 rounded-full bg-blue-500" title="Identified"></span>
+                        {% elif item.status == 'review' %}
+                        <span class="inline-flex items-center gap-0.5" title="{{ item.notes or 'Needs Review' }}">
+                            <span class="inline-block w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+                            <svg class="w-3 h-3 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+                        </span>
                         {% else %}
                         <span class="inline-block w-2.5 h-2.5 rounded-full bg-gray-400" title="Unidentified"></span>
                         {% endif %}
@@ -480,7 +487,7 @@
 
     <!-- Action buttons -->
     <div class="flex gap-2 mt-4">
-        {% if unidentified > 0 %}
+        {% if total_items > confirmed %}
         <button @click="identifyItems()"
                 class="px-3 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-1.5">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>

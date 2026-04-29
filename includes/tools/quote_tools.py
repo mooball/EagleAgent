@@ -135,6 +135,7 @@ def _render_rfq_summary(rfq: dict) -> str:
     total = len(items)
     confirmed = sum(1 for i in items if i.get("status") == "confirmed")
     identified = sum(1 for i in items if i.get("status") == "identified")
+    review = sum(1 for i in items if i.get("status") == "review")
     unidentified = sum(1 for i in items if i.get("status") == "unidentified")
     with_suppliers = sum(1 for i in items if i.get("suppliers"))
 
@@ -175,6 +176,7 @@ def _render_rfq_summary(rfq: dict) -> str:
         status_icons = {
             "confirmed": "✅ Confirmed",
             "identified": "🔵 Identified",
+            "review": "🟡 Needs Review",
             "unidentified": "⚠️ Unidentified",
         }
         lines.append("| # | Description | Part Number | Brand | Qty | Status | Suppliers |")
@@ -188,6 +190,9 @@ def _render_rfq_summary(rfq: dict) -> str:
             uom = item.get("uom", "")
             qty_str = f"{qty} {uom}".strip() if qty else "—"
             status = status_icons.get(item.get("status", ""), item.get("status", ""))
+            item_notes = item.get("notes", "")
+            if item_notes:
+                status += f" ({item_notes})"
             suppliers = item.get("suppliers", [])
             if suppliers:
                 sup_parts = []
@@ -229,6 +234,8 @@ def _render_rfq_summary(rfq: dict) -> str:
             counts.append(f"{confirmed} confirmed")
         if identified:
             counts.append(f"{identified} identified")
+        if review:
+            counts.append(f"{review} needs review")
         if unidentified:
             counts.append(f"{unidentified} unidentified")
         lines.append(
@@ -301,7 +308,10 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
                           netsuite_opportunity, hubspot_deal, assigned_to
           update_item   — Update an RFQ line item. data keys: line (required, int),
                           plus any of: input_description, input_code, part_number,
-                          brand, product_id, quantity, uom, status
+                          brand, product_id, quantity, uom, status, notes.
+                          Item status values: unidentified, identified, confirmed,
+                          review (needs human attention — e.g. part number
+                          discrepancy found during web search)
           add_supplier  — Add supplier candidate(s) to a line item. data keys:
                           line (required), EITHER name (required) for a single
                           supplier with optional supplier_id, contacts, status,
@@ -375,6 +385,7 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
                     "quantity": raw.get("quantity"),
                     "uom": raw.get("uom", "ea"),
                     "status": raw.get("status", "unidentified"),
+                    "notes": raw.get("notes", ""),
                     "suppliers": [],
                 })
 
@@ -427,12 +438,19 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
                 return f"Error: line {line_num} not found in {rfq_id}."
             updatable = [
                 "input_description", "input_code", "part_number", "brand",
-                "product_id", "quantity", "uom", "status",
+                "product_id", "quantity", "uom", "status", "notes",
             ]
+            # Don't allow clearing fields that already have values with
+            # None / empty string — the agent sometimes passes these
+            # unintentionally when only updating status/notes.
+            _no_clear = {"part_number", "brand", "product_id", "input_description", "input_code"}
             changes = []
             for key in updatable:
                 if key in data:
-                    line_item[key] = data[key]
+                    new_val = data[key]
+                    if key in _no_clear and not new_val and line_item.get(key):
+                        continue  # skip — would erase existing value
+                    line_item[key] = new_val
                     changes.append(key)
             rfq["history"].append({
                 "date": now, "user": user_id,
