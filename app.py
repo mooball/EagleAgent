@@ -604,6 +604,10 @@ async def chat_profile(current_user: cl.User):
 async def start():
     import uuid
     
+    # Immediately clear stale commands from the previous chat profile so
+    # the user never sees the old profile's buttons during initialisation.
+    await cl.context.emitter.set_commands([])
+    
     # Initialize the pg pool and database schemas if not already done securely
     # AsyncConnectionPool open can be safely called multiple times if we just open it.
     await setup_globals()

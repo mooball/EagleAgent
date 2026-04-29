@@ -605,6 +605,58 @@ def partial_supplier_update(request: Request, supplier_id: str,
     })
 
 
+@router.post("/partial/suppliers/{supplier_id}/update-contacts")
+def partial_supplier_update_contacts(request: Request, supplier_id: str,
+                                     user: dict = Depends(require_user)):
+    """Update the contacts JSONB from the structured editor form."""
+    import asyncio
+    import json
+    loop = asyncio.new_event_loop()
+    form = loop.run_until_complete(request.form())
+    loop.close()
+
+    contacts_json = form.get("contacts_json", "[]")
+    try:
+        contacts = json.loads(contacts_json)
+    except (json.JSONDecodeError, TypeError):
+        return HTMLResponse("<p>Invalid contacts data.</p>", status_code=400)
+
+    # Sanitize: keep only expected keys, strip whitespace
+    cleaned = []
+    for c in contacts:
+        if not isinstance(c, dict):
+            continue
+        entry = {
+            "name": (c.get("name") or "").strip() or None,
+            "email": (c.get("email") or "").strip() or None,
+            "phone": (c.get("phone") or "").strip() or None,
+            "label": (c.get("label") or "").strip() or None,
+        }
+        # Skip completely empty rows
+        if not any(entry.values()):
+            continue
+        cleaned.append(entry)
+
+    author = user.get("name") or user.get("email", "unknown")
+    supplier = update_supplier(supplier_id, {"contacts": cleaned}, f"user:{author}")
+    if not supplier:
+        return HTMLResponse("<p>Supplier not found.</p>")
+
+    # Re-render just the contacts section
+    contacts_list = []
+    if supplier.contacts:
+        for c in supplier.contacts:
+            if isinstance(c, dict):
+                contacts_list.append(c)
+
+    return templates.TemplateResponse("partials/_supplier_contacts.html", {
+        "request": request,
+        "user": user,
+        "supplier": supplier,
+        "contacts": contacts_list,
+    })
+
+
 @router.post("/partial/suppliers/{supplier_id}/comments")
 def partial_supplier_add_comment(request: Request, supplier_id: str,
                                  user: dict = Depends(require_user)):
@@ -795,12 +847,13 @@ def _normalize_rfq_suppliers(rfq: dict) -> None:
 
 
 def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
-    """Back-fill missing supplier contacts from the DB for display.
+    """Back-fill missing supplier contacts, terms, and tier from the DB.
 
     When a supplier was added to an RFQ, the contacts snapshot may have been
     empty or missing email/phone.  This looks up current DB contacts for
     suppliers that either have a supplier_id or can be matched by name,
-    and merges in any missing email/phone fields.
+    and merges in any missing email/phone fields.  It also pulls terms and
+    supply_chain_position tier for display.
     """
     from includes.dashboard.database import (
         match_supplier_by_name,
@@ -816,13 +869,11 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
             return True
         return not any(c.get("email") for c in contacts if isinstance(c, dict))
 
-    # Pass 1: collect suppliers needing enrichment, grouped by id / name
+    # Collect ALL suppliers grouped by id / name for enrichment
     by_id: dict[str, list[dict]] = {}
     by_name: dict[str, list[dict]] = {}   # lowercased name -> supplier dicts
     for item in rfq.get("items", []):
         for sup in item.get("suppliers", []):
-            if not _contacts_need_enrichment(sup.get("contacts", [])):
-                continue
             sid = sup.get("supplier_id")
             if sid:
                 by_id.setdefault(sid, []).append(sup)
@@ -840,7 +891,9 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
 
         # Enrich by supplier_id
         if by_id:
-            rows = session.query(Supplier.id, Supplier.contacts, Supplier.supply_chain_position).filter(
+            rows = session.query(
+                Supplier.id, Supplier.contacts, Supplier.supply_chain_position, Supplier.terms,
+            ).filter(
                 Supplier.id.in_(list(by_id.keys()))
             ).all()
             for row in rows:
@@ -848,10 +901,12 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                 if sid in by_id:
                     scp = row.supply_chain_position or {}
                     for sup in by_id[sid]:
-                        if row.contacts:
+                        if row.contacts and _contacts_need_enrichment(sup.get("contacts", [])):
                             merge_supplier_contacts(sup, row.contacts)
                         if scp.get("tier"):
                             sup["tier"] = scp["tier"]
+                        if row.terms:
+                            sup["terms"] = row.terms
 
         # Enrich by name using shared matching
         if by_name:
@@ -860,12 +915,14 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                 if matched:
                     scp = matched.supply_chain_position or {}
                     for sup in sup_list:
-                        if matched.contacts:
+                        if matched.contacts and _contacts_need_enrichment(sup.get("contacts", [])):
                             merge_supplier_contacts(sup, matched.contacts)
                         if not sup.get("supplier_id"):
                             sup["supplier_id"] = str(matched.id)
                         if scp.get("tier"):
                             sup["tier"] = scp["tier"]
+                        if matched.terms:
+                            sup["terms"] = matched.terms
     finally:
         session.close()
 

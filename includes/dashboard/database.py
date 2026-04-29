@@ -112,7 +112,7 @@ def merge_supplier_contacts(sup: dict, db_contacts: list) -> None:
 # --- Supplier update helpers ---------------------------------------------------
 
 # Fields that can be edited through the UI form
-_SUPPLIER_EDITABLE = {"name", "url", "address_1", "city", "country", "notes", "terms", "supply_chain_position"}
+_SUPPLIER_EDITABLE = {"name", "url", "address_1", "city", "country", "notes", "terms", "contacts", "supply_chain_position"}
 
 
 def update_supplier(supplier_id: str, updates: dict, modified_by: str):
