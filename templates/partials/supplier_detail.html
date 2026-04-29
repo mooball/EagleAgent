@@ -198,26 +198,7 @@
             </div>
 
             <!-- Contacts -->
-            {% if contacts %}
-            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
-                <h2 class="text-lg font-semibold mb-4">Contacts</h2>
-                <div class="space-y-3">
-                    {% for c in contacts %}
-                    <div class="flex items-start gap-3 text-sm">
-                        <div class="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-xs font-medium">
-                            {{ c.name[0] if c.name else '?' }}
-                        </div>
-                        <div>
-                            <p class="font-medium">{{ c.name or 'Unknown' }}</p>
-                            {% if c.email %}<p class="text-gray-500 dark:text-gray-400">{{ c.email }}</p>{% endif %}
-                            {% if c.phone %}<p class="text-gray-500 dark:text-gray-400">{{ c.phone }}</p>{% endif %}
-                            {% if c.role %}<p class="text-xs text-gray-400 dark:text-gray-500">{{ c.role }}</p>{% endif %}
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
-            </div>
-            {% endif %}
+            {% include "partials/_supplier_contacts.html" %}
 
             <!-- Purchase history -->
             {% if purchases %}

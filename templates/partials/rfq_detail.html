@@ -382,6 +382,9 @@
                                         {% endif %}
                                         {% endif %}
                                     </td>
+                                    <td class="px-2 py-1.5 text-xs whitespace-nowrap text-gray-500 dark:text-gray-400" :class="supStatus === 'dropped' && 'opacity-50'">
+                                        {{ s.terms or '' }}
+                                    </td>
                                     <td class="px-2 py-1.5 text-xs text-right whitespace-nowrap text-gray-500 dark:text-gray-400" :class="supStatus === 'dropped' && 'opacity-50'">
                                         {% if purchase_ref and purchase_ref.date %}
                                         {{ purchase_ref.date }}
