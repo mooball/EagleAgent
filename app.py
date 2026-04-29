@@ -1028,11 +1028,11 @@ async def on_rfq_identify_items(action: cl.Action):
         parts.append("Do NOT update items you are not 100% sure about.")
 
         rich_prompt = "\n".join(parts)
-        cl.user_session.set("intent_context", rich_prompt)
 
         short_label = f"Identify {len(unmatched)} unmatched item(s) in {rfq_id} via web search"
         synthetic = cl.Message(content=short_label)
         synthetic.author = "User"
+        synthetic.intent_context = rich_prompt  # carry context per-message to avoid race
         await main(synthetic)
     elif not matched:
         await cl.Message(
@@ -1186,7 +1186,6 @@ async def on_rfq_find_suppliers(action: cl.Action):
     parts.append("Include any pricing, lead time, or contact information you can find.")
 
     rich_prompt = "\n".join(parts)
-    cl.user_session.set("intent_context", rich_prompt)
 
     short_label = f"Search the web for suppliers for line {line}"
     if description:
@@ -1194,6 +1193,7 @@ async def on_rfq_find_suppliers(action: cl.Action):
 
     synthetic = cl.Message(content=short_label)
     synthetic.author = "User"
+    synthetic.intent_context = rich_prompt  # carry context per-message to avoid race
     await main(synthetic)
 
 
@@ -1406,6 +1406,8 @@ async def main(message: cl.Message):
     if message.command:
         intent_name = _command_to_intent_name(message.command) or message.command
         intent_context = get_intent_context(intent_name)
+    if not intent_context:
+        intent_context = getattr(message, "intent_context", None)
     if not intent_context:
         intent_context = cl.user_session.get("intent_context")
     # Eagle Agent profile defaults to supplier lookup behavior
