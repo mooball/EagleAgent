@@ -31,3 +31,13 @@ table {
 #user-nav-button {
     display: none !important;
 }
+
+/*
+ * Hide the centered WelcomeScreen that flashes briefly when switching
+ * chat profiles.  It shows stale command buttons from the previous
+ * profile while on_chat_start is still running.  The bottom ChatFooter
+ * composer is always available, so nothing useful is lost.
+ */
+#welcome-screen {
+    display: none !important;
+}
