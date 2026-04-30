@@ -80,7 +80,26 @@ def _strip_thought_signatures(messages: list) -> list:
                 "additional_kwargs": new_kwargs,
             })
         cleaned.append(msg)
-    return cleaned
+
+    # Ensure no messages have empty content (Gemini rejects these with 400)
+    sanitized = []
+    for msg in cleaned:
+        content = msg.content
+        if content is None or content == "" or content == []:
+            # Give empty messages a placeholder so Gemini doesn't reject
+            if isinstance(msg, AIMessage):
+                msg = msg.model_copy(update={"content": "(no response)"})
+            else:
+                msg = msg.model_copy(update={"content": "(empty)"})
+        elif isinstance(content, list):
+            # Filter out any empty text blocks
+            filtered = [b for b in content if not (isinstance(b, dict) and b.get("type") == "text" and not b.get("text", "").strip())]
+            if not filtered:
+                msg = msg.model_copy(update={"content": "(no response)" if isinstance(msg, AIMessage) else "(empty)"})
+            elif filtered != content:
+                msg = msg.model_copy(update={"content": filtered})
+        sanitized.append(msg)
+    return sanitized
 
 
 async def _notify_retry(agent_name: str, attempt: int, max_retries: int, delay: int) -> None:
