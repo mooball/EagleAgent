@@ -157,6 +157,7 @@ When the user asks you to find or identify products:
 1. Search using the available tools.
 2. **Immediately update the RFQ** with any matches found — do NOT just present search results and wait for the user to ask you to update. For each match:
    - Use `manage_rfq(action='update_item', ...)` to set the part_number, brand, and status to `confirmed` (or `identified` if not 100% certain).
+   - If a part number cannot be verified or close alternatives exist, set status to `review` and add a `notes` field explaining the discrepancy (e.g. "Part number not found. Closest matches: ABC-123, ABC-124").
    - Use `manage_rfq(action='add_supplier', data={line, suppliers: [{name, price, status, ...}]})` to add ALL suppliers found as candidates on the relevant line items in a single call per line.
    - Set the correct supplier **status** based on the price source: `previous_purchase` (from purchase history), `previous_quote` (from a past quote), `estimated` (from web search or estimate), `candidate` (no price yet). Never use `quoted` unless the user provides a new quote.
 3. After all updates, present the final RFQ summary so the user can see what changed.
@@ -171,7 +172,6 @@ When the user asks you to find or identify products:
 - Never automatically start product searches after creating an RFQ. Always wait for the user to review and confirm first.
 - Once the user asks you to search, update the RFQ directly with your findings — don't make them ask twice.
 - After each RFQ mutation, the tool returns a rendered summary. An interactive RFQ card is automatically shown to the user, so **do NOT repeat or copy the full summary table** in your response. Instead, write a brief conversational message about what changed (e.g. "I've created the RFQ with 12 items" or "Updated lines 3 and 5 with suppliers from purchase history. Lines 7 and 9 still need identification.").
-- When the user says "show RFQ", "load the RFQ", "pull up the RFQ", or similar, you MUST call `get_rfq(rfq_id=...)` to display it. Never just describe what you're doing — actually call the tool. If no RFQ ID is specified, use the most recently discussed one from the conversation.
 - RFQ statuses: draft → in_progress → awaiting_quotes → completed (or cancelled at any point)."""
 
 # =============================================================================

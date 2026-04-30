@@ -926,119 +926,138 @@ async def on_rfq_identify_items(action: cl.Action):
         content=f"Identifying {len(unidentified_items)} item(s) in {rfq_id}...",
         author="EagleAgent",
     ).send()
+    await notify_dashboard("agent_working", {"label": "AI confirming items..."})
 
-    # ---- Phase 1: Internal DB search ----
-    matched = []      # list of dicts: line, part_number, brand, product_id
-    unmatched = []     # items that need web search
+    try:
+        # ---- Phase 1: Internal DB search ----
+        matched = []      # list of dicts: line, part_number, brand, product_id
+        unmatched = []     # items that need web search
 
-    for ui_item in unidentified_items:
-        line = ui_item.get("line")
-        description = ui_item.get("description", "")
-        part_number = ui_item.get("part_number", "")
-        brand = ui_item.get("brand", "")
-
-        product = None
-        # Try exact part number match first (most specific)
-        if part_number:
-            try:
-                product = await asyncio.to_thread(
-                    _find_product_exact, part_number, brand or None,
-                )
-            except Exception as e:
-                logger.warning(f"Phase 1 product search failed for line {line}: {e}")
-
-        # Try supplier code search if part number didn't match
-        if not product and part_number:
-            try:
-                product = await asyncio.to_thread(
-                    _find_product_by_supplier_code, part_number, brand or None,
-                )
-            except Exception as e:
-                logger.warning(f"Phase 1 supplier code search failed for line {line}: {e}")
-
-        if product:
-            matched.append({
-                "line": line,
-                "part_number": product["part_number"],
-                "brand": product["brand"],
-                "product_id": product["id"],
-            })
-        else:
-            unmatched.append(ui_item)
-
-    # Update RFQ with matched items
-    if matched and store:
-        async with _get_rfq_lock(rfq_id):
-            item = await store.aget(NAMESPACE, rfq_id)
-            if item:
-                rfq = item.value
-                for m in matched:
-                    line_item = next(
-                        (i for i in rfq.get("items", []) if i["line"] == m["line"]), None,
-                    )
-                    if line_item:
-                        line_item["part_number"] = m["part_number"]
-                        line_item["brand"] = m["brand"]
-                        line_item["product_id"] = m["product_id"]
-                        line_item["status"] = "confirmed"
-                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                user_id = cl.user_session.get("user_id", "unknown")
-                rfq.setdefault("history", []).append({
-                    "date": now, "user": user_id,
-                    "action": f"Auto-identified {len(matched)} item(s) from internal DB: lines {', '.join(str(m['line']) for m in matched)}",
-                })
-                await store.aput(NAMESPACE, rfq_id, rfq)
-                await notify_dashboard("dashboard_refresh")
-
-    # Notify user of Phase 1 results
-    if matched:
-        match_desc = ", ".join(f"line {m['line']} → {m['part_number']} ({m['brand']})" for m in matched)
-        msg = f"Identified {len(matched)} item(s) from our product database: {match_desc}."
-        if unmatched:
-            msg += f" Searching the web for {len(unmatched)} remaining item(s)..."
-        await cl.Message(content=msg, author="EagleAgent").send()
-    elif unmatched:
-        await cl.Message(
-            content=f"No exact matches found in our product database for {len(unmatched)} item(s). Searching the web...",
-            author="EagleAgent",
-        ).send()
-
-    # ---- Phase 2: Route unmatched items to ResearchAgent for web search ----
-    if unmatched:
-        parts = ["web_research"]
-        parts.append(f"Identify the following unidentified product(s) from {rfq_id}.")
-        parts.append("For each item, search the web and find a 100% positive product match.")
-        parts.append("Do NOT guess — only match if you are certain it is the correct product.")
-        parts.append("")
-        for ui_item in unmatched:
+        for ui_item in unidentified_items:
             line = ui_item.get("line")
-            desc = ui_item.get("description", "")
-            pn = ui_item.get("part_number", "")
-            br = ui_item.get("brand", "")
-            item_parts = [f"Line {line}: {desc}"]
-            if pn:
-                item_parts.append(f"  Code/Part number: {pn}")
-            if br:
-                item_parts.append(f"  Brand: {br}")
-            parts.append("\n".join(item_parts))
-        parts.append("")
-        parts.append("For each item you can positively identify:")
-        parts.append("1. Use manage_rfq(action='update_item') to set part_number, brand, and status='confirmed'")
-        parts.append("2. Report which items you identified and which you could not")
-        parts.append("Do NOT update items you are not 100% sure about.")
+            description = ui_item.get("description", "")
+            part_number = ui_item.get("part_number", "")
+            brand = ui_item.get("brand", "")
 
-        rich_prompt = "\n".join(parts)
-        cl.user_session.set("intent_context", rich_prompt)
+            product = None
+            # Try exact part number match first (most specific)
+            if part_number:
+                try:
+                    product = await asyncio.to_thread(
+                        _find_product_exact, part_number, brand or None,
+                    )
+                except Exception as e:
+                    logger.warning(f"Phase 1 product search failed for line {line}: {e}")
 
-        short_label = f"Identify {len(unmatched)} unmatched item(s) in {rfq_id} via web search"
-        synthetic = cl.Message(content=short_label)
-        synthetic.author = "User"
-        await main(synthetic)
-    elif not matched:
-        await cl.Message(
-            content="All items could not be identified. Try adding more details (part numbers, brands) to help.",
-            author="EagleAgent",
-        ).send()
+            # Try supplier code search if part number didn't match
+            if not product and part_number:
+                try:
+                    product = await asyncio.to_thread(
+                        _find_product_by_supplier_code, part_number, brand or None,
+                    )
+                except Exception as e:
+                    logger.warning(f"Phase 1 supplier code search failed for line {line}: {e}")
+
+            if product:
+                matched.append({
+                    "line": line,
+                    "part_number": product["part_number"],
+                    "brand": product["brand"],
+                    "product_id": product["id"],
+                })
+            else:
+                unmatched.append(ui_item)
+
+        # Update RFQ with matched items
+        if matched and store:
+            async with _get_rfq_lock(rfq_id):
+                item = await store.aget(NAMESPACE, rfq_id)
+                if item:
+                    rfq = item.value
+                    for m in matched:
+                        line_item = next(
+                            (i for i in rfq.get("items", []) if i["line"] == m["line"]), None,
+                        )
+                        if line_item:
+                            line_item["part_number"] = m["part_number"]
+                            line_item["brand"] = m["brand"]
+                            line_item["product_id"] = m["product_id"]
+                            line_item["status"] = "confirmed"
+                    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                    user_id = cl.user_session.get("user_id", "unknown")
+                    rfq.setdefault("history", []).append({
+                        "date": now, "user": user_id,
+                        "action": f"Auto-identified {len(matched)} item(s) from internal DB: lines {', '.join(str(m['line']) for m in matched)}",
+                    })
+                    await store.aput(NAMESPACE, rfq_id, rfq)
+                    await notify_dashboard("dashboard_refresh")
+
+        # Notify user of Phase 1 results
+        if matched:
+            match_desc = ", ".join(f"line {m['line']} → {m['part_number']} ({m['brand']})" for m in matched)
+            msg = f"Identified {len(matched)} item(s) from our product database: {match_desc}."
+            if unmatched:
+                msg += f" Searching the web for {len(unmatched)} remaining item(s)..."
+            await cl.Message(content=msg, author="EagleAgent").send()
+        elif unmatched:
+            await cl.Message(
+                content=f"No exact matches found in our product database for {len(unmatched)} item(s). Searching the web...",
+                author="EagleAgent",
+            ).send()
+
+        # ---- Phase 2: Route unmatched items to ResearchAgent for web search ----
+        if unmatched:
+            parts = ["web_research"]
+            parts.append(f"Identify the following unidentified product(s) from {rfq_id}.")
+            parts.append("For each item, search the web to verify the part number and find a positive product match.")
+            parts.append("")
+            for ui_item in unmatched:
+                line = ui_item.get("line")
+                desc = ui_item.get("description", "")
+                pn = ui_item.get("part_number", "")
+                br = ui_item.get("brand", "")
+                item_parts = [f"Line {line}: {desc}"]
+                if pn:
+                    item_parts.append(f"  Code/Part number: {pn}")
+                if br:
+                    item_parts.append(f"  Brand: {br}")
+                parts.append("\n".join(item_parts))
+            parts.append("")
+            parts.append("IMPORTANT — Part number validation:")
+            parts.append("For each item, search the web to verify BOTH that:")
+            parts.append("  1. The part number actually exists as a real product")
+            parts.append("  2. The product that part number refers to matches the given description")
+            parts.append("For example, if the description says 'Hydraulic Return Filter' but the part number")
+            parts.append("resolves to an oil filter or a completely different product, that is a mismatch.")
+            parts.append("")
+            parts.append("Flag an item for review (status='review') if ANY of these are true:")
+            parts.append("- The exact part number cannot be found online")
+            parts.append("- The part number exists but refers to a different product than the description")
+            parts.append("- Similar/close part numbers exist that better match the description (possible typo)")
+            parts.append("In review cases, add a notes field explaining the issue")
+            parts.append("(e.g. 'Part number not found. Closest matches: 201-60-71180, 201-01-71110'")
+            parts.append(" or 'Part number 600-211-2110 resolves to a fuel filter, not an oil filter as described').")
+            parts.append("")
+            parts.append("For each item:")
+            parts.append("- EXACT match AND description matches: set part_number, brand, status='confirmed'")
+            parts.append("- Part number wrong, missing, or mismatched to description: set status='review' and notes='...' explaining the issue. Do NOT clear or remove the existing part_number or brand — keep them as-is so the user can see what was originally provided.")
+            parts.append("- Cannot identify at all: leave unchanged")
+            parts.append("Do NOT set status='confirmed' unless you are 100% certain the part number is correct AND matches the description.")
+
+            rich_prompt = "\n".join(parts)
+
+            short_label = f"Identify {len(unmatched)} unmatched item(s) in {rfq_id} via web search"
+            synthetic = cl.Message(content=short_label)
+            synthetic.author = "User"
+            synthetic.intent_context = rich_prompt  # carry context per-message to avoid race
+            await main(synthetic)
+        elif not matched:
+            await cl.Message(
+                content="All items could not be identified. Try adding more details (part numbers, brands) to help.",
+                author="EagleAgent",
+            ).send()
+    finally:
+        await notify_dashboard("agent_done")
 
 
 @cl.action_callback("rfq_find_suppliers")
@@ -1067,134 +1086,139 @@ async def on_rfq_find_suppliers(action: cl.Action):
     uom = payload.get("uom", "ea")
     existing = payload.get("existing_suppliers", [])
 
-    # ---- Phase 1: Internal DB search ----
-    existing_names_lower = {n.lower() for n in existing}
-    internal_suppliers = []  # list of dicts to add to RFQ
-    internal_summary_lines = []  # for the ResearchAgent prompt
+    await notify_dashboard("agent_working", {"label": f"Finding suppliers for line {line}..."})
 
-    # 1a) Check purchase history if we have a part number
-    if part_number:
-        try:
-            ph_rows = await asyncio.to_thread(_find_purchase_history_for_part, part_number, 20)
-            for row in ph_rows:
-                if row["name"].lower() not in existing_names_lower:
-                    sup_entry = {
-                        "supplier_id": row["supplier_id"],
-                        "name": row["name"],
-                        "contacts": row["contacts"],
-                        "status": "candidate",
-                        "price_type": "previous_purchase",
-                        "price": row["price"],
-                        "purchase_ref": {
-                            "doc_number": row["doc_number"],
-                            "date": row["date"],
-                            "order_count": row["order_count"],
-                        },
-                    }
-                    internal_suppliers.append(sup_entry)
-                    existing_names_lower.add(row["name"].lower())
-                    price_str = f"${row['price']:,.2f}" if row["price"] else "N/A"
-                    internal_summary_lines.append(
-                        f"- {row['name']} (previous purchase, price: {price_str}, orders: {row['order_count']})"
-                    )
-        except Exception as e:
-            logger.warning(f"Phase 1 purchase history search failed: {e}")
+    try:
+        # ---- Phase 1: Internal DB search ----
+        existing_names_lower = {n.lower() for n in existing}
+        internal_suppliers = []  # list of dicts to add to RFQ
+        internal_summary_lines = []  # for the ResearchAgent prompt
 
-    # 1b) Brand-based search removed — too broad (returns suppliers for the
-    #     brand, not this specific part). The web search in Phase 2 handles
-    #     finding alternative suppliers.
+        # 1a) Check purchase history if we have a part number
+        if part_number:
+            try:
+                ph_rows = await asyncio.to_thread(_find_purchase_history_for_part, part_number, 20)
+                for row in ph_rows:
+                    if row["name"].lower() not in existing_names_lower:
+                        sup_entry = {
+                            "supplier_id": row["supplier_id"],
+                            "name": row["name"],
+                            "contacts": row["contacts"],
+                            "status": "candidate",
+                            "price_type": "previous_purchase",
+                            "price": row["price"],
+                            "purchase_ref": {
+                                "doc_number": row["doc_number"],
+                                "date": row["date"],
+                                "order_count": row["order_count"],
+                            },
+                        }
+                        internal_suppliers.append(sup_entry)
+                        existing_names_lower.add(row["name"].lower())
+                        price_str = f"${row['price']:,.2f}" if row["price"] else "N/A"
+                        internal_summary_lines.append(
+                            f"- {row['name']} (previous purchase, price: {price_str}, orders: {row['order_count']})"
+                        )
+            except Exception as e:
+                logger.warning(f"Phase 1 purchase history search failed: {e}")
 
-    # Add internal suppliers to the RFQ (with dedup)
-    if internal_suppliers and store:
-        async with _get_rfq_lock(rfq_id):
-            item = await store.aget(NAMESPACE, rfq_id)
-            if item:
-                rfq = item.value
-                line_item = next((i for i in rfq.get("items", []) if i["line"] == line), None)
-                if line_item:
-                    existing_by_name = {
-                        s["name"].lower(): s for s in line_item.get("suppliers", [])
-                    }
-                    added = 0
-                    updated = 0
-                    for sup in internal_suppliers:
-                        existing = existing_by_name.get(sup["name"].lower())
-                        if existing:
-                            # Merge — update fields that have new data
-                            for key in ["supplier_id", "contacts", "price", "price_type",
-                                        "lead_time", "notes", "purchase_ref"]:
-                                val = sup.get(key)
-                                if val is not None and val != "" and val != []:
-                                    existing[key] = val
-                            updated += 1
-                        else:
-                            line_item["suppliers"].append(sup)
-                            existing_by_name[sup["name"].lower()] = sup
-                            added += 1
-                    action_parts = []
-                    if added:
-                        action_parts.append(f"Added {added} supplier(s)")
-                    if updated:
-                        action_parts.append(f"Updated {updated} existing supplier(s)")
-                    rfq.setdefault("history", []).append({
-                        "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                        "user": cl.user_session.get("user_id", "unknown"),
-                        "action": f"Internal DB search on line {line}: {' | '.join(action_parts)}" if action_parts else f"No changes to line {line}",
-                    })
-                    await store.aput(NAMESPACE, rfq_id, rfq)
-                    await notify_dashboard("dashboard_refresh")
+        # 1b) Brand-based search removed — too broad (returns suppliers for the
+        #     brand, not this specific part). The web search in Phase 2 handles
+        #     finding alternative suppliers.
 
-    # Notify user of Phase 1 results
-    if internal_suppliers:
-        names = ", ".join(s["name"] for s in internal_suppliers)
-        await cl.Message(
-            content=f"Added {len(internal_suppliers)} supplier(s) from our records to line {line}: {names}. Now searching the web for more options...",
-            author="EagleAgent",
-        ).send()
-    else:
-        await cl.Message(
-            content=f"No matching suppliers found in our records for line {line}. Searching the web...",
-            author="EagleAgent",
-        ).send()
+        # Add internal suppliers to the RFQ (with dedup)
+        if internal_suppliers and store:
+            async with _get_rfq_lock(rfq_id):
+                item = await store.aget(NAMESPACE, rfq_id)
+                if item:
+                    rfq = item.value
+                    line_item = next((i for i in rfq.get("items", []) if i["line"] == line), None)
+                    if line_item:
+                        existing_by_name = {
+                            s["name"].lower(): s for s in line_item.get("suppliers", [])
+                        }
+                        added = 0
+                        updated = 0
+                        for sup in internal_suppliers:
+                            existing = existing_by_name.get(sup["name"].lower())
+                            if existing:
+                                # Merge — update fields that have new data
+                                for key in ["supplier_id", "contacts", "price", "price_type",
+                                            "lead_time", "notes", "purchase_ref"]:
+                                    val = sup.get(key)
+                                    if val is not None and val != "" and val != []:
+                                        existing[key] = val
+                                updated += 1
+                            else:
+                                line_item["suppliers"].append(sup)
+                                existing_by_name[sup["name"].lower()] = sup
+                                added += 1
+                        action_parts = []
+                        if added:
+                            action_parts.append(f"Added {added} supplier(s)")
+                        if updated:
+                            action_parts.append(f"Updated {updated} existing supplier(s)")
+                        rfq.setdefault("history", []).append({
+                            "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                            "user": cl.user_session.get("user_id", "unknown"),
+                            "action": f"Internal DB search on line {line}: {' | '.join(action_parts)}" if action_parts else f"No changes to line {line}",
+                        })
+                        await store.aput(NAMESPACE, rfq_id, rfq)
+                        await notify_dashboard("dashboard_refresh")
 
-    # ---- Phase 2: Route to ResearchAgent for web search ----
-    all_existing = list(existing or []) + [s["name"] for s in internal_suppliers]
+        # Notify user of Phase 1 results
+        if internal_suppliers:
+            names = ", ".join(s["name"] for s in internal_suppliers)
+            await cl.Message(
+                content=f"Added {len(internal_suppliers)} supplier(s) from our records to line {line}: {names}. Now searching the web for more options...",
+                author="EagleAgent",
+            ).send()
+        else:
+            await cl.Message(
+                content=f"No matching suppliers found in our records for line {line}. Searching the web...",
+                author="EagleAgent",
+            ).send()
 
-    parts = [f"research_suppliers"]
-    parts.append(f"Find external suppliers for line {line} of {rfq_id}.")
-    parts.append(f"Product description: {description}")
-    if part_number:
-        parts.append(f"Part number: {part_number}")
-    if brand:
-        parts.append(f"Brand: {brand}")
-    if quantity:
-        parts.append(f"Quantity needed: {quantity} {uom}")
-    if all_existing:
-        parts.append(f"Already have these suppliers (do NOT repeat them): {', '.join(all_existing)}")
-    if internal_summary_lines:
-        parts.append("Internal DB results:\n" + "\n".join(internal_summary_lines))
-    parts.append("")
-    parts.append("Search the web for distributors and wholesalers who can supply this product.")
-    parts.append("Prioritise authorised distributors and industrial wholesalers over retail sources.")
-    parts.append("If distributors are scarce, include reputable retailers as fallback options.")
-    parts.append("Aim for 3-5 good supplier options but more is fine if they look like strong matches.")
-    parts.append("")
-    parts.append("CRITICAL: After researching, you MUST call manage_rfq(action='add_supplier') to add each supplier you find to the RFQ.")
-    parts.append(f"Use rfq_id='{rfq_id}' and data={{line: {line}, suppliers: [...]}} with a list of all suppliers found.")
-    parts.append("Each supplier dict must include: name, contacts (list with at least one of email/phone/url), and optionally price, price_type, lead_time.")
-    parts.append("If you do NOT call add_supplier, the suppliers will NOT appear on the RFQ. The user is counting on you to update the RFQ directly.")
-    parts.append("Include any pricing, lead time, or contact information you can find.")
+        # ---- Phase 2: Route to ResearchAgent for web search ----
+        all_existing = list(existing or []) + [s["name"] for s in internal_suppliers]
 
-    rich_prompt = "\n".join(parts)
-    cl.user_session.set("intent_context", rich_prompt)
+        parts = [f"research_suppliers"]
+        parts.append(f"Find external suppliers for line {line} of {rfq_id}.")
+        parts.append(f"Product description: {description}")
+        if part_number:
+            parts.append(f"Part number: {part_number}")
+        if brand:
+            parts.append(f"Brand: {brand}")
+        if quantity:
+            parts.append(f"Quantity needed: {quantity} {uom}")
+        if all_existing:
+            parts.append(f"Already have these suppliers (do NOT repeat them): {', '.join(all_existing)}")
+        if internal_summary_lines:
+            parts.append("Internal DB results:\n" + "\n".join(internal_summary_lines))
+        parts.append("")
+        parts.append("Search the web for distributors and wholesalers who can supply this product.")
+        parts.append("Prioritise authorised distributors and industrial wholesalers over retail sources.")
+        parts.append("If distributors are scarce, include reputable retailers as fallback options.")
+        parts.append("Aim for 3-5 good supplier options but more is fine if they look like strong matches.")
+        parts.append("")
+        parts.append("CRITICAL: After researching, you MUST call manage_rfq(action='add_supplier') to add each supplier you find to the RFQ.")
+        parts.append(f"Use rfq_id='{rfq_id}' and data={{line: {line}, suppliers: [...]}} with a list of all suppliers found.")
+        parts.append("Each supplier dict must include: name, contacts (list with at least one of email/phone/url), and optionally price, price_type, lead_time.")
+        parts.append("If you do NOT call add_supplier, the suppliers will NOT appear on the RFQ. The user is counting on you to update the RFQ directly.")
+        parts.append("Include any pricing, lead time, or contact information you can find.")
 
-    short_label = f"Search the web for suppliers for line {line}"
-    if description:
-        short_label += f" ({description[:60]})"
+        rich_prompt = "\n".join(parts)
 
-    synthetic = cl.Message(content=short_label)
-    synthetic.author = "User"
-    await main(synthetic)
+        short_label = f"Search the web for suppliers for line {line}"
+        if description:
+            short_label += f" ({description[:60]})"
+
+        synthetic = cl.Message(content=short_label)
+        synthetic.author = "User"
+        synthetic.intent_context = rich_prompt  # carry context per-message to avoid race
+        await main(synthetic)
+    finally:
+        await notify_dashboard("agent_done")
 
 
 @cl.on_message
@@ -1218,16 +1242,11 @@ async def main(message: cl.Message):
         await send_action_buttons(user_id)
         return
 
-    # Direct RFQ loading — intercept "load/show/open RFQ" before the graph runs
     import re
-    _rfq_load_keywords = ["load", "show", "open", "display", "get", "view", "pull up", "see"]
     msg_lower = message.content.lower()
 
-    # Flexible RFQ ID matching: "RFQ-2026-0001", "RFQ 0001", "RFQ-0001", "rfq 2026-0001"
-    rfq_match = re.search(r'\bRFQ[-\s]?(\d{4}[-\s]\d{4,}|\d{4,})\b', message.content, re.IGNORECASE)
-
+    # Helper to normalise matched RFQ fragments to full RFQ-YYYY-NNNN format
     def _resolve_rfq_id(match_str: str) -> str:
-        """Normalise a matched RFQ fragment to full RFQ-YYYY-NNNN format."""
         digits = re.sub(r'[-\s]', '', match_str)
         if len(digits) >= 8:  # e.g. "20260001"
             return f"RFQ-{digits[:4]}-{digits[4:]}"
@@ -1235,36 +1254,12 @@ async def main(message: cl.Message):
             from datetime import datetime
             return f"RFQ-{datetime.now().year}-{digits.zfill(4)}"
 
-    # If no explicit RFQ ID but message looks like a load request, scan chat history
-    if not rfq_match and any(kw in msg_lower for kw in _rfq_load_keywords) and "rfq" in msg_lower:
-        history = cl.chat_context.to_openai()
-        for hist_msg in reversed(history[:-1]):
-            content = hist_msg.get("content", "") or ""
-            hist_match = re.search(r'\bRFQ[-\s]?(\d{4}[-\s]\d{4,}|\d{4,})\b', content, re.IGNORECASE)
-            if hist_match:
-                rfq_match = hist_match
-                break
-
-    if rfq_match and any(kw in msg_lower for kw in _rfq_load_keywords):
-        from includes.agent_bridge import notify_dashboard
-        from includes.tools.quote_tools import NAMESPACE, _render_rfq_summary
-        rfq_id = _resolve_rfq_id(rfq_match.group(1))
-        if store:
-            item = await store.aget(NAMESPACE, rfq_id)
-            if item:
-                await notify_dashboard("agent_navigate", {"url": f"/rfqs/{rfq_id}"})
-                await cl.Message(content=f"Loaded **{rfq_id}** in the dashboard.", author="EagleAgent").send()
-                return
-            else:
-                await cl.Message(content=f"RFQ **{rfq_id}** not found.", author="EagleAgent").send()
-                return
-
     # Direct supplier clearing — intercept "clear/strip/remove suppliers" requests
     _clear_keywords = ["clear", "strip", "remove", "delete", "reset", "wipe"]
     _clear_targets = ["supplier", "suppliers", "quote", "quotes"]
     if any(kw in msg_lower for kw in _clear_keywords) and any(t in msg_lower for t in _clear_targets):
         # Resolve RFQ ID from message or chat history
-        clear_rfq_match = rfq_match  # may already be set from above
+        clear_rfq_match = re.search(r'\bRFQ[-\s]?(\d{4}[-\s]\d{4,}|\d{4,})\b', message.content, re.IGNORECASE)
         if not clear_rfq_match:
             history = cl.chat_context.to_openai()
             for hist_msg in reversed(history[:-1]):
@@ -1406,6 +1401,8 @@ async def main(message: cl.Message):
     if message.command:
         intent_name = _command_to_intent_name(message.command) or message.command
         intent_context = get_intent_context(intent_name)
+    if not intent_context:
+        intent_context = getattr(message, "intent_context", None)
     if not intent_context:
         intent_context = cl.user_session.get("intent_context")
     # Eagle Agent profile defaults to supplier lookup behavior

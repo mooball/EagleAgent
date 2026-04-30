@@ -16,7 +16,8 @@ import { useState } from "react"
 import {
   ChevronDown, ChevronRight, Search, UserX, Star, Check,
   MoreHorizontal, ExternalLink, Mail, Phone, Globe, Package,
-  FileText, User, Calendar, Hash, ClipboardList, Info, RefreshCw
+  FileText, User, Calendar, Hash, ClipboardList, Info, RefreshCw,
+  AlertTriangle
 } from "lucide-react"
 
 /* ------------------------------------------------------------------ */
@@ -26,6 +27,7 @@ import {
 const itemStatusConfig = {
   confirmed:    { label: "Confirmed",    dotStyle: { backgroundColor: "#22c55e" } },
   identified:   { label: "Identified",   dotStyle: { backgroundColor: "#3b82f6" } },
+  review:       { label: "Needs Review", dotStyle: { backgroundColor: "#f59e0b" } },
   unidentified: { label: "Unidentified", dotStyle: { backgroundColor: "#94a3b8" } },
 }
 
@@ -252,17 +254,23 @@ function ItemRow({ item, rfqId, expanded, onToggle }) {
         <TableCell className="text-center">
           <Tooltip>
             <TooltipTrigger asChild>
-              <span
-                style={Object.assign({ display: "inline-block", width: 10, height: 10, borderRadius: "50%" }, stCfg.dotStyle)}
-              />
+              <span className="inline-flex items-center gap-0.5">
+                <span
+                  style={Object.assign({ display: "inline-block", width: 10, height: 10, borderRadius: "50%" }, stCfg.dotStyle)}
+                />
+                {item.status === "review" && <AlertTriangle className="h-3 w-3 text-amber-500" />}
+              </span>
             </TooltipTrigger>
-            <TooltipContent>{stCfg.label}</TooltipContent>
+            <TooltipContent>
+              <p>{stCfg.label}</p>
+              {item.notes ? <p className="text-xs mt-1 opacity-80">{item.notes}</p> : null}
+            </TooltipContent>
           </Tooltip>
         </TableCell>
         <TableCell className="text-center text-sm">
           {suppliers.length > 0 ? (
             <span className="tabular-nums">{suppliers.filter(function(s) { return s.status !== "dropped" }).length}</span>
-          ) : (
+          ) : item.status === "confirmed" ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -286,7 +294,7 @@ function ItemRow({ item, rfqId, expanded, onToggle }) {
               </TooltipTrigger>
               <TooltipContent>Find suppliers</TooltipContent>
             </Tooltip>
-          )}
+          ) : null}
         </TableCell>
       </TableRow>
       {expanded && suppliers.length > 0 && (
@@ -355,6 +363,7 @@ export default function RFQSummary() {
 
   const confirmed = items.filter(function(i) { return i.status === "confirmed" }).length
   const identified = items.filter(function(i) { return i.status === "identified" }).length
+  const review = items.filter(function(i) { return i.status === "review" }).length
   const unidentified = items.filter(function(i) { return i.status === "unidentified" }).length
   const withSuppliers = items.filter(function(i) { return (i.suppliers || []).length > 0 }).length
 
@@ -476,6 +485,7 @@ export default function RFQSummary() {
                 <span>·</span>
                 {confirmed > 0 && <span>{confirmed} confirmed</span>}
                 {identified > 0 && <span>{identified} identified</span>}
+                {review > 0 && <span className="text-amber-600">{review} needs review</span>}
                 {unidentified > 0 && <span className="text-amber-600">{unidentified} unidentified</span>}
                 <span>·</span>
                 <span>{withSuppliers} with suppliers</span>
@@ -520,14 +530,14 @@ export default function RFQSummary() {
             </div>
 
             <div className="flex gap-2 mt-4 pt-2">
-              {unidentified > 0 && (
+              {items.length > confirmed && (
                 <Button
                   variant="outline"
                   size="default"
                   className="text-sm"
                   onClick={function() {
-                    var unidentifiedItems = items
-                      .filter(function(i) { return i.status === "unidentified" })
+                    var unconfirmedItems = items
+                      .filter(function(i) { return i.status !== "confirmed" })
                       .map(function(i) {
                         return {
                           line: i.line,
@@ -538,11 +548,11 @@ export default function RFQSummary() {
                       })
                     callAction({ name: "rfq_identify_items", payload: {
                       rfq_id: rfqId,
-                      items: unidentifiedItems
+                      items: unconfirmedItems
                     }})
                   }}
                 >
-                  <Package className="h-4 w-4 mr-1.5" /> Identify items
+                  <Package className="h-4 w-4 mr-1.5" /> AI Confirm Items
                 </Button>
               )}
             </div>

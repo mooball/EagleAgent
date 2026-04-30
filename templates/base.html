@@ -18,6 +18,7 @@
     <!-- HTMX -->
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script>htmx.config.allowScriptTags = true;</script>
+    <style>[x-cloak] { display: none !important; }</style>
 </head>
 <body class="h-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100"
       x-data="dashboard()" x-init="init()">
@@ -154,6 +155,13 @@
     <!-- Body: main content + agent panel -->
     <div class="h-[calc(100vh-3.5rem)] relative overflow-hidden">
 
+        <!-- Agent working indicator -->
+        <div x-show="agentWorking" x-cloak x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 -translate-y-2" x-transition:enter-end="opacity-100 translate-y-0" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+             class="absolute top-3 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-full shadow-lg">
+            <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+            <span x-text="agentWorkingLabel"></span>
+        </div>
+
         <!-- Main content area -->
         <main id="main-content"
               class="h-full overflow-y-auto transition-panel px-6 pb-6"
@@ -197,6 +205,8 @@
                 panelWidth: parseInt(localStorage.getItem('panelWidth') || '420', 10),
                 isResizing: false,
                 currentContext: {},
+                agentWorking: false,
+                agentWorkingLabel: '',
 
                 init() {
                     // Pre-set the iframe's theme in localStorage before it loads,
@@ -216,6 +226,15 @@
                     // Watch for agent state changes and persist
                     this.$watch('agentState', (val) => {
                         localStorage.setItem('agentState', val);
+                    });
+
+                    // Listen for agent-working events from rfqDetail actions
+                    window.addEventListener('agent-working', (e) => {
+                        this.agentWorking = true;
+                        this.agentWorkingLabel = e.detail?.label || 'Agent working...';
+                        // Safety timeout: auto-clear after 3 minutes in case agent_done is never received
+                        clearTimeout(this._agentWorkingTimeout);
+                        this._agentWorkingTimeout = setTimeout(() => { this.agentWorking = false; }, 180000);
                     });
 
                     // Listen for navigation/refresh commands from the agent iframe
@@ -241,6 +260,16 @@
                                 target: '#main-content',
                                 swap: 'innerHTML'
                             });
+                            // Don't clear agentWorking here — tools send refresh
+                            // mid-process; only explicit agent_done should clear it.
+                        }
+                        if (event.data?.type === 'agent_working') {
+                            this.agentWorking = true;
+                            this.agentWorkingLabel = event.data.payload?.label || 'Agent working...';
+                        }
+                        if (event.data?.type === 'agent_done') {
+                            this.agentWorking = false;
+                            clearTimeout(this._agentWorkingTimeout);
                         }
                         if (event.data?.type === 'thread_id' && event.data.threadId) {
                             // Track the active thread so we don't overwrite on reload
@@ -429,6 +458,8 @@
                 _sendAction(action, refreshAfter) {
                     var rfqId = this.rfqId;
                     console.log('[bridge] sending action', action.name);
+                    // Signal the dashboard that agent work has started
+                    window.dispatchEvent(new CustomEvent('agent-working', { detail: { label: action.label || 'Agent working...' } }));
                     fetch('/api/agent-bridge', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -469,7 +500,7 @@
                             };
                         })
                     };
-                    this._sendAction({ name: 'rfq_identify_items', payload: payload });
+                    this._sendAction({ name: 'rfq_identify_items', label: 'AI confirming items...', payload: payload });
                 },
                 findSuppliers(line) {
                     var item = this._items[line];
@@ -485,7 +516,7 @@
                         uom: item.uom,
                         existing_suppliers: suppliers
                     };
-                    this._sendAction({ name: 'rfq_find_suppliers', payload: payload });
+                    this._sendAction({ name: 'rfq_find_suppliers', label: 'Finding suppliers for line ' + item.line + '...', payload: payload });
                 }
             };
         }
