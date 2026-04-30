@@ -1414,6 +1414,9 @@ async def main(message: cl.Message):
         inputs["file_attachments"] = file_metadata
     
     # Invoke the graph and stream the response
+    from includes.agent_bridge import notify_dashboard
+    await notify_dashboard("agent_working", {"label": "Agent working..."})
+
     msg = cl.Message(content="")
     await msg.send()
     
@@ -1637,3 +1640,5 @@ async def main(message: cl.Message):
 
     # Clear single-use intent so the next message isn't influenced by the old button
     cl.user_session.set("intent_context", None)
+
+    await notify_dashboard("agent_done")
