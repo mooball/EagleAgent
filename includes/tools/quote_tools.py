@@ -346,6 +346,15 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
         """
         data = data or {}
 
+        # Gemini models sometimes pass data as a JSON string instead of a dict.
+        # Parse it transparently so tool calls don't fail with TypeError.
+        if isinstance(data, str):
+            import json
+            try:
+                data = json.loads(data)
+            except (json.JSONDecodeError, ValueError):
+                return f"Error: 'data' must be a JSON object, got unparseable string: {data[:100]}"
+
         # ---- CREATE ----
         if action == "create":
             customer = data.get("customer")
