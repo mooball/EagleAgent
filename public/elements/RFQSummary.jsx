@@ -270,7 +270,7 @@ function ItemRow({ item, rfqId, expanded, onToggle }) {
         <TableCell className="text-center text-sm">
           {suppliers.length > 0 ? (
             <span className="tabular-nums">{suppliers.filter(function(s) { return s.status !== "dropped" }).length}</span>
-          ) : (
+          ) : item.status === "confirmed" ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -294,7 +294,7 @@ function ItemRow({ item, rfqId, expanded, onToggle }) {
               </TooltipTrigger>
               <TooltipContent>Find suppliers</TooltipContent>
             </Tooltip>
-          )}
+          ) : null}
         </TableCell>
       </TableRow>
       {expanded && suppliers.length > 0 && (
@@ -530,14 +530,14 @@ export default function RFQSummary() {
             </div>
 
             <div className="flex gap-2 mt-4 pt-2">
-              {unidentified > 0 && (
+              {items.length > confirmed && (
                 <Button
                   variant="outline"
                   size="default"
                   className="text-sm"
                   onClick={function() {
-                    var unidentifiedItems = items
-                      .filter(function(i) { return i.status === "unidentified" })
+                    var unconfirmedItems = items
+                      .filter(function(i) { return i.status !== "confirmed" })
                       .map(function(i) {
                         return {
                           line: i.line,
@@ -548,11 +548,11 @@ export default function RFQSummary() {
                       })
                     callAction({ name: "rfq_identify_items", payload: {
                       rfq_id: rfqId,
-                      items: unidentifiedItems
+                      items: unconfirmedItems
                     }})
                   }}
                 >
-                  <Package className="h-4 w-4 mr-1.5" /> Identify items
+                  <Package className="h-4 w-4 mr-1.5" /> AI Confirm Items
                 </Button>
               )}
             </div>

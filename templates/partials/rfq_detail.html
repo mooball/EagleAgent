@@ -221,7 +221,7 @@
                         <div class="flex items-center justify-center gap-1">
                             {% if suppliers %}
                             <span class="tabular-nums">{{ active_suppliers | length }}</span>
-                            {% else %}
+                            {% elif item.status == 'confirmed' %}
                             <button class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
                                     @click.stop="findSuppliers({{ item.line }})"
                                     title="Find suppliers">
@@ -491,7 +491,7 @@
         <button @click="identifyItems()"
                 class="px-3 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-1.5">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-            Identify items
+            AI Confirm Items
         </button>
         {% endif %}
         <button @click="addingItem = true"
