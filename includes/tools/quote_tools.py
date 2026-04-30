@@ -294,7 +294,7 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
     async def manage_rfq(
         action: str,
         rfq_id: Optional[str] = None,
-        data: Optional[Dict[str, Any]] = None,
+        data: Optional[Any] = None,
     ) -> str:
         """Create or update an RFQ (Request for Quote).
 
@@ -350,6 +350,7 @@ def create_quote_tools(store: BaseStore, user_id: str) -> list:
         # Parse it transparently so tool calls don't fail with TypeError.
         if isinstance(data, str):
             import json
+            logger.warning(f"manage_rfq: 'data' received as string, parsing JSON: {data[:200]}")
             try:
                 data = json.loads(data)
             except (json.JSONDecodeError, ValueError):
