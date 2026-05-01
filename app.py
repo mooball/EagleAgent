@@ -33,6 +33,18 @@ from includes.tools.quote_tools import get_rfq_lock as _get_rfq_lock
 # Set up Chainlit server reference for middleware patching
 import chainlit.server as cl_server
 
+# Tune Engine.IO ping settings for Railway's proxy (which routes WebSocket
+# upgrades through different edge nodes, causing intermittent 403s when
+# sessions expire during the handoff).  Chainlit doesn't expose these
+# settings, so we patch the Socket.IO server's underlying Engine.IO instance.
+if hasattr(cl_server, 'sio') and hasattr(cl_server.sio, 'eio'):
+    cl_server.sio.eio.ping_interval = 30      # default 25 — interval between pings
+    cl_server.sio.eio.ping_timeout = 60        # default 20 — time to wait for pong
+    cl_server.sio.eio.ping_interval_grace_period = 5  # default 0
+    logging.getLogger(__name__).info(
+        "Patched Engine.IO: ping_interval=30, ping_timeout=60, grace=5"
+    )
+
 # Create the data directory if it doesn't exist
 os.makedirs(os.path.join(config.DATA_DIR, "attachments"), exist_ok=True)
 
