@@ -22,6 +22,11 @@ mask_user_env = false
 # Authorized origins
 allow_origins = ["*"]
 
+# Force WebSocket-only transport (skip polling→WebSocket upgrade).
+# Fixes 403 errors on Railway where different proxy nodes handle
+# polling vs WebSocket, causing session ID mismatches.
+transports = ["websocket"]
+
 [features]
 # Process and display HTML in messages. This can be a security risk (see https://stackoverflow.com/questions/19603097/why-is-it-dangerous-to-render-user-generated-html-or-javascript)
 unsafe_allow_html = true
