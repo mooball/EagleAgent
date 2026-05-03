@@ -16,6 +16,8 @@ service-account-key.mooball.json
 chainlit_datalayer.db
 chainlit.db
 *.db
+netsuite_private_key*.pem
+netsuite_public_cert*.pem
 
 # MCP server configuration (contains secrets)
 config/mcp_servers.yaml

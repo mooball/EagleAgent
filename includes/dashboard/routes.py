@@ -1717,3 +1717,14 @@ async def admin_cancel_job(request: Request, user: dict = require_admin):
         "request": request,
         "jobs": jobs,
     })
+
+
+@router.get("/partial/admin/netsuite-status")
+async def partial_netsuite_status(request: Request, user: dict = require_admin):
+    from includes.netsuite import NetSuiteClient
+    client = NetSuiteClient()
+    result = client.test_connection()
+    return templates.TemplateResponse("partials/admin_netsuite_status.html", {
+        "request": request,
+        "netsuite": result,
+    })
