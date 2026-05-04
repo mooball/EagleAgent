@@ -140,8 +140,62 @@ Once field mapping is confirmed, build the merge logic to upsert NetSuite vendor
    - EagleAgent-only fields (embeddings, categories, internal notes) are never overwritten by the sync
    - Store the `netsuite_id` on the supplier record as the dedup/matching key
 
-3. **Add `netsuite_id` column** to `suppliers` table if not already present:
-   - Create an Alembic migration to add `netsuite_id` (String, nullable, unique)
+3. **`netsuite_id` column** already exists on the `suppliers` table — no migration needed.
+
+4. **Add `state` column** to `suppliers` table (part of the address):
+   - Create an Alembic migration to add `state` (String, nullable)
+
+5. **Add `hubspot_id` column** to `suppliers` table:
+   - Create an Alembic migration to add `hubspot_id` (String, nullable, unique)
+
+---
+
+### Phase 5: Brand Alignment
+
+Re-import all brands from NetSuite and align them with the existing `brands` table using NetSuite IDs rather than name-matching (which was ~95% accurate).
+
+1. **Query all brands from NetSuite**:
+   - The `custentity_supplier_brand` field on vendors contains comma-separated brand IDs
+   - Find the correct SuiteQL record/table for the brand list (likely a custom list)
+   - https://794882.app.netsuite.com/app/common/custom/custrecordentrylist.nl?rectype=165
+   - Pull all brand records with their ID and name
+
+2. **Create `scripts/sync_netsuite_brands.py`**:
+   - Fetch all brands from NetSuite
+   - For each brand:
+     - Look up existing brand in local DB by `netsuite_id`
+     - **If exists**: update name if it has changed
+     - **If new**: insert a new brand record with the NetSuite ID and name
+     - **If local brand exists by name but has no `netsuite_id`**: backfill the `netsuite_id`
+   - Print a summary: matched count, created count, updated count
+
+3. **Verify alignment**:
+   - Compare brand count in NetSuite vs local DB
+   - Identify any orphaned local brands that don't have a NetSuite ID match
+
+---
+
+### Phase 6: Rebuild SupplierBrand Links
+
+Rebuild the `supplier_brands` join table using the authoritative NetSuite vendor→brand links (from `custentity_supplier_brand`), replacing the original name-matched links.
+
+1. **Create `scripts/sync_netsuite_supplier_brands.py`**:
+   - Fetch all vendors from NetSuite (or a subset) with their `custentity_supplier_brand` field
+   - For each vendor:
+     - Look up the matching supplier in local DB by `netsuite_id`
+     - Parse the comma-separated brand IDs from `custentity_supplier_brand`
+     - For each brand ID:
+       - Look up the local brand by `netsuite_id`
+       - Create a `SupplierBrand` link if it doesn't already exist
+     - Remove any existing `SupplierBrand` links for this supplier that are no longer in the NetSuite data
+   - Print a summary: links created, links removed, suppliers processed
+
+2. **Strategy**:
+   - NetSuite is the source of truth for supplier↔brand relationships
+   - The sync replaces the old name-matched links with ID-verified links
+   - Suppliers without a `netsuite_id` in the local DB are skipped (they haven't been synced yet)
+
+3. **Prerequisite**: Phase 4b (suppliers synced with `netsuite_id`) and Phase 5 (brands aligned with `netsuite_id`) must be completed first.
 
 ---
 
@@ -156,6 +210,8 @@ Once field mapping is confirmed, build the merge logic to upsert NetSuite vendor
 - `scripts/test_netsuite_auth.py` — Existing working auth test
 - `scripts/fetch_netsuite_suppliers.py` — New fetch-to-JSON script (Phase 4a)
 - `scripts/sync_netsuite_suppliers.py` — New import/merge script (Phase 4b)
+- `scripts/sync_netsuite_brands.py` — Brand alignment script (Phase 5)
+- `scripts/sync_netsuite_supplier_brands.py` — Rebuild supplier↔brand links (Phase 6)
 
 ### Verification
 
@@ -165,3 +221,5 @@ Once field mapping is confirmed, build the merge logic to upsert NetSuite vendor
 4. Run `scripts/sync_netsuite_suppliers.py --since 2025-01-01` and verify records are created/updated in the local database.
 5. Check the admin dashboard NetSuite status card shows "connected".
 6. Confirm all NetSuite secrets are properly loaded from environment variables (not hardcoded), including the base64-decoded private key.
+7. Run `scripts/sync_netsuite_brands.py` and verify all brands have `netsuite_id` populated.
+8. Run `scripts/sync_netsuite_supplier_brands.py` and verify supplier↔brand links match NetSuite data.
