@@ -27,23 +27,23 @@ SCRIPT_REGISTRY: dict[str, dict] = {
         "args_allowed": [],
         "long_running": True,
     },
-    "import_products": {
-        "command": ["uv", "run", "python", "-m", "scripts.import_products"],
-        "description": "Import products from CSV files in the import directory",
-        "args_allowed": [],
+    "sync_netsuite_suppliers": {
+        "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_suppliers"],
+        "description": "Sync suppliers from NetSuite API (--since YYYY-MM-DD or Nd e.g. 7d; default: 30d)",
+        "args_allowed": ["--since", "--dry-run"],
         "long_running": False,
     },
-    "import_suppliers": {
-        "command": ["uv", "run", "python", "-m", "scripts.import_suppliers"],
-        "description": "Import suppliers from CSV (two-phase: upsert then brand linking)",
-        "args_allowed": ["--phase", "--skip-batches"],
+    "sync_netsuite_brands": {
+        "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_brands"],
+        "description": "Sync brands from NetSuite API (--since YYYY-MM-DD or Nd e.g. 7d; default: full sync)",
+        "args_allowed": ["--since", "--dry-run"],
         "long_running": False,
     },
-    "import_brands": {
-        "command": ["uv", "run", "python", "-m", "scripts.import_brands"],
-        "description": "Import brands from CSV files in the import directory",
-        "args_allowed": [],
-        "long_running": False,
+    "sync_netsuite_products": {
+        "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_products"],
+        "description": "Sync products from NetSuite API (--since YYYY-MM-DD or Nd e.g. 7d; default: 30d)",
+        "args_allowed": ["--since", "--dry-run"],
+        "long_running": True,
     },
     "import_purchase_history": {
         "command": ["uv", "run", "python", "-m", "scripts.import_purchase_history"],

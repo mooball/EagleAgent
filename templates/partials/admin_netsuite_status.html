@@ -1,0 +1,12 @@
+{# NetSuite connection status indicator — loaded via HTMX into the admin page #}
+{% if netsuite.ok %}
+<div class="flex items-center gap-2 text-sm">
+    <span class="inline-block w-2.5 h-2.5 rounded-full bg-green-500"></span>
+    <span class="text-gray-700 dark:text-gray-300">{{ netsuite.message }}</span>
+</div>
+{% else %}
+<div class="flex items-center gap-2 text-sm">
+    <span class="inline-block w-2.5 h-2.5 rounded-full bg-red-500"></span>
+    <span class="text-red-600 dark:text-red-400">{{ netsuite.message }}</span>
+</div>
+{% endif %}

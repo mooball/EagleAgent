@@ -14,13 +14,18 @@ class Supplier(Base):
     name = Column(String, nullable=False)
     url = Column(String, nullable=True)
     address_1 = Column(String, nullable=True)
+    address_2 = Column(String, nullable=True)
     city = Column(String, nullable=True)
+    state = Column(String, nullable=True)
+    postcode = Column(String, nullable=True)
     country = Column(String, nullable=True)
+    hubspot_id = Column(String, unique=True, nullable=True)
     notes = Column(Text, nullable=True)
     contacts = Column(JSONB, nullable=True)
     comments = Column(JSONB, nullable=True)                    # [{author, comment, ts}]
     supply_chain_position = Column(JSONB, nullable=True)       # {category, tier, confidence, reasoning}
     terms = Column(String, nullable=True)                      # e.g. "30 days", "COD"
+    netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
     modified_at = Column(DateTime(timezone=True), nullable=True)
     modified_by = Column(String, nullable=True)                # "user:tom", "netsuite", "ai:categorizer"
 
@@ -59,12 +64,9 @@ class Brand(Base):
 
 class Product(Base):
     __tablename__ = 'products'
-    __table_args__ = (
-        UniqueConstraint('part_number', 'brand', name='uq_product_part_brand'),
-    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    netsuite_id = Column(String, nullable=True)
+    netsuite_id = Column(String, unique=True, nullable=True)
     part_number = Column(String, index=True, nullable=False)
     supplier_code = Column(String, nullable=True)
     description = Column(Text, nullable=True)
@@ -72,6 +74,7 @@ class Product(Base):
     weight_kg = Column(Float, nullable=True)
     length_m = Column(Float, nullable=True)
     product_type = Column(String, nullable=True)
+    netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
     
     # 256 dimensions for Gemini embedding-2-preview
     embedding = Column(Vector(256), nullable=True)

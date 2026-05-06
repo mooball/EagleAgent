@@ -100,6 +100,24 @@ class Config:
     MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
     
     
+    # ==================== NetSuite Integration ====================
+    
+    # NetSuite account ID
+    NETSUITE_ACCOUNT_ID = os.getenv("NETSUITE_ACCOUNT_ID", "794882")
+    
+    # OAuth2 client ID (from integration record)
+    NETSUITE_CLIENT_ID = os.getenv("NETSUITE_CLIENT_ID", "")
+    
+    # Certificate ID (kid claim for JWT header)
+    NETSUITE_CERTIFICATE_ID = os.getenv("NETSUITE_CERTIFICATE_ID", "")
+    
+    # Base64-encoded PEM private key for signing JWTs
+    NETSUITE_PRIVATE_KEY_B64 = os.getenv("NETSUITE_PRIVATE_KEY_B64", "")
+    
+    # Batch size for NetSuite sync commits (rows per commit)
+    NETSUITE_SYNC_BATCH_SIZE = int(os.getenv("NETSUITE_SYNC_BATCH_SIZE", "500"))
+    
+    
     # ==================== Development Settings ====================
     
     # Enable debug mode
