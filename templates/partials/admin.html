@@ -64,7 +64,7 @@
                     <span class="text-gray-400">({{ script.args_allowed | join(', ') }})</span>
                 </label>
                 <input type="text" name="args"
-                       placeholder="e.g. --limit 10 --dry-run"
+                       placeholder="e.g. {{ script.args_allowed | join(' ') }}"
                        class="w-full px-2 py-1 text-xs rounded border border-gray-300 dark:border-gray-600
                               bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
                 <div class="flex gap-2">

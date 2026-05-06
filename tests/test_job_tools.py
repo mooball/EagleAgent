@@ -136,7 +136,7 @@ class TestListScripts:
         list_tool = next(t for t in tools if t.name == "list_scripts")
         result = await list_tool.ainvoke({})
         assert "update_product_embeddings" in result
-        assert "import_products" in result
+        assert "sync_netsuite_suppliers" in result
 
 
 # ============================================================================

@@ -62,3 +62,31 @@ def all_brands(since_date: str | None = None) -> str:
 
     query += " ORDER BY name"
     return query
+
+
+def products_updated_since(since_date: str) -> str:
+    """
+    SuiteQL query for inventory item records modified on or after a given date.
+
+    Only returns active InvtPart (inventory part) items.
+
+    Args:
+        since_date: ISO date string, e.g. '2026-04-01'
+
+    Returns:
+        SuiteQL SELECT statement.
+    """
+    dt = datetime.strptime(since_date, "%Y-%m-%d")
+    ns_date = f"{dt.day}/{dt.month}/{dt.year}"
+
+    return (
+        "SELECT i.id, i.itemid, i.description, "
+        "i.custitem_brand, BUILTIN.DF(i.custitem_brand) AS brand_name, "
+        "i.weight, "
+        "i.lastmodifieddate "
+        "FROM item i "
+        "WHERE i.itemtype = 'InvtPart' "
+        "AND i.isinactive = 'F' "
+        f"AND i.lastmodifieddate >= '{ns_date}' "
+        "ORDER BY i.lastmodifieddate DESC"
+    )
