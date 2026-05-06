@@ -100,34 +100,69 @@ Add a NetSuite connection check to the System Admin dashboard.
 
 ---
 
-### Phase 4a: First Query — Fetch & Inspect Supplier Data
+### Phase 4a: First Query — Fetch & Inspect Supplier Data ✅ DONE
 
 Develop and test the NetSuite vendor query, saving results to JSON for review.
 
 1. **Create `scripts/fetch_netsuite_suppliers.py`**:
    - Accept `--since YYYY-MM-DD` argument (default: 30 days ago)
    - Use `NetSuiteClient` to run the `suppliers_updated_since()` query
-   - Print results as a formatted table
+   - Strip NetSuite `links` metadata from output
    - Write results to `data/netsuite_vendors.json` for inspection
 
-2. **SuiteQL query for vendors** (draft):
+2. **SuiteQL query for vendors** (final — in `includes/netsuite/queries.py`):
    ```sql
-   SELECT id, entityId, companyName, email, phone, lastModifiedDate
-   FROM vendor
-   WHERE lastModifiedDate >= '2025-01-01'
-   ORDER BY lastModifiedDate DESC
+   SELECT v.id, v.entityid, v.companyname, v.email, v.phone, v.url,
+     v.custentity_supplier_notes, v.custentity_supplier_brand,
+     v.custentity_ss_hubspot_id, BUILTIN.DF(v.terms) AS terms,
+     v.custentity_go_souce_email_address, v.custentity_go_souce_email_name,
+     v.custentity_go_souce_cc_email_addresses,
+     a.addr1, a.addr2, a.city, a.state, a.zip, a.country,
+     v.datecreated, v.lastmodifieddate
+   FROM vendor v
+   LEFT JOIN vendorAddressbook vab ON vab.entity = v.id AND vab.defaultbilling = 'T'
+   LEFT JOIN entityAddress a ON a.nkey = vab.addressbookaddress
+   WHERE v.lastmodifieddate >= '{date}'
+   ORDER BY v.lastmodifieddate DESC
    ```
 
-3. **Verify field mapping** — Run the query and inspect the JSON output to confirm which NetSuite vendor fields correspond to EagleAgent's `suppliers` table columns. Document the mapping.
+3. **Field mapping** (NetSuite → local `suppliers` table):
+   | NetSuite field | Supplier column | Notes |
+   |---|---|---|
+   | `id` | `netsuite_id` | |
+   | `companyname` | `name` | |
+   | `url` | `url` | |
+   | `email`, `phone` | `contacts` (JSONB) | Merged into contacts JSON |
+   | `custentity_go_souce_email_address` | `contacts` (JSONB) | Source email |
+   | `custentity_go_souce_email_name` | `contacts` (JSONB) | Source name |
+   | `custentity_go_souce_cc_email_addresses` | `contacts` (JSONB) | Source CC |
+   | `addr1` | `address_1` | |
+   | `addr2` | `address_2` | NEW |
+   | `city` | `city` | |
+   | `state` | `state` | NEW |
+   | `zip` | `postcode` | NEW |
+   | `country` | `country` | |
+   | `custentity_supplier_notes` | `notes` | |
+   | `terms` | `terms` | Display-formatted via BUILTIN.DF |
+   | `custentity_ss_hubspot_id` | `hubspot_id` | NEW |
+   | `lastmodifieddate` | `netsuite_last_modified` | NEW — for sync tracking |
+   | `custentity_supplier_brand` | — | Used in Phase 6 (supplier↔brand links) |
+
+4. **Migration** (`5b0642094032`): Added 5 new columns to `suppliers`:
+   - `address_2` (String)
+   - `state` (String)
+   - `postcode` (String)
+   - `hubspot_id` (String, unique index)
+   - `netsuite_last_modified` (DateTime with timezone)
 
 ---
 
-### Phase 4b: Import & Merge Suppliers into Database
+### Phase 4b: Import & Merge Suppliers into Database ✅ DONE
 
 Once field mapping is confirmed, build the merge logic to upsert NetSuite vendors into the local `suppliers` table.
 
 1. **Create `scripts/sync_netsuite_suppliers.py`**:
-   - Accept `--since YYYY-MM-DD` argument (default: 30 days ago)
+   - Accept `--since YYYY-MM-DD` or `"N days"` argument (default: 30 days ago)
    - Fetch vendors from NetSuite using `NetSuiteClient`
    - For each vendor record:
      - Look up existing supplier by `netsuite_id` in the local database
@@ -136,29 +171,26 @@ Once field mapping is confirmed, build the merge logic to upsert NetSuite vendor
    - Print a summary: created count, updated count, skipped/unchanged count
 
 2. **Field merge strategy**:
-   - NetSuite is the **source of truth** for core fields (name, contact info, status)
-   - EagleAgent-only fields (embeddings, categories, internal notes) are never overwritten by the sync
+   - NetSuite is the **source of truth** for core fields (name, contact info, address, terms, url)
+   - EagleAgent-only fields (embeddings, categories, comments, supply_chain_position) are never overwritten by the sync
+   - `contacts` JSONB: merge NetSuite contact fields (email, phone, source email/name/cc) into the contacts structure
    - Store the `netsuite_id` on the supplier record as the dedup/matching key
+   - Store `netsuite_last_modified` to track sync state
 
-3. **`netsuite_id` column** already exists on the `suppliers` table — no migration needed.
-
-4. **Add `state` column** to `suppliers` table (part of the address):
-   - Create an Alembic migration to add `state` (String, nullable)
-
-5. **Add `hubspot_id` column** to `suppliers` table:
-   - Create an Alembic migration to add `hubspot_id` (String, nullable, unique)
+3. **Database columns** — all already in place (migration `5b0642094032` applied).
 
 ---
 
-### Phase 5: Brand Alignment
+### Phase 5: Brand Alignment ✅ DONE
 
 Re-import all brands from NetSuite and align them with the existing `brands` table using NetSuite IDs rather than name-matching (which was ~95% accurate).
 
 1. **Query all brands from NetSuite**:
    - The `custentity_supplier_brand` field on vendors contains comma-separated brand IDs
-   - Find the correct SuiteQL record/table for the brand list (likely a custom list)
+   - SuiteQL table name: `customrecord_brands` (custom record type 165)
    - https://794882.app.netsuite.com/app/common/custom/custrecordentrylist.nl?rectype=165
    - Pull all brand records with their ID and name
+   - Supports `--since` filter using `lastmodified` field (YYYY-MM-DD or "N days")
 
 2. **Create `scripts/sync_netsuite_brands.py`**:
    - Fetch all brands from NetSuite
@@ -173,13 +205,27 @@ Re-import all brands from NetSuite and align them with the existing `brands` tab
    - Compare brand count in NetSuite vs local DB
    - Identify any orphaned local brands that don't have a NetSuite ID match
 
+4. **Add "Sync Brands" button to the Sys Admin Dashboard**:
+   - Register `sync_netsuite_brands` in `config/scripts.py` with:
+     - `"command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_brands"]`
+     - `"description": "Sync brands from NetSuite API"`
+   - This will auto-render as a card on the admin page via the existing dynamic template
+
+5. **Remove legacy `import_brands` script and dashboard button**:
+   - Delete `scripts/import_brands.py`
+   - Remove the `"import_brands"` entry from `config/scripts.py`
+   - Remove the `import_brands` row from `docs/SERVER_SCRIPTS.md`
+   - This removes the CSV-based import in favour of the NetSuite API sync
+
 ---
 
-### Phase 6: Rebuild SupplierBrand Links
+### Phase 6: Rebuild SupplierBrand Links ✅ DONE (merged into Phase 4b)
 
 Rebuild the `supplier_brands` join table using the authoritative NetSuite vendor→brand links (from `custentity_supplier_brand`), replacing the original name-matched links.
 
-1. **Create `scripts/sync_netsuite_supplier_brands.py`**:
+> **Note**: This was implemented directly in `scripts/sync_netsuite_suppliers.py` rather than as a separate script. Brand links are rebuilt inline during each supplier sync run.
+
+1. ~~**Create `scripts/sync_netsuite_supplier_brands.py`**~~:
    - Fetch all vendors from NetSuite (or a subset) with their `custentity_supplier_brand` field
    - For each vendor:
      - Look up the matching supplier in local DB by `netsuite_id`
@@ -211,7 +257,7 @@ Rebuild the `supplier_brands` join table using the authoritative NetSuite vendor
 - `scripts/fetch_netsuite_suppliers.py` — New fetch-to-JSON script (Phase 4a)
 - `scripts/sync_netsuite_suppliers.py` — New import/merge script (Phase 4b)
 - `scripts/sync_netsuite_brands.py` — Brand alignment script (Phase 5)
-- `scripts/sync_netsuite_supplier_brands.py` — Rebuild supplier↔brand links (Phase 6)
+- `scripts/sync_netsuite_supplier_brands.py` — ~~Separate script~~ (merged into sync_netsuite_suppliers.py)
 
 ### Verification
 

@@ -36,6 +36,9 @@ def main():
     rows = client.suiteql(query)
     print(f"Fetched {len(rows)} vendor records")
 
+    # Strip the 'links' metadata key that NetSuite adds to every row
+    rows = [{k: v for k, v in row.items() if k != "links"} for row in rows]
+
     # Save to JSON
     output_path = Path(Config.DATA_DIR) / "netsuite_vendors.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -47,9 +50,7 @@ def main():
     if rows:
         print(f"\nFirst 10 records:")
         for row in rows[:10]:
-            # Strip the 'links' key that NetSuite adds
-            display = {k: v for k, v in row.items() if k != "links"}
-            print(f"  {display}")
+            print(f"  {row}")
 
 
 if __name__ == "__main__":

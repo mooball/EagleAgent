@@ -19,8 +19,8 @@ Scripts are defined in `config/scripts.py`. Current registry:
 | `update_product_embeddings` | Regenerate missing product vector embeddings (batches of 100) |
 | `update_supplier_embeddings` | Regenerate missing supplier vector embeddings (batches of 100) |
 | `import_products` | Import products from CSV files in the import directory |
-| `import_suppliers` | Import suppliers from CSV (two-phase: upsert then brand linking) |
-| `import_brands` | Import brands from CSV files in the import directory |
+| `sync_netsuite_suppliers` | Sync suppliers from NetSuite API (default: last 30 days) |
+| `sync_netsuite_brands` | Sync brands from NetSuite API (default: full sync) |
 | `import_purchase_history` | Import purchase history from CSV files |
 
 ## Chat Commands

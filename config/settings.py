@@ -114,6 +114,9 @@ class Config:
     # Base64-encoded PEM private key for signing JWTs
     NETSUITE_PRIVATE_KEY_B64 = os.getenv("NETSUITE_PRIVATE_KEY_B64", "")
     
+    # Batch size for NetSuite sync commits (rows per commit)
+    NETSUITE_SYNC_BATCH_SIZE = int(os.getenv("NETSUITE_SYNC_BATCH_SIZE", "500"))
+    
     
     # ==================== Development Settings ====================
     

@@ -6,9 +6,12 @@ with pagination, and record retrieval.
 """
 
 import logging
+from collections.abc import Iterator
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from config.settings import Config
 from .auth import NetSuiteAuth
@@ -21,6 +24,15 @@ _DEFAULT_TIMEOUT = 60
 # SuiteQL page size
 _PAGE_LIMIT = 1000
 
+# Retry configuration for transient failures
+_RETRY_STRATEGY = Retry(
+    total=3,
+    backoff_factor=2,  # 2s, 4s, 8s
+    status_forcelist=[502, 503, 504, 520, 521, 522],
+    allowed_methods=["GET", "POST"],
+    raise_on_status=False,
+)
+
 
 class NetSuiteClient:
     """HTTP client for the NetSuite REST API."""
@@ -29,6 +41,9 @@ class NetSuiteClient:
         self._auth = auth or NetSuiteAuth()
         account_id = self._auth.account_id
         self._base_url = f"https://{account_id}.suitetalk.api.netsuite.com/services/rest"
+        self._session = requests.Session()
+        adapter = HTTPAdapter(max_retries=_RETRY_STRATEGY)
+        self._session.mount("https://", adapter)
 
     # ── HTTP helpers ─────────────────────────────────────────────
 
@@ -43,7 +58,7 @@ class NetSuiteClient:
         """GET request against the REST API. `path` is relative to the base URL."""
         url = f"{self._base_url}/{path.lstrip('/')}"
         kwargs.setdefault("timeout", _DEFAULT_TIMEOUT)
-        response = requests.get(url, headers=self._headers(), **kwargs)
+        response = self._session.get(url, headers=self._headers(), **kwargs)
         response.raise_for_status()
         return response
 
@@ -51,7 +66,7 @@ class NetSuiteClient:
         """POST request against the REST API."""
         url = f"{self._base_url}/{path.lstrip('/')}"
         kwargs.setdefault("timeout", _DEFAULT_TIMEOUT)
-        response = requests.post(url, headers=self._headers(), **kwargs)
+        response = self._session.post(url, headers=self._headers(), **kwargs)
         if not response.ok:
             logger.error("POST %s → %s: %s", path, response.status_code, response.text[:500])
         response.raise_for_status()
@@ -91,6 +106,44 @@ class NetSuiteClient:
 
         logger.info("SuiteQL returned %d total rows", len(all_items))
         return all_items
+
+    def suiteql_iter(self, query: str, limit: int = _PAGE_LIMIT) -> Iterator[list[dict]]:
+        """
+        Run a SuiteQL query and yield pages of results as they arrive.
+
+        This avoids loading the entire result set into memory at once,
+        making it suitable for large datasets (100K+ rows).
+
+        Args:
+            query: The SuiteQL SELECT statement.
+            limit: Page size per request (max 1000).
+
+        Yields:
+            Lists of row dicts, one per API page.
+        """
+        offset = 0
+        total = 0
+
+        while True:
+            response = self.post(
+                "query/v1/suiteql",
+                json={"q": query},
+                params={"limit": limit, "offset": offset},
+            )
+            data = response.json()
+            items = data.get("items", [])
+            total += len(items)
+
+            if items:
+                yield items
+
+            if not data.get("hasMore", False):
+                break
+
+            offset += limit
+            logger.debug("SuiteQL pagination: fetched %d rows so far", total)
+
+        logger.info("SuiteQL returned %d total rows (streamed)", total)
 
     # ── Record access ────────────────────────────────────────────
 

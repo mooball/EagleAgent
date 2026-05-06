@@ -14,13 +14,18 @@ class Supplier(Base):
     name = Column(String, nullable=False)
     url = Column(String, nullable=True)
     address_1 = Column(String, nullable=True)
+    address_2 = Column(String, nullable=True)
     city = Column(String, nullable=True)
+    state = Column(String, nullable=True)
+    postcode = Column(String, nullable=True)
     country = Column(String, nullable=True)
+    hubspot_id = Column(String, unique=True, nullable=True)
     notes = Column(Text, nullable=True)
     contacts = Column(JSONB, nullable=True)
     comments = Column(JSONB, nullable=True)                    # [{author, comment, ts}]
     supply_chain_position = Column(JSONB, nullable=True)       # {category, tier, confidence, reasoning}
     terms = Column(String, nullable=True)                      # e.g. "30 days", "COD"
+    netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
     modified_at = Column(DateTime(timezone=True), nullable=True)
     modified_by = Column(String, nullable=True)                # "user:tom", "netsuite", "ai:categorizer"
 
