@@ -45,11 +45,17 @@ SCRIPT_REGISTRY: dict[str, dict] = {
         "args_allowed": ["--since", "--resume", "--dry-run"],
         "long_running": True,
     },
-    "import_purchase_history": {
-        "command": ["uv", "run", "python", "-m", "scripts.import_purchase_history"],
-        "description": "Import purchase history from CSV files",
-        "args_allowed": [],
-        "long_running": False,
+    "sync_netsuite_sales_orders": {
+        "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_sales_orders"],
+        "description": "Sync Sales Order lines from NetSuite API (--since YYYY-MM-DD/Nd, --resume to continue)",
+        "args_allowed": ["--since", "--resume", "--dry-run"],
+        "long_running": True,
+    },
+    "sync_netsuite_quotes": {
+        "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_quotes"],
+        "description": "Sync Quote lines from NetSuite API (--since YYYY-MM-DD/Nd, --resume to continue)",
+        "args_allowed": ["--since", "--resume", "--dry-run"],
+        "long_running": True,
     },
     "categorize_suppliers": {
         "command": ["uv", "run", "python", "-m", "scripts.categorize_suppliers_job"],

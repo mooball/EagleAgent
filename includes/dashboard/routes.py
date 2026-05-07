@@ -930,9 +930,10 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
 # ---------------------------------------------------------------------------
 # Purchases (Transaction table — purchase & quote history)
 # ---------------------------------------------------------------------------
-@router.get("/purchases")
-def purchase_list(request: Request, user: dict = Depends(require_user),
-                  q: str = "", page: int = 1):
+@router.get("/transactions")
+def transaction_list(request: Request, user: dict = Depends(require_user),
+                     q: str = "", page: int = 1):
+    from includes.netsuite.constants import get_status_label
     session = get_session()
     try:
         query = (
@@ -961,9 +962,17 @@ def purchase_list(request: Request, user: dict = Depends(require_user),
             .all()
         )
 
-        purchases = []
+        transactions = []
         for ps, sup_name, part_number, brand in rows:
-            purchases.append({
+            cost_display = None
+            if ps.cost is not None:
+                currency = ps.cost_currency or "AUD"
+                if currency == "AUD":
+                    cost_display = f"${ps.cost:,.2f}"
+                else:
+                    cost_display = f"${ps.cost:,.2f} {currency}"
+            price_display = f"${ps.price:,.2f}" if ps.price is not None else None
+            transactions.append({
                 "id": str(ps.id),
                 "doc_number": ps.doc_number,
                 "date": str(ps.date) if ps.date else None,
@@ -973,27 +982,29 @@ def purchase_list(request: Request, user: dict = Depends(require_user),
                 "product_brand": brand,
                 "product_id": str(ps.product_id),
                 "quantity": ps.quantity,
-                "price": ps.price,
-                "status": ps.status,
+                "price": price_display,
+                "cost": cost_display,
+                "status": get_status_label(ps.doc_type or "", ps.status or "") if ps.status else None,
             })
     finally:
         session.close()
 
     ctx = {
-        "purchases": purchases,
+        "transactions": transactions,
         "q": q,
         "page": page,
         "total": total,
         "has_more": page < total_pages,
         "next_page": page + 1,
-        "active_nav": "purchases",
+        "active_nav": "transactions",
     }
-    return _render(request, "purchases.html", "partials/purchase_list.html", ctx, user)
+    return _render(request, "transactions.html", "partials/transaction_list.html", ctx, user)
 
 
-@router.get("/partial/purchases")
-def partial_purchase_list(request: Request, user: dict = Depends(require_user),
-                          q: str = "", page: int = 1):
+@router.get("/partial/transactions")
+def partial_transaction_list(request: Request, user: dict = Depends(require_user),
+                             q: str = "", page: int = 1):
+    from includes.netsuite.constants import get_status_label
     session = get_session()
     try:
         query = (
@@ -1022,9 +1033,17 @@ def partial_purchase_list(request: Request, user: dict = Depends(require_user),
             .all()
         )
 
-        purchases = []
+        transactions = []
         for ps, sup_name, part_number, brand in rows:
-            purchases.append({
+            cost_display = None
+            if ps.cost is not None:
+                currency = ps.cost_currency or "AUD"
+                if currency == "AUD":
+                    cost_display = f"${ps.cost:,.2f}"
+                else:
+                    cost_display = f"${ps.cost:,.2f} {currency}"
+            price_display = f"${ps.price:,.2f}" if ps.price is not None else None
+            transactions.append({
                 "id": str(ps.id),
                 "doc_number": ps.doc_number,
                 "date": str(ps.date) if ps.date else None,
@@ -1034,16 +1053,17 @@ def partial_purchase_list(request: Request, user: dict = Depends(require_user),
                 "product_brand": brand,
                 "product_id": str(ps.product_id),
                 "quantity": ps.quantity,
-                "price": ps.price,
-                "status": ps.status,
+                "price": price_display,
+                "cost": cost_display,
+                "status": get_status_label(ps.doc_type or "", ps.status or "") if ps.status else None,
             })
     finally:
         session.close()
 
-    return templates.TemplateResponse("partials/purchase_list.html", {
+    return templates.TemplateResponse("partials/transaction_list.html", {
         "request": request,
         "user": user,
-        "purchases": purchases,
+        "transactions": transactions,
         "q": q,
         "page": page,
         "total": total,
@@ -1052,10 +1072,11 @@ def partial_purchase_list(request: Request, user: dict = Depends(require_user),
     })
 
 
-@router.get("/partial/purchases/rows")
-def partial_purchase_rows(request: Request, user: dict = Depends(require_user),
-                          q: str = "", page: int = 1):
+@router.get("/partial/transactions/rows")
+def partial_transaction_rows(request: Request, user: dict = Depends(require_user),
+                             q: str = "", page: int = 1):
     """Return just the <tr> rows + sentinel for infinite scroll."""
+    from includes.netsuite.constants import get_status_label
     session = get_session()
     try:
         query = (
@@ -1084,9 +1105,17 @@ def partial_purchase_rows(request: Request, user: dict = Depends(require_user),
             .all()
         )
 
-        purchases = []
+        transactions = []
         for ps, sup_name, part_number, brand in rows:
-            purchases.append({
+            cost_display = None
+            if ps.cost is not None:
+                currency = ps.cost_currency or "AUD"
+                if currency == "AUD":
+                    cost_display = f"${ps.cost:,.2f}"
+                else:
+                    cost_display = f"${ps.cost:,.2f} {currency}"
+            price_display = f"${ps.price:,.2f}" if ps.price is not None else None
+            transactions.append({
                 "id": str(ps.id),
                 "doc_number": ps.doc_number,
                 "date": str(ps.date) if ps.date else None,
@@ -1096,15 +1125,16 @@ def partial_purchase_rows(request: Request, user: dict = Depends(require_user),
                 "product_brand": brand,
                 "product_id": str(ps.product_id),
                 "quantity": ps.quantity,
-                "price": ps.price,
-                "status": ps.status,
+                "price": price_display,
+                "cost": cost_display,
+                "status": get_status_label(ps.doc_type or "", ps.status or "") if ps.status else None,
             })
     finally:
         session.close()
 
-    return templates.TemplateResponse("partials/_purchase_rows.html", {
+    return templates.TemplateResponse("partials/_transaction_rows.html", {
         "request": request,
-        "purchases": purchases,
+        "transactions": transactions,
         "q": q,
         "has_more": page < total_pages,
         "next_page": page + 1,

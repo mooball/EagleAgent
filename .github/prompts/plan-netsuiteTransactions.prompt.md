@@ -125,9 +125,9 @@ Quotes (`Estimate`):
 
 ---
 
-### Phase 1: Rename `ProductSupplier` → `Transaction` ⚠️ BREAKING CHANGE
+### Phase 1: Rename `ProductSupplier` → `Transaction` ✅ DONE
 
-This is a deep refactor touching 10+ files. The database table stays as `product_suppliers` (avoiding a destructive table rename) but the Python model class and all references change.
+Class renamed across codebase (Option A). Table remains `product_suppliers`. Backwards alias `ProductSupplier = Transaction` retained. All 324 tests pass.
 
 **Option A: Rename class only, keep table name** (recommended)
 - Rename `ProductSupplier` → `Transaction` in Python code
@@ -158,9 +158,11 @@ This is a deep refactor touching 10+ files. The database table stays as `product
 
 ---
 
-### Phase 2: Add New Columns (Migration)
+### Phase 2: Add New Columns (Migration) ✅ DONE
 
-Add columns to support cost tracking:
+Migration `39e2882667f4_add_transaction_columns` applied. Adds `doc_type`, `netsuite_id` (unique), `cost`, `cost_currency`, `netsuite_last_modified`. Backfills existing rows with `doc_type = 'PurchaseOrder'`. Also added `IGNORED_COLUMNS` config to `alembic/env.py` to suppress spurious `hubspot_id` index/constraint diffs.
+
+Original column plan:
 
 ```python
 class Transaction(Base):
@@ -204,7 +206,7 @@ op.create_index('ix_product_suppliers_doc_type', 'product_suppliers', ['doc_type
 
 ---
 
-### Phase 3: Sales Order Sync Script
+### Phase 3: Sales Order Sync Script ✅ DONE
 
 `scripts/sync_netsuite_sales_orders.py`
 
@@ -235,7 +237,7 @@ Pattern identical to `sync_netsuite_products.py`:
 
 ---
 
-### Phase 4: Quote Sync Script
+### Phase 4: Quote Sync Script ✅ DONE
 
 `scripts/sync_netsuite_quotes.py`
 
@@ -247,9 +249,9 @@ Same pattern as Phase 3 but for Estimates:
 
 ---
 
-### Phase 5: Status Enums & Constants
+### Phase 5: Status Enums & Constants ✅ DONE
 
-Create `includes/netsuite/constants.py` with status mappings:
+Created `includes/netsuite/constants.py` with status mappings:
 
 ```python
 SALES_ORDER_STATUS = {
@@ -284,23 +286,29 @@ Use this in dashboard routes and agent tools to show human-readable status.
 
 ---
 
-### Phase 6: Register Scripts & Cleanup
+### Phase 6: Register Scripts & Cleanup ✅ DONE
 
-1. Add both scripts to `config/scripts.py` SCRIPT_REGISTRY
-2. Add SuiteQL query builders to `includes/netsuite/queries.py`
-3. Consider removing legacy CSV import scripts:
-   - `scripts/import_purchase_history.py`
-   - `scripts/import_quote_history.py`
-   (Only after confirming API sync covers all the same data)
+1. Added `sync_netsuite_sales_orders` and `sync_netsuite_quotes` to `config/scripts.py` SCRIPT_REGISTRY (with `--since`, `--resume`, `--dry-run`)
+2. Added `sales_orders_updated_since()` and `quotes_updated_since()` query builders to `includes/netsuite/queries.py`
+3. Removed legacy CSV import scripts: `scripts/import_purchase_history.py` and `scripts/import_quote_history.py`
+4. Removed `import_purchase_history` from script registry
+5. Updated `docs/SERVER_SCRIPTS.md`
 
 ---
 
-### Phase 7: Dashboard & Agent Updates
+### Phase 7: Dashboard & Agent Updates ✅ DONE (partial)
 
-1. Update dashboard routes to use `doc_type` filter where appropriate
-2. Update agent tools to leverage cost data in supplier comparisons
-3. Consider adding a "Quotes" view to the dashboard alongside "Purchases"
-4. Use `get_status_label()` to display human-readable statuses
+Dashboard route updates completed:
+1. Renamed `/purchases` → `/transactions` (including `/partial/transactions` and `/partial/transactions/rows`)
+2. Added Cost column — formatted as `$12,000.00` (AUD) or `$12,000.00 USD` (non-AUD)
+3. Price column now shows `$` prefix with comma-separated thousands
+4. Status column shows human-readable labels via `get_status_label()`
+5. No doc_type column (redundant — obvious from doc number prefix)
+6. Renamed templates: `purchases.html` → `transactions.html`, partials likewise
+7. Updated nav in `base.html` and home tile in `home.html`
+
+Still TODO (deferred):
+- Update agent tools to leverage cost data in supplier comparisons
 
 ---
 
@@ -319,11 +327,11 @@ Use this in dashboard routes and agent tools to show human-readable status.
 ### Execution Order
 
 ```
-Phase 1 (Rename)       →  class rename across codebase
-Phase 2 (Migration)    →  add new columns
-Phase 5 (Constants)    →  status enums (no dependencies)
-Phase 3 (Sales Orders) →  depends on Phase 2
-Phase 4 (Quotes)       →  depends on Phase 2
-Phase 6 (Registry)     →  after Phases 3+4
-Phase 7 (Dashboard)    →  after Phase 6
+Phase 1 (Rename)       →  ✅ DONE
+Phase 2 (Migration)    →  ✅ DONE
+Phase 5 (Constants)    →  ✅ DONE
+Phase 3 (Sales Orders) →  ✅ DONE
+Phase 4 (Quotes)       →  ✅ DONE
+Phase 6 (Registry)     →  ✅ DONE
+Phase 7 (Dashboard)    →  ✅ DONE (agent tools deferred)
 ```

@@ -89,12 +89,17 @@ class Transaction(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     doc_number = Column(String, nullable=False, index=True)
+    doc_type = Column(String, nullable=True, index=True)
+    netsuite_id = Column(String, unique=True, nullable=True)
     date = Column(Date, nullable=True)
     product_id = Column(UUID(as_uuid=True), ForeignKey('products.id'), nullable=False, index=True)
     supplier_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id'), nullable=False, index=True)
     quantity = Column(Float, nullable=True)
     price = Column(Float, nullable=True)
+    cost = Column(Float, nullable=True)
+    cost_currency = Column(String(3), nullable=True)
     status = Column(String, nullable=True)
+    netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self):
         return f"<Transaction(doc_number='{self.doc_number}', product_id='{self.product_id}', supplier_id='{self.supplier_id}')>"

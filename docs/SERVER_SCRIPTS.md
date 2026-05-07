@@ -21,7 +21,8 @@ Scripts are defined in `config/scripts.py`. Current registry:
 | `sync_netsuite_suppliers` | Sync suppliers from NetSuite API (default: last 30 days) |
 | `sync_netsuite_brands` | Sync brands from NetSuite API (default: full sync) |
 | `sync_netsuite_products` | Sync products from NetSuite API (default: last 30 days) |
-| `import_purchase_history` | Import purchase history from CSV files |
+| `sync_netsuite_sales_orders` | Sync Sales Order lines from NetSuite API |
+| `sync_netsuite_quotes` | Sync Quote lines from NetSuite API |
 
 ## Chat Commands
 
