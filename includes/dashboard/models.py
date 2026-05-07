@@ -83,8 +83,9 @@ class Product(Base):
         return f"<Product(part_number='{self.part_number}', brand='{self.brand}')>"
 
 
-class ProductSupplier(Base):
-    __tablename__ = 'product_suppliers'
+class Transaction(Base):
+    """Transaction line items (Sales Orders, Quotes, legacy Purchase Orders)."""
+    __tablename__ = 'product_suppliers'  # Legacy table name retained for backwards compatibility
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     doc_number = Column(String, nullable=False, index=True)
@@ -96,4 +97,8 @@ class ProductSupplier(Base):
     status = Column(String, nullable=True)
 
     def __repr__(self):
-        return f"<ProductSupplier(doc_number='{self.doc_number}', product_id='{self.product_id}', supplier_id='{self.supplier_id}')>"
+        return f"<Transaction(doc_number='{self.doc_number}', product_id='{self.product_id}', supplier_id='{self.supplier_id}')>"
+
+
+# Backwards-compatible alias
+ProductSupplier = Transaction

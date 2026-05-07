@@ -19,7 +19,7 @@ from sqlalchemy import create_engine, func, desc
 from sqlalchemy.orm import sessionmaker
 
 from config.settings import Config
-from includes.dashboard.models import Supplier, ProductSupplier
+from includes.dashboard.models import Supplier, Transaction
 
 
 def get_engine(is_prod: bool = False):
@@ -54,10 +54,10 @@ def main():
                 Supplier.url,
                 Supplier.city,
                 Supplier.country,
-                func.count(ProductSupplier.id).label("purchase_count"),
-                func.max(ProductSupplier.date).label("last_purchase_date"),
+                func.count(Transaction.id).label("purchase_count"),
+                func.max(Transaction.date).label("last_purchase_date"),
             )
-            .outerjoin(ProductSupplier, Supplier.id == ProductSupplier.supplier_id)
+            .outerjoin(Transaction, Supplier.id == Transaction.supplier_id)
             .group_by(Supplier.id, Supplier.name, Supplier.url, Supplier.city, Supplier.country)
             .order_by(desc("purchase_count"))
             .limit(args.limit)

@@ -28,7 +28,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from config.settings import Config
-from includes.dashboard.models import Product, Supplier, ProductSupplier
+from includes.dashboard.models import Product, Supplier, Transaction
 
 BATCH_SIZE = 200
 
@@ -122,10 +122,10 @@ def build_existing_keys(engine):
     session = make_session(engine)
     try:
         rows = session.query(
-            ProductSupplier.doc_number,
-            ProductSupplier.product_id,
-            ProductSupplier.supplier_id,
-            ProductSupplier.date,
+            Transaction.doc_number,
+            Transaction.product_id,
+            Transaction.supplier_id,
+            Transaction.date,
         ).all()
         keys = {(r.doc_number, str(r.product_id), str(r.supplier_id), r.date) for r in rows}
         print(f"  Existing records loaded: {len(keys)} for duplicate detection.")
@@ -217,7 +217,7 @@ def import_quote_history(engine, df: pd.DataFrame, product_netsuite: dict, suppl
                 continue
 
             for record in batch_rows:
-                new_rec = ProductSupplier(**record)
+                new_rec = Transaction(**record)
                 session.add(new_rec)
                 inserted += 1
 

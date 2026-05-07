@@ -21,7 +21,7 @@ from config import config
 from includes.dashboard.models import (
     Brand,
     Product,
-    ProductSupplier,
+    Transaction,
     Supplier,
     SupplierBrand,
 )
@@ -138,7 +138,7 @@ async def dashboard_home(request: Request, user: dict = Depends(require_user)):
         stats = {
             "suppliers": session.query(func.count(Supplier.id)).scalar(),
             "products": session.query(func.count(Product.id)).scalar(),
-            "purchases": session.query(func.count(ProductSupplier.id)).scalar(),
+            "purchases": session.query(func.count(Transaction.id)).scalar(),
         }
     finally:
         session.close()
@@ -170,9 +170,9 @@ def supplier_list(request: Request, user: dict = Depends(require_user),
     try:
         query = session.query(
             Supplier,
-            func.count(ProductSupplier.id).label("purchase_count"),
+            func.count(Transaction.id).label("purchase_count"),
         ).outerjoin(
-            ProductSupplier, ProductSupplier.supplier_id == Supplier.id
+            Transaction, Transaction.supplier_id == Supplier.id
         ).group_by(Supplier.id)
 
         if q:
@@ -184,7 +184,7 @@ def supplier_list(request: Request, user: dict = Depends(require_user),
 
         rows = (
             query
-            .order_by(func.count(ProductSupplier.id).desc(), Supplier.name)
+            .order_by(func.count(Transaction.id).desc(), Supplier.name)
             .offset((page - 1) * PAGE_SIZE)
             .limit(PAGE_SIZE)
             .all()
@@ -245,10 +245,10 @@ def supplier_detail(request: Request, supplier_id: str,
 
         # Recent purchases
         purchases_raw = (
-            session.query(ProductSupplier, Product)
-            .join(Product, ProductSupplier.product_id == Product.id)
-            .filter(ProductSupplier.supplier_id == supplier.id)
-            .order_by(ProductSupplier.date.desc().nullslast())
+            session.query(Transaction, Product)
+            .join(Product, Transaction.product_id == Product.id)
+            .filter(Transaction.supplier_id == supplier.id)
+            .order_by(Transaction.date.desc().nullslast())
             .limit(50)
             .all()
         )
@@ -332,10 +332,10 @@ def product_detail_view(request: Request, product_id: str,
 
         # Purchase history for this product
         purchases_raw = (
-            session.query(ProductSupplier, Supplier)
-            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
-            .filter(ProductSupplier.product_id == product.id)
-            .order_by(ProductSupplier.date.desc().nullslast())
+            session.query(Transaction, Supplier)
+            .join(Supplier, Transaction.supplier_id == Supplier.id)
+            .filter(Transaction.product_id == product.id)
+            .order_by(Transaction.date.desc().nullslast())
             .limit(50)
             .all()
         )
@@ -374,9 +374,9 @@ def partial_supplier_list(request: Request, user: dict = Depends(require_user),
     try:
         query = session.query(
             Supplier,
-            func.count(ProductSupplier.id).label("purchase_count"),
+            func.count(Transaction.id).label("purchase_count"),
         ).outerjoin(
-            ProductSupplier, ProductSupplier.supplier_id == Supplier.id
+            Transaction, Transaction.supplier_id == Supplier.id
         ).group_by(Supplier.id)
 
         if q:
@@ -388,7 +388,7 @@ def partial_supplier_list(request: Request, user: dict = Depends(require_user),
 
         rows = (
             query
-            .order_by(func.count(ProductSupplier.id).desc(), Supplier.name)
+            .order_by(func.count(Transaction.id).desc(), Supplier.name)
             .offset((page - 1) * PAGE_SIZE)
             .limit(PAGE_SIZE)
             .all()
@@ -427,9 +427,9 @@ def partial_supplier_rows(request: Request, user: dict = Depends(require_user),
     try:
         query = session.query(
             Supplier,
-            func.count(ProductSupplier.id).label("purchase_count"),
+            func.count(Transaction.id).label("purchase_count"),
         ).outerjoin(
-            ProductSupplier, ProductSupplier.supplier_id == Supplier.id
+            Transaction, Transaction.supplier_id == Supplier.id
         ).group_by(Supplier.id)
 
         if q:
@@ -441,7 +441,7 @@ def partial_supplier_rows(request: Request, user: dict = Depends(require_user),
 
         rows = (
             query
-            .order_by(func.count(ProductSupplier.id).desc(), Supplier.name)
+            .order_by(func.count(Transaction.id).desc(), Supplier.name)
             .offset((page - 1) * PAGE_SIZE)
             .limit(PAGE_SIZE)
             .all()
@@ -496,10 +496,10 @@ def partial_supplier_detail(request: Request, supplier_id: str,
         )
 
         purchases_raw = (
-            session.query(ProductSupplier, Product)
-            .join(Product, ProductSupplier.product_id == Product.id)
-            .filter(ProductSupplier.supplier_id == supplier.id)
-            .order_by(ProductSupplier.date.desc().nullslast())
+            session.query(Transaction, Product)
+            .join(Product, Transaction.product_id == Product.id)
+            .filter(Transaction.supplier_id == supplier.id)
+            .order_by(Transaction.date.desc().nullslast())
             .limit(50)
             .all()
         )
@@ -574,10 +574,10 @@ def partial_supplier_update(request: Request, supplier_id: str,
         )
 
         purchases_raw = (
-            session.query(ProductSupplier, Product)
-            .join(Product, ProductSupplier.product_id == Product.id)
-            .filter(ProductSupplier.supplier_id == supplier.id)
-            .order_by(ProductSupplier.date.desc().nullslast())
+            session.query(Transaction, Product)
+            .join(Product, Transaction.product_id == Product.id)
+            .filter(Transaction.supplier_id == supplier.id)
+            .order_by(Transaction.date.desc().nullslast())
             .limit(50)
             .all()
         )
@@ -776,10 +776,10 @@ def partial_product_detail(request: Request, product_id: str,
             return HTMLResponse("<p>Product not found.</p>")
 
         purchases_raw = (
-            session.query(ProductSupplier, Supplier)
-            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
-            .filter(ProductSupplier.product_id == product.id)
-            .order_by(ProductSupplier.date.desc().nullslast())
+            session.query(Transaction, Supplier)
+            .join(Supplier, Transaction.supplier_id == Supplier.id)
+            .filter(Transaction.product_id == product.id)
+            .order_by(Transaction.date.desc().nullslast())
             .limit(50)
             .all()
         )
@@ -928,7 +928,7 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Purchases (ProductSupplier table — purchase & quote history)
+# Purchases (Transaction table — purchase & quote history)
 # ---------------------------------------------------------------------------
 @router.get("/purchases")
 def purchase_list(request: Request, user: dict = Depends(require_user),
@@ -936,14 +936,14 @@ def purchase_list(request: Request, user: dict = Depends(require_user),
     session = get_session()
     try:
         query = (
-            session.query(ProductSupplier, Supplier.name, Product.part_number, Product.brand)
-            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
-            .join(Product, ProductSupplier.product_id == Product.id)
+            session.query(Transaction, Supplier.name, Product.part_number, Product.brand)
+            .join(Supplier, Transaction.supplier_id == Supplier.id)
+            .join(Product, Transaction.product_id == Product.id)
         )
 
         if q:
             query = query.filter(
-                ProductSupplier.doc_number.ilike(f"%{q}%")
+                Transaction.doc_number.ilike(f"%{q}%")
                 | Supplier.name.ilike(f"%{q}%")
                 | Product.part_number.ilike(f"%{q}%")
                 | Product.brand.ilike(f"%{q}%")
@@ -955,7 +955,7 @@ def purchase_list(request: Request, user: dict = Depends(require_user),
 
         rows = (
             query
-            .order_by(ProductSupplier.date.desc().nullslast(), ProductSupplier.doc_number)
+            .order_by(Transaction.date.desc().nullslast(), Transaction.doc_number)
             .offset((page - 1) * PAGE_SIZE)
             .limit(PAGE_SIZE)
             .all()
@@ -997,14 +997,14 @@ def partial_purchase_list(request: Request, user: dict = Depends(require_user),
     session = get_session()
     try:
         query = (
-            session.query(ProductSupplier, Supplier.name, Product.part_number, Product.brand)
-            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
-            .join(Product, ProductSupplier.product_id == Product.id)
+            session.query(Transaction, Supplier.name, Product.part_number, Product.brand)
+            .join(Supplier, Transaction.supplier_id == Supplier.id)
+            .join(Product, Transaction.product_id == Product.id)
         )
 
         if q:
             query = query.filter(
-                ProductSupplier.doc_number.ilike(f"%{q}%")
+                Transaction.doc_number.ilike(f"%{q}%")
                 | Supplier.name.ilike(f"%{q}%")
                 | Product.part_number.ilike(f"%{q}%")
                 | Product.brand.ilike(f"%{q}%")
@@ -1016,7 +1016,7 @@ def partial_purchase_list(request: Request, user: dict = Depends(require_user),
 
         rows = (
             query
-            .order_by(ProductSupplier.date.desc().nullslast(), ProductSupplier.doc_number)
+            .order_by(Transaction.date.desc().nullslast(), Transaction.doc_number)
             .offset((page - 1) * PAGE_SIZE)
             .limit(PAGE_SIZE)
             .all()
@@ -1059,14 +1059,14 @@ def partial_purchase_rows(request: Request, user: dict = Depends(require_user),
     session = get_session()
     try:
         query = (
-            session.query(ProductSupplier, Supplier.name, Product.part_number, Product.brand)
-            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
-            .join(Product, ProductSupplier.product_id == Product.id)
+            session.query(Transaction, Supplier.name, Product.part_number, Product.brand)
+            .join(Supplier, Transaction.supplier_id == Supplier.id)
+            .join(Product, Transaction.product_id == Product.id)
         )
 
         if q:
             query = query.filter(
-                ProductSupplier.doc_number.ilike(f"%{q}%")
+                Transaction.doc_number.ilike(f"%{q}%")
                 | Supplier.name.ilike(f"%{q}%")
                 | Product.part_number.ilike(f"%{q}%")
                 | Product.brand.ilike(f"%{q}%")
@@ -1078,7 +1078,7 @@ def partial_purchase_rows(request: Request, user: dict = Depends(require_user),
 
         rows = (
             query
-            .order_by(ProductSupplier.date.desc().nullslast(), ProductSupplier.doc_number)
+            .order_by(Transaction.date.desc().nullslast(), Transaction.doc_number)
             .offset((page - 1) * PAGE_SIZE)
             .limit(PAGE_SIZE)
             .all()
