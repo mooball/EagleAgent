@@ -22,7 +22,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \
     npm install -g agent-browser@0.16.3 && \
     npx -y playwright install-deps && \
-    agent-browser install && \
+    echo '{}' > /tmp/package.json && cd /tmp && agent-browser install && rm /tmp/package.json && \
     rm -rf /var/lib/apt/lists/*
 
 # Install uv package manager

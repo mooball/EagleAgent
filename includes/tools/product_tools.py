@@ -14,7 +14,7 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import asyncio
 
 from config.settings import Config
-from includes.dashboard.models import Product, Brand, Supplier, SupplierBrand, ProductSupplier
+from includes.dashboard.models import Product, Brand, Supplier, SupplierBrand, Transaction
 
 logger = logging.getLogger(__name__)
 
@@ -247,20 +247,20 @@ def _do_supplier_search(name: Optional[str] = None,
         # Build a subquery for purchase stats (order count + last date) per supplier
         purchase_sub = (
             session.query(
-                ProductSupplier.supplier_id,
-                func.count(ProductSupplier.id).label('purchase_count'),
-                func.max(ProductSupplier.date).label('last_purchase_date'),
+                Transaction.supplier_id,
+                func.count(Transaction.id).label('purchase_count'),
+                func.max(Transaction.date).label('last_purchase_date'),
             )
         )
         if brand:
             purchase_sub = (
                 purchase_sub
-                .join(Product, ProductSupplier.product_id == Product.id)
+                .join(Product, Transaction.product_id == Product.id)
                 .filter(Product.brand.ilike(f"%{brand}%"))
             )
         purchase_sub = (
             purchase_sub
-            .group_by(ProductSupplier.supplier_id)
+            .group_by(Transaction.supplier_id)
             .subquery()
         )
 
@@ -355,8 +355,8 @@ def _do_supplier_search(name: Optional[str] = None,
                     product_supplier_query = (
                         base_query.filter(
                             Supplier.id.in_(
-                                session.query(ProductSupplier.supplier_id)
-                                .filter(ProductSupplier.product_id.in_(product_ids))
+                                session.query(Transaction.supplier_id)
+                                .filter(Transaction.product_id.in_(product_ids))
                                 .distinct()
                             ),
                             ~Supplier.id.in_(list(seen_ids)) if seen_ids else True,
@@ -538,13 +538,13 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
                 Supplier.contacts.label('supplier_contacts'),
                 Product.part_number.label('part_number'),
                 Product.brand.label('brand'),
-                func.max(ProductSupplier.date).label('most_recent_date'),
-                func.sum(ProductSupplier.quantity).label('total_quantity'),
-                func.count(ProductSupplier.id).label('order_count'),
+                func.max(Transaction.date).label('most_recent_date'),
+                func.sum(Transaction.quantity).label('total_quantity'),
+                func.count(Transaction.id).label('order_count'),
             )
-            .join(Product, ProductSupplier.product_id == Product.id)
-            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
-            .filter(ProductSupplier.product_id.in_(product_ids))
+            .join(Product, Transaction.product_id == Product.id)
+            .join(Supplier, Transaction.supplier_id == Supplier.id)
+            .filter(Transaction.product_id.in_(product_ids))
             .group_by(Supplier.id, Supplier.name, Supplier.city, Supplier.country, Supplier.contacts, Product.part_number, Product.brand)
             .order_by(desc('order_count'))
             .limit(limit)
@@ -560,15 +560,15 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
         price_subquery = {}
         for row in results:
             latest = (
-                session.query(ProductSupplier.price)
-                .join(Product, ProductSupplier.product_id == Product.id)
+                session.query(Transaction.price)
+                .join(Product, Transaction.product_id == Product.id)
                 .filter(
                     and_(
-                        ProductSupplier.supplier_id == row.supplier_id,
+                        Transaction.supplier_id == row.supplier_id,
                         Product.part_number == row.part_number,
                     )
                 )
-                .order_by(ProductSupplier.date.desc().nulls_last())
+                .order_by(Transaction.date.desc().nulls_last())
                 .first()
             )
             price_subquery[(row.supplier_id, row.part_number)] = latest[0] if latest else None
@@ -642,18 +642,18 @@ def _do_search_purchase_history(
     try:
         query = (
             session.query(
-                ProductSupplier.doc_number,
-                ProductSupplier.date,
-                ProductSupplier.quantity,
-                ProductSupplier.price,
-                ProductSupplier.status,
+                Transaction.doc_number,
+                Transaction.date,
+                Transaction.quantity,
+                Transaction.price,
+                Transaction.status,
                 Product.part_number.label('part_number'),
                 Product.brand.label('brand'),
                 Supplier.id.label('supplier_id'),
                 Supplier.name.label('supplier_name'),
             )
-            .join(Product, ProductSupplier.product_id == Product.id)
-            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
+            .join(Product, Transaction.product_id == Product.id)
+            .join(Supplier, Transaction.supplier_id == Supplier.id)
         )
 
         filters = []
@@ -668,13 +668,13 @@ def _do_search_purchase_history(
             filter_desc.append(f"supplier matching '{supplier}'")
 
         if doc_number:
-            query = query.filter(ProductSupplier.doc_number.ilike(f"%{doc_number}%"))
+            query = query.filter(Transaction.doc_number.ilike(f"%{doc_number}%"))
             filter_desc.append(f"document number matching '{doc_number}'")
 
         if date_from:
             try:
                 dt = datetime.strptime(date_from, "%Y-%m-%d").date()
-                query = query.filter(ProductSupplier.date >= dt)
+                query = query.filter(Transaction.date >= dt)
                 filter_desc.append(f"from {date_from}")
             except ValueError:
                 return f"Invalid date_from format '{date_from}'. Use YYYY-MM-DD."
@@ -682,7 +682,7 @@ def _do_search_purchase_history(
         if date_to:
             try:
                 dt = datetime.strptime(date_to, "%Y-%m-%d").date()
-                query = query.filter(ProductSupplier.date <= dt)
+                query = query.filter(Transaction.date <= dt)
                 filter_desc.append(f"to {date_to}")
             except ValueError:
                 return f"Invalid date_to format '{date_to}'. Use YYYY-MM-DD."
@@ -698,12 +698,12 @@ def _do_search_purchase_history(
         if not any([part_number, supplier, doc_number, date_from, date_to]):
             # Provide aggregate stats
             stats = session.query(
-                func.count(ProductSupplier.id).label('total_records'),
-                func.count(func.distinct(ProductSupplier.doc_number)).label('total_pos'),
-                func.count(func.distinct(ProductSupplier.product_id)).label('total_products'),
-                func.count(func.distinct(ProductSupplier.supplier_id)).label('total_suppliers'),
-                func.min(ProductSupplier.date).label('earliest_date'),
-                func.max(ProductSupplier.date).label('latest_date'),
+                func.count(Transaction.id).label('total_records'),
+                func.count(func.distinct(Transaction.doc_number)).label('total_pos'),
+                func.count(func.distinct(Transaction.product_id)).label('total_products'),
+                func.count(func.distinct(Transaction.supplier_id)).label('total_suppliers'),
+                func.min(Transaction.date).label('earliest_date'),
+                func.max(Transaction.date).label('latest_date'),
             ).first()
 
             earliest = stats.earliest_date.strftime("%-d %b %Y") if stats.earliest_date else "N/A"
@@ -723,7 +723,7 @@ def _do_search_purchase_history(
         # Fetch rows
         rows = (
             query
-            .order_by(ProductSupplier.date.desc().nulls_last())
+            .order_by(Transaction.date.desc().nulls_last())
             .limit(limit)
             .all()
         )
@@ -856,13 +856,13 @@ def _find_purchase_history_for_part(part_number: str, limit: int = 20) -> list[d
                 Supplier.id.label("supplier_id"),
                 Supplier.name.label("supplier_name"),
                 Supplier.contacts.label("supplier_contacts"),
-                func.max(ProductSupplier.date).label("most_recent_date"),
-                func.sum(ProductSupplier.quantity).label("total_quantity"),
-                func.count(ProductSupplier.id).label("order_count"),
+                func.max(Transaction.date).label("most_recent_date"),
+                func.sum(Transaction.quantity).label("total_quantity"),
+                func.count(Transaction.id).label("order_count"),
             )
-            .join(Product, ProductSupplier.product_id == Product.id)
-            .join(Supplier, ProductSupplier.supplier_id == Supplier.id)
-            .filter(ProductSupplier.product_id.in_(product_ids))
+            .join(Product, Transaction.product_id == Product.id)
+            .join(Supplier, Transaction.supplier_id == Supplier.id)
+            .filter(Transaction.product_id.in_(product_ids))
             .group_by(Supplier.id, Supplier.name, Supplier.contacts)
             .order_by(desc("order_count"))
             .limit(limit)
@@ -873,14 +873,14 @@ def _find_purchase_history_for_part(part_number: str, limit: int = 20) -> list[d
         for row in results:
             # Get latest price and doc_number
             latest = (
-                session.query(ProductSupplier.price, ProductSupplier.doc_number)
+                session.query(Transaction.price, Transaction.doc_number)
                 .filter(
                     and_(
-                        ProductSupplier.supplier_id == row.supplier_id,
-                        ProductSupplier.product_id.in_(product_ids),
+                        Transaction.supplier_id == row.supplier_id,
+                        Transaction.product_id.in_(product_ids),
                     )
                 )
-                .order_by(ProductSupplier.date.desc().nulls_last())
+                .order_by(Transaction.date.desc().nulls_last())
                 .first()
             )
             contacts = []

@@ -230,5 +230,5 @@ class TestScriptRegistryValidation:
 
     def test_validate_args_allowed_flag(self):
         from config.scripts import validate_args
-        result = validate_args("import_suppliers", ["--phase"])
-        assert result == ["--phase"]
+        result = validate_args("sync_netsuite_products", ["--since"])
+        assert result == ["--since"]

@@ -164,7 +164,7 @@ The FastAPI dashboard serves HTML pages for managing suppliers, products, RFQs, 
 - **Routes** (`includes/dashboard/routes.py`): Full-page renders and HTMX partial responses. Uses Jinja2 templates from `templates/`.
 - **Context** (`includes/dashboard/context.py`): In-memory store keyed by user email — tracks which dashboard page/entity the user is viewing. Injected into the agent's system prompt so it knows the user's current context.
 - **Database** (`includes/dashboard/database.py`): `get_session()` provides SQLAlchemy sync sessions for read queries.
-- **Models** (`includes/dashboard/models.py`): SQLAlchemy ORM models — `Supplier`, `Product`, `Brand`, `SupplierBrand`, `ProductSupplier`, etc.
+- **Models** (`includes/dashboard/models.py`): SQLAlchemy ORM models — `Supplier`, `Product`, `Brand`, `SupplierBrand`, `Transaction`, etc.
 - **Agent Bridge** (`includes/agent_bridge.py`): Bidirectional communication — dashboard can dispatch messages to the agent, agent can notify dashboard to refresh via `cl.send_window_message`.
 
 ## Action Buttons (`includes/chat/actions.py`)

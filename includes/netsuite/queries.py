@@ -88,5 +88,82 @@ def products_updated_since(since_date: str) -> str:
         "WHERE i.itemtype = 'InvtPart' "
         "AND i.isinactive = 'F' "
         f"AND i.lastmodifieddate >= '{ns_date}' "
-        "ORDER BY i.lastmodifieddate DESC"
+        "ORDER BY i.lastmodifieddate ASC"
+    )
+
+
+def sales_orders_updated_since(since_date: str) -> str:
+    """
+    SuiteQL query for Sales Order line items modified on or after a given date.
+
+    Joins transactionLine with transaction to get header-level fields.
+    Only returns lines with a PO vendor (custcol_po_vendor) assigned.
+
+    Args:
+        since_date: ISO date string, e.g. '2026-04-01'
+
+    Returns:
+        SuiteQL SELECT statement sorted ASC for resumability.
+    """
+    dt = datetime.strptime(since_date, "%Y-%m-%d")
+    ns_date = f"{dt.day}/{dt.month}/{dt.year}"
+
+    return (
+        "SELECT t.tranid, t.trandate, t.status, "
+        "BUILTIN.DF(t.currency) AS currency_name, "
+        "t.lastmodifieddate, "
+        "tl.item, BUILTIN.DF(tl.item) AS item_name, "
+        "tl.quantity, tl.rate, "
+        "tl.custcol_po_rate, tl.custcol_po_vendor, "
+        "BUILTIN.DF(tl.custcol_po_vendor) AS vendor_name, "
+        "tl.uniquekey "
+        "FROM transactionLine tl "
+        "INNER JOIN transaction t ON t.id = tl.transaction "
+        "WHERE t.type = 'SalesOrd' "
+        "AND tl.item IS NOT NULL "
+        "AND tl.mainline = 'F' "
+        "AND tl.taxline = 'F' "
+        "AND tl.custcol_po_vendor IS NOT NULL "
+        f"AND t.lastmodifieddate >= '{ns_date}' "
+        "ORDER BY t.lastmodifieddate ASC"
+    )
+
+
+def quotes_updated_since(since_date: str) -> str:
+    """
+    SuiteQL query for Quote (Estimate) line items modified on or after a given date.
+
+    Same structure as sales_orders_updated_since but for type = 'Estimate'.
+    Excludes status 'B' (Processed) and 'V' (Voided):
+      - Processed Quotes become Sales Orders so importing them would duplicate data.
+      - Voided Quotes do not represent useful data.
+
+    Args:
+        since_date: ISO date string, e.g. '2026-04-01'
+
+    Returns:
+        SuiteQL SELECT statement sorted ASC for resumability.
+    """
+    dt = datetime.strptime(since_date, "%Y-%m-%d")
+    ns_date = f"{dt.day}/{dt.month}/{dt.year}"
+
+    return (
+        "SELECT t.tranid, t.trandate, t.status, "
+        "BUILTIN.DF(t.currency) AS currency_name, "
+        "t.lastmodifieddate, "
+        "tl.item, BUILTIN.DF(tl.item) AS item_name, "
+        "tl.quantity, tl.rate, "
+        "tl.custcol_po_rate, tl.custcol_po_vendor, "
+        "BUILTIN.DF(tl.custcol_po_vendor) AS vendor_name, "
+        "tl.uniquekey "
+        "FROM transactionLine tl "
+        "INNER JOIN transaction t ON t.id = tl.transaction "
+        "WHERE t.type = 'Estimate' "
+        "AND tl.item IS NOT NULL "
+        "AND tl.mainline = 'F' "
+        "AND tl.taxline = 'F' "
+        "AND tl.custcol_po_vendor IS NOT NULL "
+        "AND t.status NOT IN ('V', 'B') "
+        f"AND t.lastmodifieddate >= '{ns_date}' "
+        "ORDER BY t.lastmodifieddate ASC"
     )

@@ -27,7 +27,7 @@ from sqlalchemy import func
 
 from config import config as app_config
 from includes.dashboard.database import get_session
-from includes.dashboard.models import Supplier, ProductSupplier
+from includes.dashboard.models import Supplier, Transaction
 from includes.supplier_categorization import (
     categorize_supplier,
     load_taxonomy,
@@ -49,9 +49,9 @@ def get_suppliers_to_categorize(force: bool = False, limit: int | None = None) -
     try:
         query = session.query(
             Supplier,
-            func.count(ProductSupplier.id).label("purchase_count"),
+            func.count(Transaction.id).label("purchase_count"),
         ).outerjoin(
-            ProductSupplier, ProductSupplier.supplier_id == Supplier.id
+            Transaction, Transaction.supplier_id == Supplier.id
         ).group_by(Supplier.id)
 
         if not force:
@@ -61,7 +61,7 @@ def get_suppliers_to_categorize(force: bool = False, limit: int | None = None) -
                 | ~Supplier.supply_chain_position.has_key("category")
             )
 
-        query = query.order_by(func.count(ProductSupplier.id).desc())
+        query = query.order_by(func.count(Transaction.id).desc())
 
         if limit:
             query = query.limit(limit)

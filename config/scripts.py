@@ -41,15 +41,21 @@ SCRIPT_REGISTRY: dict[str, dict] = {
     },
     "sync_netsuite_products": {
         "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_products"],
-        "description": "Sync products from NetSuite API (--since YYYY-MM-DD or Nd e.g. 7d; default: 30d)",
-        "args_allowed": ["--since", "--dry-run"],
+        "description": "Sync products from NetSuite API (--since YYYY-MM-DD/Nd, --resume to continue from last position)",
+        "args_allowed": ["--since", "--resume", "--dry-run"],
         "long_running": True,
     },
-    "import_purchase_history": {
-        "command": ["uv", "run", "python", "-m", "scripts.import_purchase_history"],
-        "description": "Import purchase history from CSV files",
-        "args_allowed": [],
-        "long_running": False,
+    "sync_netsuite_sales_orders": {
+        "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_sales_orders"],
+        "description": "Sync Sales Order lines from NetSuite API (--since YYYY-MM-DD/Nd, --resume to continue)",
+        "args_allowed": ["--since", "--resume", "--dry-run"],
+        "long_running": True,
+    },
+    "sync_netsuite_quotes": {
+        "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_quotes"],
+        "description": "Sync Quote lines from NetSuite API (--since YYYY-MM-DD/Nd, --resume to continue)",
+        "args_allowed": ["--since", "--resume", "--dry-run"],
+        "long_running": True,
     },
     "categorize_suppliers": {
         "command": ["uv", "run", "python", "-m", "scripts.categorize_suppliers_job"],
