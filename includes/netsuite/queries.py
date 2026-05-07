@@ -88,5 +88,5 @@ def products_updated_since(since_date: str) -> str:
         "WHERE i.itemtype = 'InvtPart' "
         "AND i.isinactive = 'F' "
         f"AND i.lastmodifieddate >= '{ns_date}' "
-        "ORDER BY i.lastmodifieddate DESC"
+        "ORDER BY i.lastmodifieddate ASC"
     )
