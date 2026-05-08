@@ -237,11 +237,10 @@ class TestDashboardHome:
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard.routes.get_session") as mock_gs, \
-             patch("includes.dashboard.routes._get_store", return_value=None):
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
-            # First call returns supplier count, second product count, third purchase count
-            session.query.return_value.scalar.side_effect = [42, 100, 55]
+            # supplier count, product count, purchase count, rfq count
+            session.query.return_value.scalar.side_effect = [42, 100, 55, 8]
             mock_gs.return_value = session
 
             resp = client.get("/")
@@ -254,8 +253,7 @@ class TestDashboardHome:
         mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
         _login(client)
 
-        with patch("includes.dashboard.routes.get_session") as mock_gs, \
-             patch("includes.dashboard.routes._get_store", return_value=None):
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
             session = MagicMock()
             session.query.return_value.scalar.return_value = 0
             mock_gs.return_value = session

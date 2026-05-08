@@ -1,7 +1,7 @@
 import uuid
-from sqlalchemy import Column, String, Text, Float, Date, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Text, Float, Date, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import declarative_base, relationship
 from pgvector.sqlalchemy import Vector
 
 Base = declarative_base()
@@ -107,3 +107,55 @@ class Transaction(Base):
 
 # Backwards-compatible alias
 ProductSupplier = Transaction
+
+
+class RFQ(Base):
+    __tablename__ = 'rfqs'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    rfq_number = Column(String, unique=True, nullable=False, index=True)
+    customer = Column(String, nullable=False)
+    customer_contact = Column(JSONB, nullable=True)           # {name, email, phone}
+    reference = Column(String, nullable=True)
+    netsuite_opportunity = Column(String, nullable=True)
+    hubspot_deal = Column(String, nullable=True)
+    created_by = Column(String, nullable=False)
+    created_date = Column(Date, nullable=False)
+    assigned_to = Column(String, nullable=True)
+    thread_id = Column(String, nullable=True)
+    status = Column(String, nullable=False, default='draft')  # draft/in_progress/awaiting_quotes/completed/cancelled
+    notes = Column(Text, nullable=True)
+    history = Column(JSONB, nullable=True)                    # [{date, user, action}, ...]
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+
+    items = relationship('RFQItem', back_populates='rfq', order_by='RFQItem.line',
+                         cascade='all, delete-orphan', lazy='selectin')
+
+    def __repr__(self):
+        return f"<RFQ(rfq_number='{self.rfq_number}', customer='{self.customer}')>"
+
+
+class RFQItem(Base):
+    __tablename__ = 'rfq_items'
+    __table_args__ = (
+        UniqueConstraint('rfq_id', 'line', name='uq_rfq_item_line'),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    rfq_id = Column(UUID(as_uuid=True), ForeignKey('rfqs.id'), nullable=False, index=True)
+    line = Column(Integer, nullable=False)
+    input_description = Column(Text, nullable=True)
+    input_code = Column(String, nullable=True)
+    part_number = Column(String, nullable=True)
+    brand = Column(String, nullable=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey('products.id'), nullable=True)
+    quantity = Column(Integer, nullable=True)
+    uom = Column(String, nullable=True, default='ea')
+    status = Column(String, nullable=True, default='unidentified')  # unidentified/identified/confirmed/review
+    notes = Column(Text, nullable=True)
+    suppliers = Column(JSONB, nullable=True)                  # [{name, supplier_id, price, ...}, ...]
+
+    rfq = relationship('RFQ', back_populates='items')
+
+    def __repr__(self):
+        return f"<RFQItem(rfq_id='{self.rfq_id}', line={self.line})>"

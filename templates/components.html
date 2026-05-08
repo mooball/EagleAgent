@@ -38,7 +38,8 @@
 
 {# ── Search Form ─────────────────────────────────────────────── #}
 {% macro search_form(action, placeholder="Search…", q="") %}
-<form hx-get="{{ action }}" hx-target="#main-content" hx-push-url="true"
+{% set push_url = action | replace("/partial", "", 1) %}
+<form hx-get="{{ action }}" hx-target="#main-content" hx-push-url="{{ push_url }}"
       class="flex items-center gap-2">
     <input type="text" name="q" value="{{ q }}"
            placeholder="{{ placeholder }}"

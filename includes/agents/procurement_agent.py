@@ -41,8 +41,7 @@ class ProcurementAgent(BaseSubAgent):
         so users can view/update existing RFQs).
         """
         tools = [search_products, search_brands, search_suppliers, part_purchase_history, search_purchase_history]
-        if self.store:
-            tools.extend(create_quote_tools(self.store, user_id))
+        tools.extend(create_quote_tools(user_id))
         return tools
     
     def get_system_prompt(self) -> str:

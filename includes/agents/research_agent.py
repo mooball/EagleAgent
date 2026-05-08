@@ -44,7 +44,7 @@ class ResearchAgent(BaseSubAgent):
         if user_id and self.store:
             tools.extend(create_profile_tools(self.store, user_id))
             if self.include_rfq_tools:
-                tools.extend(create_quote_tools(self.store, user_id))
+                tools.extend(create_quote_tools(user_id))
         return tools
 
     def get_native_tools(self) -> list:
