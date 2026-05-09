@@ -440,10 +440,10 @@
                                         {% endif %}
                                     </td>
                                     <td class="px-2 py-1.5 text-xs text-right font-semibold whitespace-nowrap" :class="supStatus === 'dropped' && 'opacity-50'">
-                                        {% set cp = s.cost_price if s.cost_price is defined else none %}
+                                        {% set cp_aud = s.cost_price_aud if s.cost_price_aud is defined and s.cost_price_aud is not none else (s.cost_price if s.cost_price is defined else none) %}
                                         {% set sp = s.sale_price if s.sale_price is defined else none %}
-                                        {% if cp is not none and sp is not none and sp | float > 0 %}
-                                        {% set margin = ((sp | float - cp | float) / (sp | float) * 100) | round(0) | int %}
+                                        {% if cp_aud is not none and sp is not none and sp | float > 0 %}
+                                        {% set margin = ((sp | float - cp_aud | float) / (sp | float) * 100) | round(0) | int %}
                                         <span class="{% if margin >= 30 %}text-emerald-600 dark:text-emerald-400{% elif margin >= 15 %}text-amber-600 dark:text-amber-400{% else %}text-red-600 dark:text-red-400{% endif %}">{{ margin }}%</span>
                                         {% else %}
                                         <span class="opacity-30">—</span>

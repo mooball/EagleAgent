@@ -259,6 +259,13 @@ def _enrich_supplier_pricing(suppliers: list[dict], product_id: str | None) -> N
                 sup["price_doc_type"] = latest.doc_type
                 if sup_currency and sup_currency != "AUD":
                     sup["cost_currency"] = sup_currency
+                    # Convert cost to AUD for margin calculation
+                    if latest.cost is not None:
+                        try:
+                            from includes.currency import convert_to_aud
+                            sup["cost_price_aud"] = round(convert_to_aud(float(latest.cost), sup_currency), 2)
+                        except Exception as exc:
+                            logger.warning(f"Currency conversion {sup_currency}→AUD failed: {exc}")
 
             # Count of SO + Quote transactions
             txn_count = (
@@ -384,7 +391,8 @@ def _render_rfq_summary(rfq: dict) -> str:
                                     pass
                             if cost_price and sale_price:
                                 try:
-                                    margin = (float(sale_price) - float(cost_price)) / float(sale_price) * 100
+                                    cost_for_margin = float(s.get("cost_price_aud") or cost_price)
+                                    margin = (float(sale_price) - cost_for_margin) / float(sale_price) * 100
                                     price_bits.append(f"{margin:.0f}%")
                                 except (ValueError, TypeError, ZeroDivisionError):
                                     pass
@@ -716,7 +724,8 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             if existing:
                 for key in ["supplier_id", "contacts", "price", "price_type",
                             "lead_time", "notes", "purchase_ref",
-                            "cost_price", "sale_price", "cost_currency",
+                            "cost_price", "cost_price_aud", "sale_price",
+                            "cost_currency",
                             "price_date", "price_doc", "price_doc_type",
                             "transaction_count"]:
                     val = sup.get(key)
@@ -738,6 +747,7 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                     "notes": sup.get("notes", ""),
                     "purchase_ref": sup.get("purchase_ref"),
                     "cost_price": sup.get("cost_price"),
+                    "cost_price_aud": sup.get("cost_price_aud"),
                     "sale_price": sup.get("sale_price"),
                     "cost_currency": sup.get("cost_currency"),
                     "price_date": sup.get("price_date"),
@@ -1037,8 +1047,9 @@ def create_quote_tools(user_id: str) -> list:
                           to add multiple at once.
                           contacts: list of dicts, each with any of: url
                           (website), email, phone, city, state, country.
-                          ALWAYS include contacts with at least a url when
-                          adding external suppliers found via web search.
+                          MANDATORY: you MUST include contacts with at least
+                          a url for every supplier. A supplier without
+                          contact details is useless — do not add one.
                           Supplier status values: candidate (default),
                           shortlisted, selected, dropped.
                           Price type values: estimated (price from web search),
