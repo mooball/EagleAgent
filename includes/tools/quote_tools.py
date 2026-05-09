@@ -217,7 +217,7 @@ def _enrich_supplier_pricing(suppliers: list[dict], product_id: str | None) -> N
     if not sids:
         return
 
-    from includes.dashboard.models import Transaction
+    from includes.dashboard.models import Transaction, Supplier
     session = _get_session()
     try:
         for sid_str, sup in sids.items():
@@ -225,6 +225,13 @@ def _enrich_supplier_pricing(suppliers: list[dict], product_id: str | None) -> N
                 sid = uuid.UUID(sid_str)
             except (ValueError, TypeError):
                 continue
+
+            # Look up supplier currency
+            sup_currency = (
+                session.query(Supplier.currency)
+                .filter(Supplier.id == sid)
+                .scalar()
+            )
 
             base_filter = and_(
                 Transaction.supplier_id == sid,
@@ -237,7 +244,6 @@ def _enrich_supplier_pricing(suppliers: list[dict], product_id: str | None) -> N
                 session.query(
                     Transaction.cost, Transaction.price,
                     Transaction.date, Transaction.doc_number, Transaction.doc_type,
-                    Transaction.cost_currency,
                 )
                 .filter(base_filter)
                 .order_by(desc(Transaction.date))
@@ -251,8 +257,8 @@ def _enrich_supplier_pricing(suppliers: list[dict], product_id: str | None) -> N
                 sup["price_date"] = latest.date.isoformat() if latest.date else None
                 sup["price_doc"] = latest.doc_number
                 sup["price_doc_type"] = latest.doc_type
-                if latest.cost_currency and latest.cost_currency != "AUD":
-                    sup["cost_currency"] = latest.cost_currency
+                if sup_currency and sup_currency != "AUD":
+                    sup["cost_currency"] = sup_currency
 
             # Count of SO + Quote transactions
             txn_count = (

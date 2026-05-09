@@ -1013,7 +1013,7 @@ def partial_transaction_list(request: Request, user: dict = Depends(require_user
     session = get_session()
     try:
         query = (
-            session.query(Transaction, Supplier.name, Product.part_number, Product.brand)
+            session.query(Transaction, Supplier.name, Supplier.currency, Product.part_number, Product.brand)
             .join(Supplier, Transaction.supplier_id == Supplier.id)
             .join(Product, Transaction.product_id == Product.id)
         )
@@ -1039,10 +1039,10 @@ def partial_transaction_list(request: Request, user: dict = Depends(require_user
         )
 
         transactions = []
-        for ps, sup_name, part_number, brand in rows:
+        for ps, sup_name, sup_currency, part_number, brand in rows:
             cost_display = None
             if ps.cost is not None:
-                currency = ps.cost_currency or "AUD"
+                currency = sup_currency or "AUD"
                 if currency == "AUD":
                     cost_display = f"${ps.cost:,.2f}"
                 else:
@@ -1085,7 +1085,7 @@ def partial_transaction_rows(request: Request, user: dict = Depends(require_user
     session = get_session()
     try:
         query = (
-            session.query(Transaction, Supplier.name, Product.part_number, Product.brand)
+            session.query(Transaction, Supplier.name, Supplier.currency, Product.part_number, Product.brand)
             .join(Supplier, Transaction.supplier_id == Supplier.id)
             .join(Product, Transaction.product_id == Product.id)
         )
@@ -1111,10 +1111,10 @@ def partial_transaction_rows(request: Request, user: dict = Depends(require_user
         )
 
         transactions = []
-        for ps, sup_name, part_number, brand in rows:
+        for ps, sup_name, sup_currency, part_number, brand in rows:
             cost_display = None
             if ps.cost is not None:
-                currency = ps.cost_currency or "AUD"
+                currency = sup_currency or "AUD"
                 if currency == "AUD":
                     cost_display = f"${ps.cost:,.2f}"
                 else:

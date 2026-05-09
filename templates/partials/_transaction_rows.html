@@ -14,8 +14,8 @@
     </td>
     <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ t.product_brand or '—' }}</td>
     <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ t.quantity if t.quantity is not none else '—' }}</td>
-    <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ t.price or '—' }}</td>
     <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ t.cost or '—' }}</td>
+    <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ t.price or '—' }}</td>
     <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ t.status or '—' }}</td>
 </tr>
 {% endfor %}
