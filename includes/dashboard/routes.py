@@ -1040,14 +1040,6 @@ def partial_transaction_list(request: Request, user: dict = Depends(require_user
 
         transactions = []
         for ps, sup_name, sup_currency, part_number, brand in rows:
-            cost_display = None
-            if ps.cost is not None:
-                currency = sup_currency or "AUD"
-                if currency == "AUD":
-                    cost_display = f"${ps.cost:,.2f}"
-                else:
-                    cost_display = f"${ps.cost:,.2f} {currency}"
-            price_display = f"${ps.price:,.2f}" if ps.price is not None else None
             transactions.append({
                 "id": str(ps.id),
                 "doc_number": ps.doc_number,
@@ -1058,8 +1050,9 @@ def partial_transaction_list(request: Request, user: dict = Depends(require_user
                 "product_brand": brand,
                 "product_id": str(ps.product_id),
                 "quantity": ps.quantity,
-                "price": price_display,
-                "cost": cost_display,
+                "price": ps.price,
+                "cost": ps.cost,
+                "cost_currency": sup_currency,
                 "status": get_status_label(ps.doc_type or "", ps.status or "") if ps.status else None,
             })
     finally:
@@ -1112,14 +1105,6 @@ def partial_transaction_rows(request: Request, user: dict = Depends(require_user
 
         transactions = []
         for ps, sup_name, sup_currency, part_number, brand in rows:
-            cost_display = None
-            if ps.cost is not None:
-                currency = sup_currency or "AUD"
-                if currency == "AUD":
-                    cost_display = f"${ps.cost:,.2f}"
-                else:
-                    cost_display = f"${ps.cost:,.2f} {currency}"
-            price_display = f"${ps.price:,.2f}" if ps.price is not None else None
             transactions.append({
                 "id": str(ps.id),
                 "doc_number": ps.doc_number,
@@ -1130,8 +1115,9 @@ def partial_transaction_rows(request: Request, user: dict = Depends(require_user
                 "product_brand": brand,
                 "product_id": str(ps.product_id),
                 "quantity": ps.quantity,
-                "price": price_display,
-                "cost": cost_display,
+                "price": ps.price,
+                "cost": ps.cost,
+                "cost_currency": sup_currency,
                 "status": get_status_label(ps.doc_type or "", ps.status or "") if ps.status else None,
             })
     finally:
