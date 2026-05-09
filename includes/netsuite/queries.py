@@ -35,7 +35,7 @@ def suppliers_updated_since(since_date: str) -> str:
         "LEFT JOIN vendorAddressbook vab ON vab.entity = v.id AND vab.defaultbilling = 'T' "
         "LEFT JOIN entityAddress a ON a.nkey = vab.addressbookaddress "
         f"WHERE v.lastmodifieddate >= '{ns_date}' "
-        "ORDER BY v.lastmodifieddate DESC"
+        "ORDER BY v.lastmodifieddate ASC"
     )
 
 

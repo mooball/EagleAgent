@@ -13,6 +13,7 @@ Usage:
   uv run python -m scripts.sync_netsuite_suppliers
   uv run python -m scripts.sync_netsuite_suppliers --since 2026-04-01
   uv run python -m scripts.sync_netsuite_suppliers --since "7 days"
+  uv run python -m scripts.sync_netsuite_suppliers --resume
   uv run python -m scripts.sync_netsuite_suppliers --dry-run
 """
 
@@ -167,13 +168,38 @@ def main():
     parser.add_argument(
         "--since",
         type=str,
-        default=(datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"),
+        default=None,
         help="Only sync vendors modified since this date (YYYY-MM-DD or 'N days'). Default: 30 days.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from last synced position (uses MAX netsuite_last_modified from DB).",
     )
     parser.add_argument("--dry-run", action="store_true", help="Fetch and display changes without writing to DB.")
     args = parser.parse_args()
 
-    since_date = parse_since(args.since)
+    # Determine the since_date
+    engine = get_engine()
+    ResumeSession = sessionmaker(bind=engine)
+
+    if args.resume:
+        with ResumeSession() as session:
+            from sqlalchemy import func
+            max_date = session.query(func.max(Supplier.netsuite_last_modified)).filter(
+                Supplier.netsuite_id.isnot(None)
+            ).scalar()
+        if max_date:
+            since_date = max_date.strftime("%Y-%m-%d")
+            print(f"Resuming from last synced date: {since_date}")
+        else:
+            since_date = "2014-01-01"
+            print("No existing synced suppliers found. Starting full sync from 2014-01-01.")
+    elif args.since:
+        since_date = parse_since(args.since)
+    else:
+        since_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
     batch_size = Config.NETSUITE_SYNC_BATCH_SIZE
 
     # Connect to NetSuite
@@ -197,7 +223,6 @@ def main():
 
     # Connect to database and sync using streaming pagination + batch commits
     print("Connecting to database...")
-    engine = get_engine()
     Session = sessionmaker(bind=engine)
 
     inserted = 0
