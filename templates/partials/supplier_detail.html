@@ -234,7 +234,7 @@
                             </td>
                             <td class="py-2 text-right">{{ p.quantity or '—' }}</td>
                             <td class="py-2 text-right">
-                                {% if p.cost is not none %}${{ '{:,.2f}'.format(p.cost) }}{% if p.cost_currency and p.cost_currency != 'AUD' %} <span class="text-[10px] opacity-60">{{ p.cost_currency }}</span>{% endif %}{% else %}—{% endif %}
+                                {% if p.cost is not none %}${{ '{:,.2f}'.format(p.cost) }}{% if supplier.currency and supplier.currency != 'AUD' %} <span class="text-[10px] opacity-60">{{ supplier.currency }}</span>{% endif %}{% else %}—{% endif %}
                             </td>
                             <td class="py-2 text-right">{{ '${:,.2f}'.format(p.price) if p.price else '—' }}</td>
                         </tr>
