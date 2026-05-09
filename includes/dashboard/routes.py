@@ -259,6 +259,8 @@ def supplier_detail(request: Request, supplier_id: str,
                 "product_id": str(prod.id),
                 "product_part": prod.part_number,
                 "quantity": ps.quantity,
+                "cost": ps.cost,
+                "cost_currency": ps.cost_currency,
                 "price": ps.price,
             })
     finally:
@@ -510,6 +512,8 @@ def partial_supplier_detail(request: Request, supplier_id: str,
                 "product_id": str(prod.id),
                 "product_part": prod.part_number,
                 "quantity": ps.quantity,
+                "cost": ps.cost,
+                "cost_currency": ps.cost_currency,
                 "price": ps.price,
             })
     finally:
@@ -588,6 +592,8 @@ def partial_supplier_update(request: Request, supplier_id: str,
                 "product_id": str(prod.id),
                 "product_part": prod.part_number,
                 "quantity": ps.quantity,
+                "cost": ps.cost,
+                "cost_currency": ps.cost_currency,
                 "price": ps.price,
             })
     finally:

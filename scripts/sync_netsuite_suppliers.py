@@ -123,6 +123,7 @@ def map_vendor_to_supplier(row: dict) -> dict:
         "country": row.get("country"),
         "notes": row.get("custentity_supplier_notes"),
         "terms": row.get("terms"),
+        "currency": row.get("currency"),
         "hubspot_id": row.get("custentity_ss_hubspot_id"),
         "contacts": build_contacts(row),
         "netsuite_last_modified": parse_netsuite_date(row.get("lastmodifieddate")),
@@ -132,7 +133,7 @@ def map_vendor_to_supplier(row: dict) -> dict:
 # Fields that NetSuite owns — these get overwritten on sync
 NETSUITE_OWNED_FIELDS = {
     "name", "url", "address_1", "address_2", "city", "state",
-    "postcode", "country", "notes", "terms", "hubspot_id",
+    "postcode", "country", "notes", "terms", "currency", "hubspot_id",
     "contacts", "netsuite_last_modified",
 }
 
