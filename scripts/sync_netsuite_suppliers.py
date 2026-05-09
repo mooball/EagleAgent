@@ -318,6 +318,8 @@ def main():
         total = session.query(Supplier).count()
         print(f"Total suppliers in database: {total}")
 
+    engine.dispose()
+
 
 if __name__ == "__main__":
     main()

@@ -276,6 +276,8 @@ def main():
         ).scalar()
         print(f"Total SalesOrder lines in database: {total}")
 
+    engine.dispose()
+
 
 if __name__ == "__main__":
     main()

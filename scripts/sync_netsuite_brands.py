@@ -185,6 +185,8 @@ def main():
         total = session.query(Brand).count()
         print(f"Total brands in database: {total}")
 
+    engine.dispose()
+
 
 if __name__ == "__main__":
     main()

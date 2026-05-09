@@ -274,6 +274,8 @@ def main():
         ).scalar()
         print(f"Total Quote lines in database: {total}")
 
+    engine.dispose()
+
 
 if __name__ == "__main__":
     main()
