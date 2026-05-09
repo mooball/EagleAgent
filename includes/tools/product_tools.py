@@ -837,7 +837,8 @@ def _find_product_by_supplier_code(supplier_code: str, brand: str = None) -> Opt
 def _find_purchase_history_for_part(part_number: str, limit: int = 20) -> list[dict]:
     """Return structured purchase history per supplier for a part number.
 
-    Each dict: supplier_id, supplier_name, contacts, price, date, doc_number, order_count, total_qty
+    Each dict: supplier_id, supplier_name, contacts, cost, price, margin,
+    date, doc_number, order_count, total_qty
     """
     from sqlalchemy import func, desc, and_
 
@@ -871,9 +872,35 @@ def _find_purchase_history_for_part(part_number: str, limit: int = 20) -> list[d
 
         out = []
         for row in results:
-            # Get latest price and doc_number
-            latest = (
-                session.query(Transaction.price, Transaction.doc_number)
+            # Get latest PO cost
+            latest_po = (
+                session.query(Transaction.cost, Transaction.price, Transaction.doc_number, Transaction.date)
+                .filter(
+                    and_(
+                        Transaction.supplier_id == row.supplier_id,
+                        Transaction.product_id.in_(product_ids),
+                        Transaction.doc_type == "PurchaseOrder",
+                    )
+                )
+                .order_by(Transaction.date.desc().nulls_last())
+                .first()
+            )
+            # Get latest SO sale price
+            latest_so = (
+                session.query(Transaction.price, Transaction.doc_number, Transaction.date)
+                .filter(
+                    and_(
+                        Transaction.supplier_id == row.supplier_id,
+                        Transaction.product_id.in_(product_ids),
+                        Transaction.doc_type == "SalesOrder",
+                    )
+                )
+                .order_by(Transaction.date.desc().nulls_last())
+                .first()
+            )
+            # Fall back to any latest transaction for basic price
+            latest_any = (
+                session.query(Transaction.price, Transaction.cost, Transaction.doc_number)
                 .filter(
                     and_(
                         Transaction.supplier_id == row.supplier_id,
@@ -883,16 +910,35 @@ def _find_purchase_history_for_part(part_number: str, limit: int = 20) -> list[d
                 .order_by(Transaction.date.desc().nulls_last())
                 .first()
             )
+
             contacts = []
             if row.supplier_contacts and isinstance(row.supplier_contacts, list):
                 contacts = row.supplier_contacts
+
+            # Determine cost (prefer PO cost field, fall back to PO price)
+            cost = None
+            if latest_po:
+                cost = latest_po.cost if latest_po.cost is not None else latest_po.price
+
+            # Determine sale price (from SO)
+            sale_price = latest_so.price if latest_so else None
+
+            # Fall back price from any transaction
+            price = latest_any[0] if latest_any else None
+
+            # Calculate margin if both cost and sale are available
+            margin = None
+            if cost and sale_price and sale_price > 0:
+                margin = round((sale_price - cost) / sale_price * 100, 1)
 
             out.append({
                 "supplier_id": str(row.supplier_id),
                 "name": row.supplier_name,
                 "contacts": contacts,
-                "price": latest[0] if latest else None,
-                "doc_number": latest[1] if latest else None,
+                "cost": cost,
+                "price": sale_price or price,
+                "margin": margin,
+                "doc_number": latest_po.doc_number if latest_po else (latest_any[2] if latest_any else None),
                 "date": row.most_recent_date.isoformat() if row.most_recent_date else None,
                 "order_count": row.order_count,
                 "total_quantity": float(row.total_quantity) if row.total_quantity else 0,

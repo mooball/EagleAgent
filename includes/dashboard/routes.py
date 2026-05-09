@@ -143,14 +143,13 @@ async def dashboard_home(request: Request, user: dict = Depends(require_user)):
     finally:
         session.close()
 
-    # RFQ count from async store
-    store = _get_store()
-    if store:
-        from includes.tools.quote_tools import NAMESPACE
-        items = await store.asearch(NAMESPACE, limit=1000)
-        stats["rfqs"] = len(items)
-    else:
-        stats["rfqs"] = 0
+    # RFQ count from SQL
+    from includes.dashboard.models import RFQ as RFQModel
+    rfq_session = get_session()
+    try:
+        stats["rfqs"] = rfq_session.query(func.count(RFQModel.id)).scalar()
+    finally:
+        rfq_session.close()
 
     return templates.TemplateResponse("home.html", {
         "request": request,
@@ -1145,25 +1144,28 @@ RFQ_PAGE_SIZE = 25
 
 
 async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: str = ""):
-    """Fetch RFQs from LangGraph store with optional text search and pagination.
+    """Fetch RFQs from SQL with optional text search and pagination.
 
     Returns (rfqs_page, total, has_more, next_page).
     """
-    store = _get_store()
-    rfqs = []
-    if store:
-        from includes.tools.quote_tools import NAMESPACE
-        items = await store.asearch(NAMESPACE, limit=1000)
-        for item in items:
-            rfqs.append(item.value)
-        rfqs.sort(key=lambda r: r.get("created_date", ""), reverse=True)
+    from includes.tools.quote_tools import _list_rfqs_sync, _rfq_to_dict
 
-    # Filter to current user's RFQs if requested
-    if mine == "1" and user_email:
-        email_lower = user_email.lower()
-        rfqs = [r for r in rfqs if (r.get("assigned_to") or "").lower() == email_lower]
+    def _query():
+        from includes.dashboard.models import RFQ
+        session = get_session()
+        try:
+            query = session.query(RFQ)
+            if mine == "1" and user_email:
+                query = query.filter(RFQ.assigned_to.ilike(user_email))
+            query = query.order_by(RFQ.created_date.desc())
+            return [_rfq_to_dict(r) for r in query.limit(1000).all()]
+        finally:
+            session.close()
 
-    # Client-side text filter (LangGraph store has no full-text search)
+    import asyncio
+    rfqs = await asyncio.to_thread(_query)
+
+    # Text filter
     if q:
         q_lower = q.lower()
         filtered = []
@@ -1175,10 +1177,9 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
                 r.get("assigned_to", ""),
                 r.get("status", ""),
             ])).lower()
-            # Also search item descriptions
             for item in r.get("items", []):
                 searchable += " " + " ".join(filter(None, [
-                    item.get("description", ""),
+                    item.get("input_description", ""),
                     item.get("part_number", ""),
                     item.get("brand", ""),
                 ])).lower()
@@ -1218,17 +1219,15 @@ async def rfq_list(request: Request, user: dict = Depends(require_user),
 @router.get("/rfqs/{rfq_id}")
 async def rfq_detail(request: Request, rfq_id: str,
                      user: dict = Depends(require_user)):
-    store = _get_store()
-    if not store:
+    import asyncio
+    from includes.tools.quote_tools import _get_rfq_dict_sync
+    rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+    if not rfq:
         return RedirectResponse("/rfqs")
-    from includes.tools.quote_tools import NAMESPACE
-    item = await store.aget(NAMESPACE, rfq_id)
-    if not item:
-        return RedirectResponse("/rfqs")
-    _enrich_rfq_supplier_contacts(item.value)
+    _enrich_rfq_supplier_contacts(rfq)
 
     ctx = {
-        "rfq": item.value,
+        "rfq": rfq,
         "active_nav": "rfqs",
     }
     return _render(request, "rfq_detail.html", "partials/rfq_detail.html", ctx, user)
@@ -1270,22 +1269,109 @@ async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
     })
 
 
+@router.get("/partial/rfqs/price-history")
+async def partial_rfq_price_history(
+    request: Request,
+    product_id: str = "",
+    supplier_id: str = "",
+    user: dict = Depends(require_user),
+):
+    """Return HTML fragment with last 5 transactions for a product+supplier pair."""
+    import asyncio
+
+    def _fetch_history():
+        import uuid
+        from sqlalchemy import and_, desc
+        from includes.dashboard.models import Transaction
+        from includes.dashboard.database import get_session
+
+        try:
+            pid = uuid.UUID(product_id)
+            sid = uuid.UUID(supplier_id)
+        except (ValueError, TypeError):
+            return []
+
+        session = get_session()
+        try:
+            rows = (
+                session.query(
+                    Transaction.date,
+                    Transaction.doc_type,
+                    Transaction.doc_number,
+                    Transaction.quantity,
+                    Transaction.cost,
+                    Transaction.price,
+                )
+                .filter(and_(
+                    Transaction.product_id == pid,
+                    Transaction.supplier_id == sid,
+                ))
+                .order_by(desc(Transaction.date))
+                .limit(5)
+                .all()
+            )
+            return [
+                {
+                    "date": r.date.isoformat() if r.date else "—",
+                    "doc_type": r.doc_type or "—",
+                    "doc_number": r.doc_number or "—",
+                    "quantity": r.quantity,
+                    "cost": r.cost,
+                    "price": r.price,
+                }
+                for r in rows
+            ]
+        finally:
+            session.close()
+
+    rows = await asyncio.to_thread(_fetch_history)
+    if not rows:
+        return HTMLResponse('<span class="text-gray-400">No transaction history found.</span>')
+
+    html_parts = [
+        '<table class="w-full text-xs">',
+        '<thead><tr class="border-b border-gray-200 dark:border-gray-700 text-gray-500">',
+        '<th class="text-left py-1 pr-2">Date</th>',
+        '<th class="text-left py-1 pr-2">Type</th>',
+        '<th class="text-left py-1 pr-2">Doc #</th>',
+        '<th class="text-right py-1 pr-2">Qty</th>',
+        '<th class="text-right py-1 pr-2">Cost</th>',
+        '<th class="text-right py-1">Sale</th>',
+        '</tr></thead><tbody>',
+    ]
+    for r in rows:
+        doc_label = {"PurchaseOrder": "PO", "SalesOrder": "SO", "Quote": "Qt"}.get(r["doc_type"], r["doc_type"])
+        cost_str = f'${r["cost"]:.2f}' if r["cost"] is not None else "—"
+        price_str = f'${r["price"]:.2f}' if r["price"] is not None else "—"
+        qty_str = f'{r["quantity"]:.0f}' if r["quantity"] is not None else "—"
+        html_parts.append(
+            f'<tr class="border-b border-gray-100 dark:border-gray-700/50 whitespace-nowrap">'
+            f'<td class="py-1 pr-3 text-gray-600 dark:text-gray-400">{r["date"]}</td>'
+            f'<td class="py-1 pr-3"><span class="px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-[10px]">{doc_label}</span></td>'
+            f'<td class="py-1 pr-3 font-mono text-gray-600 dark:text-gray-400">{r["doc_number"]}</td>'
+            f'<td class="py-1 pr-3 text-right">{qty_str}</td>'
+            f'<td class="py-1 pr-3 text-right font-medium">{cost_str}</td>'
+            f'<td class="py-1 text-right font-medium">{price_str}</td>'
+            f'</tr>'
+        )
+    html_parts.append('</tbody></table>')
+    return HTMLResponse("".join(html_parts))
+
+
 @router.get("/partial/rfqs/{rfq_id}")
 async def partial_rfq_detail(request: Request, rfq_id: str,
                              user: dict = Depends(require_user)):
-    store = _get_store()
-    if not store:
-        return HTMLResponse("<p>Store not available.</p>")
-    from includes.tools.quote_tools import NAMESPACE
-    item = await store.aget(NAMESPACE, rfq_id)
-    if not item:
+    import asyncio
+    from includes.tools.quote_tools import _get_rfq_dict_sync
+    rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+    if not rfq:
         return HTMLResponse("<p>RFQ not found.</p>")
-    _enrich_rfq_supplier_contacts(item.value)
+    _enrich_rfq_supplier_contacts(rfq)
 
     return templates.TemplateResponse("partials/rfq_detail.html", {
         "request": request,
         "user": user,
-        "rfq": item.value,
+        "rfq": rfq,
     })
 
 
@@ -1293,32 +1379,28 @@ async def partial_rfq_detail(request: Request, rfq_id: str,
 async def partial_rfq_update(request: Request, rfq_id: str,
                              user: dict = Depends(require_user)):
     """Update RFQ header properties (customer, netsuite, hubspot, notes)."""
-    store = _get_store()
-    if not store:
-        return HTMLResponse("<p>Store not available.</p>", status_code=500)
-    from includes.tools.quote_tools import NAMESPACE
-    item = await store.aget(NAMESPACE, rfq_id)
-    if not item:
-        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
-
     form = await request.form()
-    rfq = item.value
+    data = {}
     updatable = ["customer", "reference", "notes", "netsuite_opportunity", "hubspot_deal"]
-    changes = []
     for key in updatable:
         val = form.get(key)
         if val is not None:
-            rfq[key] = val.strip() if val.strip() else None
-            changes.append(key)
+            data[key] = val.strip() if val.strip() else None
 
-    if changes:
-        from datetime import datetime, timezone
-        rfq.setdefault("history", []).append({
-            "date": datetime.now(timezone.utc).isoformat(),
-            "user": user.get("identifier", "dashboard"),
-            "action": f"Updated: {', '.join(changes)}",
-        })
-        await store.aput(NAMESPACE, rfq_id, rfq)
+    if data:
+        import asyncio
+        from includes.tools.quote_tools import _update_rfq_sync
+        user_ident = user.get("identifier", "dashboard")
+        result = await asyncio.to_thread(_update_rfq_sync, rfq_id, data, user_ident)
+        if isinstance(result, str):
+            return HTMLResponse(f"<p>{result}</p>", status_code=404)
+        rfq = result
+    else:
+        import asyncio
+        from includes.tools.quote_tools import _get_rfq_dict_sync
+        rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+        if not rfq:
+            return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
 
     _enrich_rfq_supplier_contacts(rfq)
     return templates.TemplateResponse("partials/rfq_detail.html", {
@@ -1330,27 +1412,14 @@ async def partial_rfq_update(request: Request, rfq_id: str,
 async def partial_rfq_update_item(request: Request, rfq_id: str,
                                   user: dict = Depends(require_user)):
     """Update a single RFQ line item."""
-    store = _get_store()
-    if not store:
-        return HTMLResponse("<p>Store not available.</p>", status_code=500)
-    from includes.tools.quote_tools import NAMESPACE
-    item = await store.aget(NAMESPACE, rfq_id)
-    if not item:
-        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
-
     form = await request.form()
-    rfq = item.value
     try:
         line_num = int(form.get("line", 0))
     except (TypeError, ValueError):
         return HTMLResponse("<p>Invalid line number.</p>", status_code=400)
 
-    line_item = next((i for i in rfq.get("items", []) if i["line"] == line_num), None)
-    if not line_item:
-        return HTMLResponse(f"<p>Line {line_num} not found.</p>", status_code=404)
-
+    data = {"line": line_num}
     updatable = ["input_description", "part_number", "brand", "quantity", "uom"]
-    changes = []
     for key in updatable:
         val = form.get(key)
         if val is not None:
@@ -1359,19 +1428,16 @@ async def partial_rfq_update_item(request: Request, rfq_id: str,
                 try:
                     val = int(val) if val else None
                 except ValueError:
-                    val = line_item.get("quantity")
-            line_item[key] = val if val else None
-            changes.append(key)
+                    val = None
+            data[key] = val if val else None
 
-    if changes:
-        from datetime import datetime, timezone
-        rfq.setdefault("history", []).append({
-            "date": datetime.now(timezone.utc).isoformat(),
-            "user": user.get("identifier", "dashboard"),
-            "action": f"Updated line {line_num}: {', '.join(changes)}",
-        })
-        await store.aput(NAMESPACE, rfq_id, rfq)
-
+    import asyncio
+    from includes.tools.quote_tools import _update_item_sync
+    user_ident = user.get("identifier", "dashboard")
+    result = await asyncio.to_thread(_update_item_sync, rfq_id, data, user_ident)
+    if isinstance(result, str):
+        return HTMLResponse(f"<p>{result}</p>", status_code=404)
+    rfq = result
     _enrich_rfq_supplier_contacts(rfq)
     return templates.TemplateResponse("partials/rfq_detail.html", {
         "request": request, "user": user, "rfq": rfq,
@@ -1382,18 +1448,7 @@ async def partial_rfq_update_item(request: Request, rfq_id: str,
 async def partial_rfq_add_item(request: Request, rfq_id: str,
                                user: dict = Depends(require_user)):
     """Add a new line item to the RFQ."""
-    store = _get_store()
-    if not store:
-        return HTMLResponse("<p>Store not available.</p>", status_code=500)
-    from includes.tools.quote_tools import NAMESPACE
-    item = await store.aget(NAMESPACE, rfq_id)
-    if not item:
-        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
-
     form = await request.form()
-    rfq = item.value
-    items = rfq.get("items", [])
-    next_line = max((i["line"] for i in items), default=0) + 1
 
     qty = form.get("quantity", "").strip()
     try:
@@ -1401,29 +1456,57 @@ async def partial_rfq_add_item(request: Request, rfq_id: str,
     except ValueError:
         qty = None
 
-    new_item = {
-        "line": next_line,
-        "input_description": (form.get("input_description") or "").strip(),
-        "input_code": "",
-        "part_number": (form.get("part_number") or "").strip() or None,
-        "brand": (form.get("brand") or "").strip() or None,
-        "product_id": None,
-        "quantity": qty,
-        "uom": (form.get("uom") or "").strip() or "ea",
-        "status": "unidentified",
-        "suppliers": [],
-    }
-    items.append(new_item)
-    rfq["items"] = items
+    def _add_item():
+        from includes.dashboard.models import RFQ, RFQItem
+        from includes.tools.quote_tools import _rfq_to_dict, _now_dt
+        from sqlalchemy import func as sa_func
+        session = get_session()
+        try:
+            rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+            if not rfq:
+                return None
+            max_line = session.query(sa_func.max(RFQItem.line)).filter(
+                RFQItem.rfq_id == rfq.id
+            ).scalar() or 0
+            next_line = max_line + 1
 
-    from datetime import datetime, timezone
-    rfq.setdefault("history", []).append({
-        "date": datetime.now(timezone.utc).isoformat(),
-        "user": user.get("identifier", "dashboard"),
-        "action": f"Added line {next_line}: {new_item['input_description'] or new_item['part_number'] or 'new item'}",
-    })
-    await store.aput(NAMESPACE, rfq_id, rfq)
+            new_item = RFQItem(
+                rfq_id=rfq.id,
+                line=next_line,
+                input_description=(form.get("input_description") or "").strip(),
+                input_code="",
+                part_number=(form.get("part_number") or "").strip() or None,
+                brand=(form.get("brand") or "").strip() or None,
+                quantity=qty,
+                uom=(form.get("uom") or "").strip() or "ea",
+                status="unidentified",
+                suppliers=[],
+            )
+            session.add(new_item)
 
+            from datetime import datetime, timezone
+            history = list(rfq.history or [])
+            desc = new_item.input_description or new_item.part_number or "new item"
+            history.append({
+                "date": datetime.now(timezone.utc).isoformat(),
+                "user": user.get("identifier", "dashboard"),
+                "action": f"Added line {next_line}: {desc}",
+            })
+            rfq.history = history
+            rfq.updated_at = _now_dt()
+            session.commit()
+            session.refresh(rfq)
+            return _rfq_to_dict(rfq)
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    import asyncio
+    rfq = await asyncio.to_thread(_add_item)
+    if not rfq:
+        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
     _enrich_rfq_supplier_contacts(rfq)
     return templates.TemplateResponse("partials/rfq_detail.html", {
         "request": request, "user": user, "rfq": rfq,
@@ -1435,31 +1518,18 @@ async def partial_rfq_clear_suppliers(request: Request, rfq_id: str,
                                      line: int = 0,
                                      user: dict = Depends(require_user)):
     """Remove all suppliers from a specific line item."""
-    store = _get_store()
-    if not store:
-        return HTMLResponse("<p>Store not available.</p>", status_code=500)
-    from includes.tools.quote_tools import NAMESPACE
-    item = await store.aget(NAMESPACE, rfq_id)
-    if not item:
-        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
-
-    rfq = item.value
-    line_item = next((i for i in rfq.get("items", []) if i["line"] == line), None)
-    if not line_item:
-        return HTMLResponse(f"<p>Line {line} not found.</p>", status_code=404)
-
-    count = len(line_item.get("suppliers", []))
-    line_item["suppliers"] = []
-
-    if count:
-        from datetime import datetime, timezone
-        rfq.setdefault("history", []).append({
-            "date": datetime.now(timezone.utc).isoformat(),
-            "user": user.get("identifier", "dashboard"),
-            "action": f"Cleared {count} suppliers from line {line}",
-        })
-        await store.aput(NAMESPACE, rfq_id, rfq)
-
+    import asyncio
+    from includes.tools.quote_tools import _clear_suppliers_sync
+    user_ident = user.get("identifier", "dashboard")
+    result = await asyncio.to_thread(_clear_suppliers_sync, rfq_id, {"line": line}, user_ident)
+    if isinstance(result, str):
+        # Not-found or nothing-to-clear — still re-render with current data
+        from includes.tools.quote_tools import _get_rfq_dict_sync
+        rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+        if not rfq:
+            return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+    else:
+        rfq = result
     _enrich_rfq_supplier_contacts(rfq)
     return templates.TemplateResponse("partials/rfq_detail.html", {
         "request": request, "user": user, "rfq": rfq,
@@ -1472,17 +1542,7 @@ async def partial_rfq_update_supplier_status(
     user: dict = Depends(require_user),
 ):
     """Update a single supplier's status directly (shortlisted / selected / dropped)."""
-    store = _get_store()
-    if not store:
-        return HTMLResponse("<p>Store not available.</p>", status_code=500)
-    from includes.tools.quote_tools import NAMESPACE
-
-    item = await store.aget(NAMESPACE, rfq_id)
-    if not item:
-        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
-
     form = await request.form()
-    rfq = item.value
     try:
         line_num = int(form.get("line", 0))
     except (TypeError, ValueError):
@@ -1493,33 +1553,15 @@ async def partial_rfq_update_supplier_status(
     if not supplier_name or new_status not in ("shortlisted", "selected", "dropped"):
         return HTMLResponse("<p>Invalid parameters.</p>", status_code=400)
 
-    line_item = next((i for i in rfq.get("items", []) if i["line"] == line_num), None)
-    if not line_item:
-        return HTMLResponse(f"<p>Line {line_num} not found.</p>", status_code=404)
-
-    supplier = next(
-        (s for s in line_item.get("suppliers", [])
-         if isinstance(s, dict) and s.get("name") == supplier_name),
-        None,
-    )
-    if not supplier:
-        return HTMLResponse(f"<p>Supplier not found.</p>", status_code=404)
-
+    import asyncio
+    from includes.tools.quote_tools import _update_supplier_sync
     from starlette.responses import Response
 
-    old_status = supplier.get("status", "candidate")
-    if old_status == new_status:
-        return Response(status_code=204)
-
-    supplier["status"] = new_status
-
-    from datetime import datetime, timezone
-    rfq.setdefault("history", []).append({
-        "date": datetime.now(timezone.utc).isoformat(),
-        "user": user.get("identifier", "dashboard"),
-        "action": f"Changed supplier '{supplier_name}' on line {line_num} from {old_status} to {new_status}",
-    })
-    await store.aput(NAMESPACE, rfq_id, rfq)
+    user_ident = user.get("identifier", "dashboard")
+    data = {"line": line_num, "name": supplier_name, "status": new_status}
+    result = await asyncio.to_thread(_update_supplier_sync, rfq_id, data, user_ident)
+    if isinstance(result, str) and "not found" in result.lower():
+        return HTMLResponse(f"<p>{result}</p>", status_code=404)
 
     return Response(status_code=204)
 
