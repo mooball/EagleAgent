@@ -65,6 +65,10 @@
                     <dt class="text-gray-500 dark:text-gray-400">Terms</dt>
                     <dd>{{ supplier.terms }}</dd>
                     {% endif %}
+                    {% if supplier.currency and supplier.currency != 'AUD' %}
+                    <dt class="text-gray-500 dark:text-gray-400">Currency</dt>
+                    <dd><span class="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">{{ supplier.currency }}</span></dd>
+                    {% endif %}
                     <dt class="text-gray-500 dark:text-gray-400">Supply Chain Position</dt>
                     <dd>
                         {% if supplier.supply_chain_position %}
@@ -211,6 +215,7 @@
                             <th class="text-left py-2 font-medium text-gray-500 dark:text-gray-400">Date</th>
                             <th class="text-left py-2 font-medium text-gray-500 dark:text-gray-400">Product</th>
                             <th class="text-right py-2 font-medium text-gray-500 dark:text-gray-400">Qty</th>
+                            <th class="text-right py-2 font-medium text-gray-500 dark:text-gray-400">Cost</th>
                             <th class="text-right py-2 font-medium text-gray-500 dark:text-gray-400">Price</th>
                         </tr>
                     </thead>
@@ -228,6 +233,9 @@
                                 {% endif %}
                             </td>
                             <td class="py-2 text-right">{{ p.quantity or '—' }}</td>
+                            <td class="py-2 text-right">
+                                {% if p.cost is not none %}${{ '{:,.2f}'.format(p.cost) }}{% if p.cost_currency and p.cost_currency != 'AUD' %} <span class="text-[10px] opacity-60">{{ p.cost_currency }}</span>{% endif %}{% else %}—{% endif %}
+                            </td>
                             <td class="py-2 text-right">{{ '${:,.2f}'.format(p.price) if p.price else '—' }}</td>
                         </tr>
                         {% endfor %}

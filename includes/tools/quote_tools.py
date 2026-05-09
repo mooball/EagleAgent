@@ -237,6 +237,7 @@ def _enrich_supplier_pricing(suppliers: list[dict], product_id: str | None) -> N
                 session.query(
                     Transaction.cost, Transaction.price,
                     Transaction.date, Transaction.doc_number, Transaction.doc_type,
+                    Transaction.cost_currency,
                 )
                 .filter(base_filter)
                 .order_by(desc(Transaction.date))
@@ -250,6 +251,8 @@ def _enrich_supplier_pricing(suppliers: list[dict], product_id: str | None) -> N
                 sup["price_date"] = latest.date.isoformat() if latest.date else None
                 sup["price_doc"] = latest.doc_number
                 sup["price_doc_type"] = latest.doc_type
+                if latest.cost_currency and latest.cost_currency != "AUD":
+                    sup["cost_currency"] = latest.cost_currency
 
             # Count of SO + Quote transactions
             txn_count = (
@@ -707,7 +710,7 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             if existing:
                 for key in ["supplier_id", "contacts", "price", "price_type",
                             "lead_time", "notes", "purchase_ref",
-                            "cost_price", "sale_price",
+                            "cost_price", "sale_price", "cost_currency",
                             "price_date", "price_doc", "price_doc_type",
                             "transaction_count"]:
                     val = sup.get(key)
@@ -730,6 +733,7 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                     "purchase_ref": sup.get("purchase_ref"),
                     "cost_price": sup.get("cost_price"),
                     "sale_price": sup.get("sale_price"),
+                    "cost_currency": sup.get("cost_currency"),
                     "price_date": sup.get("price_date"),
                     "price_doc": sup.get("price_doc"),
                     "price_doc_type": sup.get("price_doc_type"),

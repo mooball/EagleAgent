@@ -408,6 +408,7 @@
                                         {% endif %}
                                         {% if s.cost_price is defined and s.cost_price is not none %}
                                         ${{ "%.2f" | format(s.cost_price | float) }}
+                                        {% if s.cost_currency %}<span class="text-[10px] opacity-60 ml-0.5">{{ s.cost_currency }}</span>{% endif %}
                                         {% if s.price_doc_type %}
                                         <span class="text-[10px] opacity-40 ml-0.5">{% if s.price_doc_type == 'SalesOrder' %}SO{% elif s.price_doc_type == 'Quote' %}Qt{% endif %}</span>
                                         {% endif %}

@@ -26,6 +26,7 @@ def suppliers_updated_since(since_date: str) -> str:
         "SELECT v.id, v.entityid, v.companyname, v.email, v.phone, v.url, "
         "v.custentity_supplier_notes, v.custentity_supplier_brand, "
         "v.custentity_ss_hubspot_id, BUILTIN.DF(v.terms) AS terms, "
+        "BUILTIN.DF(v.currency) AS currency, "
         "v.custentity_go_souce_email_address, v.custentity_go_souce_email_name, "
         "v.custentity_go_souce_cc_email_addresses, "
         "a.addr1, a.addr2, a.city, a.state, a.zip, a.country, "

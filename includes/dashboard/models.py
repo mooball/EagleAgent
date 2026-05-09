@@ -25,6 +25,7 @@ class Supplier(Base):
     comments = Column(JSONB, nullable=True)                    # [{author, comment, ts}]
     supply_chain_position = Column(JSONB, nullable=True)       # {category, tier, confidence, reasoning}
     terms = Column(String, nullable=True)                      # e.g. "30 days", "COD"
+    currency = Column(String, nullable=True)                    # e.g. "AUD", "USD", "EUR"
     netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
     modified_at = Column(DateTime(timezone=True), nullable=True)
     modified_by = Column(String, nullable=True)                # "user:tom", "netsuite", "ai:categorizer"
