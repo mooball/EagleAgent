@@ -36,8 +36,8 @@ STEPS = [
     {
         "name": "suppliers",
         "module": "scripts.sync_netsuite_suppliers",
-        "args": ["--since", "2 days"],  # no --resume available
-        "description": "Sync suppliers (last 2 days)",
+        "args": ["--resume"],
+        "description": "Sync suppliers (resume from last sync)",
     },
     {
         "name": "sales_orders",
