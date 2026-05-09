@@ -544,19 +544,7 @@ class TestPricingEnrichment:
         db_session.add_all([product, supplier])
         db_session.flush()
 
-        # PurchaseOrder — cost=50.00, price=120.00 (sell rate)
-        po = Transaction(
-            id=uuid.uuid4(),
-            doc_number="PO-TEST-001",
-            doc_type="PurchaseOrder",
-            product_id=product.id,
-            supplier_id=supplier.id,
-            quantity=10,
-            price=120.00,
-            cost=50.00,
-            date=datetime.date(2025, 3, 15),
-        )
-        # SalesOrder — price=150.00 (sell rate)
+        # SalesOrder — most recent, cost=64.81, price=87.49
         so = Transaction(
             id=uuid.uuid4(),
             doc_number="SO-TEST-001",
@@ -564,10 +552,11 @@ class TestPricingEnrichment:
             product_id=product.id,
             supplier_id=supplier.id,
             quantity=5,
-            price=150.00,
+            price=87.49,
+            cost=64.81,
             date=datetime.date(2025, 4, 10),
         )
-        # Quote with cost
+        # Quote — older, cost=55.00, price=140.00
         qt = Transaction(
             id=uuid.uuid4(),
             doc_number="QT-TEST-001",
@@ -577,52 +566,62 @@ class TestPricingEnrichment:
             quantity=20,
             price=140.00,
             cost=55.00,
-            date=datetime.date(2025, 5, 1),
+            date=datetime.date(2025, 3, 1),
         )
-        # Older PO (should NOT be used — we want most recent)
-        po_old = Transaction(
-            id=uuid.uuid4(),
-            doc_number="PO-TEST-OLD",
-            doc_type="PurchaseOrder",
-            product_id=product.id,
-            supplier_id=supplier.id,
-            quantity=3,
-            price=100.00,
-            cost=40.00,
-            date=datetime.date(2024, 1, 1),
-        )
-        db_session.add_all([po, so, qt, po_old])
+        db_session.add_all([so, qt])
         db_session.flush()
 
         return {"product": product, "supplier": supplier}
 
-    def test_enrich_adds_cost_from_po(self, db_session, pricing_data):
+    def test_enrich_uses_most_recent_transaction(self, db_session, pricing_data):
+        """Should use the most recent SO or Quote for both cost and sale."""
         suppliers = [{"supplier_id": str(pricing_data["supplier"].id), "name": "Test Pricing Supplier"}]
         with patch("includes.tools.quote_tools._get_session", return_value=db_session):
             _enrich_supplier_pricing(suppliers, str(pricing_data["product"].id))
-        assert suppliers[0]["cost_price"] == 50.00
-        assert suppliers[0]["cost_doc"] == "PO-TEST-001"
-        assert suppliers[0]["cost_date"] == "2025-03-15"
+        # SO is most recent (2025-04-10 vs 2025-03-01)
+        assert suppliers[0]["cost_price"] == 64.81
+        assert suppliers[0]["sale_price"] == 87.49
+        assert suppliers[0]["price_doc"] == "SO-TEST-001"
+        assert suppliers[0]["price_doc_type"] == "SalesOrder"
+        assert suppliers[0]["price_date"] == "2025-04-10"
 
-    def test_enrich_adds_sale_from_so(self, db_session, pricing_data):
-        suppliers = [{"supplier_id": str(pricing_data["supplier"].id), "name": "Test Pricing Supplier"}]
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
-            _enrich_supplier_pricing(suppliers, str(pricing_data["product"].id))
-        assert suppliers[0]["sale_price"] == 150.00
-        assert suppliers[0]["sale_doc"] == "SO-TEST-001"
+    def test_enrich_uses_quote_when_most_recent(self, db_session):
+        """When a Quote is newer than any SO, use it."""
+        import uuid
+        import datetime
+        from includes.dashboard.models import Product, Supplier, Transaction
 
-    def test_enrich_adds_quote_with_cost(self, db_session, pricing_data):
-        suppliers = [{"supplier_id": str(pricing_data["supplier"].id), "name": "Test Pricing Supplier"}]
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
-            _enrich_supplier_pricing(suppliers, str(pricing_data["product"].id))
-        assert suppliers[0]["quote_price"] == 55.00
-        assert suppliers[0]["quote_doc"] == "QT-TEST-001"
+        product = Product(id=uuid.uuid4(), part_number="QT-NEWEST", description="Quote newest")
+        supplier = Supplier(id=uuid.uuid4(), name="Quote Supplier", contacts=[])
+        db_session.add_all([product, supplier])
+        db_session.flush()
 
-    def test_enrich_counts_po_transactions(self, db_session, pricing_data):
+        qt = Transaction(
+            id=uuid.uuid4(), doc_number="QT-NEW-001", doc_type="Quote",
+            product_id=product.id, supplier_id=supplier.id,
+            quantity=10, price=200.00, cost=120.00, date=datetime.date(2026, 6, 1),
+        )
+        so = Transaction(
+            id=uuid.uuid4(), doc_number="SO-OLD-001", doc_type="SalesOrder",
+            product_id=product.id, supplier_id=supplier.id,
+            quantity=3, price=180.00, cost=100.00, date=datetime.date(2026, 1, 1),
+        )
+        db_session.add_all([qt, so])
+        db_session.flush()
+
+        suppliers = [{"supplier_id": str(supplier.id), "name": "Quote Supplier"}]
+        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+            _enrich_supplier_pricing(suppliers, str(product.id))
+        assert suppliers[0]["cost_price"] == 120.00
+        assert suppliers[0]["sale_price"] == 200.00
+        assert suppliers[0]["price_doc"] == "QT-NEW-001"
+        assert suppliers[0]["price_doc_type"] == "Quote"
+
+    def test_enrich_counts_transactions(self, db_session, pricing_data):
         suppliers = [{"supplier_id": str(pricing_data["supplier"].id), "name": "Test Pricing Supplier"}]
         with patch("includes.tools.quote_tools._get_session", return_value=db_session):
             _enrich_supplier_pricing(suppliers, str(pricing_data["product"].id))
-        assert suppliers[0]["purchase_count"] == 2  # PO-TEST-001 + PO-TEST-OLD
+        assert suppliers[0]["transaction_count"] == 2  # SO + Quote
 
     def test_enrich_skips_without_product_id(self, db_session, pricing_data):
         suppliers = [{"supplier_id": str(pricing_data["supplier"].id), "name": "Test Pricing Supplier"}]
@@ -635,6 +634,31 @@ class TestPricingEnrichment:
         with patch("includes.tools.quote_tools._get_session", return_value=db_session):
             _enrich_supplier_pricing(suppliers, str(pricing_data["product"].id))
         assert "cost_price" not in suppliers[0]
+
+    def test_enrich_ignores_purchase_orders(self, db_session):
+        """PurchaseOrders should be completely ignored by enrichment."""
+        import uuid
+        import datetime
+        from includes.dashboard.models import Product, Supplier, Transaction
+
+        product = Product(id=uuid.uuid4(), part_number="PO-ONLY", description="PO only product")
+        supplier = Supplier(id=uuid.uuid4(), name="PO Supplier", contacts=[])
+        db_session.add_all([product, supplier])
+        db_session.flush()
+
+        po = Transaction(
+            id=uuid.uuid4(), doc_number="PO-001", doc_type="PurchaseOrder",
+            product_id=product.id, supplier_id=supplier.id,
+            quantity=10, price=100.00, cost=50.00, date=datetime.date(2026, 5, 1),
+        )
+        db_session.add(po)
+        db_session.flush()
+
+        suppliers = [{"supplier_id": str(supplier.id), "name": "PO Supplier"}]
+        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+            _enrich_supplier_pricing(suppliers, str(product.id))
+        assert "cost_price" not in suppliers[0]
+        assert "sale_price" not in suppliers[0]
 
     def test_render_shows_cost_sale_margin(self, db_session, pricing_data):
         """Verify _render_rfq_summary shows cost/sale/margin when present."""

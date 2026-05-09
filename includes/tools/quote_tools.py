@@ -188,18 +188,19 @@ def _match_suppliers_to_db(suppliers: list[dict]) -> None:
 
 
 def _enrich_supplier_pricing(suppliers: list[dict], product_id: str | None) -> None:
-    """Look up cost/sale/quote pricing for each supplier+product and enrich in-place.
+    """Look up cost/sale pricing for each supplier+product and enrich in-place.
+
+    Finds the most recent SalesOrder or Quote transaction for the pair and
+    reads both ``cost`` (buy price) and ``price`` (sell price) from it.
 
     Adds to each supplier dict:
-      - cost_price, cost_date, cost_doc      (from most recent PurchaseOrder)
-      - sale_price, sale_date, sale_doc      (from most recent SalesOrder)
-      - quote_price, quote_date, quote_doc   (from most recent Quote with a cost)
-      - purchase_count                        (total PO transactions for this pair)
+      - cost_price, sale_price, price_date, price_doc, price_doc_type
+      - transaction_count  (total SO + Quote transactions for this pair)
     """
     if not product_id:
         return
 
-    from sqlalchemy import and_, desc
+    from sqlalchemy import and_, desc, func
     import uuid
 
     try:
@@ -228,56 +229,36 @@ def _enrich_supplier_pricing(suppliers: list[dict], product_id: str | None) -> N
             base_filter = and_(
                 Transaction.supplier_id == sid,
                 Transaction.product_id == pid,
+                Transaction.doc_type.in_(["SalesOrder", "Quote"]),
             )
 
-            # Most recent PurchaseOrder (cost price)
-            po = (
-                session.query(Transaction.cost, Transaction.price, Transaction.date, Transaction.doc_number)
-                .filter(base_filter, Transaction.doc_type == "PurchaseOrder")
+            # Most recent SO or Quote — single source for cost + sale
+            latest = (
+                session.query(
+                    Transaction.cost, Transaction.price,
+                    Transaction.date, Transaction.doc_number, Transaction.doc_type,
+                )
+                .filter(base_filter)
                 .order_by(desc(Transaction.date))
                 .first()
             )
-            if po:
-                # Prefer cost field; fall back to price for POs
-                cost_val = po.cost if po.cost is not None else po.price
-                if cost_val is not None:
-                    sup["cost_price"] = float(cost_val)
-                    sup["cost_date"] = po.date.isoformat() if po.date else None
-                    sup["cost_doc"] = po.doc_number
+            if latest:
+                if latest.cost is not None:
+                    sup["cost_price"] = float(latest.cost)
+                if latest.price is not None:
+                    sup["sale_price"] = float(latest.price)
+                sup["price_date"] = latest.date.isoformat() if latest.date else None
+                sup["price_doc"] = latest.doc_number
+                sup["price_doc_type"] = latest.doc_type
 
-            # Count of PO transactions
-            from sqlalchemy import func
-            po_count = (
+            # Count of SO + Quote transactions
+            txn_count = (
                 session.query(func.count(Transaction.id))
-                .filter(base_filter, Transaction.doc_type == "PurchaseOrder")
+                .filter(base_filter)
                 .scalar()
             )
-            if po_count:
-                sup["purchase_count"] = po_count
-
-            # Most recent SalesOrder (sale price)
-            so = (
-                session.query(Transaction.price, Transaction.date, Transaction.doc_number)
-                .filter(base_filter, Transaction.doc_type == "SalesOrder")
-                .order_by(desc(Transaction.date))
-                .first()
-            )
-            if so and so.price is not None:
-                sup["sale_price"] = float(so.price)
-                sup["sale_date"] = so.date.isoformat() if so.date else None
-                sup["sale_doc"] = so.doc_number
-
-            # Most recent Quote with a cost value
-            qt = (
-                session.query(Transaction.cost, Transaction.price, Transaction.date, Transaction.doc_number)
-                .filter(base_filter, Transaction.doc_type == "Quote", Transaction.cost.isnot(None))
-                .order_by(desc(Transaction.date))
-                .first()
-            )
-            if qt and qt.cost is not None:
-                sup["quote_price"] = float(qt.cost)
-                sup["quote_date"] = qt.date.isoformat() if qt.date else None
-                sup["quote_doc"] = qt.doc_number
+            if txn_count:
+                sup["transaction_count"] = txn_count
 
     except Exception as e:
         logger.warning(f"Pricing enrichment failed: {e}")
@@ -726,10 +707,9 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             if existing:
                 for key in ["supplier_id", "contacts", "price", "price_type",
                             "lead_time", "notes", "purchase_ref",
-                            "cost_price", "cost_date", "cost_doc",
-                            "sale_price", "sale_date", "sale_doc",
-                            "quote_price", "quote_date", "quote_doc",
-                            "purchase_count"]:
+                            "cost_price", "sale_price",
+                            "price_date", "price_doc", "price_doc_type",
+                            "transaction_count"]:
                     val = sup.get(key)
                     if val is not None and val != "" and val != []:
                         existing[key] = val
@@ -749,15 +729,11 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                     "notes": sup.get("notes", ""),
                     "purchase_ref": sup.get("purchase_ref"),
                     "cost_price": sup.get("cost_price"),
-                    "cost_date": sup.get("cost_date"),
-                    "cost_doc": sup.get("cost_doc"),
                     "sale_price": sup.get("sale_price"),
-                    "sale_date": sup.get("sale_date"),
-                    "sale_doc": sup.get("sale_doc"),
-                    "quote_price": sup.get("quote_price"),
-                    "quote_date": sup.get("quote_date"),
-                    "quote_doc": sup.get("quote_doc"),
-                    "purchase_count": sup.get("purchase_count"),
+                    "price_date": sup.get("price_date"),
+                    "price_doc": sup.get("price_doc"),
+                    "price_doc_type": sup.get("price_doc_type"),
+                    "transaction_count": sup.get("transaction_count"),
                 }
                 current_suppliers.append(supplier_entry)
                 existing_by_name[name.lower()] = supplier_entry
@@ -1049,6 +1025,10 @@ def create_quote_tools(user_id: str) -> list:
                           price, price_type, lead_time, notes, purchase_ref;
                           OR suppliers (list of dicts with those same keys)
                           to add multiple at once.
+                          contacts: list of dicts, each with any of: url
+                          (website), email, phone, city, state, country.
+                          ALWAYS include contacts with at least a url when
+                          adding external suppliers found via web search.
                           Supplier status values: candidate (default),
                           shortlisted, selected, dropped.
                           Price type values: estimated (price from web search),
