@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -134,9 +135,12 @@ def main():
     failed = [n for n, ok in results.items() if not ok]
     if failed:
         print(f"\n{len(failed)} step(s) failed: {', '.join(failed)}")
-        sys.exit(1)
+        sys.stdout.flush()
+        os._exit(1)
     else:
         print(f"\nAll {len(results)} steps completed successfully.")
+        sys.stdout.flush()
+        os._exit(0)
 
 
 if __name__ == "__main__":

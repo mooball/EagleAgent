@@ -226,6 +226,8 @@ def main():
         total = session.query(Product).count()
         print(f"Total products in database: {total}")
 
+    engine.dispose()
+
 
 if __name__ == "__main__":
     main()
