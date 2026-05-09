@@ -223,7 +223,7 @@ class TestManageRfqSuppliers:
                     "line": 1,
                     "name": "Sydney Tools",
                     "price": 189.00,
-                    "contacts": [{"type": "email", "value": "sales@sydneytools.com.au"}],
+                    "contacts": [{"url": "https://sydneytools.com.au", "email": "sales@sydneytools.com.au"}],
                 },
             })
         assert "Sydney Tools" in result
@@ -245,8 +245,8 @@ class TestManageRfqSuppliers:
                 "data": {
                     "line": 1,
                     "suppliers": [
-                        {"name": "Sydney Tools", "price": 189.00, "contacts": [{"email": "info@sydneytools.com.au"}]},
-                        {"name": "Total Tools", "price": 195.00, "contacts": [{"email": "info@totaltools.com.au"}]},
+                        {"name": "Sydney Tools", "price": 189.00, "contacts": [{"url": "https://sydneytools.com.au", "email": "info@sydneytools.com.au"}]},
+                        {"name": "Total Tools", "price": 195.00, "contacts": [{"url": "https://totaltools.com.au", "email": "info@totaltools.com.au"}]},
                         {"name": "ToolMart Online", "contacts": [{"url": "https://toolmart.com.au"}]},
                     ],
                 },
@@ -267,7 +267,7 @@ class TestManageRfqSuppliers:
             await manage.ainvoke({
                 "action": "add_supplier",
                 "rfq_id": rfq.rfq_number,
-                "data": {"line": 1, "name": "Sydney Tools", "contacts": [{"email": "info@sydneytools.com.au"}]},
+                "data": {"line": 1, "name": "Sydney Tools", "contacts": [{"url": "https://sydneytools.com.au", "email": "info@sydneytools.com.au"}]},
             })
             result = await manage.ainvoke({
                 "action": "update_supplier",
@@ -496,12 +496,12 @@ class TestRendering:
             await manage.ainvoke({
                 "action": "add_supplier",
                 "rfq_id": rfq.rfq_number,
-                "data": {"line": 1, "name": "Sydney Tools", "price": 189.0, "price_type": "previous_purchase", "contacts": [{"email": "info@sydneytools.com.au"}]},
+                "data": {"line": 1, "name": "Sydney Tools", "price": 189.0, "price_type": "previous_purchase", "contacts": [{"url": "https://sydneytools.com.au", "email": "info@sydneytools.com.au"}]},
             })
             result = await manage.ainvoke({
                 "action": "add_supplier",
                 "rfq_id": rfq.rfq_number,
-                "data": {"line": 1, "name": "Total Tools", "status": "dropped", "contacts": [{"email": "info@totaltools.com.au"}]},
+                "data": {"line": 1, "name": "Total Tools", "status": "dropped", "contacts": [{"url": "https://totaltools.com.au", "email": "info@totaltools.com.au"}]},
             })
         assert "$189.00" in result
         assert "prev" in result
