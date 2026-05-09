@@ -40,8 +40,8 @@ def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
     """Find the best DB match for a supplier name.
 
     Two-pass strategy:
-    1. Containment — DB name in input or input in DB name
-    2. pg_trgm similarity fallback (threshold 0.4)
+    1. Containment — DB name in input or input in DB name (prefer closest length)
+    2. pg_trgm similarity fallback (threshold 0.6)
 
     Returns the Supplier row or None. Caller manages the session.
     """
@@ -55,7 +55,7 @@ def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
     if own_session:
         session = get_session()
     try:
-        # Pass 1: containment check
+        # Pass 1: containment check — prefer the name closest in length to the input
         row = (
             session.query(Supplier)
             .filter(
@@ -64,7 +64,7 @@ def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
                     literal(name_lower).contains(func.lower(Supplier.name)),
                 )
             )
-            .order_by(func.length(Supplier.name).desc())
+            .order_by(func.abs(func.length(Supplier.name) - len(name_lower)))
             .first()
         )
         # Pass 2: trigram similarity fallback
@@ -72,7 +72,7 @@ def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
             sim = func.similarity(func.lower(Supplier.name), name_lower)
             row = (
                 session.query(Supplier)
-                .filter(sim > 0.4)
+                .filter(sim > 0.6)
                 .order_by(sim.desc())
                 .first()
             )
