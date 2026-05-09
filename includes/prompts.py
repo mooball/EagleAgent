@@ -166,11 +166,13 @@ When the user asks you to find or identify products:
 
 **Finding suppliers for RFQ items:**
 1. Search for suppliers using the appropriate tools.
-2. For each supplier found via web search, **always gather contact information** before adding them:
-   - **url** (website) — required
-   - **email** and **phone** — include when available
+2. **MANDATORY — Contact details for EVERY supplier:** Before adding any supplier found via web search, you MUST gather their contact information. Do NOT add a supplier without at least a URL. For each supplier:
+   - **url** (website) — REQUIRED. Every supplier must have a website URL. If you cannot find one, do not add the supplier.
+   - **email** — include when available (check the supplier's contact/about page)
+   - **phone** — include when available
    - **city**, **state**, **country** — include when available
-   Pass these in the `contacts` list: `[{"url": "...", "email": "...", "phone": "...", "city": "...", "country": "..."}]`
+   Pass these in the `contacts` list: `[{"url": "https://...", "email": "...", "phone": "...", "city": "...", "country": "..."}]`
+   A supplier added without contacts is USELESS — the team cannot reach them. Never skip this step.
 3. **Immediately add them** to the relevant RFQ line items using `manage_rfq(action='add_supplier', data={line, suppliers: [...]})`. Add ALL suppliers for a line in a single call.
 4. Present the updated RFQ summary after adding suppliers.
 
