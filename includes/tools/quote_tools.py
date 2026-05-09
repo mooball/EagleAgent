@@ -675,13 +675,13 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         if not suppliers_list:
             return "Error: 'name' or 'suppliers' list is required for add_supplier."
 
-        def _has_contact_info(sup):
+        def _has_contact_url(sup):
+            """Check that at least one contact dict has a url field."""
             contacts = sup.get("contacts") or []
             if not isinstance(contacts, list):
                 return False
             return any(
-                (c.get("email") or c.get("phone") or c.get("url") or c.get("value"))
-                if isinstance(c, dict) else bool(c)
+                isinstance(c, dict) and c.get("url")
                 for c in contacts
             )
 
@@ -691,10 +691,23 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         for sup in suppliers_list:
             name = (sup.get("name") or "").strip()
             has_db_link = bool(sup.get("supplier_id"))
-            if not has_db_link and (name.lower() in _bad_names or not _has_contact_info(sup)):
+            if not has_db_link and name.lower() in _bad_names:
+                skipped_names.append(name or "Unknown")
+            elif not has_db_link and not _has_contact_url(sup):
                 skipped_names.append(name or "Unknown")
             else:
                 valid_suppliers.append(sup)
+
+        if skipped_names and not valid_suppliers:
+            return (
+                f"REJECTED: All {len(skipped_names)} supplier(s) were rejected because they have no contact URL: "
+                f"{', '.join(skipped_names)}. "
+                f"You MUST provide contacts with at least a url (website) for each supplier. "
+                f"Look up their website and retry with: contacts=[{{\"url\": \"https://...\"}}]"
+            )
+        if skipped_names and valid_suppliers:
+            # Partial rejection — continue with valid ones but warn loudly
+            pass
 
         _match_suppliers_to_db(valid_suppliers)
 
@@ -770,7 +783,10 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         if updated_names:
             action_parts.append(f"Updated {len(updated_names)} existing supplier(s) on line {line_num}: {', '.join(updated_names)}")
         if skipped_names:
-            action_parts.append(f"Skipped {len(skipped_names)} supplier(s) (missing name or contact info): {', '.join(skipped_names)}")
+            action_parts.append(
+                f"REJECTED {len(skipped_names)} supplier(s) — no contact URL provided: {', '.join(skipped_names)}. "
+                f"Retry with contacts=[{{\"url\": \"https://...\"}}] for each."
+            )
 
         now = _now_iso()
         history = list(rfq.history or [])
