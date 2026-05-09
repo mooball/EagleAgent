@@ -436,20 +436,30 @@
                     // Index items by line number for quick lookup
                     (data.items || []).forEach(i => this._items[i.line] = i);
                     var supplierLines = data.supplierLines || [];
-                    supplierLines.forEach(l => this.expanded[l] = false);
+                    // Restore expanded state from sessionStorage
+                    var saved = {};
+                    try { saved = JSON.parse(sessionStorage.getItem('rfq-expanded-' + this.rfqId) || '{}'); } catch(e) {}
+                    supplierLines.forEach(l => this.expanded[l] = !!saved[l]);
+                    this.checkAllExpanded();
                     console.log('[rfqDetail] init, rfqId:', this.rfqId, 'items:', Object.keys(this._items).length);
+                },
+                _saveExpanded() {
+                    try { sessionStorage.setItem('rfq-expanded-' + this.rfqId, JSON.stringify(this.expanded)); } catch(e) {}
                 },
                 toggle(line) {
                     this.expanded[line] = !this.expanded[line];
                     this.checkAllExpanded();
+                    this._saveExpanded();
                 },
                 expandAll() {
                     this._allLines.forEach(l => this.expanded[l] = true);
                     this.allExpanded = true;
+                    this._saveExpanded();
                 },
                 collapseAll() {
                     this._allLines.forEach(l => this.expanded[l] = false);
                     this.allExpanded = false;
+                    this._saveExpanded();
                 },
                 checkAllExpanded() {
                     var keys = Object.keys(this.expanded);

@@ -408,11 +408,14 @@
                                         {% endif %}
                                         {% if s.cost_price is defined and s.cost_price is not none %}
                                         ${{ "%.2f" | format(s.cost_price | float) }}
-                                        {% if s.cost_doc %}
-                                        <span class="text-[10px] opacity-40 ml-0.5">PO</span>
+                                        {% if s.price_doc_type %}
+                                        <span class="text-[10px] opacity-40 ml-0.5">{% if s.price_doc_type == 'SalesOrder' %}SO{% elif s.price_doc_type == 'Quote' %}Qt{% endif %}</span>
                                         {% endif %}
-                                        {% elif s.price is not none and s.price_type in ['previous_purchase'] %}
+                                        {% elif s.price is not none and s.price_type in ['previous_purchase', 'estimated', 'quoted', 'previous_quote'] %}
                                         ${{ "%.2f" | format(s.price | float) }}
+                                        {% if s.price_type in ['estimated', 'quoted'] %}
+                                        <span class="text-[10px] opacity-50 ml-0.5">{% if s.price_type == 'estimated' %}est{% elif s.price_type == 'quoted' %}quoted{% endif %}</span>
+                                        {% endif %}
                                         {% else %}
                                         <span class="opacity-30">—</span>
                                         {% endif %}
@@ -428,15 +431,8 @@
                                     <td class="px-2 py-1.5 text-xs text-right font-medium whitespace-nowrap" :class="supStatus === 'dropped' && 'line-through opacity-50'">
                                         {% if s.sale_price is defined and s.sale_price is not none %}
                                         ${{ "%.2f" | format(s.sale_price | float) }}
-                                        {% if s.sale_doc %}
-                                        <span class="text-[10px] opacity-40 ml-0.5">SO</span>
-                                        {% endif %}
-                                        {% elif s.price is not none and s.price_type not in ['previous_purchase'] %}
-                                        ${{ "%.2f" | format(s.price | float) }}
-                                        {% if s.price_type %}
-                                        <span class="text-[10px] opacity-50 ml-1">
-                                            {% if s.price_type == 'estimated' %}est{% elif s.price_type == 'quoted' %}quoted{% endif %}
-                                        </span>
+                                        {% if s.price_doc_type %}
+                                        <span class="text-[10px] opacity-40 ml-0.5">{% if s.price_doc_type == 'SalesOrder' %}SO{% elif s.price_doc_type == 'Quote' %}Qt{% endif %}</span>
                                         {% endif %}
                                         {% else %}
                                         <span class="opacity-30">—</span>
