@@ -348,6 +348,8 @@ def product_detail_view(request: Request, product_id: str,
                 "supplier_id": str(sup.id),
                 "supplier_name": sup.name,
                 "quantity": ps.quantity,
+                "cost": ps.cost,
+                "currency": sup.currency,
                 "price": ps.price,
             })
     finally:
@@ -796,6 +798,8 @@ def partial_product_detail(request: Request, product_id: str,
                 "supplier_id": str(sup.id),
                 "supplier_name": sup.name,
                 "quantity": ps.quantity,
+                "cost": ps.cost,
+                "currency": sup.currency,
                 "price": ps.price,
             })
     finally:
@@ -898,6 +902,7 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
         if by_id:
             rows = session.query(
                 Supplier.id, Supplier.contacts, Supplier.supply_chain_position, Supplier.terms,
+                Supplier.country,
             ).filter(
                 Supplier.id.in_(list(by_id.keys()))
             ).all()
@@ -912,6 +917,8 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                             sup["tier"] = scp["tier"]
                         if row.terms:
                             sup["terms"] = row.terms
+                        if row.country:
+                            sup["country"] = row.country
 
         # Enrich by name using shared matching
         if by_name:
@@ -928,6 +935,8 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                             sup["tier"] = scp["tier"]
                         if matched.terms:
                             sup["terms"] = matched.terms
+                        if matched.country:
+                            sup["country"] = matched.country
     finally:
         session.close()
 
