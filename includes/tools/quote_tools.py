@@ -9,6 +9,7 @@ import asyncio
 import datetime
 import logging
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import chainlit as cl
 from langchain_core.tools import tool
@@ -141,11 +142,118 @@ async def _next_rfq_number(store) -> str:
     return await asyncio.to_thread(_next_rfq_number_sync)
 
 
-def _match_suppliers_to_db(suppliers: list[dict]) -> None:
+def _verify_supplier_url(
+    name: str,
+    url: str | None,
+    country: str | None = None,
+    product_hint: str = "",
+) -> str | None:
+    """Verify a supplier URL is reachable; if not, search for the correct one.
+
+    1. HTTP HEAD the URL (follows redirects).  If it returns 200 with content,
+       return the original URL.
+    2. If the request fails or returns an empty/error response, use Gemini with
+       Google Search grounding to find the correct website for the supplier.
+    3. Return the corrected URL, or the original if nothing better is found.
+    """
+    import urllib.request
+
+    if not url:
+        return _search_supplier_url(name, country, product_hint=product_hint)
+
+    # Normalise: ensure scheme is present
+    check_url = url if "://" in url else f"https://{url}"
+
+    # HTTP HEAD check (timeout 5s)
+    try:
+        req = urllib.request.Request(
+            check_url, method="HEAD",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; EagleAgent/1.0)"},
+        )
+        resp = urllib.request.urlopen(req, timeout=5)
+        if resp.status == 200:
+            logger.debug(f"[url-verify] HTTP OK for {check_url}")
+            return url
+        else:
+            logger.info(f"[url-verify] HTTP {resp.status} for {check_url}, searching for correct URL")
+    except Exception as e:
+        logger.info(f"[url-verify] HTTP failed for {check_url} ({e}), searching for correct URL")
+
+    return _search_supplier_url(name, country, product_hint=product_hint) or url
+
+
+def _search_supplier_url(
+    name: str,
+    country: str | None = None,
+    product_hint: str = "",
+) -> str | None:
+    """Use Gemini with Google Search grounding to find a supplier's real website URL."""
+    import urllib.request
+
+    try:
+        from google import genai as _genai
+        from google.genai import types as _types
+
+        location = f" in {country}" if country else ""
+        product_ctx = f" They supply {product_hint}." if product_hint else ""
+        prompt = (
+            f"What is the official website URL for the industrial/commercial supplier "
+            f"'{name}'{location}?{product_ctx} "
+            f"Return ONLY the URL (e.g. https://example.com), nothing else. "
+            f"If you cannot find it, return NONE."
+        )
+
+        client = _genai.Client()
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=_types.GenerateContentConfig(
+                tools=[_types.Tool(google_search=_types.GoogleSearch())],
+                temperature=0.0,
+            ),
+        )
+        result = (response.text or "").strip()
+        if result and result.upper() != "NONE" and "." in result:
+            # Clean up: extract just the URL if extra text crept in
+            for token in result.split():
+                if "." in token and ("/" in token or token.startswith("http")):
+                    url = token.strip("`\"'<>")
+                    if not url.startswith("http"):
+                        url = f"https://{url}"
+                    # Verify the found URL is actually reachable (HTTP HEAD)
+                    try:
+                        req = urllib.request.Request(
+                            url, method="HEAD",
+                            headers={"User-Agent": "Mozilla/5.0 (compatible; EagleAgent/1.0)"},
+                        )
+                        resp = urllib.request.urlopen(req, timeout=5)
+                        if resp.status == 200:
+                            logger.info(f"[url-search] Found URL for '{name}': {url}")
+                            return url
+                        else:
+                            logger.warning(f"[url-search] Found URL {url} for '{name}' but got HTTP {resp.status}")
+                            continue
+                    except Exception:
+                        logger.warning(f"[url-search] Found URL {url} for '{name}' but HTTP check failed")
+                        continue
+        logger.info(f"[url-search] No valid URL found for '{name}'")
+        return None
+    except Exception as e:
+        logger.warning(f"[url-search] Search failed for '{name}': {e}")
+        return None
+
+
+def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> None:
     """Fuzzy-match supplier names against the DB and enrich with supplier_id + contacts.
 
-    Uses the shared match_supplier_by_name() two-pass strategy.
+    Uses the stricter match_supplier() which verifies domain and country
+    in addition to name similarity.
     Mutates supplier dicts in-place.
+
+    Args:
+        suppliers: List of supplier dicts to match/create.
+        product_hint: Optional product context (part number, brand, description)
+                      used to improve URL search accuracy when verification fails.
     """
     # Collect names that need matching (no supplier_id yet)
     names_to_match = {}  # lower name -> list of supplier dicts
@@ -162,9 +270,10 @@ def _match_suppliers_to_db(suppliers: list[dict]) -> None:
     try:
         from includes.dashboard.database import (
             get_session,
-            match_supplier_by_name,
+            match_supplier,
             merge_supplier_contacts,
         )
+        from includes.dashboard.models import Supplier
     except ImportError:
         logger.warning("Cannot import DB models for supplier matching")
         return
@@ -172,7 +281,39 @@ def _match_suppliers_to_db(suppliers: list[dict]) -> None:
     session = get_session()
     try:
         for name_lower, sup_list in names_to_match.items():
-            row = match_supplier_by_name(name_lower, session=session)
+            # Extract url and country from the supplier dict for verification
+            sup_url = None
+            for c in sup_list[0].get("contacts", []):
+                if isinstance(c, dict) and c.get("url"):
+                    sup_url = c["url"]
+                    break
+            sup_country = sup_list[0].get("country")
+
+            # Verify/correct the URL before matching or persisting
+            verified_url = _verify_supplier_url(
+                sup_list[0].get("name", "").strip(),
+                sup_url,
+                sup_country,
+                product_hint=product_hint,
+            )
+            if verified_url != sup_url:
+                if verified_url:
+                    logger.info(
+                        f"[url-verify] Corrected URL for '{sup_list[0].get('name')}': "
+                        f"{sup_url} → {verified_url}"
+                    )
+                else:
+                    logger.info(
+                        f"[url-verify] Could not verify URL for '{sup_list[0].get('name')}': {sup_url}"
+                    )
+                # Update the contacts in the supplier dicts
+                for sup in sup_list:
+                    for c in sup.get("contacts", []):
+                        if isinstance(c, dict) and c.get("url") == sup_url:
+                            c["url"] = verified_url or sup_url
+                sup_url = verified_url or sup_url
+
+            row = match_supplier(name_lower, url=sup_url, country=sup_country, session=session)
             if row:
                 logger.info(
                     f"[supplier-match] '{name_lower}' → '{row.name}' (id={row.id})"
@@ -181,6 +322,76 @@ def _match_suppliers_to_db(suppliers: list[dict]) -> None:
                     sup["supplier_id"] = str(row.id)
                     if row.contacts:
                         merge_supplier_contacts(sup, row.contacts)
+            else:
+                # No match — create a new web-sourced Supplier record
+                ref_sup = sup_list[0]
+                new_supplier = Supplier(
+                    name=ref_sup.get("name", "").strip(),
+                    country=ref_sup.get("country"),
+                    currency=ref_sup.get("currency"),
+                    url=sup_url,
+                    contacts=ref_sup.get("contacts"),
+                    source="web",
+                )
+                session.add(new_supplier)
+                session.flush()  # get the generated id
+                logger.info(
+                    f"[supplier-create] Created new web supplier '{new_supplier.name}' (id={new_supplier.id})"
+                )
+
+                # Run proper categorization using the full taxonomy
+                try:
+                    from includes.supplier_categorization import (
+                        categorize_supplier,
+                        load_taxonomy,
+                    )
+                    from google import genai as _genai
+
+                    _client = _genai.Client()
+                    _taxonomy = load_taxonomy()
+                    _cat_input = {
+                        "name": new_supplier.name,
+                        "url": new_supplier.url,
+                        "city": None,
+                        "country": new_supplier.country,
+                        "purchase_count": 0,
+                    }
+                    cat_result = categorize_supplier(
+                        _client, "gemini-2.5-flash", _taxonomy, _cat_input
+                    )
+                    new_supplier.supply_chain_position = {
+                        "category": cat_result.get("category"),
+                        "tier": cat_result.get("tier"),
+                        "confidence": cat_result.get("confidence"),
+                        "reasoning": cat_result.get("reasoning"),
+                    }
+                    new_supplier.modified_by = "ai:categorizer"
+                    session.flush()
+                    logger.info(
+                        f"[supplier-categorize] '{new_supplier.name}' → "
+                        f"{cat_result.get('tier')}/{cat_result.get('category')} "
+                        f"(confidence={cat_result.get('confidence')})"
+                    )
+                    # Update supplier dicts with proper categorization
+                    for sup in sup_list:
+                        if cat_result.get("tier"):
+                            sup["tier"] = cat_result["tier"]
+                        if cat_result.get("category"):
+                            sup["category"] = cat_result["category"]
+                except Exception as cat_err:
+                    logger.warning(
+                        f"[supplier-categorize] Failed for '{new_supplier.name}': {cat_err}"
+                    )
+                    # Fall back to whatever the agent provided
+                    if ref_sup.get("tier") and ref_sup.get("category"):
+                        new_supplier.supply_chain_position = {
+                            "tier": ref_sup["tier"],
+                            "category": ref_sup["category"],
+                        }
+
+                for sup in sup_list:
+                    sup["supplier_id"] = str(new_supplier.id)
+        session.commit()
     except Exception as e:
         logger.warning(f"Supplier DB matching failed: {e}")
     finally:
@@ -709,7 +920,14 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             # Partial rejection — continue with valid ones but warn loudly
             pass
 
-        _match_suppliers_to_db(valid_suppliers)
+        _match_suppliers_to_db(
+            valid_suppliers,
+            product_hint=" ".join(filter(None, [
+                line_item.part_number,
+                line_item.brand,
+                line_item.input_description,
+            ])),
+        )
 
         # Auto-resolve product_id if the item has a part_number but no product_id
         product_id = line_item.product_id

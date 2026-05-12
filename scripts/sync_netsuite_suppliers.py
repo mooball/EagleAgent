@@ -236,6 +236,23 @@ def main():
         # Build brand cache: netsuite_id -> Brand object
         brand_cache = {b.netsuite_id: b for b in session.query(Brand).all() if b.netsuite_id}
 
+        # Pre-load web-sourced suppliers for dedup during inserts
+        from includes.dashboard.database import _extract_domain
+        _web_suppliers = (
+            session.query(Supplier)
+            .filter(Supplier.source == "web", Supplier.netsuite_id.is_(None))
+            .all()
+        )
+        # Index by lowercase name and domain for fast lookup
+        _web_by_name: dict[str, "Supplier"] = {}
+        _web_by_domain: dict[str, "Supplier"] = {}
+        for ws in _web_suppliers:
+            if ws.name:
+                _web_by_name[ws.name.strip().lower()] = ws
+            ws_domain = _extract_domain(ws.url)
+            if ws_domain:
+                _web_by_domain[ws_domain] = ws
+
         for page in client.suiteql_iter(query):
             # Strip links metadata from each row in the page
             page = [{k: v for k, v in row.items() if k != "links"} for row in page]
@@ -274,31 +291,55 @@ def main():
                     brand_ids = parse_brand_ids(row)
                     brands_linked += sync_supplier_brands(session, existing, brand_ids, brand_cache)
                 else:
-                    # Insert new supplier
-                    supplier = Supplier(
-                        netsuite_id=netsuite_id,
-                        name=mapped["name"],
-                        url=mapped["url"],
-                        address_1=mapped["address_1"],
-                        address_2=mapped["address_2"],
-                        city=mapped["city"],
-                        state=mapped["state"],
-                        postcode=mapped["postcode"],
-                        country=mapped["country"],
-                        notes=mapped["notes"],
-                        terms=mapped["terms"],
-                        hubspot_id=mapped["hubspot_id"],
-                        contacts=mapped["contacts"],
-                        netsuite_last_modified=mapped["netsuite_last_modified"],
-                        modified_by="netsuite",
-                    )
-                    session.add(supplier)
-                    session.flush()  # Get the supplier ID for brand linking
-                    inserted += 1
+                    # Check for existing web-sourced supplier that matches by domain or exact name
+                    merged_web = None
+                    incoming_domain = _extract_domain(mapped.get("url"))
+                    if incoming_domain and incoming_domain in _web_by_domain:
+                        merged_web = _web_by_domain[incoming_domain]
+                    elif mapped["name"] and mapped["name"].strip().lower() in _web_by_name:
+                        merged_web = _web_by_name[mapped["name"].strip().lower()]
 
-                    # Sync brand links for new supplier
-                    brand_ids = parse_brand_ids(row)
-                    brands_linked += sync_supplier_brands(session, supplier, brand_ids, brand_cache)
+                    if merged_web:
+                        # Merge: upgrade web record with NetSuite data
+                        merged_web.netsuite_id = netsuite_id
+                        merged_web.source = "netsuite"
+                        for field in NETSUITE_OWNED_FIELDS:
+                            new_value = mapped[field]
+                            if new_value is not None:
+                                setattr(merged_web, field, new_value)
+                        merged_web.modified_by = "netsuite"
+                        updated += 1
+                        print(f"  Merged web supplier '{merged_web.name}' with NetSuite ID {netsuite_id}")
+
+                        brand_ids = parse_brand_ids(row)
+                        brands_linked += sync_supplier_brands(session, merged_web, brand_ids, brand_cache)
+                    else:
+                        # Insert new supplier
+                        supplier = Supplier(
+                            netsuite_id=netsuite_id,
+                            name=mapped["name"],
+                            url=mapped["url"],
+                            address_1=mapped["address_1"],
+                            address_2=mapped["address_2"],
+                            city=mapped["city"],
+                            state=mapped["state"],
+                            postcode=mapped["postcode"],
+                            country=mapped["country"],
+                            notes=mapped["notes"],
+                            terms=mapped["terms"],
+                            hubspot_id=mapped["hubspot_id"],
+                            contacts=mapped["contacts"],
+                            netsuite_last_modified=mapped["netsuite_last_modified"],
+                            modified_by="netsuite",
+                            source="netsuite",
+                        )
+                        session.add(supplier)
+                        session.flush()  # Get the supplier ID for brand linking
+                        inserted += 1
+
+                        # Sync brand links for new supplier
+                        brand_ids = parse_brand_ids(row)
+                        brands_linked += sync_supplier_brands(session, supplier, brand_ids, brand_cache)
 
                 processed += 1
 

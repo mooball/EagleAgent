@@ -837,6 +837,12 @@ def _normalize_rfq_suppliers(rfq: dict) -> None:
         "notes": None,
         "supplier_id": None,
         "contacts": [],
+        "country": None,
+        "currency": None,
+        "tier": None,
+        "category": None,
+        "source": None,
+        "is_new": False,
     }
     for item in rfq.get("items", []):
         suppliers = item.get("suppliers", [])
@@ -896,13 +902,13 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
 
     session = get_session()
     try:
-        from includes.dashboard.models import Supplier
+        from includes.dashboard.models import Supplier, Transaction
 
         # Enrich by supplier_id
         if by_id:
             rows = session.query(
                 Supplier.id, Supplier.contacts, Supplier.supply_chain_position, Supplier.terms,
-                Supplier.country,
+                Supplier.country, Supplier.currency, Supplier.source,
             ).filter(
                 Supplier.id.in_(list(by_id.keys()))
             ).all()
@@ -913,12 +919,33 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                     for sup in by_id[sid]:
                         if row.contacts and _contacts_need_enrichment(sup.get("contacts", [])):
                             merge_supplier_contacts(sup, row.contacts)
-                        if scp.get("tier"):
+                        if scp.get("tier") and not sup.get("tier"):
                             sup["tier"] = scp["tier"]
-                        if row.terms:
+                        if scp.get("category") and not sup.get("category"):
+                            sup["category"] = scp["category"]
+                        if row.terms and not sup.get("terms"):
                             sup["terms"] = row.terms
-                        if row.country:
+                        if row.country and not sup.get("country"):
                             sup["country"] = row.country
+                        if row.currency and not sup.get("currency"):
+                            sup["currency"] = row.currency
+                        if row.source:
+                            sup["source"] = row.source
+
+        # Mark suppliers with no transaction history as "new"
+        all_supplier_ids = set(by_id.keys())
+        if all_supplier_ids:
+            used_ids = {
+                str(r[0])
+                for r in session.query(Transaction.supplier_id)
+                .filter(Transaction.supplier_id.in_(list(all_supplier_ids)))
+                .distinct()
+                .all()
+            }
+            for sid, sup_list in by_id.items():
+                if sid not in used_ids:
+                    for sup in sup_list:
+                        sup["is_new"] = True
 
         # Enrich by name using shared matching
         if by_name:
@@ -931,12 +958,31 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                             merge_supplier_contacts(sup, matched.contacts)
                         if not sup.get("supplier_id"):
                             sup["supplier_id"] = str(matched.id)
-                        if scp.get("tier"):
+                        if scp.get("tier") and not sup.get("tier"):
                             sup["tier"] = scp["tier"]
-                        if matched.terms:
+                        if scp.get("category") and not sup.get("category"):
+                            sup["category"] = scp["category"]
+                        if matched.terms and not sup.get("terms"):
                             sup["terms"] = matched.terms
-                        if matched.country:
+                        if matched.country and not sup.get("country"):
                             sup["country"] = matched.country
+                        if matched.currency and not sup.get("currency"):
+                            sup["currency"] = matched.currency
+                        if matched.source:
+                            sup["source"] = matched.source
+                        # Check transaction history for name-matched suppliers
+                        if sup.get("supplier_id"):
+                            has_txn = session.query(Transaction.id).filter(
+                                Transaction.supplier_id == sup["supplier_id"]
+                            ).first()
+                            if not has_txn:
+                                sup["is_new"] = True
+
+        # Final pass: suppliers with no supplier_id are not in the DB at all → always "new"
+        for item in rfq.get("items", []):
+            for sup in item.get("suppliers", []):
+                if not sup.get("supplier_id"):
+                    sup["is_new"] = True
     finally:
         session.close()
 

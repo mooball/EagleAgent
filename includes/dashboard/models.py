@@ -29,6 +29,7 @@ class Supplier(Base):
     netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
     modified_at = Column(DateTime(timezone=True), nullable=True)
     modified_by = Column(String, nullable=True)                # "user:tom", "netsuite", "ai:categorizer"
+    source = Column(String(20), nullable=True, default='netsuite')  # 'netsuite' | 'web' | 'manual'
 
     # 256 dimensions for Gemini embedding-2-preview (notes only)
     embedding = Column(Vector(256), nullable=True)
