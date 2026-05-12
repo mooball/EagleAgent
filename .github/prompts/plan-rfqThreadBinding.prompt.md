@@ -158,12 +158,14 @@ Files: `app.py` (`@cl.on_chat_start` — check for pending RFQ), `includes/tools
 
 ### Phase 3: Thread switching on RFQ navigation
 
-#### 3.1 RFQ detail page triggers thread switch
+#### 3.1 RFQ detail page triggers thread switch and panel open
 When the user navigates to `/rfqs/RFQ-2026-0042`:
 1. The `rfq_detail` route looks up the user's thread for this RFQ (from `rfq_threads`).
 2. The thread_id is included in the `data-dashboard-context` JSON: `{"view": "rfq_detail", "entity": "rfq", "id": "RFQ-...", "thread_id": "abc-123"}`.
 3. `base.html`'s `updateContext()` detects the `thread_id` in the context and, if it differs from `_activeThreadId`, switches the iframe: `iframe.src = '/chat/thread/' + ctx.thread_id`.
 4. If there is no thread for this user+RFQ yet (e.g. viewing someone else's RFQ for the first time), create one on-demand.
+5. Auto-open the agent panel if it's currently closed. Set `agentState = 'panel'` and ensure `panelWidth` is at least 30–40% of the viewport width so the thread is comfortably readable.
+6. If the user's current chat profile is not "Eagle Agent", auto-switch to it to ensure the RFQ gets consistent tooling (internal + research agents).
 
 #### 3.2 Non-RFQ navigation keeps the current thread
 When the user navigates to `/suppliers/{id}` or `/products/{id}`:
@@ -184,12 +186,20 @@ When the user navigates to `/rfqs` (list) or `/` (home):
 #### 4.1 Name threads on creation
 When an RFQ is created and bound to a thread, call `update_thread()` to set the thread name to the RFQ number (e.g. `"RFQ-2026-0042 — Acme Construction"`). This makes the Chainlit thread history sidebar useful.
 
-#### 4.2 Thread indicator in RFQ detail
+#### 4.2 Pre-populate RFQ context in thread
+When an RFQ-bound thread is started or resumed, push a rich RFQ summary into the dashboard context so the agent has immediate awareness without needing to call `get_rfq`. The `data-dashboard-context` on the RFQ detail page should include:
+- `rfq_id`, `customer`, `status`, `created_date`, `assigned_to`
+- Item summary: line count, identified vs unidentified, key part numbers
+- Supplier summary: count per item, any shortlisted/selected suppliers
+
+This data is already available in the `rfq_detail` route (the `rfq` dict). Include a condensed version in the context JSON. The agent's system prompt already reads `dashboard_context` — it will automatically have the RFQ state on every message.
+
+#### 4.3 Thread indicator in RFQ detail
 Optionally show a small indicator in the RFQ detail header showing which thread is active, e.g.:
 - 💬 Thread linked (clickable to open the chat panel if closed)
 - Or simply auto-open the agent panel when viewing an RFQ detail page.
 
-#### 4.3 "Start new thread" option
+#### 4.4 "Start new thread" option
 Add an option (button or chat command) to create a fresh thread for the same RFQ. The old thread remains in Chainlit history but the `rfq_threads` row is updated to point to the new thread_id.
 
 Use case: the RFQ has been active for weeks and the thread is very long — the user wants a clean slate without losing history.
@@ -221,11 +231,11 @@ Use case: the RFQ has been active for weeks and the thread is very long — the 
 | `alembic/versions/` | Migration to create `rfq_threads` table |
 | `includes/dashboard/models.py` | Add `RFQThread` model |
 | `includes/dashboard/routes.py` | Add `GET /api/rfq-thread`, `POST /api/rfq-thread`, `POST /api/rfq-thread/new`; update `rfq_detail()` to include `thread_id` in context; update `GET /api/latest-thread` to accept `?rfq_id=` |
-| `includes/tools/quote_tools.py` | On `create`: capture `thread_id` from session, insert into `rfq_threads`, name the thread. On `create`: check if current thread is already bound to a different RFQ |
+| `includes/tools/quote_tools.py` | On `create`: capture `thread_id` from session, insert into `rfq_threads`, name the thread. Check thread state before create (redirect if bound/dirty) |
 | `app.py` | Remove `new_rfq` from Eagle Agent command buttons; update `@cl.on_chat_start` to check for pending RFQ data and auto-trigger creation; send thread_id via postMessage on start |
 | `includes/chat/actions.py` | Keep `handle_new_rfq` action handler (used by dashboard bridge), but no longer surfaced as a chat command |
-| `templates/base.html` | `updateContext()` — switch iframe when context includes `thread_id`; don't switch on non-RFQ navigation |
-| `templates/partials/rfq_detail.html` | Include `thread_id` in `data-dashboard-context` |
+| `templates/base.html` | `updateContext()` — switch iframe when context includes `thread_id`; auto-open panel to 30–40% on RFQ detail views; handle `create_rfq_thread` postMessage; don't switch on non-RFQ navigation |
+| `templates/partials/rfq_detail.html` | Include `thread_id` and condensed RFQ summary in `data-dashboard-context` |
 | `templates/partials/rfq_list.html` | Update "+ New RFQ" button to navigate iframe to `/chat` (fresh thread), then dispatch `new_rfq` intent after load |
 | `tests/` | Tests for `rfq_threads` CRUD, thread switching logic, thread conflict detection, pending RFQ data carry |
 
@@ -239,16 +249,18 @@ Use case: the RFQ has been active for weeks and the thread is very long — the 
 
 3. **Fresh empty thread:** Allow RFQ creation directly — the thread is clean, so just bind it. No redirect needed.
 
+4. **Auto-open agent panel on RFQ detail:** Yes. When navigating to an RFQ detail page, auto-open the agent panel to ~30–40% width so the user immediately sees the relevant thread.
+
+5. **Pre-populate thread context:** Yes. When creating/resuming an RFQ thread, inject the RFQ summary (customer, items, status, suppliers) into the thread context so the agent doesn't have to re-scan the RFQ on every message. Use the dashboard_context mechanism to push RFQ data alongside the view/entity info.
+
+6. **Thread cleanup:** Leave orphaned threads for now. Garbage collection can be added later.
+
+7. **Chat profile consistency:** Always use "Eagle Agent" profile for RFQ threads. If the user is on a different profile when they navigate to an RFQ, auto-switch to Eagle Agent.
+
+8. **Pending RFQ storage:** In-memory dict with TTL (e.g. 5 minutes). This is a short-lived event and a server restart would naturally expect a fresh RFQ flow.
+
 ---
 
 ## Open Questions
 
-1. **Should viewing an RFQ auto-open the agent panel?** Currently the panel can be closed. When viewing an RFQ detail, should it auto-open to show the relevant thread? Probably yes — the RFQ workflow is agent-driven.
-
-2. **LangGraph state isolation.** Each thread has its own LangGraph checkpoint. When we create a new thread for an RFQ, the agent starts with no state. Should we pre-populate any context (e.g. inject the RFQ data as a system message)? The dashboard_context mechanism already pushes the RFQ id, which the agent can use to look up the RFQ.
-
-3. **Thread cleanup.** Orphaned threads (created but never used, e.g. user clicked New RFQ then navigated away) will accumulate. Should we periodically clean these up, or just leave them?
-
-4. **Chat profile consistency.** RFQ workflows use the "Eagle Agent" profile (which has access to both internal and research tools). If a user's current profile is "Internal Agent" or "Research Agent" when they click an RFQ, should it auto-switch to "Eagle Agent"? Probably yes.
-
-5. **Pending RFQ storage.** For the redirect-with-data-carry mechanism, the pending RFQ payload needs temporary storage. Options: (a) in-memory dict with TTL (simplest, lost on restart), (b) lightweight DB table `pending_rfq_requests`, (c) user session storage. In-memory with TTL is likely sufficient since the window between store and pickup is seconds.
+None — all design questions have been resolved above.
