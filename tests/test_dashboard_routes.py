@@ -438,3 +438,135 @@ class TestPartialRoutes:
         _login(client, email="staff@eagle.com")
         resp = client.get("/partial/users", follow_redirects=False)
         assert resp.status_code == 403
+
+
+# ============================================================================
+# RFQ ↔ Thread binding API
+# ============================================================================
+
+class TestRFQThreadAPI:
+    """Tests for GET/POST /api/rfq-thread endpoints."""
+
+    def test_get_rfq_thread_returns_null_when_none(self, client):
+        _login(client)
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
+            session = MagicMock()
+            session.query.return_value.filter.return_value.first.return_value = None
+            mock_gs.return_value = session
+
+            resp = client.get("/api/rfq-thread?rfq_id=RFQ-2026-0001")
+            assert resp.status_code == 200
+            assert resp.json() == {"thread_id": None}
+
+    def test_get_rfq_thread_returns_thread_id(self, client):
+        _login(client)
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
+            session = MagicMock()
+            row = MagicMock()
+            row.thread_id = "abc-123"
+            session.query.return_value.filter.return_value.first.return_value = row
+            mock_gs.return_value = session
+
+            resp = client.get("/api/rfq-thread?rfq_id=RFQ-2026-0001")
+            assert resp.status_code == 200
+            assert resp.json() == {"thread_id": "abc-123"}
+
+    def test_post_rfq_thread_binds_new(self, client):
+        _login(client)
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
+            session = MagicMock()
+            session.query.return_value.filter.return_value.first.return_value = None
+            mock_gs.return_value = session
+
+            resp = client.post("/api/rfq-thread", json={
+                "rfq_id": "RFQ-2026-0001",
+                "thread_id": "thread-new-123",
+            })
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["ok"] is True
+            assert data["rfq_id"] == "RFQ-2026-0001"
+            assert data["thread_id"] == "thread-new-123"
+            session.add.assert_called_once()
+            session.commit.assert_called_once()
+
+    def test_post_rfq_thread_rebinds_existing(self, client):
+        _login(client)
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
+            session = MagicMock()
+            existing = MagicMock()
+            existing.thread_id = "old-thread"
+            session.query.return_value.filter.return_value.first.return_value = existing
+            mock_gs.return_value = session
+
+            resp = client.post("/api/rfq-thread", json={
+                "rfq_id": "RFQ-2026-0001",
+                "thread_id": "new-thread-456",
+            })
+            assert resp.status_code == 200
+            assert existing.thread_id == "new-thread-456"
+            session.add.assert_not_called()
+            session.commit.assert_called_once()
+
+    def test_post_rfq_thread_requires_both_fields(self, client):
+        _login(client)
+        resp = client.post("/api/rfq-thread", json={"rfq_id": "RFQ-1"})
+        assert resp.status_code == 400
+
+        resp = client.post("/api/rfq-thread", json={"thread_id": "t-1"})
+        assert resp.status_code == 400
+
+    def test_get_rfq_thread_unauthenticated(self, client):
+        resp = client.get("/api/rfq-thread?rfq_id=RFQ-1", follow_redirects=False)
+        assert resp.status_code == 303
+
+    def test_post_rfq_thread_unauthenticated(self, client):
+        resp = client.post("/api/rfq-thread", json={
+            "rfq_id": "RFQ-1", "thread_id": "t-1"
+        }, follow_redirects=False)
+        assert resp.status_code == 303
+
+
+class TestLookupRFQThreadId:
+    """Tests for the _lookup_rfq_thread_id helper."""
+
+    def test_returns_thread_id_when_found(self):
+        from includes.dashboard.routes import _lookup_rfq_thread_id
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
+            session = MagicMock()
+            row = MagicMock()
+            row.thread_id = "thread-xyz"
+            session.query.return_value.filter.return_value.first.return_value = row
+            # Thread has steps (actual interaction)
+            session.execute.return_value.fetchone.return_value = (1,)
+            mock_gs.return_value = session
+
+            result = _lookup_rfq_thread_id("RFQ-2026-0001", "user@eagle.com")
+            assert result == "thread-xyz"
+
+    def test_returns_none_when_not_found(self):
+        from includes.dashboard.routes import _lookup_rfq_thread_id
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
+            session = MagicMock()
+            session.query.return_value.filter.return_value.first.return_value = None
+            mock_gs.return_value = session
+
+            result = _lookup_rfq_thread_id("RFQ-2026-0001", "user@eagle.com")
+            assert result is None
+
+    def test_cleans_up_stale_binding(self):
+        """Thread exists in DB but has no steps — zombie from binding without interaction."""
+        from includes.dashboard.routes import _lookup_rfq_thread_id
+        with patch("includes.dashboard.routes.get_session") as mock_gs:
+            session = MagicMock()
+            row = MagicMock()
+            row.thread_id = "zombie-thread"
+            session.query.return_value.filter.return_value.first.return_value = row
+            # Thread has NO steps
+            session.execute.return_value.fetchone.return_value = None
+            mock_gs.return_value = session
+
+            result = _lookup_rfq_thread_id("RFQ-2026-0001", "user@eagle.com")
+            assert result is None
+            session.delete.assert_called_once_with(row)
+            session.commit.assert_called_once()

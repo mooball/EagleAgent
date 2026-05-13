@@ -689,9 +689,15 @@ async def start():
             welcome_msg = "Hello! I can help you find suppliers. Give me a part number, brand name, supplier name, or description and I'll search our database."
 
         from includes.prompts import INTENTS
-        eagle_commands = {k: v for k, v in INTENTS.items() if k == "new_rfq"}
-        await cl.context.emitter.set_commands(_intents_to_commands(eagle_commands))
+        await cl.context.emitter.set_commands([])
         await cl.Message(content=welcome_msg).send()
+
+    # Notify the parent frame of the Chainlit thread id so it can track it
+    try:
+        chainlit_thread_id = cl.context.session.thread_id
+        await cl.send_window_message({"type": "thread_id", "threadId": chainlit_thread_id})
+    except Exception:
+        pass
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
@@ -755,16 +761,46 @@ async def on_chat_resume(thread: ThreadDict):
                 author="EagleAgent",
             )
         else:
-            # Eagle Agent — only New RFQ command button
-            from includes.prompts import INTENTS
-            eagle_commands = {k: v for k, v in INTENTS.items() if k == "new_rfq"}
-            await cl.context.emitter.set_commands(_intents_to_commands(eagle_commands))
+            # Eagle Agent — no command buttons (RFQ creation via dashboard only)
+            await cl.context.emitter.set_commands([])
             msg = cl.Message(
                 content=f"Welcome back, {user_name}! Continuing our previous conversation.",
                 author="EagleAgent",
             )
         msg.persisted = True  # skip DB write — display only
         await msg.send()
+
+    # Notify the parent frame of this thread's id so it can track it
+    try:
+        await cl.send_window_message({"type": "thread_id", "threadId": thread_id})
+    except Exception:
+        pass
+
+    # If this thread is bound to an RFQ, ensure it's named after the RFQ
+    try:
+        from includes.dashboard.database import get_session
+        from includes.dashboard.models import RFQThread
+        user_email = user.identifier if user else None
+        if user_email:
+            session = get_session()
+            try:
+                binding = session.query(RFQThread).filter(
+                    RFQThread.thread_id == thread_id,
+                    RFQThread.user_email == user_email,
+                ).first()
+                if binding:
+                    import asyncio
+                    from includes.tools.quote_tools import _get_rfq_dict_sync
+                    rfq = await asyncio.to_thread(_get_rfq_dict_sync, binding.rfq_number)
+                    customer = rfq.get("customer", "") if rfq else ""
+                    thread_name = f"{binding.rfq_number} — {customer}" if customer else binding.rfq_number
+                    data_layer = cl.data._data_layer
+                    if data_layer:
+                        await data_layer.update_thread(thread_id=thread_id, name=thread_name)
+            finally:
+                session.close()
+    except Exception as e:
+        logger.warning(f"Failed to name RFQ thread on resume: {e}")
 
 
 # ---------------------------------------------------------------------------

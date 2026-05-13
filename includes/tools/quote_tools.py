@@ -688,7 +688,7 @@ def _create_rfq_sync(data: dict, user_id: str) -> dict:
     from includes.dashboard.models import RFQ, RFQItem
 
     customer = data.get("customer")
-    if not customer:
+    if customer is None:
         return {"error": "Error: 'customer' is required in data when creating an RFQ."}
 
     new_number = _next_rfq_number_sync()
@@ -740,6 +740,18 @@ def _create_rfq_sync(data: dict, user_id: str) -> dict:
         session.commit()
         # Re-fetch with items loaded
         session.refresh(rfq)
+
+        # Bind the thread to this RFQ for the creating user
+        thread_id = data.get("thread_id")
+        if thread_id:
+            from includes.dashboard.models import RFQThread
+            session.add(RFQThread(
+                rfq_number=new_number,
+                user_email=user_id,
+                thread_id=thread_id,
+            ))
+            session.commit()
+
         result = _rfq_to_dict(rfq)
         logger.info(f"Created {new_number} for {customer} with {len(raw_items)} items")
         return result
@@ -757,6 +769,63 @@ def _get_rfq_dict_sync(rfq_number: str) -> dict | None:
         if not rfq:
             return None
         return _rfq_to_dict(rfq)
+    finally:
+        session.close()
+
+
+def _add_items_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
+    """Add multiple items to an existing RFQ. Returns RFQ dict or error."""
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy import func as sa_func
+
+    raw_items = data.get("items", [])
+    if not raw_items:
+        return "Error: 'items' list is required for add_items."
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+
+        max_line = session.query(sa_func.max(RFQItem.line)).filter(
+            RFQItem.rfq_id == rfq.id
+        ).scalar() or 0
+
+        for idx, raw in enumerate(raw_items, start=max_line + 1):
+            item = RFQItem(
+                rfq_id=rfq.id,
+                line=idx,
+                input_description=raw.get("input_description", ""),
+                input_code=raw.get("input_code", ""),
+                part_number=raw.get("part_number"),
+                brand=raw.get("brand"),
+                product_id=raw.get("product_id"),
+                quantity=raw.get("quantity"),
+                uom=raw.get("uom", "ea"),
+                status=raw.get("status", "unidentified"),
+                notes=raw.get("notes", ""),
+                suppliers=[],
+            )
+            session.add(item)
+
+        now = _now_iso()
+        history = list(rfq.history or [])
+        history.append({
+            "date": now,
+            "user": user_id,
+            "action": f"Added {len(raw_items)} items (lines {max_line + 1}-{max_line + len(raw_items)})",
+        })
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        result = _rfq_to_dict(rfq)
+        logger.info(f"Added {len(raw_items)} items to {rfq_number}")
+        return result
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 
@@ -1263,7 +1332,8 @@ def create_quote_tools(user_id: str) -> list:
           create        — Create a new RFQ. data keys: customer (required),
                           customer_contact ({name, email, phone}), reference,
                           netsuite_opportunity, hubspot_deal, notes,
-                          items ([{input_description, input_code, quantity, uom}])
+                          items ([{input_description, input_code, part_number,
+                          brand, quantity, uom}])
           update        — Update top-level RFQ properties. data keys: any of
                           customer, customer_contact, reference, notes,
                           netsuite_opportunity, hubspot_deal, assigned_to
@@ -1273,6 +1343,10 @@ def create_quote_tools(user_id: str) -> list:
                           Item status values: unidentified, identified, confirmed,
                           review (needs human attention — e.g. part number
                           discrepancy found during web search)
+          add_items     — Add multiple line items to an existing RFQ. data keys:
+                          items (required, list of dicts with input_description,
+                          input_code, part_number, brand, quantity, uom).
+                          Use this instead of create when the RFQ already exists.
           add_supplier  — Add supplier candidate(s) to a line item. data keys:
                           line (required), EITHER name (required) for a single
                           supplier with optional supplier_id, contacts, status,
@@ -1321,10 +1395,21 @@ def create_quote_tools(user_id: str) -> list:
             except (json.JSONDecodeError, ValueError):
                 return f"Error: 'data' must be a JSON object, got unparseable string: {data[:100]}"
 
+        # For create: inject Chainlit's thread_id from the current session
+        if action == "create":
+            try:
+                import chainlit as cl
+                thread_id = cl.context.session.thread_id
+                if thread_id:
+                    data["thread_id"] = thread_id
+            except Exception:
+                pass
+
         _ACTION_MAP = {
             "create": lambda: asyncio.to_thread(_create_rfq_sync, data, user_id),
             "update": lambda: asyncio.to_thread(_update_rfq_sync, rfq_id, data, user_id),
             "update_item": lambda: asyncio.to_thread(_update_item_sync, rfq_id, data, user_id),
+            "add_items": lambda: asyncio.to_thread(_add_items_sync, rfq_id, data, user_id),
             "add_supplier": lambda: asyncio.to_thread(_add_supplier_sync, rfq_id, data, user_id),
             "update_supplier": lambda: asyncio.to_thread(_update_supplier_sync, rfq_id, data, user_id),
             "clear_suppliers": lambda: asyncio.to_thread(_clear_suppliers_sync, rfq_id, data, user_id),
@@ -1338,7 +1423,7 @@ def create_quote_tools(user_id: str) -> list:
         if not handler:
             return (
                 f"Error: unknown action '{action}'. Valid actions: create, "
-                "update, update_item, add_supplier, update_supplier, "
+                "update, update_item, add_items, add_supplier, update_supplier, "
                 "clear_suppliers, assign, update_status, add_note, link_external."
             )
 
@@ -1354,6 +1439,20 @@ def create_quote_tools(user_id: str) -> list:
         # Error dict from create
         if isinstance(result, dict) and "error" in result:
             return result["error"]
+
+        # Name the thread after RFQ creation
+        if action == "create" and isinstance(result, dict) and data.get("thread_id"):
+            try:
+                import chainlit as cl
+                data_layer = cl.data._data_layer
+                if data_layer:
+                    thread_name = f"{result.get('id', '')} — {result.get('customer', '')}"
+                    await data_layer.update_thread(
+                        thread_id=data["thread_id"],
+                        name=thread_name,
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to name thread: {e}")
 
         await _notify_rfq_updated()
         return _render_rfq_summary(result)

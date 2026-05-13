@@ -259,21 +259,32 @@ INTENTS = {
         "icon": "📋",
         "description": "Create a new Request for Quote",
         "follow_up": (
-            "I'll create a new Request for Quote. Please provide the **Customer Name** "
+            "I'll help you set up this RFQ. Please provide the **Customer Name** "
             "along with a **list of products**. Ideally include product names, brands, "
             "and part numbers.\n\n"
             "You can type the details, or upload an **image** (PNG, JPG), **PDF**, **text file** (TXT, CSV), or **spreadsheet** (XLS, XLSX) of the parts list."
         ),
         "context": (
-            "The user wants to create a new RFQ (Request for Quote). "
+            "The user is setting up an RFQ (Request for Quote). "
+            "IMPORTANT: Check the [Dashboard Context] first. If an RFQ ID is "
+            "already shown (e.g. the user is viewing an RFQ detail page), you "
+            "MUST update that existing RFQ — do NOT create a new one. Use "
+            "`manage_rfq(action='update', rfq_id=..., data={customer: ...})` to "
+            "set the customer, and `manage_rfq(action='add_items', rfq_id=..., "
+            "data={items: [...]})` to add line items in bulk. "
+            "Only use `manage_rfq(action='create', data={...})` if there is NO "
+            "RFQ in the dashboard context. "
             "Gather the customer name and a parts list. The parts list can come "
-            "from text, a screenshot, or an attachment — extract each line item "
-            "with description, part number/code (if provided), and quantity. "
-            "Then use `manage_rfq(action='create', data={...})` to create the RFQ. "
-            "After creation, STOP and present the RFQ summary for the user to "
-            "review. Ask them to confirm the customer details and line items are "
-            "correct before proceeding. Do NOT search for products or suppliers "
-            "until the user explicitly confirms the RFQ or asks you to."
+            "from text, a screenshot, or an attachment — extract each line item. "
+            "IMPORTANT: For EVERY item, you MUST populate ALL available fields: "
+            "input_description, input_code (the original part/code from the request), "
+            "part_number (same as input_code if given), brand, quantity, and uom. "
+            "Do NOT omit part numbers or brands — if they appear in the source data, "
+            "they MUST be included in the item data. "
+            "After populating the RFQ, STOP and present the RFQ summary for the "
+            "user to review. Ask them to confirm the customer details and line "
+            "items are correct before proceeding. Do NOT search for products or "
+            "suppliers until the user explicitly confirms the RFQ or asks you to."
         ),
     },
 }

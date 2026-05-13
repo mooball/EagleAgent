@@ -24,6 +24,7 @@ from includes.dashboard.models import (
     Transaction,
     Supplier,
     SupplierBrand,
+    RFQThread,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,10 +108,20 @@ def _render(request: Request, full_template: str, partial_template: str,
 # Latest thread (for iframe resume on page reload)
 # ---------------------------------------------------------------------------
 @router.get("/api/latest-thread")
-def latest_thread(user: dict = Depends(require_user)):
-    """Return the user's most recently active Chainlit thread ID."""
+def latest_thread(user: dict = Depends(require_user), rfq_id: str | None = None):
+    """Return the user's thread for an RFQ, or their most recent Chainlit thread."""
     session = get_session()
     try:
+        # If rfq_id is provided, look up the bound thread first
+        if rfq_id:
+            rfq_thread = session.query(RFQThread).filter(
+                RFQThread.rfq_number == rfq_id,
+                RFQThread.user_email == user["email"],
+            ).first()
+            if rfq_thread:
+                return JSONResponse({"thread_id": rfq_thread.thread_id})
+
+        # Fall back to most recent thread
         row = session.execute(
             text("""
                 SELECT t."id"
@@ -126,6 +137,87 @@ def latest_thread(user: dict = Depends(require_user)):
     finally:
         session.close()
     return JSONResponse({"thread_id": row[0] if row else None})
+
+
+# ---------------------------------------------------------------------------
+# RFQ ↔ Thread binding
+# ---------------------------------------------------------------------------
+
+def _lookup_rfq_thread_id(rfq_number: str, user_email: str) -> str | None:
+    """Return the thread_id bound to this RFQ for the given user, or None.
+
+    Validates that the thread has actual chat history (at least one step).
+    Zombie threads (created by binding but never interacted with) and
+    stale bindings (thread deleted) are silently cleaned up.
+    """
+    session = get_session()
+    try:
+        row = session.query(RFQThread).filter(
+            RFQThread.rfq_number == rfq_number,
+            RFQThread.user_email == user_email,
+        ).first()
+        if not row:
+            return None
+        # Verify the thread has actual interaction (at least one step).
+        # A thread row may exist from update_thread() but with no steps
+        # if the user never sent a message — Chainlit can't resume those.
+        has_steps = session.execute(
+            text('SELECT 1 FROM steps WHERE "threadId" = :tid LIMIT 1'),
+            {"tid": row.thread_id},
+        ).fetchone()
+        if has_steps:
+            return row.thread_id
+        # Stale or zombie binding — clean it up
+        logger.warning(f"Removing stale rfq_thread binding: {rfq_number} → {row.thread_id}")
+        session.delete(row)
+        session.commit()
+        return None
+    finally:
+        session.close()
+
+
+@router.get("/api/rfq-thread")
+def get_rfq_thread(rfq_id: str, user: dict = Depends(require_user)):
+    """Return the thread_id bound to this RFQ for the current user, or null."""
+    session = get_session()
+    try:
+        row = session.query(RFQThread).filter(
+            RFQThread.rfq_number == rfq_id,
+            RFQThread.user_email == user["email"],
+        ).first()
+    finally:
+        session.close()
+    return JSONResponse({"thread_id": row.thread_id if row else None})
+
+
+@router.post("/api/rfq-thread")
+async def bind_rfq_thread(request: Request, user: dict = Depends(require_user)):
+    """Bind (or rebind) a thread to an RFQ for the current user."""
+    body = await request.json()
+    rfq_id = body.get("rfq_id")
+    thread_id = body.get("thread_id")
+    if not rfq_id or not thread_id:
+        return JSONResponse({"error": "rfq_id and thread_id required"}, status_code=400)
+
+    session = get_session()
+    try:
+        existing = session.query(RFQThread).filter(
+            RFQThread.rfq_number == rfq_id,
+            RFQThread.user_email == user["email"],
+        ).first()
+        if existing:
+            existing.thread_id = thread_id
+        else:
+            session.add(RFQThread(
+                rfq_number=rfq_id,
+                user_email=user["email"],
+                thread_id=thread_id,
+            ))
+        session.commit()
+    finally:
+        session.close()
+
+    return JSONResponse({"ok": True, "rfq_id": rfq_id, "thread_id": thread_id})
 
 
 # ---------------------------------------------------------------------------
@@ -1204,7 +1296,7 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
             query = session.query(RFQ)
             if mine == "1" and user_email:
                 query = query.filter(RFQ.assigned_to.ilike(user_email))
-            query = query.order_by(RFQ.created_date.desc())
+            query = query.order_by(RFQ.created_date.desc(), RFQ.id.desc())
             return [_rfq_to_dict(r) for r in query.limit(1000).all()]
         finally:
             session.close()
@@ -1263,6 +1355,31 @@ async def rfq_list(request: Request, user: dict = Depends(require_user),
     return _render(request, "rfqs.html", "partials/rfq_list.html", ctx, user)
 
 
+@router.post("/rfqs/new")
+async def rfq_new(request: Request, user: dict = Depends(require_user)):
+    """Create a blank draft RFQ and navigate to its detail view."""
+    import asyncio
+    from includes.tools.quote_tools import _create_rfq_sync
+
+    user_email = user.get("email", user.get("identifier", ""))
+    rfq = await asyncio.to_thread(_create_rfq_sync, {"customer": ""}, user_email)
+
+    if isinstance(rfq, dict) and "error" in rfq:
+        return HTMLResponse(f"<p>{rfq['error']}</p>", status_code=400)
+
+    _enrich_rfq_supplier_contacts(rfq)
+    rfq_id = rfq["id"]
+
+    response = templates.TemplateResponse("partials/rfq_detail.html", {
+        "request": request,
+        "user": user,
+        "rfq": rfq,
+        "rfq_thread_id": None,
+    })
+    response.headers["HX-Push-Url"] = f"/rfqs/{rfq_id}"
+    return response
+
+
 @router.get("/rfqs/{rfq_id}")
 async def rfq_detail(request: Request, rfq_id: str,
                      user: dict = Depends(require_user)):
@@ -1276,6 +1393,7 @@ async def rfq_detail(request: Request, rfq_id: str,
     ctx = {
         "rfq": rfq,
         "active_nav": "rfqs",
+        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
     }
     return _render(request, "rfq_detail.html", "partials/rfq_detail.html", ctx, user)
 
@@ -1419,6 +1537,7 @@ async def partial_rfq_detail(request: Request, rfq_id: str,
         "request": request,
         "user": user,
         "rfq": rfq,
+        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
     })
 
 
@@ -1452,6 +1571,7 @@ async def partial_rfq_update(request: Request, rfq_id: str,
     _enrich_rfq_supplier_contacts(rfq)
     return templates.TemplateResponse("partials/rfq_detail.html", {
         "request": request, "user": user, "rfq": rfq,
+        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
     })
 
 
@@ -1488,6 +1608,7 @@ async def partial_rfq_update_item(request: Request, rfq_id: str,
     _enrich_rfq_supplier_contacts(rfq)
     return templates.TemplateResponse("partials/rfq_detail.html", {
         "request": request, "user": user, "rfq": rfq,
+        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
     })
 
 
@@ -1557,6 +1678,7 @@ async def partial_rfq_add_item(request: Request, rfq_id: str,
     _enrich_rfq_supplier_contacts(rfq)
     return templates.TemplateResponse("partials/rfq_detail.html", {
         "request": request, "user": user, "rfq": rfq,
+        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
     })
 
 
@@ -1580,6 +1702,7 @@ async def partial_rfq_clear_suppliers(request: Request, rfq_id: str,
     _enrich_rfq_supplier_contacts(rfq)
     return templates.TemplateResponse("partials/rfq_detail.html", {
         "request": request, "user": user, "rfq": rfq,
+        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
     })
 
 

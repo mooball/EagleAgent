@@ -220,6 +220,12 @@
                         iframe.addEventListener('load', () => {
                             this.syncThemeToIframe();
                             this.pushContext();
+                            // Extract thread_id from iframe URL as fallback
+                            try {
+                                const iframePath = iframe.contentWindow.location.pathname;
+                                const m = iframePath.match(/\/chat\/thread\/([a-f0-9-]+)/i);
+                                if (m) this._activeThreadId = m[1];
+                            } catch (_) {}
                         });
                     }
 
@@ -271,27 +277,75 @@
                             this.agentWorking = false;
                             clearTimeout(this._agentWorkingTimeout);
                         }
+                        if (event.data?.type === 'bind_rfq_thread' && event.data.rfqId) {
+                            // User clicked "Link" in the iframe banner — rebind
+                            const rfqId = event.data.rfqId;
+                            const threadId = this._activeThreadId;
+                            if (threadId) {
+                                fetch('/api/rfq-thread', {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    credentials: 'same-origin',
+                                    body: JSON.stringify({rfq_id: rfqId, thread_id: threadId}),
+                                }).then(() => {
+                                    // Update context so banner reflects the new binding
+                                    this.currentContext.thread_id = threadId;
+                                    this.pushContext();
+                                }).catch(() => {});
+                            }
+                        }
                         if (event.data?.type === 'thread_id' && event.data.threadId) {
                             // Track the active thread so we don't overwrite on reload
                             this._activeThreadId = event.data.threadId;
+                            // Re-push context so the iframe banner updates
+                            this.pushContext();
+                            // If we're waiting to bind a new thread to an RFQ, do it now
+                            if (this._pendingRfqBind) {
+                                const rfqId = this._pendingRfqBind;
+                                const isNewRfq = this._pendingNewRfq;
+                                const threadId = event.data.threadId;
+                                this._pendingRfqBind = null;
+                                this._pendingNewRfq = false;
+                                fetch('/api/rfq-thread', {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    credentials: 'same-origin',
+                                    body: JSON.stringify({rfq_id: rfqId, thread_id: threadId}),
+                                }).then(() => {
+                                    // For brand-new blank RFQs, trigger the new_rfq intent
+                                    if (isNewRfq) {
+                                        fetch('/api/agent-bridge', {
+                                            method: 'POST',
+                                            headers: {'Content-Type': 'application/json'},
+                                            credentials: 'same-origin',
+                                            body: JSON.stringify({action: {name: 'new_rfq', payload: {}}}),
+                                        }).catch(() => {});
+                                    }
+                                }).catch(() => {});
+                            }
                         }
                     });
 
-                    // Resume the user's most recent persisted thread (server-side lookup)
-                    fetch('/api/latest-thread', { credentials: 'same-origin' })
-                        .then(r => r.json())
-                        .then(data => {
-                            if (data.thread_id) {
-                                const iframe = document.getElementById('agent-iframe');
-                                if (iframe) {
-                                    iframe.src = '/chat/thread/' + data.thread_id;
-                                }
-                            }
-                        })
-                        .catch(() => {});
-
-                    // Set initial context from the page
+                    // Set initial context from the page (may switch iframe to an RFQ thread)
                     this.updateContext();
+
+                    // Resume the user's most recent persisted thread — but only if
+                    // updateContext() didn't already switch to an RFQ-bound thread
+                    // or start an on-demand bind (_pendingRfqBind).
+                    if (!this._activeThreadId && !this._pendingRfqBind) {
+                        fetch('/api/latest-thread', { credentials: 'same-origin' })
+                            .then(r => r.json())
+                            .then(data => {
+                                if (data.thread_id) {
+                                    const iframe = document.getElementById('agent-iframe');
+                                    if (iframe) {
+                                        iframe.src = '/chat/thread/' + data.thread_id;
+                                        this._activeThreadId = data.thread_id;
+                                    }
+                                }
+                            })
+                            .catch(() => {});
+                    }
 
                     // Infinite scroll: fire 'intersect' on sentinel when scrolled near bottom
                     // (backup for containers where IntersectionObserver root differs)
@@ -373,6 +427,32 @@
                             if (newJson === this._lastContextJson) return;
                             this._lastContextJson = newJson;
                             this.currentContext = newCtx;
+
+                            // Switch the chat iframe to the RFQ's bound thread
+                            if (newCtx.thread_id && newCtx.thread_id !== this._activeThreadId) {
+                                const iframe = document.getElementById('agent-iframe');
+                                if (iframe) {
+                                    iframe.src = '/chat/thread/' + newCtx.thread_id;
+                                    this._activeThreadId = newCtx.thread_id;
+                                }
+                                // Auto-open the agent panel
+                                if (this.agentState === 'closed') {
+                                    this.agentState = 'panel';
+                                }
+                            }
+                            // No thread bound yet for this RFQ — create one on demand
+                            if (newCtx.view === 'rfq_detail' && newCtx.id && !newCtx.thread_id) {
+                                this._pendingRfqBind = newCtx.id;
+                                // Track whether this is a brand-new blank RFQ
+                                this._pendingNewRfq = !newCtx.customer;
+                                const iframe = document.getElementById('agent-iframe');
+                                if (iframe) {
+                                    iframe.src = '/chat';
+                                }
+                                if (this.agentState === 'closed') {
+                                    this.agentState = 'panel';
+                                }
+                            }
                         } catch (e) {
                             this.currentContext = {};
                         }
@@ -383,6 +463,8 @@
                 pushContext() {
                     // Unwrap Alpine proxy to a plain object for postMessage/fetch
                     const ctx = JSON.parse(JSON.stringify(this.currentContext));
+                    // Include the active thread so the iframe can detect mismatches
+                    ctx._activeThreadId = this._activeThreadId || null;
                     const iframe = document.getElementById('agent-iframe');
                     if (iframe?.contentWindow) {
                         iframe.contentWindow.postMessage({
@@ -435,6 +517,16 @@
                     this._unidentifiedItems = data.unidentified || [];
                     // Index items by line number for quick lookup
                     (data.items || []).forEach(i => this._items[i.line] = i);
+                    // Auto-open header edit form for blank RFQs (no customer yet)
+                    var ctxEl = document.querySelector('[data-dashboard-context]');
+                    if (ctxEl) {
+                        try {
+                            var ctx = JSON.parse(ctxEl.dataset.dashboardContext);
+                            if (ctx.view === 'rfq_detail' && !ctx.customer) {
+                                this.editingHeader = true;
+                            }
+                        } catch(e) {}
+                    }
                     var supplierLines = data.supplierLines || [];
                     // Restore expanded state from sessionStorage
                     var saved = {};
