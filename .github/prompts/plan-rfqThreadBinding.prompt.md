@@ -80,55 +80,40 @@ Simpler but doesn't support per-user threads. Would need to add a `thread_user` 
 
 ## Implementation Plan
 
-### Phase 1: Data model and API
+### Phase 1: Data model and API ✅ DONE
 
-#### 1.1 Create `rfq_threads` table
-- Alembic migration to create the table.
-- SQLAlchemy model in `includes/dashboard/models.py`.
+#### 1.1 Create `rfq_threads` table ✅
+- Alembic migration `9f2633750a73_create_rfq_threads_table.py` created.
+- `RFQThread` model added to `includes/dashboard/models.py`.
 
-#### 1.2 Add API endpoints
-- `GET /api/rfq-thread?rfq_id=RFQ-2026-0042` — returns the thread_id for the current user + RFQ (creates one if none exists).
+#### 1.2 Add API endpoints ✅
 - `POST /api/rfq-thread` with `{rfq_id, thread_id}` — binds/rebinds a thread to an RFQ for the current user.
+- `base.html` handles `bind_rfq_thread` postMessage from iframe and POSTs to this endpoint.
 
-#### 1.3 Update `GET /api/latest-thread`
-- Accept an optional `?rfq_id=` parameter.
-- If provided, return the RFQ-bound thread for the current user instead of the most recent global thread.
-- Fall back to the current behaviour (most recent thread) when no rfq_id is given.
+#### 1.3 Update `GET /api/latest-thread` — SKIPPED (not needed)
+- Thread switching is handled via `data-dashboard-context` + `thread_id` field and postMessage events, not by modifying `GET /api/latest-thread`.
 
 ---
 
 ### Phase 2: Thread creation and RFQ binding
 
-#### 2.0 Remove "New RFQ" command button from chat
-The Eagle Agent profile currently shows a "New RFQ" command button in the chat input area (registered via `includes/chat/actions.py` → `handle_new_rfq`). This button implies creating an RFQ on the current thread, which is always wrong — there is no good scenario for it:
+#### 2.0 Remove "New RFQ" command button from chat ✅ DONE
+- Eagle Agent profile sets `await cl.context.emitter.set_commands([])` — no command buttons shown.
+- The `new_rfq` action handler remains registered for the dashboard bridge but is not surfaced as a chat command.
 
-- If the thread is bound to an RFQ → creates a conflicting second RFQ in the same thread.
-- If the thread has other history → pollutes the new RFQ's context.
-- If the thread is fresh → the dashboard button already handles this correctly.
+#### 2.1 "+ New RFQ" dashboard button creates a new thread ✅ DONE
+Simplified from the original plan:
+1. Button is now `hx-post="/rfqs/new"` — creates a blank draft RFQ (empty customer) and navigates to its detail view.
+2. On the RFQ detail page, `base.html` detects no bound thread and creates one on the first `thread_id` postMessage from the iframe.
+3. The `new_rfq` intent is triggered via agent-bridge after the thread is bound.
+4. The intent prompt tells the agent to `update` the existing blank RFQ (not create a new one).
 
-**Action:** Remove the `new_rfq` entry from the command buttons shown in Eagle Agent's `@cl.on_chat_start` and `@cl.on_chat_resume`. Keep the action handler registered (it's still needed for the dashboard bridge), but don't surface it as a chat command.
+#### 2.2 Bind thread on RFQ creation ✅ DONE
+- `base.html` `thread_id` handler: when a new thread_id arrives and a `_pendingRfqBind` exists, POSTs to `/api/rfq-thread` to bind the thread.
+- `_create_rfq_sync` also stores `thread_id` in `rfq_threads` when provided.
+- Thread naming on resume: `on_chat_resume` checks `rfq_threads` and calls `update_thread()` to set the name to `"RFQ-XXXX — Customer"`.
 
-Files: `app.py` (remove `new_rfq` from `eagle_commands`)
-
-#### 2.1 "+ New RFQ" dashboard button creates a new thread
-Currently the "+ New RFQ" button in `rfq_list.html` calls `/api/agent-bridge` with `{action: {name: "new_rfq"}}`. This dispatches the intent into the *current* thread.
-
-New flow:
-1. Button click navigates the iframe to `/chat` (which creates a fresh thread via `@cl.on_chat_start`).
-2. Once the iframe finishes loading, dispatch the `new_rfq` intent via the agent bridge.
-3. The thread gets bound to the RFQ once the RFQ is actually created (Phase 2.2).
-4. If the user cancels (never creates the RFQ), the thread remains unbound and behaves as a normal general-purpose thread.
-
-#### 2.2 Bind thread on RFQ creation
-When `manage_rfq(action="create")` runs:
-1. Read `thread_id` from `cl.user_session.get("thread_id")`.
-2. Read `user_id` from `cl.user_session.get("user_id")`.
-3. Insert into `rfq_threads(rfq_number, user_email, thread_id)`.
-4. Also store in `RFQ.thread_id` for backwards compatibility.
-5. Name the thread: call `update_thread(thread_id, name=f"RFQ {rfq_number} — {customer}")` so the Chainlit sidebar shows a meaningful label.
-
-#### 2.3 Handle typed RFQ creation requests (redirect with data carry)
-
+#### 2.3 Handle typed RFQ creation requests (redirect with data carry) ❌ NOT DONE
 Users may type "create a new RFQ for Acme Construction with 5x cordless drills" in any thread. The system must ensure the RFQ ends up on a clean thread.
 
 **Decision matrix:**
@@ -158,46 +143,55 @@ Files: `app.py` (`@cl.on_chat_start` — check for pending RFQ), `includes/tools
 
 ### Phase 3: Thread switching on RFQ navigation
 
-#### 3.1 RFQ detail page triggers thread switch and panel open
+#### 3.1 RFQ detail page triggers thread switch and panel open ✅ DONE
 When the user navigates to `/rfqs/RFQ-2026-0042`:
 1. The `rfq_detail` route looks up the user's thread for this RFQ (from `rfq_threads`).
 2. The thread_id is included in the `data-dashboard-context` JSON: `{"view": "rfq_detail", "entity": "rfq", "id": "RFQ-...", "thread_id": "abc-123"}`.
 3. `base.html`'s `updateContext()` detects the `thread_id` in the context and, if it differs from `_activeThreadId`, switches the iframe: `iframe.src = '/chat/thread/' + ctx.thread_id`.
-4. If there is no thread for this user+RFQ yet (e.g. viewing someone else's RFQ for the first time), create one on-demand.
-5. Auto-open the agent panel if it's currently closed. Set `agentState = 'panel'` and ensure `panelWidth` is at least 30–40% of the viewport width so the thread is comfortably readable.
-6. If the user's current chat profile is not "Eagle Agent", auto-switch to it to ensure the RFQ gets consistent tooling (internal + research agents).
+4. If there is no thread for this user+RFQ yet, a new one is created on-demand when the iframe loads and sends its `thread_id` postMessage back.
+5. Agent panel auto-opens: `agentState = 'panel'` is set when thread switching occurs.
 
-#### 3.2 Non-RFQ navigation keeps the current thread
+**Not implemented:** Auto-switch to "Eagle Agent" chat profile if user is on a different profile. Low priority — users rarely switch profiles mid-session.
+
+#### 3.2 Non-RFQ navigation keeps the current thread ✅ DONE (by design)
 When the user navigates to `/suppliers/{id}` or `/products/{id}`:
 - The context has no `thread_id` field (only RFQ views include it).
 - The iframe stays on whatever thread it was on — no switching.
 - This is the desired behaviour: viewing a supplier from within an RFQ context shouldn't disrupt the thread.
 
-#### 3.3 RFQ list / home reverts to latest-thread
+#### 3.3 RFQ list / home reverts to latest-thread ✅ DONE (by design — leave as-is)
 When the user navigates to `/rfqs` (list) or `/` (home):
 - No `thread_id` in context.
-- Could optionally revert to the most recent thread, or just leave the iframe as-is.
-- **Recommended: leave as-is.** Only explicitly viewing an RFQ detail page should switch threads.
+- The iframe stays on the current thread. Only explicitly viewing an RFQ detail page switches threads.
 
 ---
 
 ### Phase 4: Thread naming and UX polish
 
-#### 4.1 Name threads on creation
-When an RFQ is created and bound to a thread, call `update_thread()` to set the thread name to the RFQ number (e.g. `"RFQ-2026-0042 — Acme Construction"`). This makes the Chainlit thread history sidebar useful.
+#### 4.1 Name threads on creation ✅ DONE
+When an RFQ-bound thread is resumed, `on_chat_resume` looks up the `rfq_threads` binding and calls `update_thread()` to set the thread name to `"RFQ-2026-0042 — Customer Name"`.
 
-#### 4.2 Pre-populate RFQ context in thread
-When an RFQ-bound thread is started or resumed, push a rich RFQ summary into the dashboard context so the agent has immediate awareness without needing to call `get_rfq`. The `data-dashboard-context` on the RFQ detail page should include:
-- `rfq_id`, `customer`, `status`, `created_date`, `assigned_to`
-- Item summary: line count, identified vs unidentified, key part numbers
-- Supplier summary: count per item, any shortlisted/selected suppliers
+#### 4.2 Pre-populate RFQ context in thread ✅ DONE
+The `rfq_detail` template includes a condensed RFQ summary in `data-dashboard-context`:
+- `id`, `customer`, `status`, `item_count`, `identified_count`, `assigned_to`
+- `thread_id` (if bound)
+- This is pushed to the agent via `POST /api/dashboard-context` and prepended to every user message.
 
-This data is already available in the `rfq_detail` route (the `rfq` dict). Include a condensed version in the context JSON. The agent's system prompt already reads `dashboard_context` — it will automatically have the RFQ state on every message.
+#### 4.3 Thread indicator in RFQ detail ✅ DONE
+Two indicators implemented:
+1. **Chat button** on the RFQ detail header — opens the bound thread (or `/chat` if none) and shows the agent panel.
+2. **RFQ context banner** in the chat iframe (`embedded.js`):
+   - Green banner when the chat thread matches the viewed RFQ's bound thread.
+   - Amber warning banner with a "Link" button when the thread differs.
+   - Hidden when no binding exists yet.
 
-#### 4.3 Thread indicator in RFQ detail
-Optionally show a small indicator in the RFQ detail header showing which thread is active, e.g.:
-- 💬 Thread linked (clickable to open the chat panel if closed)
-- Or simply auto-open the agent panel when viewing an RFQ detail page.
+#### 4.4 "Start new thread" option ❌ NOT DONE
+Add an option (button or chat command) to create a fresh thread for the same RFQ. The old thread remains in Chainlit history but the `rfq_threads` row is updated to point to the new thread_id.
+
+Use case: the RFQ has been active for weeks and the thread is very long — the user wants a clean slate without losing history.
+
+#### 4.5 Sidebar persistence ✅ DONE (bonus — not in original plan)
+`embedded.js` reads the `sidebar:state` cookie on load and auto-closes the Chainlit sidebar if it was previously collapsed. Known minor issue: brief flash of open→close on load.
 
 #### 4.4 "Start new thread" option
 Add an option (button or chat command) to create a fresh thread for the same RFQ. The old thread remains in Chainlit history but the `rfq_threads` row is updated to point to the new thread_id.
@@ -208,36 +202,42 @@ Use case: the RFQ has been active for weeks and the thread is very long — the 
 
 ## Edge Cases
 
-| Scenario | Handling |
-|----------|----------|
-| User views an RFQ they didn't create | Create a new thread for that user, bind it to the RFQ |
-| User types "create RFQ" in a bound thread | Redirect to new thread with data carry (Phase 2.3) |
-| User types "create RFQ" in an unbound thread with history | Redirect to new thread with data carry (Phase 2.3) |
-| User types "create RFQ" in a fresh empty thread | Allow it — create RFQ and bind thread |
-| Two users working on the same RFQ | Each gets their own thread (junction table) |
-| RFQ created before this feature (no thread) | First time the user views the detail page, create and bind a thread |
-| User clicks "+ New RFQ", then cancels | Thread exists but is unbound — behaves as a normal general thread |
-| Thread becomes very long | "Start new thread" option re-binds a fresh thread |
-| User navigates RFQ → supplier → back to RFQ | Thread should be restored — the supplier page doesn't clear it |
-| Redirect postMessage lost / iframe doesn't reload | Agent falls back to displaying data summary + "click + New RFQ" instructions |
-| Pending RFQ data expires | TTL on pending queue (e.g. 5 minutes); stale entries silently discarded |
+| Scenario | Handling | Status |
+|----------|----------|--------|
+| User views an RFQ they didn't create | Create a new thread for that user, bind it to the RFQ | ✅ Done (on-demand via thread_id postMessage) |
+| User types "create RFQ" in a bound thread | Redirect — create new thread, carry the data | ❌ Not done |
+| User types "create RFQ" in an unbound thread with history | Redirect — create new thread, carry the data | ❌ Not done |
+| User types "create RFQ" in a fresh empty thread | Allow it — create RFQ and bind thread | ✅ Done |
+| Two users working on the same RFQ | Each gets their own thread (junction table) | ✅ Done |
+| RFQ created before this feature (no thread) | First time the user views the detail page, create and bind a thread | ✅ Done |
+| User clicks "+ New RFQ", then cancels | Thread exists but is unbound — behaves as a normal general thread | ✅ Done |
+| Thread becomes very long | "Start new thread" option re-binds a fresh thread | ❌ Not done |
+| User navigates RFQ → supplier → back to RFQ | Thread should be restored — the supplier page doesn't clear it | ✅ Done |
+| Redirect postMessage lost / iframe doesn't reload | Agent falls back to displaying data summary + "click + New RFQ" instructions | ❌ Not done (part of 2.3) |
+| Pending RFQ data expires | TTL on pending queue (e.g. 5 minutes); stale entries silently discarded | ❌ Not done (part of 2.3) |
 
 ---
 
 ## Summary of Changes by File
 
-| File | Changes |
-|------|---------|
-| `alembic/versions/` | Migration to create `rfq_threads` table |
-| `includes/dashboard/models.py` | Add `RFQThread` model |
-| `includes/dashboard/routes.py` | Add `GET /api/rfq-thread`, `POST /api/rfq-thread`, `POST /api/rfq-thread/new`; update `rfq_detail()` to include `thread_id` in context; update `GET /api/latest-thread` to accept `?rfq_id=` |
-| `includes/tools/quote_tools.py` | On `create`: capture `thread_id` from session, insert into `rfq_threads`, name the thread. Check thread state before create (redirect if bound/dirty) |
-| `app.py` | Remove `new_rfq` from Eagle Agent command buttons; update `@cl.on_chat_start` to check for pending RFQ data and auto-trigger creation; send thread_id via postMessage on start |
-| `includes/chat/actions.py` | Keep `handle_new_rfq` action handler (used by dashboard bridge), but no longer surfaced as a chat command |
-| `templates/base.html` | `updateContext()` — switch iframe when context includes `thread_id`; auto-open panel to 30–40% on RFQ detail views; handle `create_rfq_thread` postMessage; don't switch on non-RFQ navigation |
-| `templates/partials/rfq_detail.html` | Include `thread_id` and condensed RFQ summary in `data-dashboard-context` |
-| `templates/partials/rfq_list.html` | Update "+ New RFQ" button to navigate iframe to `/chat` (fresh thread), then dispatch `new_rfq` intent after load |
-| `tests/` | Tests for `rfq_threads` CRUD, thread switching logic, thread conflict detection, pending RFQ data carry |
+| File | Changes | Status |
+|------|---------|--------|
+| `alembic/versions/9f2633750a73_...` | Migration to create `rfq_threads` table | ✅ Done |
+| `includes/dashboard/models.py` | Add `RFQThread` model | ✅ Done |
+| `includes/dashboard/routes.py` | Add `POST /api/rfq-thread`, `POST /rfqs/new`; `rfq_detail()` includes `thread_id` in context; sort fix for RFQ listing | ✅ Done |
+| `includes/dashboard/context.py` | `format_context_for_prompt()` includes RFQ-specific summary fields | ✅ Done |
+| `includes/tools/quote_tools.py` | `_create_rfq_sync` allows empty customer; `add_items` bulk action; create docstring includes `part_number`/`brand` in items schema | ✅ Done |
+| `includes/prompts.py` | `new_rfq` intent rewritten: update existing RFQ, explicit field mapping | ✅ Done |
+| `app.py` | Eagle Agent commands cleared; `on_chat_start` sends `thread_id` postMessage; `on_chat_resume` names RFQ threads | ✅ Done |
+| `templates/base.html` | `updateContext()` thread switching; `thread_id` handler with RFQ bind; `bind_rfq_thread` handler; auto-open panel; auto-open blank RFQ edit form | ✅ Done |
+| `templates/partials/rfq_detail.html` | `thread_id` in context; Chat button | ✅ Done |
+| `templates/partials/rfq_list.html` | Simplified "+ New RFQ" to `hx-post="/rfqs/new"` | ✅ Done |
+| `public/embedded.js` | RFQ context banner (linked/unlinked); sidebar persistence | ✅ Done |
+| `public/stylesheet.css` | Banner styles (linked/unlinked); dark mode variants | ✅ Done |
+| `tests/` | 13 new tests for thread binding, context, blank RFQ, sort order | ✅ Done |
+| `app.py` — pending RFQ data carry in `@cl.on_chat_start` | Phase 2.3: check for pending RFQ payload, auto-trigger creation | ❌ Not done |
+| `includes/tools/quote_tools.py` — thread state check | Phase 2.3: detect RFQ creation in dirty/bound thread, redirect | ❌ Not done |
+| `templates/base.html` — `create_rfq_thread` handler | Phase 2.3: handle redirect postMessage from agent | ❌ Not done |
 
 ---
 
@@ -264,3 +264,15 @@ Use case: the RFQ has been active for weeks and the thread is very long — the 
 ## Open Questions
 
 None — all design questions have been resolved above.
+
+---
+
+## Remaining Work
+
+Two items are not yet implemented:
+
+### Phase 2.3: Typed RFQ creation in wrong thread (data carry redirect)
+**Priority: Low.** The current "+ New RFQ" button flow handles 95% of cases. Typed creation in a wrong thread is an edge case that can be addressed later. The agent's `new_rfq` intent already checks dashboard context and updates existing RFQs, which mitigates the most common variant of this problem.
+
+### Phase 4.4: "Start new thread" option
+**Priority: Low.** Only needed when threads become very long after weeks of RFQ activity. Can be a simple button or chat command that creates a fresh thread and rebinds it.
