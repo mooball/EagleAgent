@@ -689,9 +689,15 @@ async def start():
             welcome_msg = "Hello! I can help you find suppliers. Give me a part number, brand name, supplier name, or description and I'll search our database."
 
         from includes.prompts import INTENTS
-        eagle_commands = {k: v for k, v in INTENTS.items() if k == "new_rfq"}
-        await cl.context.emitter.set_commands(_intents_to_commands(eagle_commands))
+        await cl.context.emitter.set_commands([])
         await cl.Message(content=welcome_msg).send()
+
+    # Notify the parent frame of the Chainlit thread id so it can track it
+    try:
+        chainlit_thread_id = cl.context.session.thread_id
+        await cl.send_window_message({"type": "thread_id", "threadId": chainlit_thread_id})
+    except Exception:
+        pass
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
@@ -755,16 +761,46 @@ async def on_chat_resume(thread: ThreadDict):
                 author="EagleAgent",
             )
         else:
-            # Eagle Agent — only New RFQ command button
-            from includes.prompts import INTENTS
-            eagle_commands = {k: v for k, v in INTENTS.items() if k == "new_rfq"}
-            await cl.context.emitter.set_commands(_intents_to_commands(eagle_commands))
+            # Eagle Agent — no command buttons (RFQ creation via dashboard only)
+            await cl.context.emitter.set_commands([])
             msg = cl.Message(
                 content=f"Welcome back, {user_name}! Continuing our previous conversation.",
                 author="EagleAgent",
             )
         msg.persisted = True  # skip DB write — display only
         await msg.send()
+
+    # Notify the parent frame of this thread's id so it can track it
+    try:
+        await cl.send_window_message({"type": "thread_id", "threadId": thread_id})
+    except Exception:
+        pass
+
+    # If this thread is bound to an RFQ, ensure it's named after the RFQ
+    try:
+        from includes.dashboard.database import get_session
+        from includes.dashboard.models import RFQThread
+        user_email = user.identifier if user else None
+        if user_email:
+            session = get_session()
+            try:
+                binding = session.query(RFQThread).filter(
+                    RFQThread.thread_id == thread_id,
+                    RFQThread.user_email == user_email,
+                ).first()
+                if binding:
+                    import asyncio
+                    from includes.tools.quote_tools import _get_rfq_dict_sync
+                    rfq = await asyncio.to_thread(_get_rfq_dict_sync, binding.rfq_number)
+                    customer = rfq.get("customer", "") if rfq else ""
+                    thread_name = f"{binding.rfq_number} — {customer}" if customer else binding.rfq_number
+                    data_layer = cl.data._data_layer
+                    if data_layer:
+                        await data_layer.update_thread(thread_id=thread_id, name=thread_name)
+            finally:
+                session.close()
+    except Exception as e:
+        logger.warning(f"Failed to name RFQ thread on resume: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1146,15 +1182,27 @@ async def on_rfq_find_suppliers(action: cl.Action):
             parts.append("Internal DB results:\n" + "\n".join(internal_summary_lines))
         parts.append("")
         parts.append("Search the web for distributors and wholesalers who can supply this product.")
+        parts.append("")
+        parts.append("## Geographic Priority")
+        parts.append("1. FIRST search for Australian-based suppliers (add 'Australia' to your search queries).")
+        parts.append("2. If fewer than 3 Australian suppliers are found, expand to international suppliers.")
+        parts.append("3. When listing results, present Australian suppliers first, then international.")
+        parts.append("")
+        parts.append("## Supplier Selection")
         parts.append("Prioritise authorised distributors and industrial wholesalers over retail sources.")
         parts.append("If distributors are scarce, include reputable retailers as fallback options.")
         parts.append("Aim for 3-5 good supplier options but more is fine if they look like strong matches.")
         parts.append("")
+        parts.append("## Supply Chain Classification")
+        parts.append("Do NOT attempt to categorize suppliers yourself. The system will automatically classify each new supplier using our full taxonomy after you add them.")
+        parts.append("You may optionally include 'tier' (A/B/C/D) and 'category' (e.g. 'Trade Wholesaler') if it is obvious, but the system will verify and correct these.")
+        parts.append("")
         parts.append("CRITICAL: After researching, you MUST call manage_rfq(action='add_supplier') to add each supplier you find to the RFQ.")
         parts.append(f"Use rfq_id='{rfq_id}' and data={{line: {line}, suppliers: [...]}} with a list of all suppliers found.")
-        parts.append("Each supplier dict must include: name, contacts (list with at least one of email/phone/url), and optionally price, price_type, lead_time.")
+        parts.append("Each supplier dict must include: name, country (2-letter ISO code, e.g. 'AU', 'US', 'GB'), currency (3-letter ISO code for their trading currency, e.g. 'AUD', 'USD', 'GBP'), contacts (list with at least one of email/phone/url).")
+        parts.append("Optional fields: tier, category, price, price_type, lead_time, notes.")
+        parts.append("If a price is in a foreign currency, store the ORIGINAL price and set currency accordingly — do NOT convert to AUD.")
         parts.append("If you do NOT call add_supplier, the suppliers will NOT appear on the RFQ. The user is counting on you to update the RFQ directly.")
-        parts.append("Include any pricing, lead time, or contact information you can find.")
 
         rich_prompt = "\n".join(parts)
 

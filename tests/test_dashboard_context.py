@@ -58,3 +58,30 @@ class TestFormatContextForPrompt:
         assert "product_list" in result
         assert "Entity type: product" in result
         assert "ID:" not in result
+
+    def test_rfq_detail_includes_summary_fields(self):
+        set_context("rfq1@example.com", {
+            "view": "rfq_detail",
+            "entity": "rfq",
+            "id": "RFQ-2026-0042",
+            "customer": "Acme Construction",
+            "status": "in_progress",
+            "assigned_to": "tom@eagle.com",
+            "item_count": 5,
+            "identified_count": 3,
+        })
+        result = format_context_for_prompt("rfq1@example.com")
+        assert "Customer: Acme Construction" in result
+        assert "Status: in_progress" in result
+        assert "Items: 5 (3 identified)" in result
+        assert "Assigned to: tom@eagle.com" in result
+
+    def test_rfq_detail_without_summary_fields(self):
+        set_context("rfq2@example.com", {
+            "view": "rfq_detail",
+            "entity": "rfq",
+            "id": "RFQ-2026-0001",
+        })
+        result = format_context_for_prompt("rfq2@example.com")
+        assert "rfq_detail" in result
+        assert "Customer:" not in result

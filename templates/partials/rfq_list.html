@@ -2,16 +2,8 @@
 <div data-dashboard-context='{"view": "rfq_list", "entity": "rfq"}'>
     {% call page_header("Requests for Quote") %}
         <button type="button"
-                @click="
-                    fetch('/api/agent-bridge', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        credentials: 'same-origin',
-                        body: JSON.stringify({ action: { name: 'new_rfq', payload: {} } })
-                    });
-                    if ($store.dashboard) { $store.dashboard.agentState = 'panel'; }
-                    else if (agentState === 'closed') { agentState = 'panel'; }
-                "
+                hx-post="/rfqs/new"
+                hx-target="#main-content"
                 class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 whitespace-nowrap">
             + New RFQ
         </button>

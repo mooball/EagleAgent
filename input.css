@@ -4,6 +4,68 @@
 
 /* ---- Custom (non-Tailwind) styles ---- */
 
+/* ---- Reusable button components ---- */
+/* Small button: inline actions, table rows, summary bars */
+.btn-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  border-radius: 0.25rem;
+  border: 1px solid;
+  border-color: rgba(209,213,219,1);
+  color: rgba(75,85,99,1);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-sm:hover { background: rgba(249,250,251,1); }
+:is(.dark .btn-sm) {
+  border-color: rgba(75,85,99,1);
+  color: rgba(209,213,219,1);
+}
+:is(.dark .btn-sm):hover { background: rgba(55,65,81,1); }
+
+/* Standard button: bottom action bars, primary actions */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  border-radius: 0.375rem;
+  border: 1px solid;
+  border-color: rgba(209,213,219,1);
+  color: rgba(55,65,81,1);
+  background: white;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { background: rgba(249,250,251,1); }
+:is(.dark .btn) {
+  border-color: rgba(75,85,99,1);
+  color: rgba(209,213,219,1);
+  background: rgba(31,41,55,1);
+}
+:is(.dark .btn):hover { background: rgba(55,65,81,1); }
+
+/* Accent variant (blue) — add alongside .btn-sm or .btn */
+.btn-accent {
+  border-color: rgba(147,197,253,1);
+  color: rgba(37,99,235,1);
+}
+.btn-accent:hover { background: rgba(239,246,255,1); }
+:is(.dark .btn-accent) {
+  border-color: rgba(37,99,235,1);
+  color: rgba(147,197,253,1);
+}
+:is(.dark .btn-accent):hover { background: rgba(30,58,138,0.3); }
+
 /* Smooth transitions for panel resize */
 .transition-panel { transition: margin-right 0.25s ease; }
 /* Disable transition while dragging */
@@ -16,3 +78,61 @@
 /* Drag handle cursor */
 .drag-handle { cursor: col-resize; }
 .drag-handle:hover, .drag-handle.dragging { background: rgba(59,130,246,0.3); }
+
+/* ---- Instant CSS tooltip (data-tip attribute) ---- */
+/* Usage: <span class="tip" data-tip="Hello">…</span>
+   Position variants: tip-bottom (default), tip-top, tip-left, tip-right */
+.tip {
+  position: relative;
+}
+.tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 6px);
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 500;
+  white-space: normal;
+  width: max-content;
+  max-width: 300px;
+  color: #fff;
+  background: rgba(15, 23, 42, 0.9);
+  pointer-events: none;
+  opacity: 0;
+  z-index: 50;
+}
+.tip:hover::after { opacity: 1; }
+
+/* Position: top */
+.tip-top::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+/* Position: left */
+.tip-left::after {
+  top: 50%;
+  left: auto;
+  right: calc(100% + 6px);
+  transform: translateY(-50%);
+}
+/* Position: right */
+.tip-right::after {
+  top: 50%;
+  left: calc(100% + 6px);
+  transform: translateY(-50%);
+}
+/* Alignment: right-align tooltip (extends leftward — use near right edges) */
+.tip-end::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+/* Alignment: left-align tooltip (extends rightward — use near left edges) */
+.tip-start::after {
+  left: 0;
+  transform: none;
+}

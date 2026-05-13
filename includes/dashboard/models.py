@@ -29,6 +29,7 @@ class Supplier(Base):
     netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
     modified_at = Column(DateTime(timezone=True), nullable=True)
     modified_by = Column(String, nullable=True)                # "user:tom", "netsuite", "ai:categorizer"
+    source = Column(String(20), nullable=True, default='netsuite')  # 'netsuite' | 'web' | 'manual'
 
     # 256 dimensions for Gemini embedding-2-preview (notes only)
     embedding = Column(Vector(256), nullable=True)
@@ -134,6 +135,23 @@ class RFQ(Base):
 
     def __repr__(self):
         return f"<RFQ(rfq_number='{self.rfq_number}', customer='{self.customer}')>"
+
+
+class RFQThread(Base):
+    """Junction table: one chat thread per user per RFQ."""
+    __tablename__ = 'rfq_threads'
+    __table_args__ = (
+        UniqueConstraint('rfq_number', 'user_email', name='uq_rfq_thread_user'),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    rfq_number = Column(String, nullable=False, index=True)
+    user_email = Column(String, nullable=False)
+    thread_id = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self):
+        return f"<RFQThread(rfq_number='{self.rfq_number}', user='{self.user_email}')>"
 
 
 class RFQItem(Base):

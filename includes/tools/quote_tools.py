@@ -9,6 +9,7 @@ import asyncio
 import datetime
 import logging
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import chainlit as cl
 from langchain_core.tools import tool
@@ -141,11 +142,118 @@ async def _next_rfq_number(store) -> str:
     return await asyncio.to_thread(_next_rfq_number_sync)
 
 
-def _match_suppliers_to_db(suppliers: list[dict]) -> None:
+def _verify_supplier_url(
+    name: str,
+    url: str | None,
+    country: str | None = None,
+    product_hint: str = "",
+) -> str | None:
+    """Verify a supplier URL is reachable; if not, search for the correct one.
+
+    1. HTTP HEAD the URL (follows redirects).  If it returns 200 with content,
+       return the original URL.
+    2. If the request fails or returns an empty/error response, use Gemini with
+       Google Search grounding to find the correct website for the supplier.
+    3. Return the corrected URL, or the original if nothing better is found.
+    """
+    import urllib.request
+
+    if not url:
+        return _search_supplier_url(name, country, product_hint=product_hint)
+
+    # Normalise: ensure scheme is present
+    check_url = url if "://" in url else f"https://{url}"
+
+    # HTTP HEAD check (timeout 5s)
+    try:
+        req = urllib.request.Request(
+            check_url, method="HEAD",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; EagleAgent/1.0)"},
+        )
+        resp = urllib.request.urlopen(req, timeout=5)
+        if resp.status == 200:
+            logger.debug(f"[url-verify] HTTP OK for {check_url}")
+            return url
+        else:
+            logger.info(f"[url-verify] HTTP {resp.status} for {check_url}, searching for correct URL")
+    except Exception as e:
+        logger.info(f"[url-verify] HTTP failed for {check_url} ({e}), searching for correct URL")
+
+    return _search_supplier_url(name, country, product_hint=product_hint) or url
+
+
+def _search_supplier_url(
+    name: str,
+    country: str | None = None,
+    product_hint: str = "",
+) -> str | None:
+    """Use Gemini with Google Search grounding to find a supplier's real website URL."""
+    import urllib.request
+
+    try:
+        from google import genai as _genai
+        from google.genai import types as _types
+
+        location = f" in {country}" if country else ""
+        product_ctx = f" They supply {product_hint}." if product_hint else ""
+        prompt = (
+            f"What is the official website URL for the industrial/commercial supplier "
+            f"'{name}'{location}?{product_ctx} "
+            f"Return ONLY the URL (e.g. https://example.com), nothing else. "
+            f"If you cannot find it, return NONE."
+        )
+
+        client = _genai.Client()
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=_types.GenerateContentConfig(
+                tools=[_types.Tool(google_search=_types.GoogleSearch())],
+                temperature=0.0,
+            ),
+        )
+        result = (response.text or "").strip()
+        if result and result.upper() != "NONE" and "." in result:
+            # Clean up: extract just the URL if extra text crept in
+            for token in result.split():
+                if "." in token and ("/" in token or token.startswith("http")):
+                    url = token.strip("`\"'<>")
+                    if not url.startswith("http"):
+                        url = f"https://{url}"
+                    # Verify the found URL is actually reachable (HTTP HEAD)
+                    try:
+                        req = urllib.request.Request(
+                            url, method="HEAD",
+                            headers={"User-Agent": "Mozilla/5.0 (compatible; EagleAgent/1.0)"},
+                        )
+                        resp = urllib.request.urlopen(req, timeout=5)
+                        if resp.status == 200:
+                            logger.info(f"[url-search] Found URL for '{name}': {url}")
+                            return url
+                        else:
+                            logger.warning(f"[url-search] Found URL {url} for '{name}' but got HTTP {resp.status}")
+                            continue
+                    except Exception:
+                        logger.warning(f"[url-search] Found URL {url} for '{name}' but HTTP check failed")
+                        continue
+        logger.info(f"[url-search] No valid URL found for '{name}'")
+        return None
+    except Exception as e:
+        logger.warning(f"[url-search] Search failed for '{name}': {e}")
+        return None
+
+
+def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> None:
     """Fuzzy-match supplier names against the DB and enrich with supplier_id + contacts.
 
-    Uses the shared match_supplier_by_name() two-pass strategy.
+    Uses the stricter match_supplier() which verifies domain and country
+    in addition to name similarity.
     Mutates supplier dicts in-place.
+
+    Args:
+        suppliers: List of supplier dicts to match/create.
+        product_hint: Optional product context (part number, brand, description)
+                      used to improve URL search accuracy when verification fails.
     """
     # Collect names that need matching (no supplier_id yet)
     names_to_match = {}  # lower name -> list of supplier dicts
@@ -162,9 +270,10 @@ def _match_suppliers_to_db(suppliers: list[dict]) -> None:
     try:
         from includes.dashboard.database import (
             get_session,
-            match_supplier_by_name,
+            match_supplier,
             merge_supplier_contacts,
         )
+        from includes.dashboard.models import Supplier
     except ImportError:
         logger.warning("Cannot import DB models for supplier matching")
         return
@@ -172,7 +281,39 @@ def _match_suppliers_to_db(suppliers: list[dict]) -> None:
     session = get_session()
     try:
         for name_lower, sup_list in names_to_match.items():
-            row = match_supplier_by_name(name_lower, session=session)
+            # Extract url and country from the supplier dict for verification
+            sup_url = None
+            for c in sup_list[0].get("contacts", []):
+                if isinstance(c, dict) and c.get("url"):
+                    sup_url = c["url"]
+                    break
+            sup_country = sup_list[0].get("country")
+
+            # Verify/correct the URL before matching or persisting
+            verified_url = _verify_supplier_url(
+                sup_list[0].get("name", "").strip(),
+                sup_url,
+                sup_country,
+                product_hint=product_hint,
+            )
+            if verified_url != sup_url:
+                if verified_url:
+                    logger.info(
+                        f"[url-verify] Corrected URL for '{sup_list[0].get('name')}': "
+                        f"{sup_url} → {verified_url}"
+                    )
+                else:
+                    logger.info(
+                        f"[url-verify] Could not verify URL for '{sup_list[0].get('name')}': {sup_url}"
+                    )
+                # Update the contacts in the supplier dicts
+                for sup in sup_list:
+                    for c in sup.get("contacts", []):
+                        if isinstance(c, dict) and c.get("url") == sup_url:
+                            c["url"] = verified_url or sup_url
+                sup_url = verified_url or sup_url
+
+            row = match_supplier(name_lower, url=sup_url, country=sup_country, session=session)
             if row:
                 logger.info(
                     f"[supplier-match] '{name_lower}' → '{row.name}' (id={row.id})"
@@ -181,6 +322,76 @@ def _match_suppliers_to_db(suppliers: list[dict]) -> None:
                     sup["supplier_id"] = str(row.id)
                     if row.contacts:
                         merge_supplier_contacts(sup, row.contacts)
+            else:
+                # No match — create a new web-sourced Supplier record
+                ref_sup = sup_list[0]
+                new_supplier = Supplier(
+                    name=ref_sup.get("name", "").strip(),
+                    country=ref_sup.get("country"),
+                    currency=ref_sup.get("currency"),
+                    url=sup_url,
+                    contacts=ref_sup.get("contacts"),
+                    source="web",
+                )
+                session.add(new_supplier)
+                session.flush()  # get the generated id
+                logger.info(
+                    f"[supplier-create] Created new web supplier '{new_supplier.name}' (id={new_supplier.id})"
+                )
+
+                # Run proper categorization using the full taxonomy
+                try:
+                    from includes.supplier_categorization import (
+                        categorize_supplier,
+                        load_taxonomy,
+                    )
+                    from google import genai as _genai
+
+                    _client = _genai.Client()
+                    _taxonomy = load_taxonomy()
+                    _cat_input = {
+                        "name": new_supplier.name,
+                        "url": new_supplier.url,
+                        "city": None,
+                        "country": new_supplier.country,
+                        "purchase_count": 0,
+                    }
+                    cat_result = categorize_supplier(
+                        _client, "gemini-2.5-flash", _taxonomy, _cat_input
+                    )
+                    new_supplier.supply_chain_position = {
+                        "category": cat_result.get("category"),
+                        "tier": cat_result.get("tier"),
+                        "confidence": cat_result.get("confidence"),
+                        "reasoning": cat_result.get("reasoning"),
+                    }
+                    new_supplier.modified_by = "ai:categorizer"
+                    session.flush()
+                    logger.info(
+                        f"[supplier-categorize] '{new_supplier.name}' → "
+                        f"{cat_result.get('tier')}/{cat_result.get('category')} "
+                        f"(confidence={cat_result.get('confidence')})"
+                    )
+                    # Update supplier dicts with proper categorization
+                    for sup in sup_list:
+                        if cat_result.get("tier"):
+                            sup["tier"] = cat_result["tier"]
+                        if cat_result.get("category"):
+                            sup["category"] = cat_result["category"]
+                except Exception as cat_err:
+                    logger.warning(
+                        f"[supplier-categorize] Failed for '{new_supplier.name}': {cat_err}"
+                    )
+                    # Fall back to whatever the agent provided
+                    if ref_sup.get("tier") and ref_sup.get("category"):
+                        new_supplier.supply_chain_position = {
+                            "tier": ref_sup["tier"],
+                            "category": ref_sup["category"],
+                        }
+
+                for sup in sup_list:
+                    sup["supplier_id"] = str(new_supplier.id)
+        session.commit()
     except Exception as e:
         logger.warning(f"Supplier DB matching failed: {e}")
     finally:
@@ -477,7 +688,7 @@ def _create_rfq_sync(data: dict, user_id: str) -> dict:
     from includes.dashboard.models import RFQ, RFQItem
 
     customer = data.get("customer")
-    if not customer:
+    if customer is None:
         return {"error": "Error: 'customer' is required in data when creating an RFQ."}
 
     new_number = _next_rfq_number_sync()
@@ -529,6 +740,18 @@ def _create_rfq_sync(data: dict, user_id: str) -> dict:
         session.commit()
         # Re-fetch with items loaded
         session.refresh(rfq)
+
+        # Bind the thread to this RFQ for the creating user
+        thread_id = data.get("thread_id")
+        if thread_id:
+            from includes.dashboard.models import RFQThread
+            session.add(RFQThread(
+                rfq_number=new_number,
+                user_email=user_id,
+                thread_id=thread_id,
+            ))
+            session.commit()
+
         result = _rfq_to_dict(rfq)
         logger.info(f"Created {new_number} for {customer} with {len(raw_items)} items")
         return result
@@ -546,6 +769,63 @@ def _get_rfq_dict_sync(rfq_number: str) -> dict | None:
         if not rfq:
             return None
         return _rfq_to_dict(rfq)
+    finally:
+        session.close()
+
+
+def _add_items_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
+    """Add multiple items to an existing RFQ. Returns RFQ dict or error."""
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy import func as sa_func
+
+    raw_items = data.get("items", [])
+    if not raw_items:
+        return "Error: 'items' list is required for add_items."
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+
+        max_line = session.query(sa_func.max(RFQItem.line)).filter(
+            RFQItem.rfq_id == rfq.id
+        ).scalar() or 0
+
+        for idx, raw in enumerate(raw_items, start=max_line + 1):
+            item = RFQItem(
+                rfq_id=rfq.id,
+                line=idx,
+                input_description=raw.get("input_description", ""),
+                input_code=raw.get("input_code", ""),
+                part_number=raw.get("part_number"),
+                brand=raw.get("brand"),
+                product_id=raw.get("product_id"),
+                quantity=raw.get("quantity"),
+                uom=raw.get("uom", "ea"),
+                status=raw.get("status", "unidentified"),
+                notes=raw.get("notes", ""),
+                suppliers=[],
+            )
+            session.add(item)
+
+        now = _now_iso()
+        history = list(rfq.history or [])
+        history.append({
+            "date": now,
+            "user": user_id,
+            "action": f"Added {len(raw_items)} items (lines {max_line + 1}-{max_line + len(raw_items)})",
+        })
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        result = _rfq_to_dict(rfq)
+        logger.info(f"Added {len(raw_items)} items to {rfq_number}")
+        return result
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 
@@ -709,7 +989,14 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             # Partial rejection — continue with valid ones but warn loudly
             pass
 
-        _match_suppliers_to_db(valid_suppliers)
+        _match_suppliers_to_db(
+            valid_suppliers,
+            product_hint=" ".join(filter(None, [
+                line_item.part_number,
+                line_item.brand,
+                line_item.input_description,
+            ])),
+        )
 
         # Auto-resolve product_id if the item has a part_number but no product_id
         product_id = line_item.product_id
@@ -1045,7 +1332,8 @@ def create_quote_tools(user_id: str) -> list:
           create        — Create a new RFQ. data keys: customer (required),
                           customer_contact ({name, email, phone}), reference,
                           netsuite_opportunity, hubspot_deal, notes,
-                          items ([{input_description, input_code, quantity, uom}])
+                          items ([{input_description, input_code, part_number,
+                          brand, quantity, uom}])
           update        — Update top-level RFQ properties. data keys: any of
                           customer, customer_contact, reference, notes,
                           netsuite_opportunity, hubspot_deal, assigned_to
@@ -1055,6 +1343,10 @@ def create_quote_tools(user_id: str) -> list:
                           Item status values: unidentified, identified, confirmed,
                           review (needs human attention — e.g. part number
                           discrepancy found during web search)
+          add_items     — Add multiple line items to an existing RFQ. data keys:
+                          items (required, list of dicts with input_description,
+                          input_code, part_number, brand, quantity, uom).
+                          Use this instead of create when the RFQ already exists.
           add_supplier  — Add supplier candidate(s) to a line item. data keys:
                           line (required), EITHER name (required) for a single
                           supplier with optional supplier_id, contacts, status,
@@ -1103,10 +1395,21 @@ def create_quote_tools(user_id: str) -> list:
             except (json.JSONDecodeError, ValueError):
                 return f"Error: 'data' must be a JSON object, got unparseable string: {data[:100]}"
 
+        # For create: inject Chainlit's thread_id from the current session
+        if action == "create":
+            try:
+                import chainlit as cl
+                thread_id = cl.context.session.thread_id
+                if thread_id:
+                    data["thread_id"] = thread_id
+            except Exception:
+                pass
+
         _ACTION_MAP = {
             "create": lambda: asyncio.to_thread(_create_rfq_sync, data, user_id),
             "update": lambda: asyncio.to_thread(_update_rfq_sync, rfq_id, data, user_id),
             "update_item": lambda: asyncio.to_thread(_update_item_sync, rfq_id, data, user_id),
+            "add_items": lambda: asyncio.to_thread(_add_items_sync, rfq_id, data, user_id),
             "add_supplier": lambda: asyncio.to_thread(_add_supplier_sync, rfq_id, data, user_id),
             "update_supplier": lambda: asyncio.to_thread(_update_supplier_sync, rfq_id, data, user_id),
             "clear_suppliers": lambda: asyncio.to_thread(_clear_suppliers_sync, rfq_id, data, user_id),
@@ -1120,7 +1423,7 @@ def create_quote_tools(user_id: str) -> list:
         if not handler:
             return (
                 f"Error: unknown action '{action}'. Valid actions: create, "
-                "update, update_item, add_supplier, update_supplier, "
+                "update, update_item, add_items, add_supplier, update_supplier, "
                 "clear_suppliers, assign, update_status, add_note, link_external."
             )
 
@@ -1136,6 +1439,20 @@ def create_quote_tools(user_id: str) -> list:
         # Error dict from create
         if isinstance(result, dict) and "error" in result:
             return result["error"]
+
+        # Name the thread after RFQ creation
+        if action == "create" and isinstance(result, dict) and data.get("thread_id"):
+            try:
+                import chainlit as cl
+                data_layer = cl.data._data_layer
+                if data_layer:
+                    thread_name = f"{result.get('id', '')} — {result.get('customer', '')}"
+                    await data_layer.update_thread(
+                        thread_id=data["thread_id"],
+                        name=thread_name,
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to name thread: {e}")
 
         await _notify_rfq_updated()
         return _render_rfq_summary(result)

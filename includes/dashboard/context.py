@@ -47,4 +47,16 @@ def format_context_for_prompt(user_email: str) -> str:
     if ctx.get("breadcrumb"):
         parts.append(f"Breadcrumb: {' > '.join(ctx['breadcrumb'])}")
 
+    # RFQ-specific summary for rfq_detail view
+    if ctx.get("view") == "rfq_detail":
+        if ctx.get("customer"):
+            parts.append(f"Customer: {ctx['customer']}")
+        if ctx.get("status"):
+            parts.append(f"Status: {ctx['status']}")
+        if ctx.get("item_count") is not None:
+            identified = ctx.get("identified_count", 0)
+            parts.append(f"Items: {ctx['item_count']} ({identified} identified)")
+        if ctx.get("assigned_to"):
+            parts.append(f"Assigned to: {ctx['assigned_to']}")
+
     return " | ".join(parts)
