@@ -512,6 +512,20 @@
                     };
                     this._sendAction({ name: 'rfq_identify_items', label: 'AI confirming items...', payload: payload });
                 },
+                identifyItem(line) {
+                    var item = this._items[line];
+                    if (!item) { console.error('[rfqDetail] item not found for line', line); return; }
+                    var payload = {
+                        rfq_id: this.rfqId,
+                        items: [{
+                            line: item.line,
+                            description: item.input_description,
+                            part_number: item.part_number || item.input_code,
+                            brand: item.brand
+                        }]
+                    };
+                    this._sendAction({ name: 'rfq_identify_items', label: 'Identifying line ' + item.line + '...', payload: payload });
+                },
                 findSuppliers(line) {
                     var item = this._items[line];
                     if (!item) { console.error('[rfqDetail] item not found for line', line); return; }

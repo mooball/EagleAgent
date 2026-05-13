@@ -120,12 +120,14 @@
             </form>
             <div class="flex items-center gap-1 shrink-0">
                 <button x-show="!editingHeader" @click="editingHeader = true"
-                        class="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400" title="Edit">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                        class="btn-sm">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                    Edit
                 </button>
                 <button hx-get="/partial/rfqs/{{ rfq.id }}" hx-target="#main-content"
-                        class="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 shrink-0" title="Refresh">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                        class="btn-sm">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                    Refresh
                 </button>
             </div>
         </div>
@@ -148,6 +150,14 @@
             {% if identified %}<span>{{ identified }} identified</span>{% endif %}
             {% if review %}<span class="text-amber-600">{{ review }} needs review</span>{% endif %}
             {% if unidentified %}<span class="text-amber-600">{{ unidentified }} unidentified</span>{% endif %}
+            {% if total_items > confirmed %}
+            <span>·</span>
+            <button @click="identifyItems()"
+                    class="btn-sm btn-accent">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                Identify Products
+            </button>
+            {% endif %}
         </div>
         <div class="flex items-center gap-1">
             <button @click="allExpanded ? collapseAll() : expandAll()"
@@ -168,7 +178,7 @@
                     <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Brand</th>
                     <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Qty</th>
                     <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-16">Status</th>
-                    <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-16">Sup</th>
+                    <th class="text-right px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Action</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
@@ -205,33 +215,37 @@
                     <td class="px-3 py-2.5 text-center">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
                     <td class="px-3 py-2.5 text-center">
                         {% if item.status == 'confirmed' %}
-                        <span class="inline-block w-2.5 h-2.5 rounded-full bg-green-500" title="Confirmed"></span>
+                        <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-green-500" data-tip="Confirmed"></span>
                         {% elif item.status == 'identified' %}
-                        <span class="inline-block w-2.5 h-2.5 rounded-full bg-blue-500" title="Identified"></span>
+                        <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-blue-500" data-tip="Identified"></span>
                         {% elif item.status == 'review' %}
-                        <span class="inline-flex items-center gap-0.5" title="{{ item.notes or 'Needs Review' }}">
+                        <span class="tip tip-end inline-flex items-center gap-0.5" data-tip="{{ item.notes or 'Needs Review' }}">
                             <span class="inline-block w-2.5 h-2.5 rounded-full bg-amber-500"></span>
                             <svg class="w-3 h-3 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
                         </span>
                         {% else %}
-                        <span class="inline-block w-2.5 h-2.5 rounded-full bg-gray-400" title="Unidentified"></span>
+                        <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-gray-400" data-tip="Unidentified"></span>
                         {% endif %}
                     </td>
-                    <td class="px-3 py-2.5 text-center">
-                        <div class="flex items-center justify-center gap-1">
+                    <td class="px-3 py-2.5 text-right whitespace-nowrap">
+                        <div class="flex items-center justify-end gap-1">
                             {% if suppliers %}
-                            <span class="tabular-nums">{{ active_suppliers | length }}</span>
+                            <span class="tabular-nums text-xs text-gray-500">{{ active_suppliers | length }} suppliers</span>
                             {% elif item.status == 'confirmed' %}
-                            <button class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                                    @click.stop="findSuppliers({{ item.line }})"
-                                    title="Find suppliers">
-                                <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                            <button class="btn-sm"
+                                    @click.stop="findSuppliers({{ item.line }})">
+                                Find Suppliers
+                            </button>
+                            {% else %}
+                            <button class="btn-sm btn-accent"
+                                    @click.stop="identifyItem({{ item.line }})">
+                                Identify Product
                             </button>
                             {% endif %}
                             <button class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
                                     @click.stop="editingItem = {{ item.line }}"
                                     title="Edit item">
-                                <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                                <svg class="w-[18px] h-[18px] text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                             </button>
                         </div>
                     </td>
@@ -543,15 +557,8 @@
 
     <!-- Action buttons -->
     <div class="flex gap-2 mt-4">
-        {% if total_items > confirmed %}
-        <button @click="identifyItems()"
-                class="px-3 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-1.5">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-            AI Confirm Items
-        </button>
-        {% endif %}
         <button @click="addingItem = true"
-                class="px-3 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-1.5">
+                class="btn">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             Add item
         </button>
@@ -562,7 +569,7 @@
         <p class="text-sm text-gray-500 dark:text-gray-400 italic">No items yet.</p>
         <div x-show="!addingItem">
             <button @click="addingItem = true"
-                    class="px-3 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-1.5">
+                    class="btn">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
                 Add item
             </button>
