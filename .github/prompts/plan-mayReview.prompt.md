@@ -190,4 +190,4 @@ Intent contexts like `new_rfq` instruct the agent to use specific tool actions (
 | 8 | ✅ Update `chainlit` 2.11.1 + `langchain` 1.2.18 + `langgraph` 1.1.10 + `fastapi` 0.136.1 | Medium | Medium |
 | 9 | ✅ Split `prompts.py` into `prompts/` package (config, intents, builder) | Low | Low |
 | 10 | ✅ Move model config to settings — all hardcoded model strings now use `Config.DEFAULT_MODEL` | Low | Low |
-| 11 | Evaluate `google-genai` v2 migration | Low | High |
+| 11 | ✅ Evaluate `google-genai` v2 migration — BLOCKED by `langchain-google-genai~=4.2.2` which pins `google-genai<2.0.0`. v2 breaking changes are Interactions-only (we don't use it). Revisit when langchain publishes a v2-compatible release. | Low | High |
