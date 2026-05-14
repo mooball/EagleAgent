@@ -49,7 +49,7 @@ google_sso = GoogleSSO(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("FastAPI starting up")
-    from app import setup_globals
+    from includes.graph import setup_globals
     await setup_globals()
     yield
     logger.info("FastAPI shutting down")
@@ -107,8 +107,7 @@ def _redirect_to_login():
 async def login_page(request: Request):
     """Show login page (or redirect straight to Google)."""
     error = request.query_params.get("error")
-    return templates.TemplateResponse("login.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "login.html", {
         "error": error,
     })
 

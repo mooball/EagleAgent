@@ -91,9 +91,9 @@ class TestCheckpointAndStore:
         
         # Save a checkpoint with conversation state
         config = {"configurable": {"thread_id": test_thread_id, "checkpoint_ns": ""}}
-        await app.graph.aupdate_state(config, {"messages": [HumanMessage(content="Hello, remember me?")]}, as_node="Supervisor")
+        await app._graph().aupdate_state(config, {"messages": [HumanMessage(content="Hello, remember me?")]}, as_node="Supervisor")
         
-        state = await app.graph.aget_state(config)
+        state = await app._graph().aget_state(config)
         assert len(state.values["messages"]) == 1
         
         # Load profile
@@ -127,7 +127,7 @@ class TestEndToEndConversation:
         # Turn 1: User introduces themselves
         await remember_tool.ainvoke({"category": "name", "information": "Bob"})
         
-        await app.graph.aupdate_state(config, {
+        await app._graph().aupdate_state(config, {
             "messages": [
                 HumanMessage(content="Hi, I'm Bob"),
                 AIMessage(content="Nice to meet you, Bob!"),
@@ -137,7 +137,7 @@ class TestEndToEndConversation:
         # Turn 2: User shares preferences
         await remember_tool.ainvoke({"category": "preferences", "information": "Python"})
         
-        await app.graph.aupdate_state(config, {
+        await app._graph().aupdate_state(config, {
             "messages": [
                 HumanMessage(content="I love Python"),
                 AIMessage(content="Great! I've noted that."),
@@ -150,7 +150,7 @@ class TestEndToEndConversation:
         assert "Python" in profile.value["preferences"]
         
         # Verify conversation state was saved
-        state = await app.graph.aget_state(config)
+        state = await app._graph().aget_state(config)
         assert len(state.values["messages"]) >= 4
     
     @pytest.mark.asyncio
@@ -175,7 +175,7 @@ class TestEndToEndConversation:
         thread_id = "resume-conversation"
         config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
         
-        await app.graph.aupdate_state(config, {
+        await app._graph().aupdate_state(config, {
             "messages": [
                 HumanMessage(content="Call me Chuck"),
                 AIMessage(content="Got it, Chuck!"),
@@ -184,7 +184,7 @@ class TestEndToEndConversation:
         
         # Resume: Load profile and conversation
         profile = await test_store.aget(("users",), test_user_id)
-        state = await app.graph.aget_state(config)
+        state = await app._graph().aget_state(config)
         
         # Should have both profile and conversation history
         assert profile.value["name"] == "Charlie"
@@ -208,9 +208,12 @@ class TestGraphWithStubModel:
             sys.path.insert(0, str(project_root))
             
         import app
+        import includes.graph as graph_module
         import importlib
         importlib.reload(app)
         
+        # Reset the initialized flag so setup_globals() will re-run
+        graph_module.globals_initialized = False
         await app.setup_globals()
         
         # Patch the model
@@ -220,7 +223,8 @@ class TestGraphWithStubModel:
         )
         
         # Patch the store to use test store
-        monkeypatch.setattr(app, "store", test_store)
+        import includes.graph as graph_module
+        monkeypatch.setattr(graph_module, "store", test_store)
         
         # Create a user profile
         from includes.tools.user_profile import create_profile_tools
@@ -229,7 +233,7 @@ class TestGraphWithStubModel:
         
         # Run the graph
         config = {"configurable": {"thread_id": test_thread_id, "checkpoint_ns": ""}}
-        result = await app.graph.ainvoke(
+        result = await app._graph().ainvoke(
             {
                 "messages": [HumanMessage(content="hello")],
                 "user_id": test_user_id,

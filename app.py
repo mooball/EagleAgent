@@ -2,36 +2,30 @@ import chainlit as cl
 import uuid
 import urllib.parse
 from chainlit.types import ThreadDict
-from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from datetime import datetime, timezone
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
-from langchain_google_genai import ChatGoogleGenerativeAI
-from typing import TypedDict, Sequence, Annotated, Dict, Optional, Any, Literal, NotRequired
+from typing import Optional, Any
 import os
 import logging
 from dotenv import load_dotenv
 from config import config
-from psycopg_pool import AsyncConnectionPool
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from langgraph.store.postgres import AsyncPostgresStore
 from includes.chat.commands import handle_deleteall_command
 from includes.chat.actions import dispatch_action, get_actions_for_user, is_help_request, send_action_buttons
 from includes.chat.document_processing import process_file, create_multimodal_content
 from includes.chat.local_storage_client import LocalStorageClient
-from includes.mcp_config import load_mcp_config
-from includes.agents import BrowserAgent, GeneralAgent, ProcurementAgent, Supervisor, SysAdminAgent
-from includes.job_runner import JobRunner
-from langchain_mcp_adapters.client import MultiServerMCPClient
-from starlette.responses import RedirectResponse
+from includes.chat.data_layer import FixedSQLAlchemyDataLayer
+from includes.chat.middleware import OAuthErrorRedirectMiddleware, GeminiRetryNotifier
+from includes.graph import setup_globals
+import includes.graph as _graph_module  # for live access to mutable globals
 import asyncio
 
 # SQL-based RFQ helpers (BaseStore lock no longer needed — PostgreSQL handles concurrency)
 from includes.tools.quote_tools import (
-    _update_supplier_sync, _update_item_sync, _add_supplier_sync,
-    _clear_suppliers_sync, _get_rfq_dict_sync, _get_session,
+    _clear_suppliers_sync, _get_rfq_dict_sync,
 )
+
+# Import RFQ action callbacks so Chainlit registers them
+import includes.chat.rfq_actions  # noqa: F401
 
 # Set up Chainlit server reference for middleware patching
 import chainlit.server as cl_server
@@ -51,163 +45,12 @@ if hasattr(cl_server, 'sio') and hasattr(cl_server.sio, 'eio'):
 # Create the data directory if it doesn't exist
 os.makedirs(os.path.join(config.DATA_DIR, "attachments"), exist_ok=True)
 
-
-class FixedSQLAlchemyDataLayer(SQLAlchemyDataLayer):
-    """Fix two upstream Chainlit bugs in SQLAlchemyDataLayer:
-
-    1. get_current_timestamp() uses datetime.now() (local time) + "Z" suffix,
-       producing timestamps that claim to be UTC but are actually local time.
-    2. update_thread() includes createdAt in the ON CONFLICT UPDATE clause,
-       which overwrites the original creation date every time a step is created.
-
-    Fix: override get_current_timestamp() and update_thread() to exclude
-    createdAt from the UPDATE (only set it on initial INSERT).  The parent
-    create_step() is intentionally left intact so that Chainlit's internal
-    flush_thread_queues() can set userId, name, and tags on the thread row.
-    """
-
-    async def get_current_timestamp(self) -> str:
-        return datetime.now(timezone.utc).isoformat()
-
-    async def update_thread(
-        self,
-        thread_id: str,
-        name=None,
-        user_id=None,
-        metadata=None,
-        tags=None,
-    ):
-        import json as _json
-
-        if self.show_logger:
-            logger.info(f"SQLAlchemy: update_thread, thread_id={thread_id}")
-
-        user_identifier = None
-        if user_id:
-            user_identifier = await self._get_user_identifer_by_id(user_id)
-
-        if metadata is not None:
-            existing = await self.execute_sql(
-                query='SELECT "metadata" FROM threads WHERE "id" = :id',
-                parameters={"id": thread_id},
-            )
-            base = {}
-            if isinstance(existing, list) and existing:
-                raw = existing[0].get("metadata") or {}
-                if isinstance(raw, str):
-                    try:
-                        base = _json.loads(raw)
-                    except _json.JSONDecodeError:
-                        base = {}
-                elif isinstance(raw, dict):
-                    base = raw
-            incoming = {k: v for k, v in metadata.items() if v is not None}
-            metadata = {**base, **incoming}
-
-        name_value = name
-        if name_value is None and metadata:
-            name_value = metadata.get("name")
-        created_at_value = (
-            await self.get_current_timestamp() if metadata is None else None
-        )
-
-        data = {
-            "id": thread_id,
-            "createdAt": created_at_value,
-            "name": name_value,
-            "userId": user_id,
-            "userIdentifier": user_identifier,
-            "tags": ",".join(tags) if isinstance(tags, list) else tags,
-            "metadata": _json.dumps(metadata) if metadata else None,
-        }
-        parameters = {
-            key: value for key, value in data.items() if value is not None
-        }
-        columns = ", ".join(f'"{key}"' for key in parameters.keys())
-        values = ", ".join(f":{key}" for key in parameters.keys())
-        # FIX: exclude createdAt from the UPDATE so the original timestamp
-        # is preserved when re-upserting the same thread.
-        updates = ", ".join(
-            f'"{key}" = EXCLUDED."{key}"'
-            for key in parameters.keys()
-            if key not in ("id", "createdAt")
-        )
-
-        if updates:
-            query = f"""
-                INSERT INTO threads ({columns})
-                VALUES ({values})
-                ON CONFLICT ("id") DO UPDATE
-                SET {updates};
-            """
-        else:
-            # Nothing to update — just ensure the row exists
-            query = f"""
-                INSERT INTO threads ({columns})
-                VALUES ({values})
-                ON CONFLICT ("id") DO NOTHING;
-            """
-        await self.execute_sql(query=query, parameters=parameters)
-
-
-class OAuthErrorRedirectMiddleware:
-    """Pure ASGI middleware: redirects 401s on OAuth callback paths to the login page.
-
-    Uses raw ASGI to avoid the known issues that BaseHTTPMiddleware causes with
-    WebSocket connections and streaming responses in Starlette/Chainlit.
-    """
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        # Only intercept HTTP requests on OAuth callback paths
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        path = scope.get("path", "")
-        if not (path.startswith("/auth/oauth/") and path.endswith("/callback")):
-            await self.app(scope, receive, send)
-            return
-
-        status_code = None
-
-        async def send_wrapper(message):
-            nonlocal status_code
-            if message["type"] == "http.response.start":
-                status_code = message["status"]
-                if status_code == 401:
-                    params = urllib.parse.urlencode(
-                        {"error": "Access denied. Your account is not authorised to use this application."}
-                    )
-                    redirect_url = f"/login?{params}"
-                    await send({
-                        "type": "http.response.start",
-                        "status": 302,
-                        "headers": [
-                            [b"location", redirect_url.encode()],
-                            [b"content-length", b"0"],
-                        ],
-                    })
-                    return
-                await send(message)
-            elif message["type"] == "http.response.body":
-                if status_code == 401:
-                    await send({"type": "http.response.body", "body": b""})
-                    return
-                await send(message)
-
-        await self.app(scope, receive, send_wrapper)
-
-
 # Guard module-level ASGI app modifications so they only run once.
 # On hot-reload Chainlit re-executes this module; adding middleware or
 # mounting routes a second time would crash with "Cannot add middleware
 # after an application has started".
 if not getattr(cl_server.app, "_eagleagent_patched", False):
     cl_server.app._eagleagent_patched = True
-
     cl_server.app.add_middleware(OAuthErrorRedirectMiddleware)
 
 # Load environment variables (Vertex AI config, OAuth secrets, etc.)
@@ -217,249 +60,23 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
 # Surface Google API retries to Chainlit UI in real-time
-# ---------------------------------------------------------------------------
-class _GeminiRetryNotifier(logging.Handler):
-    """Intercepts google_genai retry log messages and pushes them to the UI.
-    
-    Debounced: only sends one UI notification per 10-second window to avoid spam
-    when Google does rapid-fire exponential backoff retries.
-    """
-
-    def __init__(self, level: int = logging.NOTSET):
-        super().__init__(level)
-        self._last_notified = 0.0
-
-    def emit(self, record: logging.LogRecord) -> None:
-        msg = record.getMessage()
-        if "Retrying" not in msg:
-            return
-        if "503" not in msg and "429" not in msg:
-            return
-        import time
-        now = time.monotonic()
-        if now - self._last_notified < 10:
-            return  # Debounce: skip if we notified recently
-        self._last_notified = now
-        try:
-            import asyncio
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._send_notification())
-        except RuntimeError:
-            pass  # No event loop — nothing we can do
-
-    @staticmethod
-    async def _send_notification() -> None:
-        try:
-            await cl.Message(
-                content="\u23f3 Model temporarily overloaded — retrying automatically...",
-                author="System",
-            ).send()
-        except Exception:
-            pass  # Never break the app for a UI notification
-
 _genai_logger = logging.getLogger("google_genai._api_client")
-_genai_logger.addHandler(_GeminiRetryNotifier(level=logging.INFO))
+_genai_logger.addHandler(GeminiRetryNotifier(level=logging.INFO))
 
 
-# Define which tools require Admin privileges
-ADMIN_ONLY_TOOLS = ["delete_all_user_data"]
+# ---------------------------------------------------------------------------
+# Convenience accessors for graph module globals (they mutate after setup)
+# ---------------------------------------------------------------------------
+def _store():
+    return _graph_module.store
 
-# Initialize PostgreSQL connection pool
-# Using the CHECKPOINT_DATABASE_URL which defaults to psycopg style dsns
-pg_pool = AsyncConnectionPool(
-    config.CHECKPOINT_DATABASE_URL,
-    min_size=1,
-    max_size=10,
-    kwargs={
-        "autocommit": True,
-        "keepalives": 1,
-        "keepalives_idle": 30,
-        "keepalives_interval": 10,
-        "keepalives_count": 5,
-    },
-    open=False, # We will open this explicitly in an async context or lazily
-)
+def _graph():
+    return _graph_module.graph
 
-# Add cross-thread persistent store for user profiles and long-term memory
-# Initialize this early so we can use it to create tools
-store = None  # Will be initialized in start()
+def _research_graph():
+    return _graph_module.research_graph
 
-# Initialize MCP client for external tool integration
-# Loads MCP server configurations from config/mcp_servers.yaml
-mcp_client = None
-
-
-# Initialize the model
-# Model configuration is in config/settings.py (DEFAULT_MODEL + per-agent overrides)
-# Auth is handled via Vertex AI env vars (GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_APPLICATION_CREDENTIALS)
-def create_model(agent_name: str) -> ChatGoogleGenerativeAI:
-    """Create a model instance for a specific agent, using per-agent model overrides."""
-    return ChatGoogleGenerativeAI(
-        model=config.get_agent_model(agent_name),
-        temperature=config.DEFAULT_TEMPERATURE,
-        max_output_tokens=config.DEFAULT_MAX_TOKENS,
-    )
-
-# Initialize agents
-browser_agent = None
-general_agent = None
-supervisor_node = None
-
-# Define the state with supervisor pattern
-class SupervisorState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], add_messages]
-    user_id: str  # User email for cross-thread memory lookup
-    file_attachments: NotRequired[list[Dict[str, Any]]]  # Optional: uploaded file metadata
-    next_agent: NotRequired[str]  # Which agent to route to
-    intent_context: NotRequired[str]  # Procurement intent context from action buttons
-
-
-
-# Add PostgreSQL-based memory to persist state across interactions and restarts
-checkpointer = None
-
-# Compile graph with both checkpointer (thread state) and store (cross-thread memory)
-graph = None
-
-# System Admin graph — single-agent for admin script/job management
-sysadmin_graph = None
-
-# Research graph — single-agent with Google Search grounding
-research_graph = None
-
-# Background job runner for admin script execution
-job_runner = JobRunner()
-
-globals_initialized = False
-
-async def setup_globals():
-    """Initialize async-dependent global variables."""
-    global store, mcp_client, browser_agent, general_agent, supervisor_node, checkpointer, graph, sysadmin_graph, research_graph, globals_initialized
-    
-    if globals_initialized:
-        return
-        
-    # Open pg_pool
-    try:
-        await pg_pool.open()
-    except Exception:
-        pass
-
-    # Start the background job runner
-    await job_runner.start()
-        
-    # Set up store
-    store = AsyncPostgresStore(pg_pool)
-    await store.setup()
-    
-    # Set up checkpointer
-    checkpointer = AsyncPostgresSaver(pg_pool)
-    await checkpointer.setup()
-    
-    # Set up MCP
-    try:
-        mcp_config = load_mcp_config("config/mcp_servers.yaml")
-        if mcp_config:
-            mcp_client = MultiServerMCPClient(mcp_config)
-            logging.info(f"MCP client initialized with {len(mcp_config)} server(s)")
-        else:
-            logging.info("No MCP servers configured")
-    except Exception as e:
-        logging.warning(f"Failed to initialize MCP client: {e}. Agent will work without MCP tools.")
-        mcp_client = None
-        
-    # Initialize agents
-    # NOTE: BrowserAgent is NOT USED in the Eagle graph — disabled to avoid misrouting
-    browser_agent = BrowserAgent(model=create_model("BrowserAgent"), store=store)
-    procurement_agent = ProcurementAgent(model=create_model("ProcurementAgent"), store=store)
-    general_agent = GeneralAgent(model=create_model("GeneralAgent"), store=store, mcp_client=mcp_client, admin_only_tools=ADMIN_ONLY_TOOLS)
-    supervisor_node = Supervisor(model=create_model("Supervisor"))
-    
-    # Build the graph inside setup_globals where agents are initialized
-    from includes.agents import ResearchAgent
-    research_agent = ResearchAgent(
-        model=create_model("ResearchAgent"), store=store,
-        include_rfq_tools=True,  # Has RFQ tools when used inside Eagle Agent graph
-    )
-
-    builder = StateGraph(SupervisorState)
-
-    async def run_supervisor(state, config):
-        return await supervisor_node(state, config)
-    
-    async def run_general(state, config):
-        return await general_agent(state, config)
-
-    async def run_procurement(state, config):
-        return await procurement_agent(state, config)
-
-    async def run_research(state, config):
-        return await research_agent(state, config)
-
-    # Add nodes
-    builder.add_node("Supervisor", run_supervisor)
-    builder.add_node("GeneralAgent", run_general)
-    builder.add_node("ProcurementAgent", run_procurement)
-    builder.add_node("ResearchAgent", run_research)
-
-    # Add edges
-    builder.add_edge(START, "Supervisor")
-
-    # Conditional routing from Supervisor
-    def router(state: SupervisorState) -> Literal["GeneralAgent", "ProcurementAgent", "ResearchAgent", "__end__"]:
-        next_agent = state.get("next_agent", "FINISH")
-        if next_agent == "GeneralAgent":
-            return "GeneralAgent"
-        elif next_agent == "ProcurementAgent":
-            return "ProcurementAgent"
-        elif next_agent == "ResearchAgent":
-            return "ResearchAgent"
-        else:
-            return END
-
-    builder.add_conditional_edges("Supervisor", router)
-
-    # Agents always route back to Supervisor
-    builder.add_edge("GeneralAgent", "Supervisor")
-    builder.add_edge("ProcurementAgent", "Supervisor")
-    builder.add_edge("ResearchAgent", "Supervisor")
-
-    # Compile graph
-    graph = builder.compile(checkpointer=checkpointer, store=store)
-
-    # Build System Admin graph — single-agent, no supervisor routing
-    sysadmin_agent = SysAdminAgent(
-        model=create_model("SysAdminAgent"), store=store, job_runner=job_runner
-    )
-
-    async def run_sysadmin(state, config):
-        return await sysadmin_agent(state, config)
-
-    sa_builder = StateGraph(SupervisorState)
-    sa_builder.add_node("SysAdminAgent", run_sysadmin)
-    sa_builder.add_edge(START, "SysAdminAgent")
-    sa_builder.add_edge("SysAdminAgent", END)
-    sysadmin_graph = sa_builder.compile(checkpointer=checkpointer, store=store)
-
-    # Build Research graph — standalone single-agent profile (no RFQ tools)
-    standalone_research_agent = ResearchAgent(
-        model=create_model("ResearchAgent"), store=store,
-        include_rfq_tools=False,
-    )
-
-    async def run_standalone_research(state, config):
-        return await standalone_research_agent(state, config)
-
-    ra_builder = StateGraph(SupervisorState)
-    ra_builder.add_node("ResearchAgent", run_standalone_research)
-    ra_builder.add_edge(START, "ResearchAgent")
-    ra_builder.add_edge("ResearchAgent", END)
-    research_graph = ra_builder.compile(checkpointer=checkpointer, store=store)
-
-    globals_initialized = True
 
 @cl.header_auth_callback
 async def header_auth_callback(headers) -> Optional[cl.User]:
@@ -512,7 +129,7 @@ async def _ensure_user_profile(user: cl.User) -> tuple:
     Returns:
         (user_name, is_new_user) where user_name may be None if no user is provided.
     """
-    user_profile = await store.aget(("users",), user.identifier)
+    user_profile = await _store().aget(("users",), user.identifier)
     is_new_user = False
     
     if not user_profile or not user_profile.value:
@@ -523,8 +140,8 @@ async def _ensure_user_profile(user: cl.User) -> tuple:
             "full_name": user.metadata.get("name", "") if user.metadata else "",
             "email": user.metadata.get("email", user.identifier) if user.metadata else user.identifier
         }
-        await store.aput(("users",), user.identifier, profile_data)
-        user_profile = await store.aget(("users",), user.identifier)
+        await _store().aput(("users",), user.identifier, profile_data)
+        user_profile = await _store().aget(("users",), user.identifier)
 
     # Resolve display name: preferred_name > given_name from OAuth > email
     user_name = None
@@ -645,9 +262,9 @@ async def start():
     # Select graph based on chosen chat profile
     chat_profile_name = cl.user_session.get("chat_profile")
     if chat_profile_name == "Research Agent":
-        cl.user_session.set("active_graph", research_graph)
+        cl.user_session.set("active_graph", _research_graph())
     else:
-        cl.user_session.set("active_graph", graph)
+        cl.user_session.set("active_graph", _graph())
 
     # Personalized welcome message
     if chat_profile_name == "Research Agent":
@@ -731,9 +348,9 @@ async def on_chat_resume(thread: ThreadDict):
     # Select graph based on chat profile (persisted with thread)
     chat_profile_name = cl.user_session.get("chat_profile")
     if chat_profile_name == "Research Agent":
-        cl.user_session.set("active_graph", research_graph)
+        cl.user_session.set("active_graph", _research_graph())
     else:
-        cl.user_session.set("active_graph", graph)
+        cl.user_session.set("active_graph", _graph())
     
     # Log for debugging
     print(f"Resuming conversation with thread_id: {thread_id} (profile: {chat_profile_name})")
@@ -810,7 +427,7 @@ async def on_chat_resume(thread: ThreadDict):
 @cl.on_stop
 async def on_stop():
     """Gracefully shut down the job runner when the app stops."""
-    await job_runner.shutdown()
+    await _graph_module.job_runner.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -834,7 +451,7 @@ async def on_action_confirm_delete(action: cl.Action):
     """Handle the Yes/confirm button from the delete confirmation."""
     user_id = cl.user_session.get("user_id", "")
     if user_id:
-        await handle_deleteall_command(user_id, store, pg_pool)
+        await handle_deleteall_command(user_id, _store(), _graph_module.pg_pool)
 
     new_thread = str(uuid.uuid4())
     cl.user_session.set("thread_id", new_thread)
@@ -872,7 +489,7 @@ async def on_action_cancel_job(action: cl.Action):
     """Cancel button attached to job start messages."""
     job_id = action.payload.get("job_id", "")
     try:
-        job = await job_runner.cancel(job_id)
+        job = await _graph_module.job_runner.cancel(job_id)
         await cl.Message(
             content=f"Cancelled job `{job.id[:8]}` ({job.script_name}).",
             author="EagleAgent",
@@ -884,370 +501,9 @@ async def on_action_cancel_job(action: cl.Action):
         ).send()
 
 
-@cl.action_callback("rfq_refresh")
-async def on_rfq_refresh(action: cl.Action):
-    """Refresh the dashboard RFQ view with latest data."""
-    from includes.agent_bridge import notify_dashboard
-
-    payload = action.payload or {}
-    rfq_id = payload.get("rfq_id")
-    if not rfq_id or not store:
-        return
-
-    await notify_dashboard("dashboard_refresh")
-
-
-@cl.action_callback("rfq_update_supplier")
-async def on_rfq_update_supplier(action: cl.Action):
-    """Handle supplier status change from dashboard."""
-    from includes.agent_bridge import notify_dashboard
-
-    payload = action.payload or {}
-    rfq_id = payload.get("rfq_id")
-    line = payload.get("line")
-    supplier_name = payload.get("supplier_name")
-    new_status = payload.get("status")
-
-    if not all([rfq_id, line, supplier_name, new_status]):
-        return
-
-    user_id = cl.user_session.get("user_id", "unknown")
-    await asyncio.to_thread(
-        _update_supplier_sync, rfq_id,
-        {"line": line, "name": supplier_name, "status": new_status},
-        user_id,
-    )
-
-    # Refresh the dashboard view
-    await notify_dashboard("dashboard_refresh")
-
-    status_label = new_status.replace("_", " ")
-    await cl.Message(
-        content=f"Updated **{supplier_name}** on line {line} of {rfq_id} → *{status_label}*",
-        author="EagleAgent",
-    ).send()
-
-
-@cl.action_callback("rfq_identify_items")
-async def on_rfq_identify_items(action: cl.Action):
-    """Handle Identify Items button from RFQ custom element.
-
-    Phase 1: Search internal product DB by part number, supplier code,
-             and description for each unidentified item.
-             Update the RFQ directly for any exact matches (with product_id).
-    Phase 2: Route unmatched items to ResearchAgent for web-based
-             identification (must be 100% positive match).
-    """
-    import asyncio
-    from includes.agent_bridge import notify_dashboard
-    from includes.tools.product_tools import _find_product_exact, _find_product_by_supplier_code
-
-    payload = action.payload or {}
-    rfq_id = payload.get("rfq_id", "???")
-    unidentified_items = payload.get("items", [])
-
-    if not unidentified_items:
-        return
-
-    await cl.Message(
-        content=f"Identifying {len(unidentified_items)} item(s) in {rfq_id}...",
-        author="EagleAgent",
-    ).send()
-    await notify_dashboard("agent_working", {"label": "AI confirming items..."})
-
-    try:
-        # ---- Phase 1: Internal DB search ----
-        matched = []      # list of dicts: line, part_number, brand, product_id
-        unmatched = []     # items that need web search
-
-        for ui_item in unidentified_items:
-            line = ui_item.get("line")
-            description = ui_item.get("description", "")
-            part_number = ui_item.get("part_number", "")
-            brand = ui_item.get("brand", "")
-
-            product = None
-            # Try exact part number match first (most specific)
-            if part_number:
-                try:
-                    product = await asyncio.to_thread(
-                        _find_product_exact, part_number, brand or None,
-                    )
-                except Exception as e:
-                    logger.warning(f"Phase 1 product search failed for line {line}: {e}")
-
-            # Try supplier code search if part number didn't match
-            if not product and part_number:
-                try:
-                    product = await asyncio.to_thread(
-                        _find_product_by_supplier_code, part_number, brand or None,
-                    )
-                except Exception as e:
-                    logger.warning(f"Phase 1 supplier code search failed for line {line}: {e}")
-
-            if product:
-                matched.append({
-                    "line": line,
-                    "part_number": product["part_number"],
-                    "brand": product["brand"],
-                    "product_id": product["id"],
-                })
-            else:
-                unmatched.append(ui_item)
-
-        # Update RFQ with matched items via SQL
-        if matched:
-            user_id = cl.user_session.get("user_id", "unknown")
-            for m in matched:
-                await asyncio.to_thread(
-                    _update_item_sync, rfq_id,
-                    {"line": m["line"], "part_number": m["part_number"],
-                     "brand": m["brand"], "product_id": m["product_id"],
-                     "status": "confirmed"},
-                    user_id,
-                )
-            await notify_dashboard("dashboard_refresh")
-
-        # Notify user of Phase 1 results
-        if matched:
-            match_desc = ", ".join(f"line {m['line']} → {m['part_number']} ({m['brand']})" for m in matched)
-            msg = f"Identified {len(matched)} item(s) from our product database: {match_desc}."
-            if unmatched:
-                msg += f" Searching the web for {len(unmatched)} remaining item(s)..."
-            await cl.Message(content=msg, author="EagleAgent").send()
-        elif unmatched:
-            await cl.Message(
-                content=f"No exact matches found in our product database for {len(unmatched)} item(s). Searching the web...",
-                author="EagleAgent",
-            ).send()
-
-        # ---- Phase 2: Route unmatched items to ResearchAgent for web search ----
-        if unmatched:
-            parts = ["web_research"]
-            parts.append(f"Identify the following unidentified product(s) from {rfq_id}.")
-            parts.append("For each item, search the web to verify the part number and find a positive product match.")
-            parts.append("")
-            for ui_item in unmatched:
-                line = ui_item.get("line")
-                desc = ui_item.get("description", "")
-                pn = ui_item.get("part_number", "")
-                br = ui_item.get("brand", "")
-                item_parts = [f"Line {line}: {desc}"]
-                if pn:
-                    item_parts.append(f"  Code/Part number: {pn}")
-                if br:
-                    item_parts.append(f"  Brand: {br}")
-                parts.append("\n".join(item_parts))
-            parts.append("")
-            parts.append("IMPORTANT — Part number validation:")
-            parts.append("For each item, search the web to verify BOTH that:")
-            parts.append("  1. The part number actually exists as a real product")
-            parts.append("  2. The product that part number refers to matches the given description")
-            parts.append("For example, if the description says 'Hydraulic Return Filter' but the part number")
-            parts.append("resolves to an oil filter or a completely different product, that is a mismatch.")
-            parts.append("")
-            parts.append("Flag an item for review (status='review') if ANY of these are true:")
-            parts.append("- The exact part number cannot be found online")
-            parts.append("- The part number exists but refers to a different product than the description")
-            parts.append("- Similar/close part numbers exist that better match the description (possible typo)")
-            parts.append("In review cases, add a notes field explaining the issue")
-            parts.append("(e.g. 'Part number not found. Closest matches: 201-60-71180, 201-01-71110'")
-            parts.append(" or 'Part number 600-211-2110 resolves to a fuel filter, not an oil filter as described').")
-            parts.append("")
-            parts.append("For each item:")
-            parts.append("- EXACT match AND description matches: set part_number, brand, status='confirmed'")
-            parts.append("- Part number wrong, missing, or mismatched to description: set status='review' and notes='...' explaining the issue. Do NOT clear or remove the existing part_number or brand — keep them as-is so the user can see what was originally provided.")
-            parts.append("- Cannot identify at all: leave unchanged")
-            parts.append("Do NOT set status='confirmed' unless you are 100% certain the part number is correct AND matches the description.")
-
-            rich_prompt = "\n".join(parts)
-
-            short_label = f"Identify {len(unmatched)} unmatched item(s) in {rfq_id} via web search"
-            synthetic = cl.Message(content=short_label)
-            synthetic.author = "User"
-            synthetic.intent_context = rich_prompt  # carry context per-message to avoid race
-            await main(synthetic)
-        elif not matched:
-            await cl.Message(
-                content="All items could not be identified. Try adding more details (part numbers, brands) to help.",
-                author="EagleAgent",
-            ).send()
-    finally:
-        await notify_dashboard("agent_done")
-
-
-@cl.action_callback("rfq_find_suppliers")
-async def on_rfq_find_suppliers(action: cl.Action):
-    """Handle Find Suppliers button from RFQ custom element.
-
-    Phase 1: Search internal DB for suppliers (purchase history + supplier DB).
-             Add any found directly to the RFQ with supplier_id and purchase refs.
-    Phase 2: Route to ResearchAgent for web-based supplier discovery,
-             with full context of what was already found internally.
-    """
-    import asyncio
-    from includes.agent_bridge import notify_dashboard
-    from includes.tools.product_tools import (
-        _find_purchase_history_for_part,
-    )
-
-    payload = action.payload or {}
-    rfq_id = payload.get("rfq_id", "???")
-    line = payload.get("line")
-    description = payload.get("description", "")
-    part_number = payload.get("part_number", "")
-    brand = payload.get("brand", "")
-    quantity = payload.get("quantity", "")
-    uom = payload.get("uom", "ea")
-    existing = payload.get("existing_suppliers", [])
-
-    await notify_dashboard("agent_working", {"label": f"Finding suppliers for line {line}..."})
-
-    try:
-        # ---- Phase 1: Internal DB search ----
-        existing_names_lower = {n.lower() for n in existing}
-        internal_suppliers = []  # list of dicts to add to RFQ
-        internal_summary_lines = []  # for the ResearchAgent prompt
-
-        # 1a) Check purchase history if we have a part number
-        if part_number:
-            try:
-                ph_rows = await asyncio.to_thread(_find_purchase_history_for_part, part_number, 20)
-                for row in ph_rows:
-                    if row["name"].lower() not in existing_names_lower:
-                        sup_entry = {
-                            "supplier_id": row["supplier_id"],
-                            "name": row["name"],
-                            "contacts": row["contacts"],
-                            "status": "candidate",
-                            "price_type": "previous_purchase",
-                            "price": row["price"],
-                            "purchase_ref": {
-                                "doc_number": row["doc_number"],
-                                "date": row["date"],
-                                "order_count": row["order_count"],
-                            },
-                        }
-                        internal_suppliers.append(sup_entry)
-                        existing_names_lower.add(row["name"].lower())
-                        price_str = f"${row['price']:,.2f}" if row["price"] else "N/A"
-                        internal_summary_lines.append(
-                            f"- {row['name']} (previous purchase, price: {price_str}, orders: {row['order_count']})"
-                        )
-            except Exception as e:
-                logger.warning(f"Phase 1 purchase history search failed: {e}")
-
-        # 1b) Brand-based search removed — too broad (returns suppliers for the
-        #     brand, not this specific part). The web search in Phase 2 handles
-        #     finding alternative suppliers.
-
-        # Add internal suppliers to the RFQ via SQL
-        if internal_suppliers:
-            user_id = cl.user_session.get("user_id", "unknown")
-            await asyncio.to_thread(
-                _add_supplier_sync, rfq_id,
-                {"line": line, "suppliers": internal_suppliers},
-                user_id,
-            )
-            await notify_dashboard("dashboard_refresh")
-
-        # Notify user of Phase 1 results
-        if internal_suppliers:
-            names = ", ".join(s["name"] for s in internal_suppliers)
-            await cl.Message(
-                content=f"Added {len(internal_suppliers)} supplier(s) from our records to line {line}: {names}. Now searching the web for more options...",
-                author="EagleAgent",
-            ).send()
-        else:
-            await cl.Message(
-                content=f"No matching suppliers found in our records for line {line}. Searching the web...",
-                author="EagleAgent",
-            ).send()
-
-        # ---- Phase 2: Route to ResearchAgent for web search ----
-        all_existing = list(existing or []) + [s["name"] for s in internal_suppliers]
-
-        parts = [f"research_suppliers"]
-        parts.append(f"Find external suppliers for line {line} of {rfq_id}.")
-        parts.append(f"Product description: {description}")
-        if part_number:
-            parts.append(f"Part number: {part_number}")
-        if brand:
-            parts.append(f"Brand: {brand}")
-        if quantity:
-            parts.append(f"Quantity needed: {quantity} {uom}")
-        if all_existing:
-            parts.append(f"Already have these suppliers (do NOT repeat them): {', '.join(all_existing)}")
-        if internal_summary_lines:
-            parts.append("Internal DB results:\n" + "\n".join(internal_summary_lines))
-        parts.append("")
-        parts.append("Search the web for distributors and wholesalers who can supply this product.")
-        parts.append("")
-        parts.append("## Geographic Priority")
-        parts.append("1. FIRST search for Australian-based suppliers (add 'Australia' to your search queries).")
-        parts.append("2. If fewer than 3 Australian suppliers are found, expand to international suppliers.")
-        parts.append("3. When listing results, present Australian suppliers first, then international.")
-        parts.append("")
-        parts.append("## Supplier Selection")
-        parts.append("Prioritise authorised distributors and industrial wholesalers over retail sources.")
-        parts.append("If distributors are scarce, include reputable retailers as fallback options.")
-        parts.append("Aim for 3-5 good supplier options but more is fine if they look like strong matches.")
-        parts.append("")
-        parts.append("## Supply Chain Classification")
-        parts.append("Do NOT attempt to categorize suppliers yourself. The system will automatically classify each new supplier using our full taxonomy after you add them.")
-        parts.append("You may optionally include 'tier' (A/B/C/D) and 'category' (e.g. 'Trade Wholesaler') if it is obvious, but the system will verify and correct these.")
-        parts.append("")
-        parts.append("CRITICAL: After researching, you MUST call manage_rfq(action='add_supplier') to add each supplier you find to the RFQ.")
-        parts.append(f"Use rfq_id='{rfq_id}' and data={{line: {line}, suppliers: [...]}} with a list of all suppliers found.")
-        parts.append("Each supplier dict must include: name, country (2-letter ISO code, e.g. 'AU', 'US', 'GB'), currency (3-letter ISO code for their trading currency, e.g. 'AUD', 'USD', 'GBP'), contacts (list with at least one of email/phone/url).")
-        parts.append("Optional fields: tier, category, price, price_type, lead_time, notes.")
-        parts.append("If a price is in a foreign currency, store the ORIGINAL price and set currency accordingly — do NOT convert to AUD.")
-        parts.append("If you do NOT call add_supplier, the suppliers will NOT appear on the RFQ. The user is counting on you to update the RFQ directly.")
-
-        rich_prompt = "\n".join(parts)
-
-        short_label = f"Search the web for suppliers for line {line}"
-        if description:
-            short_label += f" ({description[:60]})"
-
-        synthetic = cl.Message(content=short_label)
-        synthetic.author = "User"
-        synthetic.intent_context = rich_prompt  # carry context per-message to avoid race
-
-        # Track supplier count before web search to detect if any were added
-        pre_web_count = 0
-        _pre_rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
-        if _pre_rfq:
-            _pre_line = next((i for i in _pre_rfq.get("items", []) if i["line"] == line), None)
-            if _pre_line:
-                pre_web_count = len(_pre_line.get("suppliers", []))
-
-        await main(synthetic)
-
-        # Fallback: if main() produced no visible response but suppliers were
-        # added by the tool, notify the user so the result isn't silent.
-        _post_rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
-        if _post_rfq:
-            _post_line = next((i for i in _post_rfq.get("items", []) if i["line"] == line), None)
-            if _post_line:
-                post_web_count = len(_post_line.get("suppliers", []))
-                new_count = post_web_count - pre_web_count
-                if new_count > 0:
-                    new_suppliers = _post_line.get("suppliers", [])[-new_count:]
-                    names = ", ".join(s.get("name", "?") for s in new_suppliers)
-                    await cl.Message(
-                        content=f"Web search complete — added {new_count} additional supplier(s) to line {line}: {names}.",
-                        author="EagleAgent",
-                    ).send()
-                    await notify_dashboard("dashboard_refresh")
-                elif not internal_suppliers:
-                    # Neither internal nor web search found anything
-                    await cl.Message(
-                        content=f"Web search complete but no suitable suppliers found for line {line}. Try broadening the search terms or checking alternative part numbers.",
-                        author="EagleAgent",
-                    ).send()
-    finally:
-        await notify_dashboard("agent_done")
+# RFQ action callbacks are registered via @cl.action_callback decorators
+# in rfq_actions — importing the module is enough.
+import includes.chat.rfq_actions  # noqa: F401 — registers Chainlit callbacks
 
 
 @cl.on_message
@@ -1455,7 +711,7 @@ async def main(message: cl.Message):
     # Fallback: capture last AI response text for non-streaming model calls
     last_ai_text = ""
     
-    active_graph = cl.user_session.get("active_graph", graph)
+    active_graph = cl.user_session.get("active_graph", _graph())
     last_event_time = request_start
     try:
       async for event in active_graph.astream_events(inputs, config=graph_config, version="v1"):

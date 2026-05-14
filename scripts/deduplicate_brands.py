@@ -32,6 +32,7 @@ from collections import defaultdict
 from rapidfuzz import fuzz
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from config.settings import Config
 
 from config.settings import Config
 from includes.dashboard.models import Brand
@@ -178,7 +179,7 @@ Example response:
 [{{"canonical": "Hilti", "duplicates": ["Hilti", "HILTI", "hilti"]}}]"""
 
     model = ChatGoogleGenerativeAI(
-        model="gemini-3-flash-preview",
+        model=Config.DEFAULT_MODEL,
         temperature=0,
         timeout=60,
     )

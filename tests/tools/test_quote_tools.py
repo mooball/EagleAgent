@@ -54,7 +54,7 @@ def db_session():
 @pytest.fixture
 def rfq_tools(db_session, test_user_id):
     """Create RFQ tools with mocked DB session."""
-    with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+    with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
         tools = create_quote_tools(test_user_id)
     return tools
 
@@ -82,7 +82,7 @@ async def _create_sample_rfq(manage, db_session, **overrides):
         ],
     }
     data.update(overrides)
-    with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+    with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
         return await manage.ainvoke({"action": "create", "data": data})
 
 
@@ -118,7 +118,7 @@ class TestManageRfqCreate:
         assert num2 == num1 + 1
 
     async def test_create_requires_customer(self, manage, db_session):
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({"action": "create", "data": {}})
         assert "error" in result.lower()
 
@@ -158,7 +158,7 @@ class TestManageRfqUpdateItem:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({
                 "action": "update_item",
                 "rfq_id": rfq.rfq_number,
@@ -176,7 +176,7 @@ class TestManageRfqUpdateItem:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({
                 "action": "update_item", "rfq_id": rfq.rfq_number, "data": {"part_number": "X"},
             })
@@ -186,7 +186,7 @@ class TestManageRfqUpdateItem:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({
                 "action": "update_item", "rfq_id": rfq.rfq_number, "data": {"line": 99},
             })
@@ -197,7 +197,7 @@ class TestManageRfqUpdateItem:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({
                 "action": "update_item",
                 "rfq_id": rfq.rfq_number,
@@ -215,7 +215,7 @@ class TestManageRfqSuppliers:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({
                 "action": "add_supplier",
                 "rfq_id": rfq.rfq_number,
@@ -238,7 +238,7 @@ class TestManageRfqSuppliers:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({
                 "action": "add_supplier",
                 "rfq_id": rfq.rfq_number,
@@ -263,7 +263,7 @@ class TestManageRfqSuppliers:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             await manage.ainvoke({
                 "action": "add_supplier",
                 "rfq_id": rfq.rfq_number,
@@ -285,7 +285,7 @@ class TestManageRfqSuppliers:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({
                 "action": "update_supplier",
                 "rfq_id": rfq.rfq_number,
@@ -297,7 +297,7 @@ class TestManageRfqSuppliers:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({
                 "action": "add_supplier",
                 "rfq_id": rfq.rfq_number,
@@ -315,7 +315,7 @@ class TestManageRfqMisc:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             await manage.ainvoke({
                 "action": "assign", "rfq_id": rfq.rfq_number,
                 "data": {"assigned_to": "sarah@eagle.com.au"},
@@ -328,7 +328,7 @@ class TestManageRfqMisc:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             await manage.ainvoke({
                 "action": "update_status", "rfq_id": rfq.rfq_number,
                 "data": {"status": "in_progress"},
@@ -341,7 +341,7 @@ class TestManageRfqMisc:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({
                 "action": "update_status", "rfq_id": rfq.rfq_number,
                 "data": {"status": "bogus"},
@@ -352,7 +352,7 @@ class TestManageRfqMisc:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             await manage.ainvoke({
                 "action": "add_note", "rfq_id": rfq.rfq_number,
                 "data": {"note": "Urgent — needed by end of month"},
@@ -365,7 +365,7 @@ class TestManageRfqMisc:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             await manage.ainvoke({
                 "action": "add_note", "rfq_id": rfq.rfq_number,
                 "data": {"note": "First note"},
@@ -383,7 +383,7 @@ class TestManageRfqMisc:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             await manage.ainvoke({
                 "action": "link_external", "rfq_id": rfq.rfq_number,
                 "data": {"netsuite_opportunity": "OPP-12345"},
@@ -396,19 +396,19 @@ class TestManageRfqMisc:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({
                 "action": "link_external", "rfq_id": rfq.rfq_number, "data": {},
             })
         assert "error" in result.lower()
 
     async def test_unknown_action(self, manage, db_session):
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({"action": "explode"})
         assert "error" in result.lower()
 
     async def test_rfq_not_found(self, manage, db_session):
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await manage.ainvoke({
                 "action": "update_status", "rfq_id": "RFQ-9999-0000",
                 "data": {"status": "draft"},
@@ -419,7 +419,7 @@ class TestManageRfqMisc:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             await manage.ainvoke({
                 "action": "update_status", "rfq_id": rfq.rfq_number,
                 "data": {"status": "in_progress"},
@@ -442,13 +442,13 @@ class TestGetRfq:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await get.ainvoke({"rfq_id": rfq.rfq_number})
         assert rfq.rfq_number in result
         assert "Acme Construction" in result
 
     async def test_get_not_found(self, get, db_session):
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await get.ainvoke({"rfq_id": "RFQ-0000-0000"})
         assert "not found" in result.lower()
 
@@ -456,7 +456,7 @@ class TestGetRfq:
         await _create_sample_rfq(manage, db_session)
         await _create_sample_rfq(manage, db_session, customer="Beta Corp")
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await get.ainvoke({"list_all": True})
         assert "Acme Construction" in result
         assert "Beta Corp" in result
@@ -466,7 +466,7 @@ class TestGetRfq:
         await _create_sample_rfq(manage, db_session, customer="FilterTestCo")
         rfq = _get_rfq_from_db(db_session, customer="FilterTestCo")
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             await manage.ainvoke({
                 "action": "update_status", "rfq_id": rfq.rfq_number,
                 "data": {"status": "awaiting_quotes"},
@@ -478,7 +478,7 @@ class TestGetRfq:
 
     async def test_default_shows_my_rfqs(self, manage, get, db_session, test_user_id):
         await _create_sample_rfq(manage, db_session)
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             result = await get.ainvoke({})
         assert "Acme" in result
 
@@ -492,7 +492,7 @@ class TestRendering:
         await _create_sample_rfq(manage, db_session)
         rfq = _get_rfq_from_db(db_session)
 
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             await manage.ainvoke({
                 "action": "add_supplier",
                 "rfq_id": rfq.rfq_number,
@@ -576,7 +576,7 @@ class TestPricingEnrichment:
     def test_enrich_uses_most_recent_transaction(self, db_session, pricing_data):
         """Should use the most recent SO or Quote for both cost and sale."""
         suppliers = [{"supplier_id": str(pricing_data["supplier"].id), "name": "Test Pricing Supplier"}]
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             _enrich_supplier_pricing(suppliers, str(pricing_data["product"].id))
         # SO is most recent (2025-04-10 vs 2025-03-01)
         assert suppliers[0]["cost_price"] == 64.81
@@ -610,7 +610,7 @@ class TestPricingEnrichment:
         db_session.flush()
 
         suppliers = [{"supplier_id": str(supplier.id), "name": "Quote Supplier"}]
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             _enrich_supplier_pricing(suppliers, str(product.id))
         assert suppliers[0]["cost_price"] == 120.00
         assert suppliers[0]["sale_price"] == 200.00
@@ -619,19 +619,19 @@ class TestPricingEnrichment:
 
     def test_enrich_counts_transactions(self, db_session, pricing_data):
         suppliers = [{"supplier_id": str(pricing_data["supplier"].id), "name": "Test Pricing Supplier"}]
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             _enrich_supplier_pricing(suppliers, str(pricing_data["product"].id))
         assert suppliers[0]["transaction_count"] == 2  # SO + Quote
 
     def test_enrich_skips_without_product_id(self, db_session, pricing_data):
         suppliers = [{"supplier_id": str(pricing_data["supplier"].id), "name": "Test Pricing Supplier"}]
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             _enrich_supplier_pricing(suppliers, None)
         assert "cost_price" not in suppliers[0]
 
     def test_enrich_skips_without_supplier_id(self, db_session, pricing_data):
         suppliers = [{"name": "Unknown Supplier"}]
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             _enrich_supplier_pricing(suppliers, str(pricing_data["product"].id))
         assert "cost_price" not in suppliers[0]
 
@@ -655,7 +655,7 @@ class TestPricingEnrichment:
         db_session.flush()
 
         suppliers = [{"supplier_id": str(supplier.id), "name": "PO Supplier"}]
-        with patch("includes.tools.quote_tools._get_session", return_value=db_session):
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
             _enrich_supplier_pricing(suppliers, str(product.id))
         assert "cost_price" not in suppliers[0]
         assert "sale_price" not in suppliers[0]

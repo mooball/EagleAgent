@@ -20,6 +20,7 @@ import argparse
 from dotenv import load_dotenv
 load_dotenv()
 
+from config.settings import Config
 from google import genai
 
 from includes.supplier_categorization import (
@@ -33,7 +34,7 @@ def main():
     parser = argparse.ArgumentParser(description="Categorize suppliers using search-grounded Gemini LLM.")
     parser.add_argument("--input", type=str, default="data/top_50_suppliers.json", help="Input JSON file of suppliers.")
     parser.add_argument("--output", type=str, default="data/supplier_categories.json", help="Output JSON file for results.")
-    parser.add_argument("--model", type=str, default="gemini-3-flash-preview", help="Gemini model to use.")
+    parser.add_argument("--model", type=str, default=Config.DEFAULT_MODEL, help="Gemini model to use.")
     parser.add_argument("--dry-run", action="store_true", help="Show the prompt for the first supplier without calling the API.")
     parser.add_argument("--delay", type=float, default=2.0, help="Delay in seconds between API calls (default: 2.0).")
     parser.add_argument("--start", type=int, default=0, help="Index to start from (for resuming interrupted runs).")
