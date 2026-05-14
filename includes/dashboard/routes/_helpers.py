@@ -1,0 +1,96 @@
+"""Shared helpers for dashboard routes.
+
+All route sub-modules import from here so there's a single router,
+templates instance, auth guard, and render helper.
+"""
+
+import logging
+import math
+import os
+import hashlib
+
+from fastapi import APIRouter, Request, Depends
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from sqlalchemy import func, text
+
+from includes.dashboard.database import get_session, update_supplier, add_supplier_comment
+from config import config
+from includes.dashboard.models import (
+    Brand,
+    Product,
+    Transaction,
+    Supplier,
+    SupplierBrand,
+    RFQThread,
+)
+
+logger = logging.getLogger(__name__)
+templates = Jinja2Templates(directory="templates")
+
+
+# Cache-busting hash for static assets (computed once at startup)
+def _css_hash() -> str:
+    css_path = os.path.join("public", "tailwind.min.css")
+    try:
+        with open(css_path, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()[:8]
+    except FileNotFoundError:
+        return "dev"
+
+templates.env.globals["css_version"] = _css_hash()
+
+router = APIRouter()
+
+PAGE_SIZE = 50
+
+
+# ---------------------------------------------------------------------------
+# Auth dependencies
+# ---------------------------------------------------------------------------
+def require_user(request: Request) -> dict:
+    """Ensure a logged-in user; redirect to /login otherwise."""
+    user = request.session.get("user")
+    if not user:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=303, headers={"Location": "/login"})
+    # Attach computed role so templates/downstream code can use it
+    user["role"] = (
+        "Admin"
+        if user.get("email", "").lower() in config.get_admin_emails()
+        else "Staff"
+    )
+    return user
+
+
+def require_role(*allowed_roles: str):
+    """Dependency factory: restrict a route to users with one of the given roles."""
+    def _guard(request: Request) -> dict:
+        user = require_user(request)
+        if user["role"] not in allowed_roles:
+            from fastapi import HTTPException
+            if _is_htmx(request):
+                raise HTTPException(status_code=403)
+            raise HTTPException(status_code=403)
+        return user
+    return Depends(_guard)
+
+
+# Convenience alias for the most common guard
+require_admin = require_role("Admin")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _is_htmx(request: Request) -> bool:
+    return request.headers.get("hx-request") == "true"
+
+
+def _render(request: Request, full_template: str, partial_template: str,
+            context: dict, user: dict):
+    """Return a partial if HTMX, else the full page."""
+    context["user"] = user
+    if _is_htmx(request):
+        return templates.TemplateResponse(request, partial_template, context)
+    return templates.TemplateResponse(request, full_template, context)

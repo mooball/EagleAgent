@@ -71,7 +71,7 @@ async def test_langgraph_wiring_with_stub(monkeypatch):
 
         # Arrange: a simple user message and required LangGraph config
         config = {"configurable": {"thread_id": "test-thread"}}
-        result = await app.graph.ainvoke(
+        result = await app._graph().ainvoke(
             {"messages": [HumanMessage(content="hello")]}, config=config
         )
 

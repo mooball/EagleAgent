@@ -124,8 +124,8 @@ class TestMatchSupplierDomainFirst:
         """Domain-first: same domain matches even when names differ significantly."""
         sup = Supplier(
             id=uuid.uuid4(),
-            name="Repco Export & Wholesale",
-            url="https://www.repco.com.au",
+            name="Xyzzy Test Export & Wholesale",
+            url="https://www.xyzzytest-unique.com.au",
             country="AU",
             source="netsuite",
         )
@@ -133,8 +133,8 @@ class TestMatchSupplierDomainFirst:
         db_session.flush()
 
         result = match_supplier(
-            "Repco Australia",
-            url="https://repco.com.au/shop",
+            "Xyzzy Test Australia",
+            url="https://xyzzytest-unique.com.au/shop",
             country="AU",
             session=db_session,
         )
@@ -145,8 +145,8 @@ class TestMatchSupplierDomainFirst:
         """Subdomain difference shouldn't matter — root domains match."""
         sup = Supplier(
             id=uuid.uuid4(),
-            name="Komatsu Parts",
-            url="https://www.komatsu.com.au",
+            name="Fakeomatsu Parts",
+            url="https://www.fakeomatsu-test.com.au",
             country="AU",
             source="netsuite",
         )
@@ -154,8 +154,8 @@ class TestMatchSupplierDomainFirst:
         db_session.flush()
 
         result = match_supplier(
-            "Komatsu Australia",
-            url="https://my.komatsu.com.au",
+            "Fakeomatsu Australia",
+            url="https://my.fakeomatsu-test.com.au",
             country="AU",
             session=db_session,
         )
@@ -187,9 +187,9 @@ class TestMatchSupplierDomainFirst:
         """Match via a URL in the supplier's contacts array."""
         sup = Supplier(
             id=uuid.uuid4(),
-            name="Western Equipment",
+            name="Fakewestern Equipment",
             url=None,  # no main URL
-            contacts=[{"url": "https://www.westernequip.com.au", "email": "info@westernequip.com.au"}],
+            contacts=[{"url": "https://www.fakewestern-test.com.au", "email": "info@fakewestern-test.com.au"}],
             country="AU",
             source="netsuite",
         )
@@ -197,8 +197,8 @@ class TestMatchSupplierDomainFirst:
         db_session.flush()
 
         result = match_supplier(
-            "Western Equipment Co",
-            url="https://westernequip.com.au",
+            "Fakewestern Equipment Co",
+            url="https://fakewestern-test.com.au",
             country="AU",
             session=db_session,
         )
