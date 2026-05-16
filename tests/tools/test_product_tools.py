@@ -150,12 +150,15 @@ class TestPurchaseHistorySearch:
          .limit.return_value
          .all.return_value) = [row]
 
-        # Mock the price subquery
+        # Mock the cost+price subquery
+        price_mock = MagicMock()
+        price_mock.cost = 35.00
+        price_mock.price = 42.50
         (mock_session.query.return_value
          .join.return_value
          .filter.return_value
          .order_by.return_value
-         .first.return_value) = (42.50,)
+         .first.return_value) = price_mock
 
         result = _do_part_purchase_history(part_number="P-100")
 
@@ -163,6 +166,7 @@ class TestPurchaseHistorySearch:
         assert "Supplier ID" in result
         assert "Location" in result
         assert "Acme Tools" in result
+        assert "$35.00" in result
         assert "$42.50" in result
         assert "15 Jan 2026" in result
         assert "500" in result
@@ -207,11 +211,14 @@ class TestPurchaseHistorySearch:
          .limit.return_value
          .all.return_value) = [row1, row2]
 
+        price_mock = MagicMock()
+        price_mock.cost = 45.00
+        price_mock.price = 55.00
         (mock_session.query.return_value
          .join.return_value
          .filter.return_value
          .order_by.return_value
-         .first.return_value) = (55.00,)
+         .first.return_value) = price_mock
 
         result = _do_part_purchase_history(part_number="P-200")
 
@@ -316,6 +323,7 @@ class TestSearchPurchaseHistory:
         row.doc_number = "P158740"
         row.date = date(2026, 3, 10)
         row.quantity = 16.0
+        row.cost = 180.00
         row.price = 236.68
         row.status = "Pending Receipt"
         row.part_number = "ABC-123"
@@ -333,6 +341,7 @@ class TestSearchPurchaseHistory:
         assert "P158740" in result
         assert "ABC-123" in result
         assert "Acme Supplies" in result
+        assert "$180.00" in result
         assert "$236.68" in result
 
 

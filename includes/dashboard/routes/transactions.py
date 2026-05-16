@@ -16,7 +16,7 @@ def transaction_list(request: Request, user: dict = Depends(require_user),
     session = _helpers.get_session()
     try:
         query = (
-            session.query(Transaction, Supplier.name, Product.part_number, Product.brand)
+            session.query(Transaction, Supplier.name, Supplier.currency, Product.part_number, Product.brand)
             .join(Supplier, Transaction.supplier_id == Supplier.id)
             .join(Product, Transaction.product_id == Product.id)
         )
@@ -42,15 +42,7 @@ def transaction_list(request: Request, user: dict = Depends(require_user),
         )
 
         transactions = []
-        for ps, sup_name, part_number, brand in rows:
-            cost_display = None
-            if ps.cost is not None:
-                currency = ps.cost_currency or "AUD"
-                if currency == "AUD":
-                    cost_display = f"${ps.cost:,.2f}"
-                else:
-                    cost_display = f"${ps.cost:,.2f} {currency}"
-            price_display = f"${ps.price:,.2f}" if ps.price is not None else None
+        for ps, sup_name, sup_currency, part_number, brand in rows:
             transactions.append({
                 "id": str(ps.id),
                 "doc_number": ps.doc_number,
@@ -61,8 +53,9 @@ def transaction_list(request: Request, user: dict = Depends(require_user),
                 "product_brand": brand,
                 "product_id": str(ps.product_id),
                 "quantity": ps.quantity,
-                "price": price_display,
-                "cost": cost_display,
+                "price": float(ps.price) if ps.price is not None else None,
+                "cost": float(ps.cost) if ps.cost is not None else None,
+                "cost_currency": sup_currency,
                 "status": get_status_label(ps.doc_type or "", ps.status or "") if ps.status else None,
             })
     finally:
@@ -124,8 +117,8 @@ def partial_transaction_list(request: Request, user: dict = Depends(require_user
                 "product_brand": brand,
                 "product_id": str(ps.product_id),
                 "quantity": ps.quantity,
-                "price": ps.price,
-                "cost": ps.cost,
+                "price": float(ps.price) if ps.price is not None else None,
+                "cost": float(ps.cost) if ps.cost is not None else None,
                 "cost_currency": sup_currency,
                 "status": get_status_label(ps.doc_type or "", ps.status or "") if ps.status else None,
             })
@@ -188,8 +181,8 @@ def partial_transaction_rows(request: Request, user: dict = Depends(require_user
                 "product_brand": brand,
                 "product_id": str(ps.product_id),
                 "quantity": ps.quantity,
-                "price": ps.price,
-                "cost": ps.cost,
+                "price": float(ps.price) if ps.price is not None else None,
+                "cost": float(ps.cost) if ps.cost is not None else None,
                 "cost_currency": sup_currency,
                 "status": get_status_label(ps.doc_type or "", ps.status or "") if ps.status else None,
             })

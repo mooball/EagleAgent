@@ -77,6 +77,9 @@ def _graph():
 def _research_graph():
     return _graph_module.research_graph
 
+def _internal_graph():
+    return _graph_module.internal_graph
+
 
 @cl.header_auth_callback
 async def header_auth_callback(headers) -> Optional[cl.User]:
@@ -224,7 +227,7 @@ async def chat_profile(current_user: cl.User):
         profiles.append(
             cl.ChatProfile(
                 name="Internal Agent",
-                markdown_description="General assistant for product procurement, supplier information, and RFQs.",
+                markdown_description="Search the internal database for products, suppliers, and purchase history.",
                 icon="/public/avatars/EagleAgent.png",
             )
         )
@@ -263,9 +266,11 @@ async def start():
     chat_profile_name = cl.user_session.get("chat_profile")
     if chat_profile_name == "Research Agent":
         cl.user_session.set("active_graph", _research_graph())
+    elif chat_profile_name == "Internal Agent":
+        cl.user_session.set("active_graph", _internal_graph())
     else:
         cl.user_session.set("active_graph", _graph())
-
+    
     # Personalized welcome message
     if chat_profile_name == "Research Agent":
         if is_first_visit and user_name:
@@ -349,6 +354,8 @@ async def on_chat_resume(thread: ThreadDict):
     chat_profile_name = cl.user_session.get("chat_profile")
     if chat_profile_name == "Research Agent":
         cl.user_session.set("active_graph", _research_graph())
+    elif chat_profile_name == "Internal Agent":
+        cl.user_session.set("active_graph", _internal_graph())
     else:
         cl.user_session.set("active_graph", _graph())
     
@@ -707,6 +714,8 @@ async def main(message: cl.Message):
     # Collapse repeated tool calls into a single step with a counter
     last_tool_name = None
     tool_call_count = 0
+    # Track all tool names used for the compact footer summary
+    tool_names_used = []
     
     # Fallback: capture last AI response text for non-streaming model calls
     last_ai_text = ""
@@ -744,8 +753,9 @@ async def main(message: cl.Message):
             continue
             
         if kind == "on_chat_model_stream":
-            # Tool sequence is over — reset tracking
+            # Tool sequence is over — clean up status indicator
             if active_step:
+                await active_step.remove()
                 active_step = None
                 last_tool_name = None
             content = event["data"]["chunk"].content
@@ -764,38 +774,30 @@ async def main(message: cl.Message):
                     await msg.stream_token(content)
 
         elif kind == "on_tool_start":
-            # Collapse consecutive calls to the same tool into one step
+            # Show a compact, transient status message while tools run
             friendly = name.replace("_", " ").title()
+            if friendly not in tool_names_used:
+                tool_names_used.append(friendly)
             if name == last_tool_name and active_step:
-                # Same tool again — increment counter and update label
+                # Same tool again — update counter in existing status
                 tool_call_count += 1
-                active_step.name = f"{friendly} (x{tool_call_count})"
+                active_step.content = f"⏳ Using {friendly} (x{tool_call_count})…"
                 await active_step.update()
             else:
-                # Different tool — start a new step
+                # Different tool — replace the status message
+                if active_step:
+                    await active_step.remove()
                 last_tool_name = name
                 tool_call_count = 1
-                active_step = cl.Step(name=friendly, type="tool")
+                active_step = cl.Message(
+                    content=f"⏳ Using {friendly}…",
+                    author="EagleAgent",
+                )
                 await active_step.send()
 
         elif kind == "on_tool_end":
-            # Close the progress step (only if next event is a different tool)
-            if active_step:
-                data = event.get("data", {})
-                output = data.get("output")
-                output_str = ""
-                if isinstance(output, str):
-                    output_str = output
-                elif hasattr(output, "content"):
-                    output_str = str(output.content)
-                elif hasattr(output, "get") and "output" in output:
-                    output_str = str(output["output"])
-                else:
-                    output_str = str(output)
-                active_step.output = output_str[:2000] if len(output_str) > 2000 else output_str
-                await active_step.update()
-                # Don't clear active_step yet — next on_tool_start
-                # will reuse it if it's the same tool
+            # Keep the status visible until the model starts streaming
+            pass
 
         elif kind == "on_chat_model_end":
             # Accumulate token usage — footer is emitted once after the stream
@@ -898,6 +900,11 @@ async def main(message: cl.Message):
         except Exception as fb_err:
             logger.debug(f"State fallback failed: {fb_err}")
 
+    # Clean up any lingering tool status message
+    if active_step:
+        await active_step.remove()
+        active_step = None
+
     # Emit a single token-usage footer after the full response
     if total_all_tokens > 0:
         total_elapsed = time.monotonic() - request_start
@@ -905,7 +912,10 @@ async def main(message: cl.Message):
         if supervisor_done_at is not None:
             routing_s = supervisor_done_at - request_start
             routing_part = f" | Routing: {routing_s:.1f}s"
-        token_info = f"\n\n<div style='margin-top:20px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Agent: {active_agent} | Tokens: {total_all_tokens:,} (Context: {total_prompt_tokens:,}, Generated: {total_completion_tokens:,}){routing_part} | Total: {total_elapsed:.1f}s</div>\n\n"
+        tools_part = ""
+        if tool_names_used:
+            tools_part = " | Used " + ", ".join(tool_names_used)
+        token_info = f"\n\n<div style='margin-top:20px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Agent: {active_agent} | Tokens: {total_all_tokens:,} (Context: {total_prompt_tokens:,}, Generated: {total_completion_tokens:,}){routing_part} | Total: {total_elapsed:.1f}s{tools_part}</div>\n\n"
         await msg.stream_token(token_info)
 
     await msg.update()

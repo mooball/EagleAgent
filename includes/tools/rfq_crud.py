@@ -428,6 +428,9 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         skipped_names = []
         valid_suppliers = []
         for sup in suppliers_list:
+            # Normalize: agent sends 'currency', we store as 'cost_currency'
+            if sup.get("currency") and not sup.get("cost_currency"):
+                sup["cost_currency"] = sup["currency"]
             name = (sup.get("name") or "").strip()
             has_db_link = bool(sup.get("supplier_id"))
             if not has_db_link and name.lower() in _bad_names:
@@ -577,7 +580,11 @@ def _update_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | s
         if not supplier:
             return f"Error: supplier '{name}' not found on line {line_num}."
 
-        updatable = ["status", "price", "price_type", "lead_time", "notes", "contacts", "purchase_ref"]
+        # Normalize: agent sends 'currency', we store as 'cost_currency'
+        if "currency" in data and "cost_currency" not in data:
+            data["cost_currency"] = data["currency"]
+
+        updatable = ["status", "price", "price_type", "cost_currency", "lead_time", "notes", "contacts", "purchase_ref"]
         changes = []
         for key in updatable:
             if key in data:

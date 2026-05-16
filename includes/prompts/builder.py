@@ -173,16 +173,16 @@ def _build_script_awareness(profile_data: Optional[Dict[str, Any]] = None) -> st
 
 
 def _build_admin_profile_hint(profile_data: Optional[Dict[str, Any]] = None) -> str:
-    """Build a hint directing admin users to the System Admin profile for script tasks."""
+    """Build a hint for admin users about available chat profiles."""
     is_admin = (profile_data or {}).get("role", "Staff") == "Admin"
     if not is_admin:
         return ""
 
     return (
-        "\nServer administration tasks such as running scripts, updating embeddings, "
-        "importing data, and checking background jobs are available in the **System Admin** "
-        "chat profile. If the user asks about these tasks, let them know they can switch to "
-        "that profile using the dropdown at the top of the chat."
+        "\nAs an admin, you also have access to the **Internal Agent** profile "
+        "(focused on internal database searches) and the **Research Agent** profile "
+        "(web research with Google Search). Users can switch profiles using the "
+        "dropdown at the top of the chat."
     )
 
 
@@ -375,7 +375,7 @@ def build_system_prompt(
     # Dynamic action awareness section built from the action registry
     parts.append(_build_action_awareness(profile_data))
 
-    # Redirect admin users to System Admin profile for script/job tasks
+    # Admin profile awareness hint
     parts.append(_build_admin_profile_hint(profile_data))
     
     return "\n".join(parts).strip()

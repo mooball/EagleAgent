@@ -348,26 +348,13 @@ async def on_rfq_find_suppliers(action: cl.Action):
         from app import main
         await main(synthetic)
 
-        # Fallback: if main() produced no visible response but suppliers were
-        # added by the tool, notify the user so the result isn't silent.
+        # Refresh dashboard if suppliers were added by the agent
         _post_rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
         if _post_rfq:
             _post_line = next((i for i in _post_rfq.get("items", []) if i["line"] == line), None)
             if _post_line:
                 post_web_count = len(_post_line.get("suppliers", []))
-                new_count = post_web_count - pre_web_count
-                if new_count > 0:
-                    new_suppliers = _post_line.get("suppliers", [])[-new_count:]
-                    names = ", ".join(s.get("name", "?") for s in new_suppliers)
-                    await cl.Message(
-                        content=f"Web search complete — added {new_count} additional supplier(s) to line {line}: {names}.",
-                        author="EagleAgent",
-                    ).send()
+                if post_web_count > pre_web_count:
                     await notify_dashboard("dashboard_refresh")
-                elif not internal_suppliers:
-                    await cl.Message(
-                        content=f"Web search complete but no suitable suppliers found for line {line}. Try broadening the search terms or checking alternative part numbers.",
-                        author="EagleAgent",
-                    ).send()
     finally:
         await notify_dashboard("agent_done")

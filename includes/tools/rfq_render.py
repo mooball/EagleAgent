@@ -95,6 +95,9 @@ def _render_rfq_summary(rfq: dict) -> str:
                     price_type = s.get("price_type", "")
                     cost_price = s.get("cost_price")
                     sale_price = s.get("sale_price")
+                    cost_currency = s.get("cost_currency", "")
+                    currency_sym = "$" if not cost_currency or cost_currency == "AUD" else ""
+                    currency_tag = f" {cost_currency}" if cost_currency and cost_currency != "AUD" else ""
                     if st == "dropped":
                         sup_parts.append(f"~~{name}~~")
                     else:
@@ -104,7 +107,7 @@ def _render_rfq_summary(rfq: dict) -> str:
                             price_bits = []
                             if cost_price is not None:
                                 try:
-                                    price_bits.append(f"cost ${float(cost_price):,.2f}")
+                                    price_bits.append(f"cost {currency_sym}{float(cost_price):,.2f}{currency_tag}")
                                 except (ValueError, TypeError):
                                     pass
                             if sale_price is not None:
@@ -124,7 +127,7 @@ def _render_rfq_summary(rfq: dict) -> str:
                         elif price is not None:
                             label = _status_labels.get(price_type, "")
                             try:
-                                price_str = f"${float(price):,.2f}"
+                                price_str = f"{currency_sym}{float(price):,.2f}{currency_tag}"
                             except (ValueError, TypeError):
                                 price_str = str(price)
                             if label:
