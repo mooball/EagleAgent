@@ -463,13 +463,14 @@
                                                 class="cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 underline decoration-dotted underline-offset-2 decoration-gray-400/50">
                                         {% endif %}
                                         {% if s.cost_price is defined and s.cost_price is not none %}
-                                        ${{ "%.2f" | format(s.cost_price | float) }}
-                                        {% if s.cost_currency %}<span class="text-[10px] opacity-60 ml-0.5">{{ s.cost_currency }}</span>{% endif %}
+                                        {% if not s.cost_currency or s.cost_currency == 'AUD' %}${% endif %}{{ "%.2f" | format(s.cost_price | float) }}
+                                        {% if s.cost_currency and s.cost_currency != 'AUD' %}<span class="text-[10px] opacity-60 ml-0.5">{{ s.cost_currency }}</span>{% endif %}
                                         {% if s.price_doc_type %}
                                         <span class="text-[10px] opacity-40 ml-0.5">{% if s.price_doc_type == 'SalesOrder' %}SO{% elif s.price_doc_type == 'Quote' %}Qt{% endif %}</span>
                                         {% endif %}
                                         {% elif s.price is not none and s.price_type in ['previous_purchase', 'estimated', 'quoted', 'previous_quote'] %}
-                                        ${{ "%.2f" | format(s.price | float) }}
+                                        {% if not s.cost_currency or s.cost_currency == 'AUD' %}${% endif %}{{ "%.2f" | format(s.price | float) }}
+                                        {% if s.cost_currency and s.cost_currency != 'AUD' %}<span class="text-[10px] opacity-60 ml-0.5">{{ s.cost_currency }}</span>{% endif %}
                                         {% if s.price_type in ['estimated', 'quoted'] %}
                                         <span class="text-[10px] opacity-50 ml-0.5">{% if s.price_type == 'estimated' %}est{% elif s.price_type == 'quoted' %}quoted{% endif %}</span>
                                         {% endif %}

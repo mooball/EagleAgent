@@ -25,9 +25,10 @@ class ProcurementAgent(BaseSubAgent):
     Specialized agent for searching products, parts, and suppliers.
     """
     
-    def __init__(self, model: ChatGoogleGenerativeAI, store: BaseStore = None):
+    def __init__(self, model: ChatGoogleGenerativeAI, store: BaseStore = None, internal_only: bool = False):
         super().__init__("ProcurementAgent", model, store)
         self._rfq_active = False
+        self._internal_only = internal_only
     
     async def __call__(self, state: Dict[str, Any], config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
         # Determine if RFQ workflow should be active based on the thread's intent
@@ -41,7 +42,8 @@ class ProcurementAgent(BaseSubAgent):
         so users can view/update existing RFQs).
         """
         tools = [search_products, search_brands, search_suppliers, part_purchase_history, search_purchase_history]
-        tools.extend(create_quote_tools(user_id))
+        if not self._internal_only:
+            tools.extend(create_quote_tools(user_id))
         return tools
     
     def get_system_prompt(self) -> str:
@@ -63,7 +65,7 @@ Help users find the correct products or brands matching their queries using the 
 - search_purchase_history(part_number: str, supplier: str, date_from: str, date_to: str, doc_number: str, limit: int):
   General-purpose purchase history search and filter tool. Call with NO arguments to get a database summary (total records, POs, products, suppliers, date range). Use filters to find specific records. All filters are optional and combinable. Use when the user asks "how many purchase orders?", "show purchases from supplier X", "what did we buy in 2026?", "find PO P12345", etc. Dates use YYYY-MM-DD format.
 - part_purchase_history(part_number: str, limit: int):
-  Search past purchase records to find which suppliers have supplied a given part. Returns a per-supplier summary: supplier name, most recent price, most recent supply date, total quantity, and order count. Use when the user asks "who can supply part X?" or "which suppliers have we bought part X from?".
+  Search past purchase records to find which suppliers have supplied a given part. Returns a per-supplier summary: supplier name, most recent cost price, most recent sale price, most recent supply date, total quantity, and order count. Use when the user asks "who can supply part X?" or "which suppliers have we bought part X from?".
 
 **Standard Workflow:**
 1. Analyze the user's request. Identify if they are providing parts, brands, supplier codes, or descriptions.
@@ -120,7 +122,16 @@ When the user asks to find a supplier, first determine what kind of input they'v
 *If the user provides a supplier name, country, or description:*
 1. Call `search_suppliers` with the appropriate parameters (`name`, `country`, or `query`).
 
-""" + (RFQ_WORKFLOW_PROMPT if self._rfq_active else """\n**RFQ Policy:**
+""" + ("""\n\n**Internal Agent Profile Boundaries:**
+You are running as the Internal Agent — a database-only assistant. You do NOT have access to:
+- Web browsing or internet search of any kind
+- Google Search grounding
+- Research tools (no product research, no supply chain research)
+- RFQ management tools (no creating, viewing, or editing RFQs)
+- Data deletion tools
+- Server administration or script-running tools
+
+Your ONLY capabilities are searching the internal database for products, brands, suppliers, and purchase history. If the user asks about RFQs, tell them to switch to the **Eagle Agent** profile. If they ask for web research, suggest the **Research Agent** profile.""" if self._internal_only else (RFQ_WORKFLOW_PROMPT if self._rfq_active else """\n**RFQ Policy:**
 You have access to RFQ tools (`get_rfq`, `manage_rfq`) and should use them when the user asks to view, update, or manage an existing RFQ.
 
-**However, do NOT create new RFQs** in this session. If the user wants to create a new RFQ, tell them to use the **New RFQ** command button. Never proactively create an RFQ just because the user mentioned a list of products or parts — only do product/supplier lookups unless an RFQ creation is explicitly requested via the command button.""")
+**However, do NOT create new RFQs** in this session. If the user wants to create a new RFQ, tell them to use the **RFQ section on the dashboard**. Never proactively create an RFQ just because the user mentioned a list of products or parts — only do product/supplier lookups unless an RFQ creation is explicitly requested."""))

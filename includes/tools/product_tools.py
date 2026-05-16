@@ -555,12 +555,12 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
             matched_parts = ', '.join(p.part_number for p in products)
             return f"Found product(s) ({matched_parts}) but no purchase history records exist."
 
-        # Get most recent price per supplier+product via a separate query
+        # Get most recent cost and price per supplier+product via a separate query
         from sqlalchemy import and_
         price_subquery = {}
         for row in results:
             latest = (
-                session.query(Transaction.price)
+                session.query(Transaction.cost, Transaction.price)
                 .join(Product, Transaction.product_id == Product.id)
                 .filter(
                     and_(
@@ -571,16 +571,19 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
                 .order_by(Transaction.date.desc().nulls_last())
                 .first()
             )
-            price_subquery[(row.supplier_id, row.part_number)] = latest[0] if latest else None
+            price_subquery[(row.supplier_id, row.part_number)] = (
+                (latest.cost, latest.price) if latest else (None, None)
+            )
 
         # Format output as markdown table
         output_parts = [f"Purchase history for part number '{part_number}':"]
         output_parts.append(f"\nFound {len(results)} supplier(s), sorted by number of purchases:\n")
-        output_parts.append("| # | Supplier ID | Supplier | Location | Contact | Part Number | Brand | Last Price | Last Date | Total Qty | Orders |")
-        output_parts.append("|---|-------------|----------|----------|---------|-------------|-------|-----------|-----------|-----------|--------|")
+        output_parts.append("| # | Supplier ID | Supplier | Location | Contact | Part Number | Brand | Last Cost | Last Sale Price | Last Date | Total Qty | Orders |")
+        output_parts.append("|---|-------------|----------|----------|---------|-------------|-------|-----------|-----------------|-----------|-----------|---------|") 
 
         for idx, row in enumerate(results, 1):
-            price = price_subquery.get((row.supplier_id, row.part_number))
+            cost, price = price_subquery.get((row.supplier_id, row.part_number), (None, None))
+            cost_str = f"${cost:,.2f}" if cost is not None else "N/A"
             price_str = f"${price:,.2f}" if price is not None else "N/A"
             date_str = row.most_recent_date.strftime("%-d %b %Y") if row.most_recent_date else "N/A"
             qty_str = f"{row.total_quantity:,.0f}" if row.total_quantity else "0"
@@ -596,7 +599,7 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
                     parts = [p for p in [c.get("name"), c.get("email"), c.get("phone")] if p]
                     contact_str = " | ".join(parts) if parts else "N/A"
             output_parts.append(
-                f"| {idx} | {row.supplier_id} | [{row.supplier_name}](/suppliers/{row.supplier_id}) | {location_str} | {contact_str} | {row.part_number} | {row.brand or 'N/A'} | {price_str} | {date_str} | {qty_str} | {row.order_count} |"
+                f"| {idx} | {row.supplier_id} | [{row.supplier_name}](/suppliers/{row.supplier_id}) | {location_str} | {contact_str} | {row.part_number} | {row.brand or 'N/A'} | {cost_str} | {price_str} | {date_str} | {qty_str} | {row.order_count} |"
             )
 
         return "\n".join(output_parts)
@@ -612,8 +615,8 @@ async def part_purchase_history(part_number: str, limit: int = 20) -> str:
     """
     Search past purchase records to find which suppliers have supplied a given part.
 
-    Returns a per-supplier summary: supplier name, most recent price, most recent
-    supply date, total quantity ever purchased, and number of orders.
+    Returns a per-supplier summary: supplier name, most recent cost price, most recent
+    sale price, most recent supply date, total quantity ever purchased, and number of orders.
     Sorted by total quantity descending.
 
     Use when the user asks "who can supply part X?", "which suppliers have we
@@ -645,6 +648,7 @@ def _do_search_purchase_history(
                 Transaction.doc_number,
                 Transaction.date,
                 Transaction.quantity,
+                Transaction.cost,
                 Transaction.price,
                 Transaction.status,
                 Product.part_number.label('part_number'),
@@ -731,15 +735,16 @@ def _do_search_purchase_history(
         desc_str = ", ".join(filter_desc)
         output = [f"Purchase history search ({desc_str}):"]
         output.append(f"\nFound {total_count:,} records. Showing {'all' if total_count <= limit else f'first {limit}'}:\n")
-        output.append("| # | Doc Number | Date | Part Number | Brand | Supplier | Qty | Price | Status |")
-        output.append("|---|------------|------|-------------|-------|----------|-----|-------|--------|")
+        output.append("| # | Doc Number | Date | Part Number | Brand | Supplier | Qty | Cost | Sale Price | Status |")
+        output.append("|---|------------|------|-------------|-------|----------|-----|------|------------|--------|")
 
         for idx, row in enumerate(rows, 1):
             date_str = row.date.strftime("%-d %b %Y") if row.date else "N/A"
+            cost_str = f"${row.cost:,.2f}" if row.cost is not None else "N/A"
             price_str = f"${row.price:,.2f}" if row.price is not None else "N/A"
             qty_str = f"{row.quantity:,.0f}" if row.quantity is not None else "N/A"
             output.append(
-                f"| {idx} | {row.doc_number or 'N/A'} | {date_str} | {row.part_number} | {row.brand or 'N/A'} | [{row.supplier_name}](/suppliers/{row.supplier_id}) | {qty_str} | {price_str} | {row.status or 'N/A'} |"
+                f"| {idx} | {row.doc_number or 'N/A'} | {date_str} | {row.part_number} | {row.brand or 'N/A'} | [{row.supplier_name}](/suppliers/{row.supplier_id}) | {qty_str} | {cost_str} | {price_str} | {row.status or 'N/A'} |"
             )
 
         if total_count > limit:

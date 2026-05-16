@@ -437,9 +437,9 @@ def create_quote_tools(user_id: str) -> list:
           add_supplier  — Add supplier candidate(s) to a line item. data keys:
                           line (required), EITHER name (required) for a single
                           supplier with optional supplier_id, contacts, status,
-                          price, price_type, lead_time, notes, purchase_ref;
-                          OR suppliers (list of dicts with those same keys)
-                          to add multiple at once.
+                          price, price_type, currency, lead_time, notes,
+                          purchase_ref; OR suppliers (list of dicts with those
+                          same keys) to add multiple at once.
                           contacts: list of dicts, each with any of: url
                           (website), email, phone, city, state, country.
                           MANDATORY: you MUST include contacts with at least
@@ -451,12 +451,16 @@ def create_quote_tools(user_id: str) -> list:
                           previous_purchase (price from purchase history),
                           previous_quote (price from past quote), quoted
                           (new quote received). Omit if no price.
+                          currency: 3-letter ISO code for the price currency
+                          (e.g. 'AUD', 'USD', 'EUR', 'GBP'). Required when
+                          price is not in AUD. Omit or use 'AUD' for
+                          Australian dollar prices.
                           purchase_ref: optional dict {doc_number, date,
                           order_count} linking to the latest purchase record.
           update_supplier — Update a supplier on a line item. data keys:
                           line (required), name (required), plus any of: status,
-                          price, price_type, lead_time, notes, contacts,
-                          purchase_ref
+                          price, price_type, currency, lead_time, notes,
+                          contacts, purchase_ref
           clear_suppliers — Remove all suppliers from line item(s). data keys:
                           line (optional, int — if omitted clears ALL lines)
           assign        — Reassign the RFQ. data keys: assigned_to (required)

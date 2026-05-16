@@ -21,7 +21,7 @@ from psycopg_pool import AsyncConnectionPool
 from config import config
 from includes.mcp_config import load_mcp_config
 from includes.agents import (
-    BrowserAgent, GeneralAgent, ProcurementAgent, Supervisor, SysAdminAgent,
+    BrowserAgent, GeneralAgent, ProcurementAgent, Supervisor,
 )
 from includes.job_runner import JobRunner
 
@@ -56,8 +56,8 @@ store = None               # AsyncPostgresStore (cross-thread memory)
 checkpointer = None        # AsyncPostgresSaver (thread state)
 mcp_client = None           # MultiServerMCPClient | None
 graph = None               # Compiled Eagle Agent multi-agent graph
-sysadmin_graph = None      # Compiled System Admin single-agent graph
 research_graph = None      # Compiled Research Agent single-agent graph
+internal_graph = None      # Compiled Internal Agent single-agent graph (DB-only)
 job_runner = JobRunner()    # Background script runner
 
 globals_initialized = False
@@ -91,7 +91,7 @@ def create_model(agent_name: str) -> ChatGoogleGenerativeAI:
 # ---------------------------------------------------------------------------
 async def setup_globals():
     """Initialize async-dependent global variables (idempotent)."""
-    global store, mcp_client, checkpointer, graph, sysadmin_graph, research_graph, globals_initialized
+    global store, mcp_client, checkpointer, graph, research_graph, internal_graph, globals_initialized
 
     if globals_initialized:
         return
@@ -178,20 +178,6 @@ async def setup_globals():
     builder.add_edge("ResearchAgent", "Supervisor")
     graph = builder.compile(checkpointer=checkpointer, store=store)
 
-    # ---- System Admin single-agent graph ----
-    sysadmin_agent = SysAdminAgent(
-        model=create_model("SysAdminAgent"), store=store, job_runner=job_runner,
-    )
-
-    async def run_sysadmin(state, config):
-        return await sysadmin_agent(state, config)
-
-    sa_builder = StateGraph(SupervisorState)
-    sa_builder.add_node("SysAdminAgent", run_sysadmin)
-    sa_builder.add_edge(START, "SysAdminAgent")
-    sa_builder.add_edge("SysAdminAgent", END)
-    sysadmin_graph = sa_builder.compile(checkpointer=checkpointer, store=store)
-
     # ---- Research single-agent graph (standalone profile, no RFQ tools) ----
     standalone_research_agent = ResearchAgent(
         model=create_model("ResearchAgent"), store=store,
@@ -206,5 +192,20 @@ async def setup_globals():
     ra_builder.add_edge(START, "ResearchAgent")
     ra_builder.add_edge("ResearchAgent", END)
     research_graph = ra_builder.compile(checkpointer=checkpointer, store=store)
+
+    # ---- Internal Agent single-agent graph (DB-only, no web/research) ----
+    internal_procurement_agent = ProcurementAgent(
+        model=create_model("ProcurementAgent"), store=store,
+        internal_only=True,
+    )
+
+    async def run_internal_procurement(state, config):
+        return await internal_procurement_agent(state, config)
+
+    ia_builder = StateGraph(SupervisorState)
+    ia_builder.add_node("ProcurementAgent", run_internal_procurement)
+    ia_builder.add_edge(START, "ProcurementAgent")
+    ia_builder.add_edge("ProcurementAgent", END)
+    internal_graph = ia_builder.compile(checkpointer=checkpointer, store=store)
 
     globals_initialized = True
