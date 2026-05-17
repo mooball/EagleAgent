@@ -243,6 +243,11 @@
                         this._agentWorkingTimeout = setTimeout(() => { this.agentWorking = false; }, 600000);
                     });
 
+                    // Safety net: ensure thread is bound before any agent action
+                    window.addEventListener('ensure-rfq-bound', () => {
+                        this._ensureRfqBound();
+                    });
+
                     // Listen for navigation/refresh commands from the agent iframe
                     window.addEventListener('message', (event) => {
                         if (event.origin !== window.location.origin) return;
@@ -302,29 +307,25 @@
                             this._activeThreadId = event.data.threadId;
                             // Re-push context so the iframe banner updates
                             this.pushContext();
-                            // If we're waiting to bind a new thread to an RFQ, do it now
+                            // Auto-bind to RFQ if viewing one without a bound thread
+                            this._ensureRfqBound();
+                            // Legacy: if _pendingRfqBind is set for a new-RFQ flow
                             if (this._pendingRfqBind) {
                                 const rfqId = this._pendingRfqBind;
                                 const isNewRfq = this._pendingNewRfq;
                                 const threadId = event.data.threadId;
                                 this._pendingRfqBind = null;
                                 this._pendingNewRfq = false;
-                                fetch('/api/rfq-thread', {
-                                    method: 'POST',
-                                    headers: {'Content-Type': 'application/json'},
-                                    credentials: 'same-origin',
-                                    body: JSON.stringify({rfq_id: rfqId, thread_id: threadId}),
-                                }).then(() => {
-                                    // For brand-new blank RFQs, trigger the new_rfq intent
-                                    if (isNewRfq) {
-                                        fetch('/api/agent-bridge', {
-                                            method: 'POST',
-                                            headers: {'Content-Type': 'application/json'},
-                                            credentials: 'same-origin',
-                                            body: JSON.stringify({action: {name: 'new_rfq', payload: {}}}),
-                                        }).catch(() => {});
-                                    }
-                                }).catch(() => {});
+                                // Binding already handled by _ensureRfqBound above,
+                                // but still handle new_rfq intent trigger
+                                if (isNewRfq) {
+                                    fetch('/api/agent-bridge', {
+                                        method: 'POST',
+                                        headers: {'Content-Type': 'application/json'},
+                                        credentials: 'same-origin',
+                                        body: JSON.stringify({action: {name: 'new_rfq', payload: {}}}),
+                                    }).catch(() => {});
+                                }
                             }
                         }
                     });
@@ -445,12 +446,17 @@
                             }
                             // No thread bound yet for this RFQ — create one on demand
                             if (newCtx.view === 'rfq_detail' && newCtx.id && !newCtx.thread_id) {
-                                this._pendingRfqBind = newCtx.id;
-                                // Track whether this is a brand-new blank RFQ
-                                this._pendingNewRfq = !newCtx.customer;
-                                const iframe = document.getElementById('agent-iframe');
-                                if (iframe) {
-                                    iframe.src = '/chat';
+                                // If we already have an active thread, bind it immediately
+                                if (this._activeThreadId) {
+                                    this._ensureRfqBound();
+                                } else {
+                                    this._pendingRfqBind = newCtx.id;
+                                    // Track whether this is a brand-new blank RFQ
+                                    this._pendingNewRfq = !newCtx.customer;
+                                    const iframe = document.getElementById('agent-iframe');
+                                    if (iframe) {
+                                        iframe.src = '/chat';
+                                    }
                                 }
                                 if (this.agentState === 'closed') {
                                     this.agentState = 'panel';
@@ -496,6 +502,27 @@
                         link.classList.toggle('dark:hover:text-gray-200', !isActive);
                         link.classList.toggle('dark:hover:bg-gray-700', !isActive);
                     });
+                },
+
+                _ensureRfqBound() {
+                    // If we're on an RFQ detail with no bound thread and we have
+                    // an active thread, bind it immediately. Called from multiple
+                    // points to guarantee binding regardless of message timing.
+                    const ctx = this.currentContext;
+                    if (ctx?.view === 'rfq_detail' && ctx?.id && !ctx?.thread_id && this._activeThreadId) {
+                        const rfqId = ctx.id;
+                        const threadId = this._activeThreadId;
+                        console.log('[bind] Auto-binding thread', threadId, 'to', rfqId);
+                        fetch('/api/rfq-thread', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            credentials: 'same-origin',
+                            body: JSON.stringify({rfq_id: rfqId, thread_id: threadId}),
+                        }).then(() => {
+                            this.currentContext.thread_id = threadId;
+                            this.pushContext();
+                        }).catch(() => {});
+                    }
                 }
             };
         }
@@ -563,6 +590,8 @@
                 _sendAction(action, refreshAfter) {
                     var rfqId = this.rfqId;
                     console.log('[bridge] sending action', action.name);
+                    // Ensure thread is bound to the RFQ before dispatching
+                    window.dispatchEvent(new CustomEvent('ensure-rfq-bound'));
                     // Signal the dashboard that agent work has started
                     window.dispatchEvent(new CustomEvent('agent-working', { detail: { label: action.label || 'Agent working...' } }));
                     fetch('/api/agent-bridge', {
