@@ -4,6 +4,7 @@ import math
 
 from fastapi import Request, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import func
 
 from includes.dashboard.models import Product, Transaction, Supplier
 from . import _helpers
@@ -18,7 +19,12 @@ def product_list(request: Request, user: dict = Depends(require_user),
                  q: str = "", page: int = 1):
     session = _helpers.get_session()
     try:
-        query = session.query(Product)
+        txn_count = func.count(Transaction.id).label("txn_count")
+        query = (
+            session.query(Product, txn_count)
+            .outerjoin(Transaction, Transaction.product_id == Product.id)
+            .group_by(Product.id)
+        )
 
         if q:
             query = query.filter(
@@ -31,13 +37,16 @@ def product_list(request: Request, user: dict = Depends(require_user),
         total_pages = max(1, math.ceil(total / PAGE_SIZE))
         page = max(1, min(page, total_pages))
 
-        products = (
+        rows = (
             query
-            .order_by(Product.brand, Product.part_number)
+            .order_by(txn_count.desc(), Product.brand, Product.part_number)
             .offset((page - 1) * PAGE_SIZE)
             .limit(PAGE_SIZE)
             .all()
         )
+        for p, cnt in rows:
+            p.txn_count = cnt
+        products = [p for p, _ in rows]
     finally:
         session.close()
 
@@ -104,7 +113,12 @@ def partial_product_list(request: Request, user: dict = Depends(require_user),
                          q: str = "", page: int = 1):
     session = _helpers.get_session()
     try:
-        query = session.query(Product)
+        txn_count = func.count(Transaction.id).label("txn_count")
+        query = (
+            session.query(Product, txn_count)
+            .outerjoin(Transaction, Transaction.product_id == Product.id)
+            .group_by(Product.id)
+        )
 
         if q:
             query = query.filter(
@@ -117,13 +131,16 @@ def partial_product_list(request: Request, user: dict = Depends(require_user),
         total_pages = max(1, math.ceil(total / PAGE_SIZE))
         page = max(1, min(page, total_pages))
 
-        products = (
+        rows = (
             query
-            .order_by(Product.brand, Product.part_number)
+            .order_by(txn_count.desc(), Product.brand, Product.part_number)
             .offset((page - 1) * PAGE_SIZE)
             .limit(PAGE_SIZE)
             .all()
         )
+        for p, cnt in rows:
+            p.txn_count = cnt
+        products = [p for p, _ in rows]
     finally:
         session.close()
 
@@ -144,7 +161,12 @@ def partial_product_rows(request: Request, user: dict = Depends(require_user),
     """Return just the <tr> rows + sentinel for infinite scroll."""
     session = _helpers.get_session()
     try:
-        query = session.query(Product)
+        txn_count = func.count(Transaction.id).label("txn_count")
+        query = (
+            session.query(Product, txn_count)
+            .outerjoin(Transaction, Transaction.product_id == Product.id)
+            .group_by(Product.id)
+        )
 
         if q:
             query = query.filter(
@@ -157,13 +179,16 @@ def partial_product_rows(request: Request, user: dict = Depends(require_user),
         total_pages = max(1, math.ceil(total / PAGE_SIZE))
         page = max(1, min(page, total_pages))
 
-        products = (
+        rows = (
             query
-            .order_by(Product.brand, Product.part_number)
+            .order_by(txn_count.desc(), Product.brand, Product.part_number)
             .offset((page - 1) * PAGE_SIZE)
             .limit(PAGE_SIZE)
             .all()
         )
+        for p, cnt in rows:
+            p.txn_count = cnt
+        products = [p for p, _ in rows]
     finally:
         session.close()
 

@@ -1,46 +1,49 @@
 {% for rfq in rfqs %}
 {% set items = rfq.get('items', []) %}
 {% set status = rfq.status or 'draft' %}
-<a hx-get="/partial/rfqs/{{ rfq.id }}" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}"
-   class="block bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md transition-shadow cursor-pointer">
-    <div class="flex items-center justify-between">
-        <div class="flex items-center gap-3">
-            <span class="font-bold text-gray-900 dark:text-gray-100">{{ rfq.id }}</span>
-            <span class="text-gray-400">—</span>
-            <span class="font-medium">{{ rfq.customer or 'Unknown' }}</span>
-            {% if status == 'draft' %}
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-gray-600 text-gray-100">Draft</span>
-            {% elif status == 'in_progress' %}
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-blue-600 text-blue-100">In Progress</span>
-            {% elif status == 'awaiting_quotes' %}
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-600 text-amber-100">Awaiting Quotes</span>
-            {% elif status == 'completed' %}
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-green-600 text-green-100">Completed</span>
-            {% elif status == 'cancelled' %}
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-red-600 text-red-100">Cancelled</span>
-            {% endif %}
-        </div>
-        <div class="text-xs text-gray-500 dark:text-gray-400">
-            {{ items | length }} items · {{ rfq.created_date or '' }}
-        </div>
-    </div>
-    {% if rfq.assigned_to or rfq.reference %}
-    <div class="flex items-center gap-3 mt-1 text-xs text-gray-500 dark:text-gray-400">
-        {% if rfq.assigned_to %}<span>{{ rfq.assigned_to }}</span>{% endif %}
-        {% if rfq.reference %}<span>Ref: {{ rfq.reference }}</span>{% endif %}
-    </div>
-    {% endif %}
-</a>
+{% set is_empty = (items | length == 0) and status == 'draft' %}
+<tr class="{% if is_empty %}opacity-40{% endif %} hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
+    hx-get="/partial/rfqs/{{ rfq.id }}" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}">
+    <td class="px-4 py-3 font-bold text-gray-900 dark:text-gray-100 whitespace-nowrap">{{ rfq.id }}</td>
+    <td class="px-4 py-3 text-gray-700 dark:text-gray-300">{{ rfq.customer or 'Unknown' }}</td>
+    <td class="px-4 py-3 whitespace-nowrap">
+        {% if status == 'draft' %}
+        <span class="text-[10px] px-2 py-0.5 rounded-full bg-gray-600 text-gray-100">Draft</span>
+        {% elif status == 'in_progress' %}
+        <span class="text-[10px] px-2 py-0.5 rounded-full bg-blue-600 text-blue-100">In Progress</span>
+        {% elif status == 'awaiting_quotes' %}
+        <span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-600 text-amber-100">Awaiting Quotes</span>
+        {% elif status == 'completed' %}
+        <span class="text-[10px] px-2 py-0.5 rounded-full bg-green-600 text-green-100">Completed</span>
+        {% elif status == 'cancelled' %}
+        <span class="text-[10px] px-2 py-0.5 rounded-full bg-red-600 text-red-100">Cancelled</span>
+        {% endif %}
+    </td>
+    <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ items | length }}</td>
+    <td class="px-4 py-3 text-xs text-gray-500 dark:text-gray-400">{{ rfq.assigned_to or '—' }}</td>
+    <td class="px-4 py-3 text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">{{ rfq.created_date or '' }}</td>
+    <td class="px-4 py-1 w-8">
+        {% if is_empty %}
+        <button hx-delete="/partial/rfqs/{{ rfq.id }}" hx-target="closest tr" hx-swap="outerHTML"
+                hx-confirm="Discard empty RFQ {{ rfq.id }}?"
+                @click.stop
+                title="Discard"
+                class="p-1 rounded opacity-60 hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+        </button>
+        {% endif %}
+    </td>
+</tr>
 {% endfor %}
 {% if has_more %}
-<!-- Sentinel: triggers load when scrolled near bottom -->
-<div id="rfq-sentinel"
-     hx-get="/partial/rfqs/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}{% if mine %}&mine={{ mine }}{% endif %}"
-     hx-trigger="intersect"
-     hx-target="this"
-     hx-swap="outerHTML"
-     class="text-center py-3 text-gray-400 dark:text-gray-500 text-sm">
-    <svg class="animate-spin inline-block w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-    Loading more…
-</div>
+<tr id="rfq-sentinel"
+    hx-get="/partial/rfqs/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}{% if mine %}&mine={{ mine }}{% endif %}"
+    hx-trigger="intersect"
+    hx-target="this"
+    hx-swap="outerHTML">
+    <td colspan="7" class="px-4 py-3 text-center text-gray-400 dark:text-gray-500">
+        <svg class="animate-spin inline-block w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+        Loading more…
+    </td>
+</tr>
 {% endif %}

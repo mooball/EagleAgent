@@ -47,8 +47,9 @@ def _humanize_timestamp(iso_str: str | None) -> tuple[str, str]:
         exact = dt_local.strftime("%Y-%m-%d %H:%M:%S")
         time_fmt = dt_local.strftime("%-I:%M %p")
 
-        delta = now - dt_local
-        days = delta.days
+        # Compare calendar dates, not timedelta, to avoid
+        # "Today 7 PM" when it's actually yesterday evening.
+        days = (now.date() - dt_local.date()).days
 
         if days == 0:
             label = f"Today {time_fmt}"

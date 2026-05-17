@@ -238,9 +238,9 @@
                     window.addEventListener('agent-working', (e) => {
                         this.agentWorking = true;
                         this.agentWorkingLabel = e.detail?.label || 'Agent working...';
-                        // Safety timeout: auto-clear after 3 minutes in case agent_done is never received
+                        // Safety timeout: auto-clear after 10 minutes in case agent_done is never received
                         clearTimeout(this._agentWorkingTimeout);
-                        this._agentWorkingTimeout = setTimeout(() => { this.agentWorking = false; }, 180000);
+                        this._agentWorkingTimeout = setTimeout(() => { this.agentWorking = false; }, 600000);
                     });
 
                     // Listen for navigation/refresh commands from the agent iframe
@@ -272,6 +272,9 @@
                         if (event.data?.type === 'agent_working') {
                             this.agentWorking = true;
                             this.agentWorkingLabel = event.data.payload?.label || 'Agent working...';
+                            // Reset safety timeout on each working signal
+                            clearTimeout(this._agentWorkingTimeout);
+                            this._agentWorkingTimeout = setTimeout(() => { this.agentWorking = false; }, 600000);
                         }
                         if (event.data?.type === 'agent_done') {
                             this.agentWorking = false;
@@ -633,6 +636,52 @@
                         existing_suppliers: suppliers
                     };
                     this._sendAction({ name: 'rfq_find_suppliers', label: 'Finding suppliers for line ' + item.line + '...', payload: payload });
+                },
+                groupItems() {
+                    var confirmed = [];
+                    var self = this;
+                    this._allLines.forEach(function(line) {
+                        var item = self._items[line];
+                        if (item && item.status === 'confirmed') {
+                            confirmed.push({
+                                line: item.line,
+                                input_description: item.input_description,
+                                part_number: item.part_number || item.input_code,
+                                brand: item.brand
+                            });
+                        }
+                    });
+                    if (confirmed.length < 2) { return; }
+                    var payload = {
+                        rfq_id: this.rfqId,
+                        items: confirmed
+                    };
+                    this._sendAction({ name: 'rfq_group_items', label: 'Grouping items...', payload: payload });
+                },
+                findAllSuppliers() {
+                    var confirmedItems = [];
+                    var self = this;
+                    this._allLines.forEach(function(line) {
+                        var item = self._items[line];
+                        if (item && item.status === 'confirmed') {
+                            var suppliers = (item.suppliers || []).filter(function(s) { return s.status !== 'dropped'; }).map(function(s) { return s.name; });
+                            confirmedItems.push({
+                                line: item.line,
+                                description: item.input_description,
+                                part_number: item.part_number || item.input_code,
+                                brand: item.brand,
+                                quantity: item.quantity,
+                                uom: item.uom,
+                                existing_suppliers: suppliers
+                            });
+                        }
+                    });
+                    if (confirmedItems.length < 1) { return; }
+                    var payload = {
+                        rfq_id: this.rfqId,
+                        items: confirmedItems
+                    };
+                    this._sendAction({ name: 'rfq_find_all_suppliers', label: 'Finding suppliers for all confirmed items...', payload: payload });
                 }
             };
         }

@@ -352,8 +352,10 @@ class TestProductRoutes:
 
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
-            session.query.return_value.count.return_value = 0
-            session.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
+            qm = session.query.return_value.outerjoin.return_value.group_by.return_value
+            qm.count.return_value = 0
+            qm.filter.return_value.count.return_value = 0
+            qm.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
             mock_gs.return_value = session
 
             resp = client.get("/products")
@@ -402,8 +404,10 @@ class TestPartialRoutes:
 
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
-            session.query.return_value.count.return_value = 0
-            session.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
+            qm = session.query.return_value.outerjoin.return_value.group_by.return_value
+            qm.count.return_value = 0
+            qm.filter.return_value.count.return_value = 0
+            qm.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
             mock_gs.return_value = session
 
             resp = client.get("/partial/products")

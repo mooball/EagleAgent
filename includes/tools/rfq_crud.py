@@ -107,6 +107,7 @@ def _rfq_to_dict(rfq) -> dict:
         "status": rfq.status or "draft",
         "notes": rfq.notes or "",
         "history": rfq.history or [],
+        "item_groups": rfq.item_groups,
         "items": [_item_to_dict(item) for item in (rfq.items or [])],
     }
 
@@ -134,6 +135,113 @@ def _get_rfq_sync(rfq_number: str):
     session = _get_session()
     rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
     return rfq, session
+
+
+# ---------------------------------------------------------------------------
+# Supplier sorting
+# ---------------------------------------------------------------------------
+
+_TIER_ORDER = {"A": 0, "B": 1, "C": 2, "D": 3}
+
+
+def _supplier_sort_key(sup: dict) -> tuple:
+    """Sort key for ordering suppliers on an RFQ line item.
+
+    Priority (ascending):
+      1. Transaction history — suppliers with history first
+      2. Supply chain tier — A > B > C > D > unknown
+      3. Location — AU first, non-AU second
+      4. Alphabetical by name
+    """
+    has_history = 0 if (sup.get("transaction_count") or sup.get("purchase_ref")) else 1
+    tier = _TIER_ORDER.get(sup.get("tier"), 9)
+    is_au = 0 if (sup.get("country") or "").upper() == "AU" else 1
+    name = (sup.get("name") or "").lower()
+    return (has_history, tier, is_au, name)
+
+
+def sort_item_suppliers(suppliers: list[dict]) -> list[dict]:
+    """Return a sorted copy of a supplier list. Safe to call at any time."""
+    return sorted(suppliers, key=_supplier_sort_key)
+
+
+def _enrich_suppliers_from_db(suppliers: list[dict], session) -> None:
+    """Fill in missing tier and country on supplier dicts from the Supplier DB.
+
+    Mutates supplier dicts in-place. Only queries the DB for suppliers that
+    have a supplier_id but are missing tier or country.
+    """
+    from includes.dashboard.models import Supplier
+    import uuid
+
+    ids_to_lookup = {}  # str(uuid) -> list of supplier dicts
+    for sup in suppliers:
+        sid = sup.get("supplier_id")
+        if not sid:
+            continue
+        missing_tier = not sup.get("tier")
+        missing_country = not sup.get("country")
+        if missing_tier or missing_country:
+            ids_to_lookup.setdefault(str(sid), []).append(sup)
+
+    if not ids_to_lookup:
+        return
+
+    # Batch query all needed supplier IDs
+    try:
+        uuids = [uuid.UUID(s) for s in ids_to_lookup]
+    except (ValueError, TypeError):
+        return
+
+    rows = session.query(
+        Supplier.id, Supplier.country, Supplier.supply_chain_position,
+    ).filter(Supplier.id.in_(uuids)).all()
+
+    for row in rows:
+        sid_str = str(row.id)
+        scp = row.supply_chain_position or {}
+        db_tier = scp.get("tier")
+        db_country = row.country
+
+        for sup in ids_to_lookup.get(sid_str, []):
+            if not sup.get("tier") and db_tier:
+                sup["tier"] = db_tier
+            if not sup.get("country") and db_country:
+                sup["country"] = db_country
+
+
+def _sort_rfq_suppliers_sync(rfq_number: str) -> dict | None:
+    """Sort suppliers on every line item of an RFQ. Returns RFQ dict or None.
+
+    Also enriches suppliers with tier/country from the Supplier DB table
+    when those fields are missing, so the sort has accurate data.
+    """
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return None
+
+        changed = False
+        for item in rfq.items or []:
+            if item.suppliers:
+                _enrich_suppliers_from_db(item.suppliers, session)
+                item.suppliers = sort_item_suppliers(item.suppliers)
+                flag_modified(item, "suppliers")
+                changed = True
+
+        if changed:
+            session.commit()
+            session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +334,32 @@ def _get_rfq_dict_sync(rfq_number: str) -> dict | None:
         if not rfq:
             return None
         return _rfq_to_dict(rfq)
+    finally:
+        session.close()
+
+
+def _update_item_groups_sync(rfq_number: str, groups_data: dict, user_id: str) -> dict | str:
+    """Update item_groups on an RFQ. Returns RFQ dict or error string."""
+    rfq, session = _get_rfq_sync(rfq_number)
+    try:
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+        rfq.item_groups = groups_data
+        rfq.updated_at = _now_dt()
+        history = list(rfq.history or [])
+        n_groups = len(groups_data.get("groups", []))
+        history.append({
+            "date": _now_iso(),
+            "user": user_id,
+            "action": f"Updated item groups ({n_groups} groups)",
+        })
+        rfq.history = history
+        session.commit()
+        session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 
@@ -543,6 +677,11 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             "date": now, "user": user_id,
             "action": " | ".join(action_parts) or f"No changes to suppliers on line {line_num}",
         })
+        # Auto-progress: draft → in_progress when suppliers are added
+        if added_names and rfq.status == "draft":
+            rfq.status = "in_progress"
+            history.append({"date": now, "user": "system", "action": "Status auto-changed to in_progress (suppliers added)"})
+
         rfq.history = history
         rfq.updated_at = _now_dt()
         session.commit()
