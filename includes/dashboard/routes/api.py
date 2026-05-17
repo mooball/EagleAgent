@@ -53,12 +53,7 @@ def latest_thread(user: dict = Depends(require_user), rfq_id: str | None = None)
 # ---------------------------------------------------------------------------
 
 def _lookup_rfq_thread_id(rfq_number: str, user_email: str) -> str | None:
-    """Return the thread_id bound to this RFQ for the given user, or None.
-
-    Validates that the thread has actual chat history (at least one step).
-    Zombie threads (created by binding but never interacted with) and
-    stale bindings (thread deleted) are silently cleaned up.
-    """
+    """Return the thread_id bound to this RFQ for the given user, or None."""
     session = _helpers.get_session()
     try:
         row = session.query(RFQThread).filter(
@@ -67,18 +62,7 @@ def _lookup_rfq_thread_id(rfq_number: str, user_email: str) -> str | None:
         ).first()
         if not row:
             return None
-        # Verify the thread has actual interaction (at least one step).
-        has_steps = session.execute(
-            text('SELECT 1 FROM steps WHERE "threadId" = :tid LIMIT 1'),
-            {"tid": row.thread_id},
-        ).fetchone()
-        if has_steps:
-            return row.thread_id
-        # Stale or zombie binding — clean it up
-        logger.warning(f"Removing stale rfq_thread binding: {rfq_number} → {row.thread_id}")
-        session.delete(row)
-        session.commit()
-        return None
+        return row.thread_id
     finally:
         session.close()
 

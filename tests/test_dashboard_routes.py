@@ -541,8 +541,6 @@ class TestLookupRFQThreadId:
             row = MagicMock()
             row.thread_id = "thread-xyz"
             session.query.return_value.filter.return_value.first.return_value = row
-            # Thread has steps (actual interaction)
-            session.execute.return_value.fetchone.return_value = (1,)
             mock_gs.return_value = session
 
             result = _lookup_rfq_thread_id("RFQ-2026-0001", "user@eagle.com")
@@ -558,19 +556,16 @@ class TestLookupRFQThreadId:
             result = _lookup_rfq_thread_id("RFQ-2026-0001", "user@eagle.com")
             assert result is None
 
-    def test_cleans_up_stale_binding(self):
-        """Thread exists in DB but has no steps — zombie from binding without interaction."""
+    def test_returns_thread_id_even_without_steps(self):
+        """Thread bound but no steps yet — should still return it (auto-bind creates before interaction)."""
         from includes.dashboard.routes import _lookup_rfq_thread_id
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
             row = MagicMock()
-            row.thread_id = "zombie-thread"
+            row.thread_id = "new-thread"
             session.query.return_value.filter.return_value.first.return_value = row
-            # Thread has NO steps
-            session.execute.return_value.fetchone.return_value = None
             mock_gs.return_value = session
 
             result = _lookup_rfq_thread_id("RFQ-2026-0001", "user@eagle.com")
-            assert result is None
-            session.delete.assert_called_once_with(row)
-            session.commit.assert_called_once()
+            assert result == "new-thread"
+            session.delete.assert_not_called()
