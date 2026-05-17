@@ -128,6 +128,7 @@ class RFQ(Base):
     status = Column(String, nullable=False, default='draft')  # draft/in_progress/awaiting_quotes/completed/cancelled
     notes = Column(Text, nullable=True)
     history = Column(JSONB, nullable=True)                    # [{date, user, action}, ...]
+    item_groups = Column(JSONB, nullable=True)                # {groups: [...], ungrouped: [...]}
     updated_at = Column(DateTime(timezone=True), nullable=True)
 
     items = relationship('RFQItem', back_populates='rfq', order_by='RFQItem.line',

@@ -179,7 +179,7 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
             query = session.query(RFQ)
             if mine == "1" and user_email:
                 query = query.filter(RFQ.assigned_to.ilike(user_email))
-            query = query.order_by(RFQ.created_date.desc(), RFQ.id.desc())
+            query = query.order_by(RFQ.rfq_number.desc())
             return [_rfq_to_dict(r) for r in query.limit(1000).all()]
         finally:
             session.close()
@@ -260,6 +260,39 @@ async def rfq_new(request: Request, user: dict = Depends(require_user)):
     })
     response.headers["HX-Push-Url"] = f"/rfqs/{rfq_id}"
     return response
+
+
+@router.delete("/partial/rfqs/{rfq_id}")
+async def partial_rfq_discard(request: Request, rfq_id: str,
+                              user: dict = Depends(require_user)):
+    """Discard an empty draft RFQ (0 items, status=draft)."""
+    from includes.dashboard.models import RFQ, RFQItem
+
+    def _delete():
+        session = _helpers.get_session()
+        try:
+            rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+            if not rfq:
+                return "not_found"
+            if rfq.status != "draft":
+                return "not_draft"
+            item_count = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).count()
+            if item_count > 0:
+                return "has_items"
+            session.delete(rfq)
+            session.commit()
+            return "ok"
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    result = await asyncio.to_thread(_delete)
+    if result == "ok":
+        return HTMLResponse("")  # empty response removes the row via hx-swap="outerHTML"
+    msg = {"not_found": "RFQ not found.", "not_draft": "Only draft RFQs can be discarded.", "has_items": "RFQ has items and cannot be discarded."}
+    return HTMLResponse(f"<tr><td colspan='7' class='px-4 py-2 text-red-600 text-sm'>{msg.get(result, 'Error')}</td></tr>", status_code=400)
 
 
 @router.get("/rfqs/{rfq_id}")
@@ -440,6 +473,27 @@ async def partial_rfq_update(request: Request, rfq_id: str,
         if not rfq:
             return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
 
+    _enrich_rfq_supplier_contacts(rfq)
+    return templates.TemplateResponse(request, "partials/rfq_detail.html", {
+        "user": user, "rfq": rfq,
+        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
+    })
+
+
+@router.patch("/partial/rfqs/{rfq_id}/status")
+async def partial_rfq_status(request: Request, rfq_id: str,
+                             user: dict = Depends(require_user)):
+    """Update just the RFQ status via the dropdown."""
+    form = await request.form()
+    new_status = form.get("status", "")
+
+    from includes.tools.rfq_crud import _update_status_sync
+    user_ident = user.get("identifier", "dashboard")
+    result = await asyncio.to_thread(_update_status_sync, rfq_id, {"status": new_status}, user_ident)
+    if isinstance(result, str):
+        return HTMLResponse(f"<p>{result}</p>", status_code=400)
+
+    rfq = result
     _enrich_rfq_supplier_contacts(rfq)
     return templates.TemplateResponse(request, "partials/rfq_detail.html", {
         "user": user, "rfq": rfq,

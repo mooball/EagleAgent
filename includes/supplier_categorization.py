@@ -22,7 +22,7 @@ from config import config as app_config
 
 logger = logging.getLogger(__name__)
 
-TAXONOMY_PATH = Path(__file__).parent.parent / "config" / "supplier-categorization-taxonomy.md"
+TAXONOMY_PATH = Path(__file__).parent.parent / "config" / "prompts" / "supplier_categorization.md"
 
 VALID_CATEGORIES = app_config.get_valid_categories()
 VALID_TIERS = app_config.get_valid_tiers()

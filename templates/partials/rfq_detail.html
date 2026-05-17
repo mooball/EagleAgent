@@ -38,17 +38,32 @@
                     <span class="text-gray-400">—</span>
                     <span class="text-xl font-medium">{{ rfq.customer or 'Unknown' }}</span>
                     {% set status = rfq.status or 'draft' %}
-                    {% if status == 'draft' %}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-gray-600 text-gray-100">Draft</span>
-                    {% elif status == 'in_progress' %}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-blue-600 text-blue-100">In Progress</span>
-                    {% elif status == 'awaiting_quotes' %}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-amber-600 text-amber-100">Awaiting Quotes</span>
-                    {% elif status == 'completed' %}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-green-600 text-green-100">Completed</span>
-                    {% elif status == 'cancelled' %}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-red-600 text-red-100">Cancelled</span>
-                    {% endif %}
+                    <div class="relative" x-data="{ statusOpen: false }">
+                        <button @click.stop="statusOpen = !statusOpen" type="button"
+                                class="text-xs px-2 py-0.5 rounded-full cursor-pointer transition-colors
+                                       {% if status == 'draft' %}bg-gray-600 text-gray-100 hover:bg-gray-500
+                                       {% elif status == 'in_progress' %}bg-blue-600 text-blue-100 hover:bg-blue-500
+                                       {% elif status == 'awaiting_quotes' %}bg-amber-600 text-amber-100 hover:bg-amber-500
+                                       {% elif status == 'completed' %}bg-green-600 text-green-100 hover:bg-green-500
+                                       {% elif status == 'cancelled' %}bg-red-600 text-red-100 hover:bg-red-500{% endif %}">
+                            {% if status == 'draft' %}Draft{% elif status == 'in_progress' %}In Progress{% elif status == 'awaiting_quotes' %}Awaiting Quotes{% elif status == 'completed' %}Completed{% elif status == 'cancelled' %}Cancelled{% endif %}
+                            <svg class="inline w-3 h-3 ml-0.5 -mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                        </button>
+                        <div x-show="statusOpen" @click.outside="statusOpen = false" x-cloak
+                             class="absolute left-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 w-max">
+                            {% for val, label, bg in [('draft', 'Draft', 'bg-gray-600'), ('in_progress', 'In Progress', 'bg-blue-600'), ('awaiting_quotes', 'Awaiting Quotes', 'bg-amber-600'), ('completed', 'Completed', 'bg-green-600'), ('cancelled', 'Cancelled', 'bg-red-600')] %}
+                            <button type="button" @click="statusOpen = false"
+                                    hx-patch="/partial/rfqs/{{ rfq.id }}/status" hx-vals='{"status": "{{ val }}"}'
+                                    hx-target="#main-content"
+                                    class="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2
+                                           {% if status == val %}font-bold{% endif %}">
+                                <span class="w-2 h-2 rounded-full {{ bg }} inline-block"></span>
+                                {{ label }}
+                                {% if status == val %}<svg class="w-3 h-3 ml-auto" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>{% endif %}
+                            </button>
+                            {% endfor %}
+                        </div>
+                    </div>
                 </div>
                 <div class="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400 flex-wrap">
                     <span>{{ rfq.assigned_to or 'Unassigned' }}</span>
@@ -84,17 +99,14 @@
                 <div class="flex items-center gap-3 mb-1">
                     <h1 class="text-xl font-bold">{{ rfq.id }}</h1>
                     {% set status = rfq.status or 'draft' %}
-                    {% if status == 'draft' %}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-gray-600 text-gray-100">Draft</span>
-                    {% elif status == 'in_progress' %}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-blue-600 text-blue-100">In Progress</span>
-                    {% elif status == 'awaiting_quotes' %}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-amber-600 text-amber-100">Awaiting Quotes</span>
-                    {% elif status == 'completed' %}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-green-600 text-green-100">Completed</span>
-                    {% elif status == 'cancelled' %}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-red-600 text-red-100">Cancelled</span>
-                    {% endif %}
+                    <span class="text-xs px-2 py-0.5 rounded-full
+                           {% if status == 'draft' %}bg-gray-600 text-gray-100
+                           {% elif status == 'in_progress' %}bg-blue-600 text-blue-100
+                           {% elif status == 'awaiting_quotes' %}bg-amber-600 text-amber-100
+                           {% elif status == 'completed' %}bg-green-600 text-green-100
+                           {% elif status == 'cancelled' %}bg-red-600 text-red-100{% endif %}">
+                        {% if status == 'draft' %}Draft{% elif status == 'in_progress' %}In Progress{% elif status == 'awaiting_quotes' %}Awaiting Quotes{% elif status == 'completed' %}Completed{% elif status == 'cancelled' %}Cancelled{% endif %}
+                    </span>
                 </div>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
@@ -181,7 +193,23 @@
             <button @click="identifyItems()"
                     class="btn-sm btn-accent">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-                Identify Products
+                Identify Items
+            </button>
+            {% endif %}
+            {# {% if confirmed >= 2 %}
+            <span>·</span>
+            <button @click="groupItems()"
+                    class="btn-sm">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+                Group Items
+            </button>
+            {% endif %} #}
+            {% if confirmed >= 1 %}
+            <span>·</span>
+            <button @click="findAllSuppliers()"
+                    class="btn-sm btn-accent">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                Find Suppliers
             </button>
             {% endif %}
         </div>
@@ -193,394 +221,58 @@
         </div>
     </div>
 
-    <!-- Items table -->
-    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-        <table class="w-full text-sm">
-            <thead class="bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700">
-                <tr>
-                    <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-10">#</th>
-                    <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Description</th>
-                    <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Part Number</th>
-                    <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Brand</th>
-                    <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Qty</th>
-                    <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-16">Status</th>
-                    <th class="text-right px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Action</th>
-                </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
-                {% for item in items %}
-                {% set suppliers = item.suppliers or [] %}
-                {% set active_suppliers = [] %}
-                {% for s in suppliers %}{% if s.status != 'dropped' %}{% set _ = active_suppliers.append(s) %}{% endif %}{% endfor %}
-                <!-- Item row (display mode) -->
-                <tr x-show="editingItem !== {{ item.line }}"
-                    class="cursor-pointer transition-colors group"
-                    :class="expanded[{{ item.line }}] ? 'bg-blue-50 dark:bg-blue-950' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'"
-                    @click="toggle({{ item.line }})">
-                    <td class="px-3 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
-                    <td class="px-3 py-2.5">
-                        <div class="flex items-center gap-1.5">
-                            {% if suppliers %}
-                            <svg x-show="expanded[{{ item.line }}]" class="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-                            <svg x-show="!expanded[{{ item.line }}]" class="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                            {% else %}
-                            <span class="w-3.5 shrink-0"></span>
-                            {% endif %}
-                            <span>{{ item.input_description or '—' }}</span>
-                        </div>
-                    </td>
-                    <td class="px-3 py-2.5 font-mono">
-                        <span class="inline-flex items-center gap-1">
-                            {{ item.part_number or '—' }}
-                            {% if item.product_id %}
-                            <svg class="inline w-3 h-3 text-blue-500 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="In database"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"/></svg>
-                            {% endif %}
-                        </span>
-                    </td>
-                    <td class="px-3 py-2.5">{{ item.brand or '—' }}</td>
-                    <td class="px-3 py-2.5 text-center">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
-                    <td class="px-3 py-2.5 text-center">
-                        {% if item.status == 'confirmed' %}
-                        <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-green-500" data-tip="Confirmed"></span>
-                        {% elif item.status == 'identified' %}
-                        <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-blue-500" data-tip="Identified"></span>
-                        {% elif item.status == 'review' %}
-                        <span class="tip tip-end inline-flex items-center gap-0.5" data-tip="{{ item.notes or 'Needs Review' }}">
-                            <span class="inline-block w-2.5 h-2.5 rounded-full bg-amber-500"></span>
-                            <svg class="w-3 h-3 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
-                        </span>
-                        {% else %}
-                        <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-gray-400" data-tip="Unidentified"></span>
-                        {% endif %}
-                    </td>
-                    <td class="px-3 py-2.5 text-right whitespace-nowrap">
-                        <div class="flex items-center justify-end gap-1">
-                            {% if suppliers %}
-                            <span class="tabular-nums text-xs text-gray-500">{{ active_suppliers | length }} suppliers</span>
-                            {% elif item.status == 'confirmed' %}
-                            <button class="btn-sm"
-                                    @click.stop="findSuppliers({{ item.line }})">
-                                Find Suppliers
-                            </button>
-                            {% else %}
-                            <button class="btn-sm btn-accent"
-                                    @click.stop="identifyItem({{ item.line }})">
-                                Identify Product
-                            </button>
-                            {% endif %}
-                            <button class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
-                                    @click.stop="editingItem = {{ item.line }}"
-                                    title="Edit item">
-                                <svg class="w-[18px] h-[18px] text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                            </button>
-                        </div>
-                    </td>
-                </tr>
-                <!-- Item row (edit mode) -->
-                <tr x-show="editingItem === {{ item.line }}" x-cloak class="bg-amber-50 dark:bg-amber-950">
-                    <td class="px-3 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
-                    <td class="px-3 py-2.5">
-                        <form id="edit-item-{{ item.line }}" hx-post="/partial/rfqs/{{ rfq.id }}/update-item" hx-target="#main-content">
-                            <input type="hidden" name="line" value="{{ item.line }}">
-                            <input type="text" name="input_description" value="{{ item.input_description or '' }}"
-                                   class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
-                        </form>
-                    </td>
-                    <td class="px-3 py-2.5">
-                        <input type="text" name="part_number" value="{{ item.part_number or '' }}" form="edit-item-{{ item.line }}"
-                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 font-mono">
-                    </td>
-                    <td class="px-3 py-2.5">
-                        <input type="text" name="brand" value="{{ item.brand or '' }}" form="edit-item-{{ item.line }}"
-                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
-                    </td>
-                    <td class="px-3 py-2.5 text-center">
-                        <input type="text" name="quantity" value="{{ item.quantity or '' }}" form="edit-item-{{ item.line }}"
-                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 text-center">
-                    </td>
-                    <td colspan="2" class="px-3 py-2.5 text-center">
-                        <div class="flex items-center justify-center gap-1">
-                            <button type="submit" form="edit-item-{{ item.line }}"
-                                    class="px-2.5 py-1 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700">Save</button>
-                            <button type="button" @click="editingItem = null"
-                                    class="px-2.5 py-1 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700">Cancel</button>
-                        </div>
-                    </td>
-                </tr>
-                <!-- Expanded supplier sub-table -->
-                {% if suppliers %}
-                <tr x-show="expanded[{{ item.line }}]" x-cloak class="border-b-2 border-gray-300 dark:border-gray-600">
-                    <td class="bg-gray-50 dark:bg-gray-800"></td>
-                    <td colspan="7" class="py-2 pl-8 pr-4 bg-gray-50 dark:bg-gray-800">
-                        <div class="flex items-center gap-3 mb-2">
-                            <span class="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-medium">Suppliers</span>
-                            <button class="text-[10px] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
-                                    @click.stop="findSuppliers({{ item.line }})">
-                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                                Find more
-                            </button>
-                            <button class="text-[10px] text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 flex items-center gap-1"
-                                    @click.stop="if(confirm('Remove all suppliers from line {{ item.line }}?')) htmx.ajax('POST', '/partial/rfqs/{{ rfq.id }}/clear-suppliers?line={{ item.line }}', {target: '#main-content'})"
-                                    title="Remove all suppliers from this line">
-                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                Remove all
-                            </button>
-                        </div>
-                        <table class="w-full">
-                            <tbody>
-                                {% for s in suppliers %}
-                                {% set is_dropped = s.status == 'dropped' %}
-                                {% set contacts = s.contacts or [] %}
-                                {% set purchase_ref = s.purchase_ref %}
-                                {% set has_details = contacts | length > 0 or s.lead_time or s.notes or s.supplier_id or purchase_ref %}
-                                <tr x-data="{ supStatus: '{{ s.status }}' }" class="border-b last:border-b-0 border-gray-100 dark:border-gray-700">
-                                    <td class="px-2 py-1.5 text-xs" :class="supStatus === 'dropped' && 'line-through opacity-50'">
-                                        {% if has_details %}
-                                        {% set popover_key = 'sup-' ~ item.line ~ '-' ~ loop.index %}
-                                        <div class="relative">
-                                            <button @click.stop="openPopover = (openPopover === '{{ popover_key }}') ? null : '{{ popover_key }}'"
-                                                    class="text-left cursor-pointer flex items-center gap-1 underline decoration-dotted underline-offset-2 decoration-gray-400/50 hover:text-blue-600 dark:hover:text-blue-400">
-                                                {{ s.name }}{% if s.country and s.country != 'AU' %} <span class="text-gray-400 dark:text-gray-500">({{ s.country }})</span>{% endif %}
-                                                {% if s.is_new %}
-                                                <span class="no-underline text-[9px] px-1 py-0.5 rounded font-semibold bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200" title="No previous quotes or orders">NEW</span>
-                                                {% elif s.supplier_id %}
-                                                <svg class="w-3 h-3 text-blue-500 dark:text-blue-400 shrink-0 no-underline" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="Previous transaction history"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"/></svg>
-                                                {% endif %}
-                                                {% if s.tier %}
-                                                <span class="no-underline text-[9px] px-1 py-0.5 rounded font-medium
-                                                    {% if s.tier == 'A' %}bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200
-                                                    {% elif s.tier == 'B' %}bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
-                                                    {% elif s.tier == 'C' %}bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200
-                                                    {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}">{{ s.tier }}</span>
-                                                {% endif %}
-                                            </button>
-                                            <div x-show="openPopover === '{{ popover_key }}'" @click.outside="openPopover = null" x-cloak
-                                                 class="absolute left-0 bottom-full mb-1 z-40 w-fit min-w-72 max-w-md bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-3 text-xs space-y-2">
-                                                <div class="flex items-center gap-2">
-                                                    <span class="font-semibold text-sm text-gray-900 dark:text-gray-100">{{ s.name }}</span>
-                                                </div>
-                                                {% set ns = namespace(url=none) %}
-                                                {% for c in contacts %}{% if c.url and not ns.url %}{% set ns.url = c.url %}{% endif %}{% endfor %}
-                                                {% if ns.url %}
-                                                <div class="flex items-center gap-1.5 text-gray-600 dark:text-gray-400">
-                                                    <svg class="w-3 h-3 opacity-60 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
-                                                    <a href="{{ ns.url }}" target="_blank" rel="noopener" class="text-blue-600 dark:text-blue-400 hover:underline truncate" @click.stop>{{ ns.url | replace('https://', '') | replace('http://', '') }}</a>
-                                                </div>
-                                                {% endif %}
-                                                {% for c in contacts %}
-                                                {% if c.email %}
-                                                <div class="flex items-center gap-1.5 text-gray-600 dark:text-gray-400">
-                                                    <svg class="w-3 h-3 opacity-60 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
-                                                    <span>{{ c.email }}{% if c.label %} <span class="opacity-50">({{ c.label }})</span>{% endif %}</span>
-                                                    <button type="button" @click.stop="navigator.clipboard.writeText('{{ c.email }}')" title="Copy email"
-                                                            class="shrink-0 p-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
-                                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-                                                    </button>
-                                                </div>
-                                                {% endif %}
-                                                {% endfor %}
-                                                {% for c in contacts %}
-                                                {% if c.phone %}
-                                                <div class="flex items-center gap-1.5 text-gray-600 dark:text-gray-400">
-                                                    <svg class="w-3 h-3 opacity-60 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>
-                                                    <span>{{ c.phone }}{% if c.label %} <span class="opacity-50">({{ c.label }})</span>{% endif %}</span>
-                                                </div>
-                                                {% endif %}
-                                                {% endfor %}
-                                                {% for c in contacts %}
-                                                {% if c.name and not c.email and not c.phone %}
-                                                <div class="flex items-center gap-1.5 text-gray-600 dark:text-gray-400">
-                                                    <svg class="w-3 h-3 opacity-60 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
-                                                    <span>{{ c.name }}{% if c.label %} <span class="opacity-50">({{ c.label }})</span>{% endif %}</span>
-                                                </div>
-                                                {% endif %}
-                                                {% endfor %}
-                                                {% if s.lead_time %}
-                                                <div class="flex items-center gap-1.5 text-gray-600 dark:text-gray-400">
-                                                    <svg class="w-3 h-3 opacity-60 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                                    <span>{{ s.lead_time }}</span>
-                                                </div>
-                                                {% endif %}
-                                                {% if s.notes %}
-                                                <div class="flex items-center gap-1.5 text-gray-600 dark:text-gray-400">
-                                                    <svg class="w-3 h-3 opacity-60 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                                                    <span class="italic">{{ s.notes }}</span>
-                                                </div>
-                                                {% endif %}
-                                                {% if purchase_ref %}
-                                                <div class="pt-1.5 border-t border-gray-200 dark:border-gray-700">
-                                                    <div class="flex items-center gap-1.5 text-gray-500 dark:text-gray-400">
-                                                        <svg class="w-3 h-3 opacity-60 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
-                                                        <span>
-                                                            {% if purchase_ref.doc_number %}<span class="font-mono">{{ purchase_ref.doc_number }}</span>{% endif %}
-                                                            {% if purchase_ref.date %}<span> · {{ purchase_ref.date }}</span>{% endif %}
-                                                            {% if purchase_ref.order_count and purchase_ref.order_count > 1 %}<span> · {{ purchase_ref.order_count }} orders</span>{% endif %}
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                                {% endif %}
-                                                {% if s.supplier_id %}
-                                                <div class="pt-1.5 border-t border-gray-200 dark:border-gray-700">
-                                                    <a hx-get="/partial/suppliers/{{ s.supplier_id }}" hx-target="#main-content" hx-push-url="/suppliers/{{ s.supplier_id }}"
-                                                       class="text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
-                                                       @click.stop>
-                                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
-                                                        View supplier
-                                                    </a>
-                                                </div>
-                                                {% endif %}
-                                            </div>
-                                        </div>
-                                        {% else %}
-                                        {{ s.name }}{% if s.country and s.country != 'AU' %} <span class="text-gray-400 dark:text-gray-500">({{ s.country }})</span>{% endif %}
-                                        {% if s.is_new %}
-                                        <span class="text-[9px] px-1 py-0.5 rounded font-semibold bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200" title="No previous quotes or orders">NEW</span>
-                                        {% elif s.supplier_id %}
-                                        <svg class="inline w-3 h-3 text-blue-500 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="Previous transaction history"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"/></svg>
-                                        {% endif %}
-                                        {% if s.tier %}
-                                        <span class="text-[9px] px-1 py-0.5 rounded font-medium
-                                            {% if s.tier == 'A' %}bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200
-                                            {% elif s.tier == 'B' %}bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
-                                            {% elif s.tier == 'C' %}bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200
-                                            {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}">{{ s.tier }}</span>
-                                        {% endif %}
-                                        {% endif %}
-                                    </td>
-                                    <td class="px-2 py-1.5 text-xs whitespace-nowrap text-gray-500 dark:text-gray-400" :class="supStatus === 'dropped' && 'opacity-50'">
-                                        {{ s.terms or '' }}
-                                    </td>
-                                    <td class="px-2 py-1.5 text-xs text-right whitespace-nowrap text-gray-500 dark:text-gray-400" :class="supStatus === 'dropped' && 'opacity-50'">
-                                        {% if purchase_ref and purchase_ref.date %}
-                                        {{ purchase_ref.date }}
-                                        {% endif %}
-                                    </td>
-                                    {% set has_history = s.supplier_id and item.product_id %}
-                                    <td class="px-2 py-1.5 text-xs text-right font-medium whitespace-nowrap relative" :class="supStatus === 'dropped' && 'line-through opacity-50'"
-                                        {% if has_history %}x-data="{ histOpen: false, histHtml: '' }"{% endif %}>
-                                        {% if has_history %}
-                                        <button @click.stop="if(!histHtml) { fetch('/partial/rfqs/price-history?product_id={{ item.product_id }}&supplier_id={{ s.supplier_id }}').then(r=>r.text()).then(h=>{histHtml=h}); } histOpen = !histOpen"
-                                                class="cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 underline decoration-dotted underline-offset-2 decoration-gray-400/50">
-                                        {% endif %}
-                                        {% if s.cost_price is defined and s.cost_price is not none %}
-                                        {% if not s.cost_currency or s.cost_currency == 'AUD' %}${% endif %}{{ "%.2f" | format(s.cost_price | float) }}
-                                        {% if s.cost_currency and s.cost_currency != 'AUD' %}<span class="text-[10px] opacity-60 ml-0.5">{{ s.cost_currency }}</span>{% endif %}
-                                        {% if s.price_doc_type %}
-                                        <span class="text-[10px] opacity-40 ml-0.5">{% if s.price_doc_type == 'SalesOrder' %}SO{% elif s.price_doc_type == 'Quote' %}Qt{% endif %}</span>
-                                        {% endif %}
-                                        {% elif s.price is not none and s.price_type in ['previous_purchase', 'estimated', 'quoted', 'previous_quote'] %}
-                                        {% if not s.cost_currency or s.cost_currency == 'AUD' %}${% endif %}{{ "%.2f" | format(s.price | float) }}
-                                        {% if s.cost_currency and s.cost_currency != 'AUD' %}<span class="text-[10px] opacity-60 ml-0.5">{{ s.cost_currency }}</span>{% endif %}
-                                        {% if s.price_type in ['estimated', 'quoted'] %}
-                                        <span class="text-[10px] opacity-50 ml-0.5">{% if s.price_type == 'estimated' %}est{% elif s.price_type == 'quoted' %}quoted{% endif %}</span>
-                                        {% endif %}
-                                        {% else %}
-                                        <span class="opacity-30">—</span>
-                                        {% endif %}
-                                        {% if has_history %}
-                                        </button>
-                                        <div x-show="histOpen" @click.outside="histOpen = false" x-cloak
-                                             class="absolute right-0 top-full mt-1 z-50 min-w-[26rem] w-max bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-3 text-xs text-left font-normal no-underline">
-                                            <div class="font-semibold text-gray-700 dark:text-gray-200 mb-2">Price History — {{ s.name }}</div>
-                                            <div x-html="histHtml || '<span class=\'text-gray-400\'>Loading...</span>'"></div>
-                                        </div>
-                                        {% endif %}
-                                    </td>
-                                    <td class="px-2 py-1.5 text-xs text-right font-medium whitespace-nowrap" :class="supStatus === 'dropped' && 'line-through opacity-50'">
-                                        {% if s.sale_price is defined and s.sale_price is not none %}
-                                        ${{ "%.2f" | format(s.sale_price | float) }}
-                                        {% if s.price_doc_type %}
-                                        <span class="text-[10px] opacity-40 ml-0.5">{% if s.price_doc_type == 'SalesOrder' %}SO{% elif s.price_doc_type == 'Quote' %}Qt{% endif %}</span>
-                                        {% endif %}
-                                        {% else %}
-                                        <span class="opacity-30">—</span>
-                                        {% endif %}
-                                    </td>
-                                    <td class="px-2 py-1.5 text-xs text-right font-semibold whitespace-nowrap" :class="supStatus === 'dropped' && 'opacity-50'">
-                                        {% set cp_aud = s.cost_price_aud if s.cost_price_aud is defined and s.cost_price_aud is not none else (s.cost_price if s.cost_price is defined else none) %}
-                                        {% set sp = s.sale_price if s.sale_price is defined else none %}
-                                        {% if cp_aud is not none and sp is not none and sp | float > 0 %}
-                                        {% set margin = ((sp | float - cp_aud | float) / (sp | float) * 100) | round(0) | int %}
-                                        <span class="{% if margin >= 30 %}text-emerald-600 dark:text-emerald-400{% elif margin >= 15 %}text-amber-600 dark:text-amber-400{% else %}text-red-600 dark:text-red-400{% endif %}">{{ margin }}%</span>
-                                        {% else %}
-                                        <span class="opacity-30">—</span>
-                                        {% endif %}
-                                    </td>
-                                    <td class="px-2 py-1.5 text-xs whitespace-nowrap" :class="supStatus === 'dropped' && 'opacity-50'">
-                                        {{ s.lead_time or '' }}
-                                    </td>
-                                    <td class="px-2 py-1.5">
-                                        <span x-show="supStatus === 'candidate'" {% if s.status != 'candidate' %}style="display:none"{% endif %} class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-200">Candidate</span>
-                                        <span x-show="supStatus === 'shortlisted'" {% if s.status != 'shortlisted' %}style="display:none"{% endif %} class="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200">Shortlisted</span>
-                                        <span x-show="supStatus === 'selected'" {% if s.status != 'selected' %}style="display:none"{% endif %} class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">Selected</span>
-                                        <span x-show="supStatus === 'dropped'" {% if s.status != 'dropped' %}style="display:none"{% endif %} class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200 line-through">Dropped</span>
-                                    </td>
-                                    <td class="px-2 py-1.5 w-8">
-                                        <div x-show="supStatus !== 'dropped'" {% if s.status == 'dropped' %}style="display:none"{% endif %} class="relative" x-data="{ menuOpen: false }">
-                                            <button @click.stop="menuOpen = !menuOpen" class="p-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700">
-                                                <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
-                                            </button>
-                                            <div x-show="menuOpen" @click.outside="menuOpen = false" x-cloak
-                                                 class="absolute right-0 z-30 mt-1 w-32 bg-white dark:bg-gray-800 rounded-md shadow-lg border border-gray-200 dark:border-gray-700 py-1 text-xs">
-                                                <button x-show="supStatus !== 'shortlisted'" class="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700"
-                                                        data-supplier="{{ s.name | e }}"
-                                                        @click.stop="supStatus = 'shortlisted'; menuOpen = false; setSupplierStatus({{ item.line }}, $el.dataset.supplier, 'shortlisted')">
-                                                    ⭐ Shortlist
-                                                </button>
-                                                <button x-show="supStatus !== 'selected'" class="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700"
-                                                        data-supplier="{{ s.name | e }}"
-                                                        @click.stop="supStatus = 'selected'; menuOpen = false; setSupplierStatus({{ item.line }}, $el.dataset.supplier, 'selected')">
-                                                    ✅ Select
-                                                </button>
-                                                <button class="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 text-red-600"
-                                                        data-supplier="{{ s.name | e }}"
-                                                        @click.stop="supStatus = 'dropped'; menuOpen = false; setSupplierStatus({{ item.line }}, $el.dataset.supplier, 'dropped')">
-                                                    ✕ Drop
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </td>
-                </tr>
-                {% endif %}
-                {% endfor %}
-                <!-- Add item row -->
-                <tr x-show="addingItem" x-cloak class="bg-green-50 dark:bg-green-950">
-                    <td class="px-3 py-2.5 text-center font-mono text-xs text-gray-400">+</td>
-                    <td class="px-3 py-2.5">
-                        <form id="add-item-form" hx-post="/partial/rfqs/{{ rfq.id }}/add-item" hx-target="#main-content">
-                            <input type="text" name="input_description" placeholder="Item description"
-                                   class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
-                        </form>
-                    </td>
-                    <td class="px-3 py-2.5">
-                        <input type="text" name="part_number" placeholder="Part #" form="add-item-form"
-                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 font-mono">
-                    </td>
-                    <td class="px-3 py-2.5">
-                        <input type="text" name="brand" placeholder="Brand" form="add-item-form"
-                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
-                    </td>
-                    <td class="px-3 py-2.5 text-center">
-                        <input type="text" name="quantity" placeholder="1" form="add-item-form"
-                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 text-center">
-                    </td>
-                    <td colspan="2" class="px-3 py-2.5 text-center">
-                        <div class="flex items-center justify-center gap-1">
-                            <button type="submit" form="add-item-form"
-                                    class="px-2.5 py-1 text-xs font-medium rounded bg-green-600 text-white hover:bg-green-700">Add</button>
-                            <button type="button" @click="addingItem = false"
-                                    class="px-2.5 py-1 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700">Cancel</button>
-                        </div>
-                    </td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
+    {% set item_groups = rfq.get('item_groups') %}
+    {% set has_groups = item_groups and item_groups.get('groups') %}
+    {# View mode: set grouped_view = true to enable per-group tables when groups exist #}
+    {% set grouped_view = false %}
+
+    {% if has_groups and grouped_view %}
+    {# -- GROUPED VIEW: separate table per group -- #}
+    {% set items_by_line = {} %}
+    {% for item in items %}{% set _ = items_by_line.update({item.line: item}) %}{% endfor %}
+
+    {% for group in item_groups.get('groups', []) %}
+    {% set group_lines = group.get('lines', []) %}
+    {% set table_items = [] %}
+    {% for ln in group_lines %}{% if ln in items_by_line %}{% set _ = table_items.append(items_by_line[ln]) %}{% endif %}{% endfor %}
+    {% if table_items %}
+    <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mt-4 mb-2 flex items-center gap-2">
+        <span class="text-xs font-mono text-gray-400">{{ group.get('id', '') }}</span>
+        {{ group.get('label', 'Group') }}
+        <span class="text-xs font-normal text-gray-400">({{ table_items | length }} items)</span>
+    </h3>
+    {% set show_add_row = false %}
+    {% include "partials/_rfq_items_table.html" %}
+    {% endif %}
+    {% endfor %}
+
+    {# -- Ungrouped items -- #}
+    {% set ungrouped_lines = item_groups.get('ungrouped', []) %}
+    {% set all_grouped_lines = [] %}
+    {% for g in item_groups.get('groups', []) %}{% for ln in g.get('lines', []) %}{% set _ = all_grouped_lines.append(ln) %}{% endfor %}{% endfor %}
+    {% for ln in ungrouped_lines %}{% if ln not in all_grouped_lines %}{% set _ = all_grouped_lines.append(ln) %}{% endif %}{% endfor %}
+    {% set remaining_items = [] %}
+    {% for item in items %}{% if item.line not in all_grouped_lines %}{% set _ = remaining_items.append(item) %}{% endif %}{% endfor %}
+    {% set ungrouped_items = [] %}
+    {% for ln in ungrouped_lines %}{% if ln in items_by_line %}{% set _ = ungrouped_items.append(items_by_line[ln]) %}{% endif %}{% endfor %}
+    {% for item in remaining_items %}{% set _ = ungrouped_items.append(item) %}{% endfor %}
+    {% set ungrouped_items = ungrouped_items | sort(attribute='line') %}
+    {% if ungrouped_items %}
+    <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 mt-4 mb-2">
+        Ungrouped
+        <span class="text-xs font-normal">({{ ungrouped_items | length }} items)</span>
+    </h3>
+    {% set table_items = ungrouped_items %}
+    {% set show_add_row = true %}
+    {% include "partials/_rfq_items_table.html" %}
+    {% endif %}
+
+    {% else %}
+    {# -- LIST VIEW: single table with all items (default) -- #}
+    {% set table_items = items %}
+    {% set show_add_row = true %}
+    {% include "partials/_rfq_items_table.html" %}
+    {% endif %}
 
     <!-- Action buttons -->
     <div class="flex gap-2 mt-4">

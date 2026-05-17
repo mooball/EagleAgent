@@ -1,4 +1,4 @@
-{% from "components.html" import page_header, search_form, row_count, empty_state %}
+{% from "components.html" import page_header, search_form, table_wrapper, th, row_count, empty_state %}
 <div data-dashboard-context='{"view": "rfq_list", "entity": "rfq"}'>
     {% call page_header("Requests for Quote") %}
         <button type="button"
@@ -26,9 +26,22 @@
     </div>
 
     {% if rfqs %}
-    <div id="rfq-rows" class="grid gap-3">
-        {% include "partials/_rfq_rows.html" %}
-    </div>
+    {% call table_wrapper() %}
+        <thead class="border-b border-gray-200 dark:border-gray-700 sticky top-[72px] z-10">
+            <tr>
+                {{ th("RFQ") }}
+                {{ th("Customer") }}
+                {{ th("Status") }}
+                {{ th("Items", align="right") }}
+                {{ th("Assigned To") }}
+                {{ th("Created") }}
+                <th class="px-4 py-3 bg-gray-50 dark:bg-gray-800 w-8"></th>
+            </tr>
+        </thead>
+        <tbody id="rfq-rows" class="divide-y divide-gray-100 dark:divide-gray-700">
+            {% include "partials/_rfq_rows.html" %}
+        </tbody>
+    {% endcall %}
 
     {{ row_count(total, "RFQs") }}
 

@@ -21,6 +21,7 @@ from includes.tools.rfq_crud import (  # noqa: F401
     _list_rfqs_sync, _update_rfq_sync, _update_item_sync, _add_supplier_sync,
     _update_supplier_sync, _clear_suppliers_sync, _assign_sync,
     _update_status_sync, _add_note_sync, _link_external_sync,
+    _update_item_groups_sync,
 )
 from includes.tools.rfq_render import (  # noqa: F401
     _render_rfq_summary, _render_rfq_list,
@@ -469,6 +470,9 @@ def create_quote_tools(user_id: str) -> list:
           add_note      — Append a note. data keys: note (required)
           link_external — Set external IDs. data keys: netsuite_opportunity
                           and/or hubspot_deal
+          group_items  — Set or update sourcing groups. data keys:
+                          item_groups (required, the grouping result object
+                          with {groups: [...], ungrouped: [...]})
 
         Args:
             action: The mutation to perform (see above).
@@ -508,6 +512,7 @@ def create_quote_tools(user_id: str) -> list:
             "update_status": lambda: asyncio.to_thread(_update_status_sync, rfq_id, data, user_id),
             "add_note": lambda: asyncio.to_thread(_add_note_sync, rfq_id, data, user_id),
             "link_external": lambda: asyncio.to_thread(_link_external_sync, rfq_id, data, user_id),
+            "group_items": lambda: asyncio.to_thread(_update_item_groups_sync, rfq_id, data.get("item_groups", data), user_id),
         }
 
         handler = _ACTION_MAP.get(action)
@@ -515,7 +520,8 @@ def create_quote_tools(user_id: str) -> list:
             return (
                 f"Error: unknown action '{action}'. Valid actions: create, "
                 "update, update_item, add_items, add_supplier, update_supplier, "
-                "clear_suppliers, assign, update_status, add_note, link_external."
+                "clear_suppliers, assign, update_status, add_note, link_external, "
+                "group_items."
             )
 
         if action != "create" and not rfq_id:

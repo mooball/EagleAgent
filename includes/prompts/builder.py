@@ -19,6 +19,14 @@ from includes.prompts.config import (
 # HELPER FUNCTIONS
 # =============================================================================
 
+def _load_prompt(name: str) -> str:
+    """Load a skill prompt from config/prompts/<name>.md (no caching here; the
+    public ``load_prompt`` in ``__init__`` is cached).
+    """
+    from pathlib import Path
+    path = Path(__file__).parent.parent.parent / "config" / "prompts" / f"{name}.md"
+    return path.read_text()
+
 def format_profile_section(key: str, value: Any) -> str:
     """
     Format a single profile section with appropriate handling for different data types.
@@ -250,33 +258,8 @@ def build_research_prompt(profile_data: Optional[Dict[str, Any]] = None, embedde
     )
     parts.append("")
 
-    parts.append("## Research Guidelines")
-    parts.append("- When answering questions, search for up-to-date information rather than relying on training data.")
-    parts.append("- Cite your sources — include URLs or source names when referencing specific information.")
-    parts.append("- Synthesize information from multiple sources when possible to provide balanced answers.")
-    parts.append("- Clearly distinguish between established facts and recent developments.")
-    parts.append("- If information is uncertain or conflicting across sources, say so.")
-    parts.append("- Provide concise summaries first, then offer to go deeper if the user wants more detail.")
-    parts.append("")
-
-    parts.append("## Tool Call Budget")
-    parts.append("You have a maximum of 15 tool calls per response. If after 5 search calls you haven't found useful results, STOP and ask the user for clarification.")
-    parts.append("")
-
-    parts.append("## Image/Document Input")
-    parts.append("If the user provides an image or document:")
-    parts.append("1. First, analyse what you're looking at — is it a product photo, a screenshot, a document, or something else?")
-    parts.append("2. **If it contains readable text** (names, URLs, descriptions, etc.), extract the key information and use it to guide your search. If there are many items, list what you found and ask which to research rather than searching them all.")
-    parts.append("3. **If it's a photo** with no readable text, describe what you see, try 1–2 broad searches based on your description, and if those don't help, STOP and ask the user for more context.")
-    parts.append("4. Never make more than 3 search attempts from a single image without returning results or asking the user for clarification.")
-    parts.append("")
-
-    parts.append("## Product Identification Confidence")
-    parts.append("When identifying a product — especially from an image, description, or partial information — you MUST be certain before presenting detailed product data. If there is ANY doubt about the exact product:")
-    parts.append("1. Present your best guess as a hypothesis: 'Based on what I can see, this looks like it could be [product]. Can you confirm?'")
-    parts.append("2. Do NOT proceed with detailed specs, pricing, or supplier lookups until the user confirms the identification.")
-    parts.append("3. If multiple products could match, list the candidates and ask the user to pick the right one.")
-    parts.append("4. Only present definitive product information when you have an exact match confirmed by the user or an unambiguous identifier (e.g. a clearly readable part number).")
+    # Load research guidelines from skill file
+    parts.append(_load_prompt("research_agent"))
     parts.append("")
 
     parts.append("## RFQ and Procurement")

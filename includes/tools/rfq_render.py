@@ -156,6 +156,20 @@ def _render_rfq_summary(rfq: dict) -> str:
             f"**{total} items** | {', '.join(counts) if counts else 'none'} | "
             f"{with_suppliers} with suppliers"
         )
+
+        # Render item groups if present
+        item_groups = rfq.get("item_groups")
+        if item_groups:
+            groups = item_groups.get("groups", [])
+            ungrouped = item_groups.get("ungrouped", [])
+            if groups:
+                lines.append("")
+                lines.append(f"**Sourcing Groups** ({len(groups)}):")
+                for g in groups:
+                    line_list = ", ".join(str(l) for l in g.get("lines", []))
+                    lines.append(f"- **{g.get('id', '?')}: {g.get('label', '?')}** — lines {line_list}")
+                if ungrouped:
+                    lines.append(f"- *Ungrouped:* lines {', '.join(str(l) for l in ungrouped)}")
     else:
         lines.append("*No items yet.*")
 

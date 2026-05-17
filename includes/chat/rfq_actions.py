@@ -18,6 +18,52 @@ from includes.tools.quote_tools import (
 logger = logging.getLogger(__name__)
 
 
+def _cross_apply_suppliers_sync(rfq_number: str, line_num: int, suppliers: list[dict]) -> None:
+    """Append suppliers directly to a line item's JSON, bypassing enrichment.
+
+    Used by Phase 2.5 to cross-apply group suppliers without pulling
+    incorrect transaction history for a different product.
+    """
+    from includes.dashboard.models import RFQ, RFQItem
+    from includes.tools.rfq_crud import _get_session
+    from sqlalchemy.orm.attributes import flag_modified
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return
+        item = session.query(RFQItem).filter(
+            RFQItem.rfq_id == rfq.id, RFQItem.line == line_num
+        ).first()
+        if not item:
+            return
+
+        current = list(item.suppliers or [])
+        existing_names = {s["name"].lower() for s in current}
+
+        for sup in suppliers:
+            if sup["name"].lower() not in existing_names:
+                current.append({
+                    "supplier_id": sup.get("supplier_id"),
+                    "name": sup["name"],
+                    "contacts": sup.get("contacts", []),
+                    "status": sup.get("status", "candidate"),
+                    "price_type": sup.get("price_type", "candidate"),
+                    "notes": sup.get("notes", ""),
+                })
+                existing_names.add(sup["name"].lower())
+
+        item.suppliers = current
+        flag_modified(item, "suppliers")
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 @cl.action_callback("rfq_refresh")
 async def on_rfq_refresh(action: cl.Action):
     """Refresh the dashboard RFQ view with latest data."""
@@ -167,26 +213,8 @@ async def on_rfq_identify_items(action: cl.Action):
                     item_parts.append(f"  Brand: {br}")
                 parts.append("\n".join(item_parts))
             parts.append("")
-            parts.append("IMPORTANT — Part number validation:")
-            parts.append("For each item, search the web to verify BOTH that:")
-            parts.append("  1. The part number actually exists as a real product")
-            parts.append("  2. The product that part number refers to matches the given description")
-            parts.append("For example, if the description says 'Hydraulic Return Filter' but the part number")
-            parts.append("resolves to an oil filter or a completely different product, that is a mismatch.")
-            parts.append("")
-            parts.append("Flag an item for review (status='review') if ANY of these are true:")
-            parts.append("- The exact part number cannot be found online")
-            parts.append("- The part number exists but refers to a different product than the description")
-            parts.append("- Similar/close part numbers exist that better match the description (possible typo)")
-            parts.append("In review cases, add a notes field explaining the issue")
-            parts.append("(e.g. 'Part number not found. Closest matches: 201-60-71180, 201-01-71110'")
-            parts.append(" or 'Part number 600-211-2110 resolves to a fuel filter, not an oil filter as described').")
-            parts.append("")
-            parts.append("For each item:")
-            parts.append("- EXACT match AND description matches: set part_number, brand, status='confirmed'")
-            parts.append("- Part number wrong, missing, or mismatched to description: set status='review' and notes='...' explaining the issue. Do NOT clear or remove the existing part_number or brand — keep them as-is so the user can see what was originally provided.")
-            parts.append("- Cannot identify at all: leave unchanged")
-            parts.append("Do NOT set status='confirmed' unless you are 100% certain the part number is correct AND matches the description.")
+            from includes.prompts import load_prompt
+            parts.append(load_prompt("rfq_identify_items"))
 
             rich_prompt = "\n".join(parts)
 
@@ -303,28 +331,10 @@ async def on_rfq_find_suppliers(action: cl.Action):
         if internal_summary_lines:
             parts.append("Internal DB results:\n" + "\n".join(internal_summary_lines))
         parts.append("")
-        parts.append("Search the web for distributors and wholesalers who can supply this product.")
+        from includes.prompts import load_prompt
+        parts.append(load_prompt("rfq_find_suppliers"))
         parts.append("")
-        parts.append("## Geographic Priority")
-        parts.append("1. FIRST search for Australian-based suppliers (add 'Australia' to your search queries).")
-        parts.append("2. If fewer than 3 Australian suppliers are found, expand to international suppliers.")
-        parts.append("3. When listing results, present Australian suppliers first, then international.")
-        parts.append("")
-        parts.append("## Supplier Selection")
-        parts.append("Prioritise authorised distributors and industrial wholesalers over retail sources.")
-        parts.append("If distributors are scarce, include reputable retailers as fallback options.")
-        parts.append("Aim for 3-5 good supplier options but more is fine if they look like strong matches.")
-        parts.append("")
-        parts.append("## Supply Chain Classification")
-        parts.append("Do NOT attempt to categorize suppliers yourself. The system will automatically classify each new supplier using our full taxonomy after you add them.")
-        parts.append("You may optionally include 'tier' (A/B/C/D) and 'category' (e.g. 'Trade Wholesaler') if it is obvious, but the system will verify and correct these.")
-        parts.append("")
-        parts.append("CRITICAL: After researching, you MUST call manage_rfq(action='add_supplier') to add each supplier you find to the RFQ.")
-        parts.append(f"Use rfq_id='{rfq_id}' and data={{line: {line}, suppliers: [...]}} with a list of all suppliers found.")
-        parts.append("Each supplier dict must include: name, country (2-letter ISO code, e.g. 'AU', 'US', 'GB'), currency (3-letter ISO code for their trading currency, e.g. 'AUD', 'USD', 'GBP'), contacts (list with at least one of email/phone/url).")
-        parts.append("Optional fields: tier, category, price, price_type, lead_time, notes.")
-        parts.append("If a price is in a foreign currency, store the ORIGINAL price and set currency accordingly — do NOT convert to AUD.")
-        parts.append("If you do NOT call add_supplier, the suppliers will NOT appear on the RFQ. The user is counting on you to update the RFQ directly.")
+        parts.append(f"CRITICAL: Use rfq_id='{rfq_id}' and data={{line: {line}, suppliers: [...]}} when calling manage_rfq(action='add_supplier').")
 
         rich_prompt = "\n".join(parts)
 
@@ -356,5 +366,515 @@ async def on_rfq_find_suppliers(action: cl.Action):
                 post_web_count = len(_post_line.get("suppliers", []))
                 if post_web_count > pre_web_count:
                     await notify_dashboard("dashboard_refresh")
+    finally:
+        await notify_dashboard("agent_done")
+
+
+@cl.action_callback("rfq_group_items")
+async def on_rfq_group_items(action: cl.Action):
+    """Group confirmed RFQ items by brand/supply chain using LLM."""
+    import json
+    from pathlib import Path
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from config import config
+    from includes.tools.rfq_crud import _update_item_groups_sync
+
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "???")
+    items = payload.get("items", [])
+
+    if len(items) < 2:
+        await cl.Message(
+            content="Need at least 2 confirmed items to group.",
+            author="EagleAgent",
+        ).send()
+        return
+
+    await notify_dashboard("agent_working", {"label": "Grouping items..."})
+
+    try:
+        # Load the grouping prompt
+        from includes.prompts import load_prompt
+        grouping_prompt = load_prompt("rfq_item_grouping")
+
+        # Build the input payload (no existing groups for now)
+        input_payload = json.dumps({
+            "items": items,
+            "existing_groups": None,
+        }, indent=2)
+
+        full_prompt = (
+            f"{grouping_prompt}\n\n"
+            f"---\n\n"
+            f"## Your Task\n\n"
+            f"Group the following items from **{rfq_id}**.\n\n"
+            f"```json\n{input_payload}\n```\n\n"
+            f"Return ONLY the JSON output as specified in section 3."
+        )
+
+        model = ChatGoogleGenerativeAI(
+            model=config.get_agent_model("procurement"),
+            temperature=0.2,
+            max_output_tokens=4096,
+        )
+
+        response = await model.ainvoke(full_prompt)
+        raw_text = response.content
+        if isinstance(raw_text, list):
+            raw_text = "\n".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in raw_text
+            )
+
+        # Try to parse the JSON to validate it
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            cleaned = "\n".join(lines).strip()
+
+        try:
+            result = json.loads(cleaned)
+            # Save to DB
+            user_id = cl.user_session.get("user_id", "unknown")
+            await asyncio.to_thread(_update_item_groups_sync, rfq_id, result, user_id)
+            await notify_dashboard("dashboard_refresh")
+
+            # Format a nice summary for chat
+            groups = result.get("groups", [])
+            ungrouped = result.get("ungrouped", [])
+
+            parts = [f"**Item Grouping for {rfq_id}** — {len(groups)} group(s), {len(ungrouped)} ungrouped\n"]
+            for g in groups:
+                parts.append(f"### {g['id']}: {g['label']}")
+                parts.append(f"Lines: {', '.join(str(l) for l in g['lines'])}")
+                parts.append(f"*{g['reason']}*\n")
+
+            if ungrouped:
+                parts.append(f"### Ungrouped")
+                parts.append(f"Lines: {', '.join(str(l) for l in ungrouped)}")
+                if result.get("ungrouped_reason"):
+                    parts.append(f"*{result['ungrouped_reason']}*")
+
+            parts.append(f"\n<details><summary>Raw JSON</summary>\n\n```json\n{json.dumps(result, indent=2)}\n```\n</details>")
+
+            await cl.Message(
+                content="\n".join(parts),
+                author="EagleAgent",
+            ).send()
+        except json.JSONDecodeError:
+            # If we can't parse, just show the raw response
+            await cl.Message(
+                content=f"**Item Grouping for {rfq_id}** (raw response):\n\n{raw_text}",
+                author="EagleAgent",
+            ).send()
+    except Exception as e:
+        logger.exception(f"Error grouping items for {rfq_id}")
+        await cl.Message(
+            content=f"Error grouping items: {e}",
+            author="EagleAgent",
+        ).send()
+    finally:
+        await notify_dashboard("agent_done")
+
+
+@cl.action_callback("rfq_find_all_suppliers")
+async def on_rfq_find_all_suppliers(action: cl.Action):
+    """Handle batch Find Suppliers for all confirmed items on an RFQ.
+
+    Workflow:
+      Phase 1 — Run item grouping (LLM) to identify brand/supply-chain groups.
+      Phase 2 — Search internal DB for suppliers for ALL confirmed items.
+      Phase 3 — Route to ResearchAgent for web search:
+                - One search per group (results shared across group lines).
+                - One search per ungrouped item.
+    """
+    import json
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from config import config
+    from includes.tools.product_tools import _find_purchase_history_for_part
+    from includes.tools.rfq_crud import _update_item_groups_sync
+    from includes.prompts import load_prompt
+
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "???")
+    confirmed_items = payload.get("items", [])
+
+    if not confirmed_items:
+        await cl.Message(
+            content="No confirmed items to find suppliers for.",
+            author="EagleAgent",
+        ).send()
+        return
+
+    await notify_dashboard("agent_working", {"label": "Phase 1/3: Grouping items..."})
+
+    try:
+        # ================================================================
+        # Phase 1: Item grouping (LLM) — identify brand/supply-chain groups
+        # ================================================================
+        await cl.Message(
+            content=f"**Phase 1/3** — Grouping {len(confirmed_items)} confirmed item(s) by brand/supply chain...",
+            author="EagleAgent",
+        ).send()
+
+        groups_result = None
+        if len(confirmed_items) >= 2:
+            grouping_prompt = load_prompt("rfq_item_grouping")
+            grouping_items = [
+                {
+                    "line": i["line"],
+                    "input_description": i.get("description", ""),
+                    "part_number": i.get("part_number", ""),
+                    "brand": i.get("brand", ""),
+                }
+                for i in confirmed_items
+            ]
+            input_payload = json.dumps({
+                "items": grouping_items,
+                "existing_groups": None,
+            }, indent=2)
+
+            full_prompt = (
+                f"{grouping_prompt}\n\n"
+                f"---\n\n"
+                f"## Your Task\n\n"
+                f"Group the following items from **{rfq_id}**.\n\n"
+                f"```json\n{input_payload}\n```\n\n"
+                f"Return ONLY the JSON output as specified in section 3."
+            )
+
+            model = ChatGoogleGenerativeAI(
+                model=config.get_agent_model("procurement"),
+                temperature=0.2,
+                max_output_tokens=4096,
+            )
+
+            try:
+                response = await model.ainvoke(full_prompt)
+                raw_text = response.content
+                if isinstance(raw_text, list):
+                    raw_text = "\n".join(
+                        part.get("text", "") if isinstance(part, dict) else str(part)
+                        for part in raw_text
+                    )
+                cleaned = raw_text.strip()
+                if cleaned.startswith("```"):
+                    lines = cleaned.split("\n")
+                    lines = [l for l in lines if not l.strip().startswith("```")]
+                    cleaned = "\n".join(lines).strip()
+
+                groups_result = json.loads(cleaned)
+
+                # Save groups to DB
+                user_id = cl.user_session.get("user_id", "unknown")
+                await asyncio.to_thread(_update_item_groups_sync, rfq_id, groups_result, user_id)
+                await notify_dashboard("dashboard_refresh")
+
+                n_groups = len(groups_result.get("groups", []))
+                n_ungrouped = len(groups_result.get("ungrouped", []))
+                await cl.Message(
+                    content=f"Grouped into **{n_groups}** group(s), **{n_ungrouped}** ungrouped. Now checking our records...",
+                    author="EagleAgent",
+                ).send()
+            except Exception as e:
+                logger.warning(f"Grouping failed, treating all items as ungrouped: {e}")
+                groups_result = None
+        else:
+            await cl.Message(
+                content=f"Only 1 confirmed item, skipping grouping. Now checking our records...",
+                author="EagleAgent",
+            ).send()
+
+        # ================================================================
+        # Phase 2: Internal DB search — batch across ALL confirmed items
+        # ================================================================
+        await notify_dashboard("agent_working", {"label": f"Phase 2/3: Checking records ({len(confirmed_items)} items)..."})
+        await cl.Message(
+            content=f"**Phase 2/3** — Searching our internal records for {len(confirmed_items)} confirmed item(s)...",
+            author="EagleAgent",
+        ).send()
+
+        total_internal = 0
+        items_with_context = []  # enriched items for later phases
+        # Track suppliers found per line for cross-apply in Phase 2.5
+        suppliers_by_line = {}  # line -> list of supplier dicts
+
+        for item in confirmed_items:
+            line = item.get("line")
+            part_number = item.get("part_number", "")
+            existing = item.get("existing_suppliers", [])
+            existing_names_lower = {n.lower() for n in existing}
+            internal_suppliers = []
+
+            if part_number:
+                try:
+                    ph_rows = await asyncio.to_thread(_find_purchase_history_for_part, part_number, 20)
+                    for row in ph_rows:
+                        if row["name"].lower() not in existing_names_lower:
+                            sup_entry = {
+                                "supplier_id": row["supplier_id"],
+                                "name": row["name"],
+                                "contacts": row["contacts"],
+                                "status": "candidate",
+                                "price_type": "previous_purchase",
+                                "price": row["price"],
+                                "purchase_ref": {
+                                    "doc_number": row["doc_number"],
+                                    "date": row["date"],
+                                    "order_count": row["order_count"],
+                                },
+                            }
+                            internal_suppliers.append(sup_entry)
+                            existing_names_lower.add(row["name"].lower())
+                except Exception as e:
+                    logger.warning(f"Phase 2 DB search failed for line {line}: {e}")
+
+            # Add internal suppliers to the RFQ
+            if internal_suppliers:
+                user_id = cl.user_session.get("user_id", "unknown")
+                await asyncio.to_thread(
+                    _add_supplier_sync, rfq_id,
+                    {"line": line, "suppliers": internal_suppliers},
+                    user_id,
+                )
+                total_internal += len(internal_suppliers)
+
+            suppliers_by_line[line] = internal_suppliers
+
+            # Build enriched item for later phases
+            all_existing = list(existing) + [s["name"] for s in internal_suppliers]
+            items_with_context.append({
+                **item,
+                "existing_suppliers": all_existing,
+            })
+
+        if total_internal > 0:
+            await notify_dashboard("dashboard_refresh")
+            await cl.Message(
+                content=f"Found **{total_internal}** supplier(s) from our records. Now cross-applying within groups...",
+                author="EagleAgent",
+            ).send()
+        else:
+            await cl.Message(
+                content=f"No matching suppliers in our records. Skipping cross-apply, moving to web search...",
+                author="EagleAgent",
+            ).send()
+
+        # ================================================================
+        # Phase 2.5: Cross-apply suppliers within groups
+        # ================================================================
+        # Any supplier found for one item in a group likely supplies
+        # all items in that group. Spread each group's unique suppliers
+        # to every line in the group that doesn't already have them.
+        # We write directly to the DB, bypassing _add_supplier_sync to
+        # avoid _enrich_supplier_pricing looking up incorrect transaction
+        # history for a different product.
+        total_cross = 0
+        if groups_result and total_internal > 0:
+            await notify_dashboard("agent_working", {"label": "Phase 2.5: Cross-applying within groups..."})
+            items_by_line_ctx = {i["line"]: i for i in items_with_context}
+            for g in groups_result.get("groups", []):
+                group_lines = g.get("lines", [])
+                if len(group_lines) < 2:
+                    continue
+
+                # Collect all unique suppliers across the group (keyed by name)
+                group_suppliers = {}  # name_lower -> supplier entry (clean)
+                for gl in group_lines:
+                    for sup in suppliers_by_line.get(gl, []):
+                        key = sup["name"].lower()
+                        if key not in group_suppliers:
+                            group_suppliers[key] = {
+                                "supplier_id": sup.get("supplier_id"),
+                                "name": sup["name"],
+                                "contacts": sup.get("contacts", []),
+                                "status": "candidate",
+                                "price_type": "candidate",
+                                "notes": "Cross-applied from group (supplier has history with other items in this group)",
+                            }
+
+                if not group_suppliers:
+                    continue
+
+                # For each line in the group, add any suppliers it doesn't have yet
+                for gl in group_lines:
+                    existing_on_line = {s["name"].lower() for s in suppliers_by_line.get(gl, [])}
+                    # Also include suppliers the line already had before this run
+                    item_ctx = items_by_line_ctx.get(gl)
+                    if item_ctx:
+                        existing_on_line.update(n.lower() for n in item_ctx.get("existing_suppliers", []))
+
+                    to_add = [
+                        s for name_lower, s in group_suppliers.items()
+                        if name_lower not in existing_on_line
+                    ]
+                    if to_add:
+                        await asyncio.to_thread(
+                            _cross_apply_suppliers_sync, rfq_id, gl, to_add,
+                        )
+                        total_cross += len(to_add)
+                        # Update the enriched context so Phase 3 knows about them
+                        if item_ctx:
+                            item_ctx["existing_suppliers"] = list(item_ctx["existing_suppliers"]) + [s["name"] for s in to_add]
+
+            if total_cross > 0:
+                await notify_dashboard("dashboard_refresh")
+                await cl.Message(
+                    content=f"Cross-applied **{total_cross}** supplier(s) within groups. Now searching the web...",
+                    author="EagleAgent",
+                ).send()
+            else:
+                await cl.Message(
+                    content=f"No additional cross-apply needed. Now searching the web...",
+                    author="EagleAgent",
+                ).send()
+
+        # ================================================================
+        # Phase 3: Web search via ResearchAgent — one call per group/item
+        # ================================================================
+        # Instead of one big prompt (agent ignores grouping), we loop in
+        # Python: one agent call per group + one per ungrouped item.
+        # This guarantees exactly the right number of web searches.
+
+        items_by_line = {i["line"]: i for i in items_with_context}
+        find_skill = load_prompt("rfq_find_suppliers")
+
+        # Collect search tasks: list of (label, short_desc, lines, prompt)
+        search_tasks: list[tuple[str, str, list[int], str]] = []
+        grouped_lines: set[int] = set()
+
+        if groups_result:
+            for g in groups_result.get("groups", []):
+                group_lines = g.get("lines", [])
+                grouped_lines.update(group_lines)
+                group_items_full = [items_by_line[l] for l in group_lines if l in items_by_line]
+                if not group_items_full:
+                    continue
+
+                all_existing_for_group: set[str] = set()
+                for gi in group_items_full:
+                    all_existing_for_group.update(gi.get("existing_suppliers", []))
+
+                sample = group_items_full[:3]
+                sample_desc = "; ".join(
+                    f"{s.get('part_number', '')} {s.get('description', '')}".strip()
+                    for s in sample
+                )
+
+                parts = [f"research_suppliers"]
+                parts.append(f"Find web suppliers for a group of {len(group_lines)} related items on {rfq_id}.")
+                parts.append(f"Group: {g['label']} ({g['reason']})")
+                parts.append(f"Sample items: {sample_desc}")
+                if group_items_full[0].get("brand"):
+                    parts.append(f"Brand: {group_items_full[0]['brand']}")
+                if all_existing_for_group:
+                    parts.append(f"Already have these suppliers (do NOT repeat them): {', '.join(sorted(all_existing_for_group))}")
+                parts.append("")
+                parts.append(find_skill)
+                parts.append("")
+                # Tell the agent which lines to add suppliers to
+                lines_str = ", ".join(str(l) for l in group_lines)
+                parts.append(f"CRITICAL: Add the SAME suppliers to ALL of these lines: {lines_str}")
+                parts.append(f"Call manage_rfq(action='add_supplier', rfq_id='{rfq_id}', data={{line: N, suppliers: [...]}}) once per line.")
+
+                search_tasks.append((
+                    g["label"],
+                    f"group {g['id']} ({g['label'][:40]})",
+                    group_lines,
+                    "\n".join(parts),
+                ))
+
+            for line_num in groups_result.get("ungrouped", []):
+                if line_num in items_by_line:
+                    ui = items_by_line[line_num]
+                    _desc = ui.get("description", "")
+                    parts = [f"research_suppliers"]
+                    parts.append(f"Find web suppliers for line {line_num} of {rfq_id}.")
+                    parts.append(f"Product description: {_desc}")
+                    if ui.get("part_number"):
+                        parts.append(f"Part number: {ui['part_number']}")
+                    if ui.get("brand"):
+                        parts.append(f"Brand: {ui['brand']}")
+                    if ui.get("quantity"):
+                        parts.append(f"Quantity needed: {ui['quantity']} {ui.get('uom', 'ea')}")
+                    if ui.get("existing_suppliers"):
+                        parts.append(f"Already have these suppliers (do NOT repeat them): {', '.join(ui['existing_suppliers'])}")
+                    parts.append("")
+                    parts.append(find_skill)
+                    parts.append("")
+                    parts.append(f"CRITICAL: Use rfq_id='{rfq_id}' and data={{line: {line_num}, suppliers: [...]}} when calling manage_rfq(action='add_supplier').")
+
+                    search_tasks.append((
+                        _desc[:60] or f"Line {line_num}",
+                        f"line {line_num}",
+                        [line_num],
+                        "\n".join(parts),
+                    ))
+
+        # Any items not covered by groups
+        for item in items_with_context:
+            if item["line"] not in grouped_lines and not any(item["line"] in t[2] for t in search_tasks):
+                _desc = item.get("description", "")
+                line_num = item["line"]
+                parts = [f"research_suppliers"]
+                parts.append(f"Find web suppliers for line {line_num} of {rfq_id}.")
+                parts.append(f"Product description: {_desc}")
+                if item.get("part_number"):
+                    parts.append(f"Part number: {item['part_number']}")
+                if item.get("brand"):
+                    parts.append(f"Brand: {item['brand']}")
+                if item.get("quantity"):
+                    parts.append(f"Quantity needed: {item['quantity']} {item.get('uom', 'ea')}")
+                if item.get("existing_suppliers"):
+                    parts.append(f"Already have these suppliers (do NOT repeat them): {', '.join(item['existing_suppliers'])}")
+                parts.append("")
+                parts.append(find_skill)
+                parts.append("")
+                parts.append(f"CRITICAL: Use rfq_id='{rfq_id}' and data={{line: {line_num}, suppliers: [...]}} when calling manage_rfq(action='add_supplier').")
+
+                search_tasks.append((
+                    _desc[:60] or f"Line {line_num}",
+                    f"line {line_num}",
+                    [line_num],
+                    "\n".join(parts),
+                ))
+
+        total_searches = len(search_tasks)
+        await cl.Message(
+            content=f"**Phase 3/3** — Searching the web: **{total_searches}** search(es) to perform...",
+            author="EagleAgent",
+        ).send()
+
+        from app import main
+        for idx, (label, short_desc, _lines, rich_prompt) in enumerate(search_tasks, 1):
+            await notify_dashboard("agent_working", {
+                "label": f"Web search {idx}/{total_searches}: {label[:50]}..."
+            })
+            await cl.Message(
+                content=f"🔍 Search {idx}/{total_searches}: **{label}** (lines {', '.join(str(l) for l in _lines)})...",
+                author="EagleAgent",
+            ).send()
+
+            synthetic = cl.Message(content=f"Find suppliers for {short_desc} on {rfq_id}")
+            synthetic.author = "User"
+            synthetic.intent_context = rich_prompt
+            await main(synthetic)
+
+            await notify_dashboard("dashboard_refresh")
+
+        # Sort suppliers on all line items
+        await notify_dashboard("agent_working", {"label": "Sorting suppliers..."})
+        from includes.tools.rfq_crud import _sort_rfq_suppliers_sync
+        await asyncio.to_thread(_sort_rfq_suppliers_sync, rfq_id)
+
+        await notify_dashboard("dashboard_refresh")
+
+    except Exception as e:
+        logger.exception(f"Error in batch find suppliers for {rfq_id}")
+        await cl.Message(
+            content=f"Error finding suppliers: {e}",
+            author="EagleAgent",
+        ).send()
     finally:
         await notify_dashboard("agent_done")
