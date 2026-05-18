@@ -214,6 +214,17 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                 )
                 for sup in sup_list:
                     sup["supplier_id"] = str(row.id)
+                    # Pull cached data from DB — avoid re-researching known suppliers
+                    if row.currency and not sup.get("currency"):
+                        sup["currency"] = row.currency
+                    if row.country and not sup.get("country"):
+                        sup["country"] = row.country
+                    if row.supply_chain_position:
+                        scp = row.supply_chain_position
+                        if scp.get("tier") and not sup.get("tier"):
+                            sup["tier"] = scp["tier"]
+                        if scp.get("category") and not sup.get("category"):
+                            sup["category"] = scp["category"]
                     if row.contacts:
                         merge_supplier_contacts(sup, row.contacts)
             else:

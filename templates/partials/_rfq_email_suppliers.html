@@ -1,0 +1,134 @@
+{# Email Suppliers panel — loaded via HTMX into #email-suppliers-panel #}
+{% set supplier_count = suppliers | length %}
+{% if supplier_count == 0 %}
+<div class="p-4 text-sm text-gray-500 dark:text-gray-400 italic">
+    No shortlisted suppliers found. Use the ⭐ Shortlist option on suppliers to include them in email templates.
+</div>
+{% else %}
+<div class="space-y-1">
+    {% for sup in suppliers %}
+    {% set sup_id = loop.index %}
+    <div x-data="{ open: false }" class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+        <!-- Supplier row -->
+        <div @click="open = !open"
+             class="flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors"
+             :class="open ? 'bg-blue-50 dark:bg-blue-950' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'">
+            <svg x-show="open" class="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            <svg x-show="!open" class="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            <span class="font-medium text-sm">{{ sup.name }}</span>
+            <span class="text-xs text-gray-400">{{ sup.line_items | length }} item{{ 's' if sup.line_items | length != 1 else '' }}</span>
+            {% if sup.email %}
+            <span class="ml-auto flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 font-mono">
+                {{ sup.email }}
+                <button @click.stop="navigator.clipboard.writeText('{{ sup.email }}'); $el.querySelector('svg').classList.add('text-green-500'); setTimeout(() => $el.querySelector('svg').classList.remove('text-green-500'), 1000)"
+                        class="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600" title="Copy email">
+                    <svg class="w-3.5 h-3.5 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                </button>
+            </span>
+            {% elif sup.url %}
+            <span class="ml-auto text-xs text-gray-400 italic">No email — check website</span>
+            {% else %}
+            <span class="ml-auto text-xs text-red-400 italic">No contact info</span>
+            {% endif %}
+            {% if sup.country %}
+            <span class="text-xs text-gray-400">({{ sup.country }})</span>
+            {% endif %}
+        </div>
+        <!-- Expanded: email template -->
+        <div x-show="open" x-cloak class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-4">
+            <!-- Contact hints -->
+            <div class="flex items-center gap-4 mb-3 text-xs">
+                {% if sup.email %}
+                <span class="flex items-center gap-1 text-gray-600 dark:text-gray-300">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                    <strong>To:</strong> {{ sup.email }}
+                </span>
+                {% endif %}
+                {% if sup.url %}
+                <a href="{{ sup.url }}" target="_blank" rel="noopener"
+                   class="flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+                    Website
+                </a>
+                {% endif %}
+                {% if not sup.email %}
+                <span class="text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+                    No email on file{% if sup.url %} — check their website for a sales contact{% endif %}
+                </span>
+                {% endif %}
+            </div>
+            <!-- Copyable email content -->
+            <div class="relative group/email" x-data="{ copied: false }">
+                <button @click="
+                    const el = $el.parentElement.querySelector('[data-email-body]');
+                    const range = document.createRange();
+                    range.selectNodeContents(el);
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    document.execCommand('copy');
+                    sel.removeAllRanges();
+                    copied = true;
+                    setTimeout(() => copied = false, 1500);
+                " class="absolute top-2 right-2 text-xs px-2 py-1 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 opacity-0 group-hover/email:opacity-100 transition-opacity">
+                    <span x-text="copied ? 'Copied!' : 'Copy email'"></span>
+                </button>
+                <div data-email-body
+                     class="text-sm leading-relaxed text-gray-800 dark:text-gray-200 font-sans p-4 bg-gray-50 dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700">
+<p><strong>Subject:</strong> Quotation Request: Eagle Exports - {{ rfq.id }}</p>
+
+<p>Dear {{ sup.name }} Sales Team,</p>
+<br>
+<p>I hope this email finds you well.</p>
+<br>
+<p>We are currently reviewing our requirements for upcoming projects and are interested in sourcing several items from your catalog. Could you please provide a formal quotation for the following items:</p>
+<br>
+<table style="border-collapse: collapse; margin: 0;" cellpadding="0" cellspacing="0">
+    <thead>
+        <tr style="background-color: #f3f4f6;">
+            <th style="border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; font-size: 13px;">Item Description</th>
+            <th style="border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; font-size: 13px;">SKU / Part Number</th>
+            <th style="border: 1px solid #d1d5db; padding: 8px 12px; text-align: center; font-size: 13px;">Quantity</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for it in sup.line_items %}
+        <tr>
+            <td style="border: 1px solid #d1d5db; padding: 8px 12px; font-size: 13px;">{{ it.description }}{% if it.brand %} ({{ it.brand }}){% endif %}</td>
+            <td style="border: 1px solid #d1d5db; padding: 8px 12px; font-size: 13px; font-family: monospace;">{{ it.part_number }}</td>
+            <td style="border: 1px solid #d1d5db; padding: 8px 12px; font-size: 13px; text-align: center;">{{ it.quantity }}{{ ' ' + it.uom if it.uom else '' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+<br>
+<p>In your response, please include the following details for each line item:</p>
+<br>
+<ul style="margin: 0; padding-left: 20px;">
+    <li><strong>Unit Pricing</strong> (including any applicable bulk discounts)</li>
+    <li><strong>Stock Availability</strong> (confirming if items are currently in stock)</li>
+    <li><strong>Estimated Lead Time</strong> for delivery to Brisbane, Australia</li>
+    <li><strong>Shipping Costs</strong> and terms</li>
+</ul>
+<br>
+<p>As we are looking to finalize our procurement schedule shortly, I would appreciate it if you could reply with this information as soon as possible.</p>
+<br>
+<p>If you require any further specifications or have any questions regarding this request, please feel free to reach out to me directly.</p>
+<br>
+<p>Thank you for your assistance. I look forward to hearing from you.</p>
+<br>
+<p>Best regards,<br>
+<strong>{{ user.name or user.email }}</strong><br>
+Eagle Exports<br>
+<span style="font-size: 12px; color: #6b7280;">Spare Parts | Industrial | Workshop | Procurement<br>
+Supporting heavy industry since 1993</span><br>
+<span style="font-size: 12px;">P: +61 7 3217 0050 &nbsp;|&nbsp; <a href="https://www.eaglexp.com.au">www.eaglexp.com.au</a></span><br>
+<span style="font-size: 12px;">Unit 1, 18 Gravel Pit Road, Darra, Queensland, 4076</span><br>
+<span style="font-size: 12px;">E: {{ user.email }}</span></p></div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}

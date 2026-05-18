@@ -162,7 +162,7 @@ class TestEnrichIsNew:
             }],
         }
 
-        with patch("includes.dashboard.routes.get_session", return_value=db_session):
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=db_session):
             _enrich_rfq_supplier_contacts(rfq)
 
         assert rfq["items"][0]["suppliers"][0]["is_new"] is False
@@ -188,7 +188,7 @@ class TestEnrichIsNew:
             }],
         }
 
-        with patch("includes.dashboard.routes.get_session", return_value=db_session):
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=db_session):
             _enrich_rfq_supplier_contacts(rfq)
 
         assert rfq["items"][0]["suppliers"][0]["is_new"] is True
@@ -203,7 +203,7 @@ class TestEnrichIsNew:
             }],
         }
 
-        with patch("includes.dashboard.routes.get_session", return_value=db_session):
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=db_session):
             _enrich_rfq_supplier_contacts(rfq)
 
         assert rfq["items"][0]["suppliers"][0]["is_new"] is True
@@ -254,7 +254,7 @@ class TestEnrichIsNew:
             }],
         }
 
-        with patch("includes.dashboard.routes.get_session", return_value=db_session):
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=db_session):
             _enrich_rfq_supplier_contacts(rfq)
 
         sups = rfq["items"][0]["suppliers"]
@@ -282,7 +282,7 @@ class TestEnrichIsNew:
             }],
         }
 
-        with patch("includes.dashboard.routes.get_session", return_value=db_session):
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=db_session):
             _enrich_rfq_supplier_contacts(rfq)
 
         assert rfq["items"][0]["suppliers"][0]["source"] == "web"
@@ -312,7 +312,7 @@ class TestEnrichIsNew:
             }],
         }
 
-        with patch("includes.dashboard.routes.get_session", return_value=db_session):
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=db_session):
             _enrich_rfq_supplier_contacts(rfq)
 
         s = rfq["items"][0]["suppliers"][0]
@@ -341,7 +341,7 @@ class TestEnrichIsNew:
             }],
         }
 
-        with patch("includes.dashboard.routes.get_session", return_value=db_session):
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=db_session):
             _enrich_rfq_supplier_contacts(rfq)
 
         s = rfq["items"][0]["suppliers"][0]

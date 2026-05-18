@@ -21,11 +21,21 @@ _USER_STATS_SQL = text("""
         u.identifier,
         COUNT(DISTINCT t.id)  AS thread_count,
         COUNT(s.id)           AS message_count,
-        MAX(s."createdAt")    AS last_active
+        MAX(s."createdAt")    AS last_active,
+        COALESCE(r.rfq_count, 0) AS rfq_count
     FROM users u
     LEFT JOIN threads t ON t."userId" = u.id
     LEFT JOIN steps s   ON s."threadId" = t.id
-    GROUP BY u.id, u.identifier
+    LEFT JOIN (
+        SELECT email, COUNT(*) AS rfq_count
+        FROM (
+            SELECT created_by AS email FROM rfqs
+            UNION ALL
+            SELECT assigned_to AS email FROM rfqs WHERE assigned_to IS NOT NULL
+        ) rfq_users
+        GROUP BY email
+    ) r ON r.email = u.identifier
+    GROUP BY u.id, u.identifier, r.rfq_count
     ORDER BY last_active DESC NULLS LAST
 """)
 
@@ -78,11 +88,16 @@ def _query_users(session):
     users = []
     for row in rows:
         human, exact = _humanize_timestamp(row.last_active)
+        tc = row.thread_count or 0
+        mc = row.message_count or 0
+        mpt = round(mc / tc, 1) if tc > 0 else 0
         users.append({
             "id": row.id,
             "identifier": row.identifier,
-            "thread_count": row.thread_count,
-            "message_count": row.message_count,
+            "thread_count": tc,
+            "message_count": mc,
+            "msgs_per_thread": mpt,
+            "rfq_count": row.rfq_count,
             "last_active": human,
             "last_active_exact": exact,
         })

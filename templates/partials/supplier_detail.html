@@ -13,15 +13,24 @@
             <h1 class="text-2xl font-bold">{{ supplier.name }}</h1>
             {% if supplier.supply_chain_position and supplier.supply_chain_position.category %}
             {% set scp = supplier.supply_chain_position %}
-            <span class="text-xs px-2 py-0.5 rounded-full
-                {% if scp.tier == 'A' %}bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200
-                {% elif scp.tier == 'B' %}bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
-                {% elif scp.tier == 'C' %}bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200
-                {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}"
-                title="{{ scp.reasoning or '' }}">
-                {% if scp.tier %}Tier {{ scp.tier }} · {% endif %}{{ scp.category }}
-                {% if scp.confidence %}<span class="opacity-60 ml-1">({{ scp.confidence }}/5)</span>{% endif %}
-            </span>
+            <div class="relative" x-data="{ tierTip: false }">
+                <button @click.stop="tierTip = !tierTip"
+                    class="text-xs px-2 py-0.5 rounded-full cursor-pointer
+                    {% if scp.tier == 'A' %}bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200
+                    {% elif scp.tier == 'B' %}bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
+                    {% elif scp.tier == 'C' %}bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200
+                    {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}">
+                    {% if scp.tier %}Tier {{ scp.tier }} · {% endif %}{{ scp.category }}
+                    {% if scp.confidence %}<span class="opacity-60 ml-1">({{ scp.confidence }}/5)</span>{% endif %}
+                </button>
+                {% if scp.reasoning %}
+                <div x-show="tierTip" @click.outside="tierTip = false" x-cloak
+                     class="absolute left-0 top-full mt-1 z-50 w-96 max-w-lg bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-3 text-sm text-gray-700 dark:text-gray-300">
+                    <div class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Tier Reasoning</div>
+                    <p class="leading-relaxed">{{ scp.reasoning }}</p>
+                </div>
+                {% endif %}
+            </div>
             {% endif %}
         </div>
         <div class="flex items-center gap-1 shrink-0">
@@ -73,19 +82,26 @@
                     <dd>
                         {% if supplier.supply_chain_position %}
                         {% set scp = supplier.supply_chain_position %}
-                        <span class="inline-flex items-center gap-1">
-                            <span class="text-xs px-1.5 py-0.5 rounded
+                        <div class="relative inline-flex items-center gap-1" x-data="{ tierTip2: false }">
+                            <button @click.stop="tierTip2 = !tierTip2"
+                                class="text-xs px-1.5 py-0.5 rounded cursor-pointer
                                 {% if scp.tier == 'A' %}bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200
                                 {% elif scp.tier == 'B' %}bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
                                 {% elif scp.tier == 'C' %}bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200
                                 {% elif scp.tier == 'D' %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200
-                                {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}"
-                                title="{{ scp.reasoning or '' }}">
+                                {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}">
                                 Tier {{ scp.tier }}
-                            </span>
-                            {{ scp.category }}
+                            </button>
+                            <span>{{ scp.category }}</span>
                             {% if scp.confidence %}<span class="text-xs text-gray-400">({{ scp.confidence }}/5)</span>{% endif %}
-                        </span>
+                            {% if scp.reasoning %}
+                            <div x-show="tierTip2" @click.outside="tierTip2 = false" x-cloak
+                                 class="absolute left-0 top-full mt-1 z-50 w-96 max-w-lg bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-3 text-sm text-gray-700 dark:text-gray-300">
+                                <div class="font-semibold text-gray-900 dark:text-gray-100 mb-1">Tier Reasoning</div>
+                                <p class="leading-relaxed">{{ scp.reasoning }}</p>
+                            </div>
+                            {% endif %}
+                        </div>
                         {% else %}
                         <span class="text-gray-400">—</span>
                         {% endif %}
