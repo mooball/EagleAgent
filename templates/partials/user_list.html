@@ -8,8 +8,9 @@
             <tr>
                 {{ th("User") }}
                 {{ th("Role") }}
-                {{ th("Threads", "right") }}
-                {{ th("Messages", "right") }}
+                {{ th("RFQs", "right") }}
+                {{ th("Messages (Threads)", "right") }}
+                {{ th("Msgs/Thread", "right") }}
                 {{ th("Last Active") }}
             </tr>
         </thead>
@@ -25,8 +26,12 @@
                 <td class="px-4 py-3">
                     {{ badge(u.role, "purple" if u.role == "Admin" else "gray") }}
                 </td>
-                <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-300">{{ u.thread_count }}</td>
-                <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-300">{{ u.message_count }}</td>
+                <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-300">{{ u.rfq_count }}</td>
+                <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-300">
+                    {{ u.message_count }}
+                    <span class="text-gray-400 dark:text-gray-500">({{ u.thread_count }})</span>
+                </td>
+                <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-300">{{ u.msgs_per_thread }}</td>
                 <td class="px-4 py-3 text-gray-500 dark:text-gray-400"
                     {% if u.last_active_exact %}title="{{ u.last_active_exact }}"{% endif %}>
                     {{ u.last_active }}

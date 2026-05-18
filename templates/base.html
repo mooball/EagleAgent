@@ -535,6 +535,8 @@
                 editingHeader: false,
                 editingItem: null,
                 addingItem: false,
+                showEmailPanel: false,
+                copySupplierModal: { open: false, sourceLine: null, supplierName: '', items: [] },
                 rfqId: '',
                 _allLines: [],
                 _items: {},
@@ -688,6 +690,22 @@
                     this._sendAction({ name: 'rfq_group_items', label: 'Grouping items...', payload: payload });
                 },
                 findAllSuppliers() {
+                    // Legacy: runs both phases sequentially
+                    var payload = this._buildSupplierPayload();
+                    if (!payload) return;
+                    this._sendAction({ name: 'rfq_find_all_suppliers', label: 'Finding suppliers for all confirmed items...', payload: payload });
+                },
+                findPreviousSuppliers() {
+                    var payload = this._buildSupplierPayload();
+                    if (!payload) return;
+                    this._sendAction({ name: 'rfq_find_previous_suppliers', label: 'Searching our records...', payload: payload });
+                },
+                findNewSuppliers() {
+                    var payload = this._buildSupplierPayload();
+                    if (!payload) return;
+                    this._sendAction({ name: 'rfq_find_new_suppliers', label: 'Searching the web for new suppliers...', payload: payload });
+                },
+                _buildSupplierPayload() {
                     var confirmedItems = [];
                     var self = this;
                     this._allLines.forEach(function(line) {
@@ -705,12 +723,96 @@
                             });
                         }
                     });
-                    if (confirmedItems.length < 1) { return; }
-                    var payload = {
-                        rfq_id: this.rfqId,
-                        items: confirmedItems
+                    if (confirmedItems.length < 1) return null;
+                    return { rfq_id: this.rfqId, items: confirmedItems };
+                },
+                shortlistAll() {
+                    var rfqId = this.rfqId;
+                    fetch('/partial/rfqs/' + rfqId + '/shortlist-all', {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                    }).then(function(resp) {
+                        if (resp.ok) {
+                            htmx.ajax('GET', '/partial/rfqs/' + rfqId, { target: '#main-content' });
+                        }
+                    }).catch(function(err) { console.error('[shortlist-all]', err); });
+                },
+                dropSupplierAll(supplierName) {
+                    var rfqId = this.rfqId;
+                    fetch('/partial/rfqs/' + rfqId + '/drop-supplier-all', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        credentials: 'same-origin',
+                        body: 'supplier_name=' + encodeURIComponent(supplierName)
+                    }).then(function(resp) {
+                        if (resp.ok) {
+                            htmx.ajax('GET', '/partial/rfqs/' + rfqId, { target: '#main-content' });
+                        }
+                    }).catch(function(err) { console.error('[drop-supplier-all]', err); });
+                },
+                copySupplierToAll(line, supplierName) {
+                    var rfqId = this.rfqId;
+                    fetch('/partial/rfqs/' + rfqId + '/copy-supplier-to-all', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        credentials: 'same-origin',
+                        body: 'line=' + line + '&supplier_name=' + encodeURIComponent(supplierName)
+                    }).then(function(resp) {
+                        if (resp.ok) {
+                            htmx.ajax('GET', '/partial/rfqs/' + rfqId, { target: '#main-content' });
+                        }
+                    }).catch(function(err) { console.error('[copy-supplier-to-all]', err); });
+                },
+                openCopySupplierModal(sourceLine, supplierName) {
+                    var items = this._items;
+                    var nameLC = supplierName.toLowerCase();
+                    var modalItems = [];
+                    this._allLines.forEach(function(line) {
+                        var item = items[line];
+                        if (!item) return;
+                        var already = false;
+                        (item.suppliers || []).forEach(function(s) {
+                            if ((s.name || '').toLowerCase() === nameLC) already = true;
+                        });
+                        modalItems.push({
+                            line: item.line,
+                            description: item.input_description || '(no description)',
+                            part_number: item.part_number || '',
+                            already: already,
+                            selected: false
+                        });
+                    });
+                    this.copySupplierModal = {
+                        open: true,
+                        sourceLine: sourceLine,
+                        supplierName: supplierName,
+                        items: modalItems
                     };
-                    this._sendAction({ name: 'rfq_find_all_suppliers', label: 'Finding suppliers for all confirmed items...', payload: payload });
+                },
+                selectAllCopyItems() {
+                    this.copySupplierModal.items.forEach(function(item) {
+                        if (!item.already) item.selected = true;
+                    });
+                },
+                submitCopySupplierToItems() {
+                    var modal = this.copySupplierModal;
+                    var targetLines = [];
+                    modal.items.forEach(function(item) {
+                        if (item.selected && !item.already) targetLines.push(item.line);
+                    });
+                    if (targetLines.length === 0) { modal.open = false; return; }
+                    var rfqId = this.rfqId;
+                    fetch('/partial/rfqs/' + rfqId + '/copy-supplier-to-items', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        credentials: 'same-origin',
+                        body: 'line=' + modal.sourceLine + '&supplier_name=' + encodeURIComponent(modal.supplierName) + '&target_lines=' + encodeURIComponent(JSON.stringify(targetLines))
+                    }).then(function(resp) {
+                        if (resp.ok) {
+                            htmx.ajax('GET', '/partial/rfqs/' + rfqId, { target: '#main-content' });
+                        }
+                    }).catch(function(err) { console.error('[copy-supplier-to-items]', err); });
+                    modal.open = false;
                 }
             };
         }

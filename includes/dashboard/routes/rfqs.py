@@ -642,7 +642,7 @@ async def partial_rfq_update_supplier_status(
 
     supplier_name = (form.get("supplier_name") or "").strip()
     new_status = (form.get("status") or "").strip()
-    if not supplier_name or new_status not in ("shortlisted", "selected", "dropped"):
+    if not supplier_name or new_status not in ("shortlisted", "dropped"):
         return HTMLResponse("<p>Invalid parameters.</p>", status_code=400)
 
     from includes.tools.quote_tools import _update_supplier_sync
@@ -655,3 +655,324 @@ async def partial_rfq_update_supplier_status(
         return HTMLResponse(f"<p>{result}</p>", status_code=404)
 
     return Response(status_code=204)
+
+
+@router.post("/partial/rfqs/{rfq_id}/shortlist-all")
+async def partial_rfq_shortlist_all(
+    request: Request, rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Shortlist all non-dropped suppliers across all line items."""
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if not rfq:
+            return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+
+        items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()
+        count = 0
+        for item in items:
+            suppliers = list(item.suppliers or [])
+            changed = False
+            for sup in suppliers:
+                if isinstance(sup, dict) and sup.get("status") not in ("dropped", "shortlisted"):
+                    sup["status"] = "shortlisted"
+                    changed = True
+                    count += 1
+            if changed:
+                item.suppliers = suppliers
+                flag_modified(item, "suppliers")
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    from starlette.responses import Response
+    return Response(status_code=204)
+
+
+@router.post("/partial/rfqs/{rfq_id}/drop-supplier-all")
+async def partial_rfq_drop_supplier_all(
+    request: Request, rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Drop a supplier from all line items on the RFQ."""
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+
+    form = await request.form()
+    supplier_name = (form.get("supplier_name") or "").strip()
+    if not supplier_name:
+        return HTMLResponse("<p>Missing supplier name.</p>", status_code=400)
+
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if not rfq:
+            return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+
+        items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()
+        name_lower = supplier_name.lower()
+        for item in items:
+            suppliers = list(item.suppliers or [])
+            changed = False
+            for sup in suppliers:
+                if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
+                    if sup.get("status") != "dropped":
+                        sup["status"] = "dropped"
+                        changed = True
+            if changed:
+                item.suppliers = suppliers
+                flag_modified(item, "suppliers")
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    from starlette.responses import Response
+    return Response(status_code=204)
+
+
+@router.post("/partial/rfqs/{rfq_id}/copy-supplier-to-all")
+async def partial_rfq_copy_supplier_to_all(
+    request: Request, rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Copy a supplier from one line item to all other items (skip duplicates)."""
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+
+    form = await request.form()
+    try:
+        source_line = int(form.get("line", 0))
+    except (TypeError, ValueError):
+        return HTMLResponse("<p>Invalid line number.</p>", status_code=400)
+
+    supplier_name = (form.get("supplier_name") or "").strip()
+    if not supplier_name:
+        return HTMLResponse("<p>Missing supplier name.</p>", status_code=400)
+
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if not rfq:
+            return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+
+        items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()
+
+        # Find the source supplier dict
+        source_sup = None
+        name_lower = supplier_name.lower()
+        for item in items:
+            if item.line == source_line:
+                for sup in (item.suppliers or []):
+                    if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
+                        source_sup = sup
+                        break
+                break
+
+        if not source_sup:
+            return HTMLResponse("<p>Supplier not found on source item.</p>", status_code=404)
+
+        # Copy to all other items (skip if already present)
+        for item in items:
+            if item.line == source_line:
+                continue
+            suppliers = list(item.suppliers or [])
+            already_present = any(
+                isinstance(s, dict) and (s.get("name") or "").lower() == name_lower
+                for s in suppliers
+            )
+            if already_present:
+                continue
+            # Create a fresh copy without item-specific pricing
+            new_sup = {
+                "name": source_sup.get("name", ""),
+                "status": "shortlisted",
+                "supplier_id": source_sup.get("supplier_id"),
+                "contacts": source_sup.get("contacts", []),
+                "country": source_sup.get("country"),
+                "currency": source_sup.get("currency"),
+                "tier": source_sup.get("tier"),
+                "category": source_sup.get("category"),
+                "source": source_sup.get("source"),
+                "is_new": source_sup.get("is_new", False),
+                "price": None,
+                "price_type": None,
+                "lead_time": source_sup.get("lead_time"),
+                "notes": None,
+            }
+            suppliers.append(new_sup)
+            item.suppliers = suppliers
+            flag_modified(item, "suppliers")
+
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    from starlette.responses import Response
+    return Response(status_code=204)
+
+
+@router.post("/partial/rfqs/{rfq_id}/copy-supplier-to-items")
+async def partial_rfq_copy_supplier_to_items(
+    request: Request, rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Copy a supplier to specific line items (skip duplicates)."""
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+    import json as _json
+
+    form = await request.form()
+    try:
+        source_line = int(form.get("line", 0))
+    except (TypeError, ValueError):
+        return HTMLResponse("<p>Invalid line number.</p>", status_code=400)
+
+    supplier_name = (form.get("supplier_name") or "").strip()
+    if not supplier_name:
+        return HTMLResponse("<p>Missing supplier name.</p>", status_code=400)
+
+    # Target lines as JSON array or comma-separated
+    target_lines_raw = form.get("target_lines", "")
+    try:
+        target_lines = _json.loads(target_lines_raw)
+    except (ValueError, TypeError):
+        target_lines = [int(x.strip()) for x in target_lines_raw.split(",") if x.strip()]
+
+    if not target_lines:
+        return HTMLResponse("<p>No target items specified.</p>", status_code=400)
+
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if not rfq:
+            return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+
+        items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()
+
+        # Find the source supplier dict
+        source_sup = None
+        name_lower = supplier_name.lower()
+        for item in items:
+            if item.line == source_line:
+                for sup in (item.suppliers or []):
+                    if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
+                        source_sup = sup
+                        break
+                break
+
+        if not source_sup:
+            return HTMLResponse("<p>Supplier not found on source item.</p>", status_code=404)
+
+        target_set = set(target_lines)
+        for item in items:
+            if item.line not in target_set or item.line == source_line:
+                continue
+            suppliers = list(item.suppliers or [])
+            already_present = any(
+                isinstance(s, dict) and (s.get("name") or "").lower() == name_lower
+                for s in suppliers
+            )
+            if already_present:
+                continue
+            new_sup = {
+                "name": source_sup.get("name", ""),
+                "status": "shortlisted",
+                "supplier_id": source_sup.get("supplier_id"),
+                "contacts": source_sup.get("contacts", []),
+                "country": source_sup.get("country"),
+                "currency": source_sup.get("currency"),
+                "tier": source_sup.get("tier"),
+                "category": source_sup.get("category"),
+                "source": source_sup.get("source"),
+                "is_new": source_sup.get("is_new", False),
+                "price": None,
+                "price_type": None,
+                "lead_time": source_sup.get("lead_time"),
+                "notes": None,
+            }
+            suppliers.append(new_sup)
+            item.suppliers = suppliers
+            flag_modified(item, "suppliers")
+
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    from starlette.responses import Response
+    return Response(status_code=204)
+
+
+@router.get("/partial/rfqs/{rfq_id}/email-suppliers")
+async def partial_rfq_email_suppliers(
+    request: Request, rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Generate email templates for all active suppliers on the RFQ."""
+    from includes.tools.quote_tools import _get_rfq_dict_sync
+
+    rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+    if not rfq:
+        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+    _enrich_rfq_supplier_contacts(rfq)
+
+    # Pivot: group items by supplier (only shortlisted suppliers)
+    supplier_map: dict[str, dict] = {}  # key (lower name) -> supplier info + items
+    for item in rfq.get("items", []):
+        for sup in item.get("suppliers", []):
+            if sup.get("status") != "shortlisted":
+                continue
+            name = (sup.get("name") or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key not in supplier_map:
+                # Extract best email from contacts
+                email = None
+                url = None
+                contacts = sup.get("contacts") or []
+                for c in contacts:
+                    if isinstance(c, dict):
+                        if c.get("email") and not email:
+                            email = c["email"]
+                        if c.get("url") and not url:
+                            url = c["url"]
+                supplier_map[key] = {
+                    "name": name,
+                    "email": email,
+                    "url": url,
+                    "country": sup.get("country"),
+                    "currency": sup.get("currency"),
+                    "line_items": [],
+                }
+            supplier_map[key]["line_items"].append({
+                "line": item.get("line"),
+                "description": item.get("input_description") or "—",
+                "part_number": item.get("part_number") or "—",
+                "brand": item.get("brand") or "",
+                "quantity": item.get("quantity") or "—",
+                "uom": item.get("uom") or "",
+            })
+
+    suppliers = sorted(supplier_map.values(), key=lambda s: s["name"].lower())
+
+    return templates.TemplateResponse(request, "partials/_rfq_email_suppliers.html", {
+        "user": user,
+        "rfq": rfq,
+        "suppliers": suppliers,
+    })
