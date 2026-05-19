@@ -500,7 +500,10 @@ class TestRFQThreadAPI:
             session = MagicMock()
             existing = MagicMock()
             existing.thread_id = "old-thread"
-            session.query.return_value.filter.return_value.first.return_value = existing
+            existing.rfq_number = "RFQ-2026-0001"
+            # First query: check if thread is already bound (returns None — not bound)
+            # Second query: check if RFQ already has a binding (returns existing)
+            session.query.return_value.filter.return_value.first.side_effect = [None, existing]
             mock_gs.return_value = session
 
             resp = client.post("/api/rfq-thread", json={
@@ -511,6 +514,26 @@ class TestRFQThreadAPI:
             assert existing.thread_id == "new-thread-456"
             session.add.assert_not_called()
             session.commit.assert_called_once()
+
+    def test_post_rfq_thread_rejects_thread_bound_to_other_rfq(self, client):
+        """A thread already bound to a different RFQ must not be hijacked."""
+        _login(client)
+        with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
+            session = MagicMock()
+            other_binding = MagicMock()
+            other_binding.rfq_number = "RFQ-2026-0099"
+            # First query: thread is already bound to a different RFQ
+            session.query.return_value.filter.return_value.first.return_value = other_binding
+            mock_gs.return_value = session
+
+            resp = client.post("/api/rfq-thread", json={
+                "rfq_id": "RFQ-2026-0001",
+                "thread_id": "already-bound-thread",
+            })
+            assert resp.status_code == 409
+            assert resp.json()["error"] == "thread_already_bound"
+            assert resp.json()["bound_to"] == "RFQ-2026-0099"
+            session.commit.assert_not_called()
 
     def test_post_rfq_thread_requires_both_fields(self, client):
         _login(client)

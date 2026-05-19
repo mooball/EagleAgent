@@ -92,6 +92,18 @@ async def bind_rfq_thread(request: Request, user: dict = Depends(require_user)):
 
     session = _helpers.get_session()
     try:
+        # Check if this thread is already bound to a DIFFERENT RFQ for this user.
+        # Never hijack a thread that belongs to another RFQ.
+        thread_bound = session.query(RFQThread).filter(
+            RFQThread.thread_id == thread_id,
+            RFQThread.user_email == user["email"],
+        ).first()
+        if thread_bound and thread_bound.rfq_number != rfq_id:
+            return JSONResponse(
+                {"error": "thread_already_bound", "bound_to": thread_bound.rfq_number},
+                status_code=409,
+            )
+
         existing = session.query(RFQThread).filter(
             RFQThread.rfq_number == rfq_id,
             RFQThread.user_email == user["email"],
