@@ -295,18 +295,41 @@
                                     headers: {'Content-Type': 'application/json'},
                                     credentials: 'same-origin',
                                     body: JSON.stringify({rfq_id: rfqId, thread_id: threadId}),
-                                }).then(() => {
-                                    // Update context so banner reflects the new binding
-                                    this.currentContext.thread_id = threadId;
-                                    this.pushContext();
+                                }).then(resp => {
+                                    if (resp.ok) {
+                                        this.currentContext.thread_id = threadId;
+                                        this._activeThreadRfqId = rfqId;
+                                        this.pushContext();
+                                    }
                                 }).catch(() => {});
                             }
                         }
                         if (event.data?.type === 'thread_id' && event.data.threadId) {
                             // Track the active thread so we don't overwrite on reload
-                            this._activeThreadId = event.data.threadId;
+                            const newThreadId = event.data.threadId;
+                            this._activeThreadId = newThreadId;
                             // Re-push context so the iframe banner updates
                             this.pushContext();
+
+                            // If the RFQ context expected a different thread (stale/deleted),
+                            // rebind to the fresh thread that Chainlit created.
+                            const ctx = this.currentContext;
+                            if (ctx?.view === 'rfq_detail' && ctx?.id && ctx?.thread_id && ctx.thread_id !== newThreadId) {
+                                console.log('[bind] Stale thread detected, rebinding', ctx.id, 'to', newThreadId);
+                                fetch('/api/rfq-thread', {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    credentials: 'same-origin',
+                                    body: JSON.stringify({rfq_id: ctx.id, thread_id: newThreadId}),
+                                }).then(resp => {
+                                    if (resp.ok) {
+                                        this.currentContext.thread_id = newThreadId;
+                                        this._activeThreadRfqId = ctx.id;
+                                        this.pushContext();
+                                    }
+                                }).catch(() => {});
+                            }
+
                             // Auto-bind to RFQ if viewing one without a bound thread
                             this._ensureRfqBound();
                             // Legacy: if _pendingRfqBind is set for a new-RFQ flow
@@ -439,6 +462,8 @@
                                     iframe.src = '/chat/thread/' + newCtx.thread_id;
                                     this._activeThreadId = newCtx.thread_id;
                                 }
+                                // Track which RFQ owns this thread
+                                this._activeThreadRfqId = newCtx.id;
                                 // Auto-open the agent panel
                                 if (this.agentState === 'closed') {
                                     this.agentState = 'panel';
@@ -446,7 +471,13 @@
                             }
                             // No thread bound yet for this RFQ — create one on demand
                             if (newCtx.view === 'rfq_detail' && newCtx.id && !newCtx.thread_id) {
-                                // If we already have an active thread, bind it immediately
+                                // If the active thread belongs to a different RFQ, don't reuse it
+                                if (this._activeThreadId && this._activeThreadRfqId && this._activeThreadRfqId !== newCtx.id) {
+                                    // Start a fresh thread for this new RFQ
+                                    console.log('[bind] Active thread belongs to', this._activeThreadRfqId, '— starting fresh for', newCtx.id);
+                                    this._activeThreadId = null;
+                                    this._activeThreadRfqId = null;
+                                }
                                 if (this._activeThreadId) {
                                     this._ensureRfqBound();
                                 } else {
@@ -518,9 +549,21 @@
                             headers: {'Content-Type': 'application/json'},
                             credentials: 'same-origin',
                             body: JSON.stringify({rfq_id: rfqId, thread_id: threadId}),
-                        }).then(() => {
-                            this.currentContext.thread_id = threadId;
-                            this.pushContext();
+                        }).then(resp => {
+                            if (resp.ok) {
+                                this.currentContext.thread_id = threadId;
+                                this._activeThreadRfqId = rfqId;
+                                this.pushContext();
+                            } else if (resp.status === 409) {
+                                // Thread is already bound to another RFQ — start a fresh thread
+                                console.log('[bind] Thread already bound to another RFQ, starting fresh');
+                                this._activeThreadId = null;
+                                const iframe = document.getElementById('agent-iframe');
+                                if (iframe) {
+                                    iframe.src = '/chat';
+                                }
+                                // The new thread_id message from the iframe will trigger _ensureRfqBound again
+                            }
                         }).catch(() => {});
                     }
                 }

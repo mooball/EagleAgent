@@ -32,8 +32,22 @@ class ProcurementAgent(BaseSubAgent):
     
     async def __call__(self, state: Dict[str, Any], config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
         # Determine if RFQ workflow should be active based on the thread's intent
+        # or the user's current dashboard view (viewing an RFQ detail page)
         intent_context = state.get("intent_context") or ""
         self._rfq_active = any(kw in intent_context for kw in _RFQ_INTENT_KEYWORDS)
+        if not self._rfq_active:
+            # Check if the user is viewing an RFQ in the dashboard context
+            messages = state.get("messages", [])
+            if messages:
+                last_msg = messages[-1]
+                content = last_msg.content if hasattr(last_msg, "content") else ""
+                if isinstance(content, list):
+                    content = " ".join(
+                        p.get("text", "") if isinstance(p, dict) else str(p)
+                        for p in content
+                    )
+                if "rfq_detail" in content or "RFQ-" in content:
+                    self._rfq_active = True
         return await super().__call__(state, config)
 
     def get_tools(self, user_id: str) -> List[BaseTool]:

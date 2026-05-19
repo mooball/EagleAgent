@@ -518,9 +518,13 @@ async def main(message: cl.Message):
     # Gemini requires at least one content part. If a command button was
     # clicked without text, use the command label as the prompt so the LLM
     # can infer intent from conversation history + command name.
+    has_files = bool(message.elements)
     if not message.content or not message.content.strip():
         if message.command:
             message.content = message.command
+        elif has_files:
+            # User uploaded file(s) without text — let processing continue
+            message.content = ""
         else:
             await cl.Message(content="Please enter some text to get started.").send()
             return
