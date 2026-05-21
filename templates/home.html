@@ -15,7 +15,12 @@
         {% endset %}
         {{ tile_card("/suppliers", "/partial/suppliers", "Suppliers",
             "Browse supplier directory, contacts, brands, and purchase history.",
-            supplier_icon, color="blue", stat=stats.suppliers if stats and stats.suppliers else none) }}
+            supplier_icon, color="blue", stat=stats.suppliers if stats and stats.suppliers else none,
+            substats=[
+                ("Categorised", stats.suppliers_categorised, stats.suppliers),
+                ("Notes", stats.suppliers_with_notes, stats.suppliers),
+                ("Embedding", stats.suppliers_with_embedding, stats.suppliers),
+            ] if stats and stats.suppliers else none) }}
 
         {% set product_icon %}
             <svg class="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -24,7 +29,10 @@
         {% endset %}
         {{ tile_card("/products", "/partial/products", "Products",
             "Product catalogue with part numbers, brands, and descriptions.",
-            product_icon, color="green", stat=stats.products if stats and stats.products else none) }}
+            product_icon, color="green", stat=stats.products if stats and stats.products else none,
+            substats=[
+                ("Embedding", stats.products_with_embedding, stats.products),
+            ] if stats and stats.products else none) }}
 
         {% set purchase_icon %}
             <svg class="w-5 h-5 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
