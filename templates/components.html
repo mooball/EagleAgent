@@ -5,7 +5,7 @@
 
 
 {# ── Dashboard Tile Card ─────────────────────────────────────── #}
-{% macro tile_card(href, hx_get, title, description, icon_svg, color="blue", stat=none) %}
+{% macro tile_card(href, hx_get, title, description, icon_svg, color="blue", stat=none, substats=none) %}
 <a href="{{ href }}"
    hx-get="{{ hx_get }}" hx-target="#main-content" hx-push-url="{{ href }}"
    class="block bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6 hover:shadow-md transition-shadow">
@@ -17,7 +17,15 @@
     </div>
     <p class="text-sm text-gray-500 dark:text-gray-400">{{ description }}</p>
     {% if stat is not none %}
-    <p class="mt-3 text-2xl font-bold text-{{ color }}-600 dark:text-{{ color }}-400">{{ stat }}</p>
+    <p class="mt-3 text-2xl font-bold text-{{ color }}-600 dark:text-{{ color }}-400">{{ "{:,}".format(stat) }}</p>
+    {% endif %}
+    {% if substats %}
+    <div class="mt-2 flex flex-wrap gap-x-1 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+        {% for label, value, total in substats %}
+        {% if not loop.first %}<span class="text-gray-300 dark:text-gray-600">·</span>{% endif %}
+        <span>{{ label }}: <span class="font-medium text-gray-700 dark:text-gray-300">{{ "{:,}".format(value) }}</span>/{{ "{:,}".format(total) }}</span>
+        {% endfor %}
+    </div>
     {% endif %}
 </a>
 {% endmacro %}

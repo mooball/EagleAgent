@@ -42,10 +42,18 @@ from .admin import _humanize_timestamp  # noqa: F401
 async def dashboard_home(request: Request, user: dict = Depends(require_user)):
     session = _helpers.get_session()
     try:
+        supplier_total = session.query(func.count(Supplier.id)).scalar()
+        product_total = session.query(func.count(Product.id)).scalar()
         stats = {
-            "suppliers": session.query(func.count(Supplier.id)).scalar(),
-            "products": session.query(func.count(Product.id)).scalar(),
+            "suppliers": supplier_total,
+            "products": product_total,
             "purchases": session.query(func.count(Transaction.id)).scalar(),
+            # Supplier sub-stats
+            "suppliers_categorised": session.query(func.count(Supplier.id)).filter(Supplier.supply_chain_position.isnot(None)).scalar(),
+            "suppliers_with_notes": session.query(func.count(Supplier.id)).filter(Supplier.notes.isnot(None), Supplier.notes != "").scalar(),
+            "suppliers_with_embedding": session.query(func.count(Supplier.id)).filter(Supplier.embedding.isnot(None)).scalar(),
+            # Product sub-stats
+            "products_with_embedding": session.query(func.count(Product.id)).filter(Product.embedding.isnot(None)).scalar(),
         }
     finally:
         session.close()
