@@ -203,12 +203,7 @@ def _command_to_intent_name(command_label: str) -> str | None:
 
 @cl.set_chat_profiles
 async def chat_profile(current_user: cl.User):
-    """Define available chat profiles. Admin users see the Internal Agent profile."""
-    is_admin = (
-        current_user
-        and current_user.identifier.lower() in config.get_admin_emails()
-    )
-
+    """Define available chat profiles."""
     profiles = [
         cl.ChatProfile(
             name="Eagle Agent",
@@ -221,16 +216,12 @@ async def chat_profile(current_user: cl.User):
             markdown_description="Search the web for information and research topics.",
             icon="/public/avatars/EagleAgent.png",
         ),
+        cl.ChatProfile(
+            name="Internal Agent",
+            markdown_description="Search the internal database for products, suppliers, and purchase history.",
+            icon="/public/avatars/EagleAgent.png",
+        ),
     ]
-
-    if is_admin:
-        profiles.append(
-            cl.ChatProfile(
-                name="Internal Agent",
-                markdown_description="Search the internal database for products, suppliers, and purchase history.",
-                icon="/public/avatars/EagleAgent.png",
-            )
-        )
 
     return profiles
 

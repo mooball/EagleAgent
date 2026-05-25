@@ -2,6 +2,8 @@
 
 EagleAgent allows admin users to run registered server-side scripts directly from the chat UI. Scripts run as background processes — the chat remains responsive while they execute.
 
+> **Note:** The `SysAdminAgent` (which provides job management tools) is currently defined but **not wired into any active chat profile graph**. To enable script execution from the chat, `SysAdminAgent` needs to be added as a node in the main graph or given its own chat profile. The infrastructure (job runner, tools, progress messages) is fully implemented and ready.
+
 ## How It Works
 
 1. **Admin asks** to run a task (e.g. "update the product embeddings").
