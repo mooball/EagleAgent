@@ -136,7 +136,10 @@ def _psycopg_dump(database_url: str, output_path: str) -> None:
                     # COPY TO stdout
                     with cur.copy(f"COPY {qualified} TO STDOUT") as copy:
                         for row in copy:
-                            gz.write(row.decode("utf-8") if isinstance(row, bytes) else row)
+                            if isinstance(row, (bytes, memoryview)):
+                                gz.write(bytes(row).decode("utf-8"))
+                            else:
+                                gz.write(row)
 
                     gz.write("\\.\n\n")
 
