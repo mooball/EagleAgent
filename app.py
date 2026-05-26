@@ -241,6 +241,25 @@ async def start():
     # Get authenticated user
     user = cl.user_session.get("user")
     
+    # FIX: Ensure session.user is a PersistedUser so that flush_thread_queues
+    # (called by the emitter on first message) correctly sets userId on the
+    # thread. The upstream Chainlit auth flow can sometimes leave a plain User
+    # on the session if get_user/create_user fails during WebSocket auth.
+    from chainlit.user import PersistedUser
+    from chainlit.data import get_data_layer
+    if user and not isinstance(user, PersistedUser):
+        try:
+            data_layer = get_data_layer()
+            if data_layer:
+                persisted = await data_layer.get_user(user.identifier)
+                if not persisted:
+                    persisted = await data_layer.create_user(user)
+                if persisted:
+                    cl.context.session.user = persisted
+                    user = persisted
+        except Exception as e:
+            logger.warning(f"Failed to upgrade session user to PersistedUser: {e}")
+    
     # Create thread_id (will be managed by Chainlit's data layer once set up)
     thread_id = str(uuid.uuid4())
     cl.user_session.set("thread_id", thread_id)
@@ -334,6 +353,22 @@ async def on_chat_resume(thread: ThreadDict):
     user = cl.user_session.get("user")
     if user:
         cl.user_session.set("user_id", user.identifier)
+
+    # FIX: Ensure session.user is a PersistedUser (same fix as on_chat_start)
+    from chainlit.user import PersistedUser
+    from chainlit.data import get_data_layer
+    if user and not isinstance(user, PersistedUser):
+        try:
+            data_layer = get_data_layer()
+            if data_layer:
+                persisted = await data_layer.get_user(user.identifier)
+                if not persisted:
+                    persisted = await data_layer.create_user(user)
+                if persisted:
+                    cl.context.session.user = persisted
+                    user = persisted
+        except Exception as e:
+            logger.warning(f"Failed to upgrade session user to PersistedUser: {e}")
 
     # Normalize legacy chat profile names (EagleAgent → Eagle Agent, System Admin → Eagle Agent)
     chat_profile_name = cl.user_session.get("chat_profile")
