@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     sqlite3 \
     gosu \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x LTS for MCP servers (npx) and agent-browser
