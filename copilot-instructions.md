@@ -79,9 +79,8 @@ The user authenticates via FastAPI, then the session is injected into Chainlit v
 
 The app offers multiple chat profiles via `@cl.set_chat_profiles`:
 - **Eagle Agent** (default) — Multi-agent graph: Supervisor → GeneralAgent | ProcurementAgent | ResearchAgent
-- **Research Agent** — Standalone research graph (Google Search grounding)
-- **Internal Agent** (admin-only) — Same as Eagle Agent, for internal use
-- **System Admin** (admin-only) — Single-agent SysAdminAgent graph for script management
+- **Research Agent** — Standalone research graph (Google Search grounding, no RFQ tools)
+- **Internal Agent** — Standalone ProcurementAgent graph (DB-only, no web/research/RFQ tools)
 
 ## Multi-Agent Architecture
 
@@ -150,7 +149,7 @@ All sub-agents must extend `BaseSubAgent` (`includes/agents/base.py`). The base 
 
 ## Chainlit (`app.py`)
 
-- `@cl.set_chat_profiles`: Defines available profiles (Eagle Agent, Research Agent, Internal Agent, System Admin).
+- `@cl.set_chat_profiles`: Defines available profiles (Eagle Agent, Research Agent, Internal Agent).
 - `@cl.on_chat_start` / `@cl.on_chat_resume`: Set up thread ID, ensure user profile via `_ensure_user_profile()`, attach action buttons to welcome message.
 - `@cl.action_callback`: Handles action button clicks (`new_conversation`, `delete_all_data`, `confirm_delete_all`, `cancel_delete_all`).
 - `@cl.on_message` (`main()`): Intercepts help keywords via `is_help_request()`, processes file attachments, invokes graph with streaming.
@@ -182,7 +181,7 @@ Actions replace the old `/` slash commands with Chainlit-native action buttons a
 1. In `includes/chat/actions.py`, add a `@register_action(...)` decorated async handler.
 2. In `app.py`, add a `@cl.action_callback("your_action_name")` that calls `dispatch_action("your_action_name")`.
 3. Optionally add a LangGraph tool wrapper in `includes/tools/action_tools.py`.
-4. If admin-only, add the tool name to `ADMIN_ONLY_TOOLS` in `app.py`.
+4. If admin-only, add the tool name to `ADMIN_ONLY_TOOLS` in `includes/graph.py`.
 
 ## Prompts (`includes/prompts.py`)
 - `build_system_prompt()` is the primary prompt builder — dynamic, role-aware, profile-aware.

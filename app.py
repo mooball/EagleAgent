@@ -203,12 +203,7 @@ def _command_to_intent_name(command_label: str) -> str | None:
 
 @cl.set_chat_profiles
 async def chat_profile(current_user: cl.User):
-    """Define available chat profiles. Admin users see the Internal Agent profile."""
-    is_admin = (
-        current_user
-        and current_user.identifier.lower() in config.get_admin_emails()
-    )
-
+    """Define available chat profiles."""
     profiles = [
         cl.ChatProfile(
             name="Eagle Agent",
@@ -221,16 +216,12 @@ async def chat_profile(current_user: cl.User):
             markdown_description="Search the web for information and research topics.",
             icon="/public/avatars/EagleAgent.png",
         ),
+        cl.ChatProfile(
+            name="Internal Agent",
+            markdown_description="Search the internal database for products, suppliers, and purchase history.",
+            icon="/public/avatars/EagleAgent.png",
+        ),
     ]
-
-    if is_admin:
-        profiles.append(
-            cl.ChatProfile(
-                name="Internal Agent",
-                markdown_description="Search the internal database for products, suppliers, and purchase history.",
-                icon="/public/avatars/EagleAgent.png",
-            )
-        )
 
     return profiles
 
@@ -249,6 +240,25 @@ async def start():
     
     # Get authenticated user
     user = cl.user_session.get("user")
+    
+    # FIX: Ensure session.user is a PersistedUser so that flush_thread_queues
+    # (called by the emitter on first message) correctly sets userId on the
+    # thread. The upstream Chainlit auth flow can sometimes leave a plain User
+    # on the session if get_user/create_user fails during WebSocket auth.
+    from chainlit.user import PersistedUser
+    from chainlit.data import get_data_layer
+    if user and not isinstance(user, PersistedUser):
+        try:
+            data_layer = get_data_layer()
+            if data_layer:
+                persisted = await data_layer.get_user(user.identifier)
+                if not persisted:
+                    persisted = await data_layer.create_user(user)
+                if persisted:
+                    cl.context.session.user = persisted
+                    user = persisted
+        except Exception as e:
+            logger.warning(f"Failed to upgrade session user to PersistedUser: {e}")
     
     # Create thread_id (will be managed by Chainlit's data layer once set up)
     thread_id = str(uuid.uuid4())
@@ -343,6 +353,22 @@ async def on_chat_resume(thread: ThreadDict):
     user = cl.user_session.get("user")
     if user:
         cl.user_session.set("user_id", user.identifier)
+
+    # FIX: Ensure session.user is a PersistedUser (same fix as on_chat_start)
+    from chainlit.user import PersistedUser
+    from chainlit.data import get_data_layer
+    if user and not isinstance(user, PersistedUser):
+        try:
+            data_layer = get_data_layer()
+            if data_layer:
+                persisted = await data_layer.get_user(user.identifier)
+                if not persisted:
+                    persisted = await data_layer.create_user(user)
+                if persisted:
+                    cl.context.session.user = persisted
+                    user = persisted
+        except Exception as e:
+            logger.warning(f"Failed to upgrade session user to PersistedUser: {e}")
 
     # Normalize legacy chat profile names (EagleAgent → Eagle Agent, System Admin → Eagle Agent)
     chat_profile_name = cl.user_session.get("chat_profile")

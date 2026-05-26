@@ -25,8 +25,8 @@ EagleAgent now supports connecting to MCP servers to extend its capabilities wit
    - Interpolates environment variables
    - Returns config dict compatible with `MultiServerMCPClient`
 
-2. **MCP Client Initialization** ([app.py](app.py))
-   - Initializes `MultiServerMCPClient` at app startup
+2. **MCP Client Initialization** ([includes/graph.py](includes/graph.py))
+   - Initializes `MultiServerMCPClient` in `setup_globals()`
    - Global `mcp_client` variable (similar to `store`)
    - Graceful error handling if initialization fails
 
