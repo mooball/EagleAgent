@@ -73,6 +73,7 @@ class Product(Base):
     supplier_code = Column(String, nullable=True)
     description = Column(Text, nullable=True)
     brand = Column(String, nullable=True)
+    brand_id = Column(UUID(as_uuid=True), ForeignKey('brands.id'), nullable=True, index=True)
     weight_kg = Column(Float, nullable=True)
     length_m = Column(Float, nullable=True)
     product_type = Column(String, nullable=True)
