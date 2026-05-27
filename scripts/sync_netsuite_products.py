@@ -25,7 +25,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from config.settings import Config
-from includes.dashboard.models import Product
+from includes.dashboard.models import Brand, Product
 from includes.netsuite.client import NetSuiteClient
 from includes.netsuite.queries import products_updated_since
 
@@ -84,11 +84,17 @@ def map_item_to_product(row: dict) -> dict:
     if description and isinstance(description, str):
         description = description.strip()
 
+    # custitem_brand is the NetSuite internal ID for the brand record
+    netsuite_brand_id = row.get("custitem_brand")
+    if netsuite_brand_id:
+        netsuite_brand_id = str(netsuite_brand_id).strip()
+
     return {
         "netsuite_id": str(row.get("id", "")).strip(),
         "part_number": (row.get("itemid") or "").strip(),
         "description": description or None,
         "brand": row.get("brand_name"),
+        "netsuite_brand_id": netsuite_brand_id,
         "weight_kg": safe_float(row.get("weight")),
         "netsuite_last_modified": parse_netsuite_date(row.get("lastmodifieddate")),
     }
@@ -96,7 +102,7 @@ def map_item_to_product(row: dict) -> dict:
 
 # Fields that NetSuite owns — these get overwritten on sync
 NETSUITE_OWNED_FIELDS = {
-    "part_number", "description", "brand", "weight_kg", "netsuite_last_modified",
+    "part_number", "description", "brand", "brand_id", "weight_kg", "netsuite_last_modified",
 }
 
 
@@ -165,6 +171,13 @@ def main():
     fetched = 0
 
     with Session() as session:
+        # Build a lookup cache: NetSuite brand ID → local Brand UUID
+        brand_lookup = {}
+        for b in session.query(Brand).filter(Brand.duplicate_of.is_(None)).all():
+            if b.netsuite_id:
+                brand_lookup[b.netsuite_id] = b.id
+        print(f"  Loaded {len(brand_lookup)} brand mappings.")
+
         for page in client.suiteql_iter(query):
             page = [{k: v for k, v in row.items() if k != "links"} for row in page]
             fetched += len(page)
@@ -177,6 +190,10 @@ def main():
                     skipped += 1
                     processed += 1
                     continue
+
+                # Resolve brand_id from NetSuite brand ID
+                netsuite_brand_id = mapped.pop("netsuite_brand_id", None)
+                mapped["brand_id"] = brand_lookup.get(netsuite_brand_id) if netsuite_brand_id else None
 
                 # Look up existing product by netsuite_id
                 existing = session.query(Product).filter(Product.netsuite_id == netsuite_id).first()
@@ -203,6 +220,7 @@ def main():
                         part_number=mapped["part_number"],
                         description=mapped["description"],
                         brand=mapped["brand"],
+                        brand_id=mapped["brand_id"],
                         weight_kg=mapped["weight_kg"],
                         netsuite_last_modified=mapped["netsuite_last_modified"],
                     )

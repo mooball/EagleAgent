@@ -7,6 +7,9 @@ Orchestrates a full nightly sync from NetSuite in dependency order:
   3. Suppliers    (--since 2 days — no --resume available)
   4. Sales Orders (--resume)
   5. Quotes       (--resume)
+  6. Link Supplier Brands (--since 2d — post-sync linking)
+  7. Categorize Suppliers (--limit 100 — batch of uncategorized)
+  8. Generate Supplier Notes (--limit 50 — research missing notes)
 
 Usage:
   uv run python -m scripts.nightly_sync
@@ -51,6 +54,24 @@ STEPS = [
         "module": "scripts.sync_netsuite_quotes",
         "args": ["--resume"],
         "description": "Sync quotes (resume from last sync)",
+    },
+    {
+        "name": "link_supplier_brands",
+        "module": "scripts.link_supplier_brands",
+        "args": ["--since", "2d"],
+        "description": "Link suppliers to brands from recent transactions",
+    },
+    {
+        "name": "categorize_suppliers",
+        "module": "scripts.categorize_suppliers_job",
+        "args": ["--limit", "100"],
+        "description": "Categorize uncategorized suppliers (batch of 100)",
+    },
+    {
+        "name": "generate_supplier_notes",
+        "module": "scripts.generate_supplier_notes",
+        "args": ["--limit", "100"],
+        "description": "Research and generate notes for suppliers missing them (batch of 100)",
     },
 ]
 

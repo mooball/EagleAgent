@@ -21,6 +21,7 @@ class Supplier(Base):
     country = Column(String, nullable=True)
     hubspot_id = Column(String, unique=True, nullable=True)
     notes = Column(Text, nullable=True)
+    notes_updated_at = Column(DateTime(timezone=True), nullable=True)
     contacts = Column(JSONB, nullable=True)
     comments = Column(JSONB, nullable=True)                    # [{author, comment, ts}]
     supply_chain_position = Column(JSONB, nullable=True)       # {category, tier, confidence, reasoning}
@@ -30,6 +31,8 @@ class Supplier(Base):
     modified_at = Column(DateTime(timezone=True), nullable=True)
     modified_by = Column(String, nullable=True)                # "user:tom", "netsuite", "ai:categorizer"
     source = Column(String(20), nullable=True, default='netsuite')  # 'netsuite' | 'web' | 'manual'
+    alt_names = Column(JSONB, nullable=True)                   # ["Variant Name 1", "Variant 2"]
+    alt_domains = Column(JSONB, nullable=True)                 # ["example.com.au", "example.au"]
 
     # 256 dimensions for Gemini embedding-2-preview (notes only)
     embedding = Column(Vector(256), nullable=True)
@@ -73,6 +76,7 @@ class Product(Base):
     supplier_code = Column(String, nullable=True)
     description = Column(Text, nullable=True)
     brand = Column(String, nullable=True)
+    brand_id = Column(UUID(as_uuid=True), ForeignKey('brands.id'), nullable=True, index=True)
     weight_kg = Column(Float, nullable=True)
     length_m = Column(Float, nullable=True)
     product_type = Column(String, nullable=True)
