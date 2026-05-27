@@ -70,8 +70,8 @@ STEPS = [
     {
         "name": "generate_supplier_notes",
         "module": "scripts.generate_supplier_notes",
-        "args": ["--limit", "50"],
-        "description": "Research and generate notes for suppliers missing them (batch of 50)",
+        "args": ["--limit", "100"],
+        "description": "Research and generate notes for suppliers missing them (batch of 100)",
     },
 ]
 
