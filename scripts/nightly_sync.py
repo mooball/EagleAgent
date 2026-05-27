@@ -9,7 +9,8 @@ Orchestrates a full nightly sync from NetSuite in dependency order:
   5. Quotes       (--resume)
   6. Link Supplier Brands (--since 2d — post-sync linking)
   7. Categorize Suppliers (--limit 100 — batch of uncategorized)
-  8. Generate Supplier Notes (--limit 50 — research missing notes)
+  8. Generate Supplier Notes (--limit 100 — research missing notes)
+  9. Update Supplier Embeddings (re-embed any with NULL embedding)
 
 Usage:
   uv run python -m scripts.nightly_sync
@@ -72,6 +73,12 @@ STEPS = [
         "module": "scripts.generate_supplier_notes",
         "args": ["--limit", "100"],
         "description": "Research and generate notes for suppliers missing them (batch of 100)",
+    },
+    {
+        "name": "update_supplier_embeddings",
+        "module": "scripts.update_supplier_embeddings",
+        "args": [],
+        "description": "Regenerate embeddings for suppliers with updated notes",
     },
 ]
 
