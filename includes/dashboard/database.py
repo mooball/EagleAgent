@@ -40,9 +40,10 @@ def get_session():
 def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
     """Find the best DB match for a supplier name.
 
-    Two-pass strategy:
+    Three-pass strategy:
     1. Containment — DB name in input or input in DB name (prefer closest length)
-    2. pg_trgm similarity fallback (threshold 0.6)
+    2. Alt names — check if input matches any entry in the alt_names JSONB array
+    3. pg_trgm similarity fallback (threshold 0.6)
 
     Returns the Supplier row or None. Caller manages the session.
     """
@@ -68,7 +69,20 @@ def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
             .order_by(func.abs(func.length(Supplier.name) - len(name_lower)))
             .first()
         )
-        # Pass 2: trigram similarity fallback
+        # Pass 2: alt_names array match
+        if not row:
+            from sqlalchemy import cast, String
+            from sqlalchemy.dialects.postgresql import JSONB
+            # Check if any element in alt_names matches (case-insensitive)
+            row = (
+                session.query(Supplier)
+                .filter(
+                    Supplier.alt_names.isnot(None),
+                    func.lower(cast(Supplier.alt_names, String)).contains(name_lower),
+                )
+                .first()
+            )
+        # Pass 3: trigram similarity fallback
         if not row:
             sim = func.similarity(func.lower(Supplier.name), name_lower)
             row = (
@@ -158,6 +172,14 @@ def match_supplier(
                         f"[supplier-match] '{name}' → '{s.name}' via domain match ({incoming_domain})"
                     )
                     return s
+                # Check alt_domains array
+                if s.alt_domains:
+                    for alt_d in s.alt_domains:
+                        if alt_d and alt_d.lower() == incoming_domain:
+                            logger.info(
+                                f"[supplier-match] '{name}' → '{s.name}' via alt_domain match ({incoming_domain})"
+                            )
+                            return s
                 # Also check contact URLs
                 if s.contacts:
                     for c in s.contacts:
@@ -186,9 +208,14 @@ def match_supplier(
                     if candidate_domain:
                         break
 
-        # Domain check: if both have domains, they must match
+        # Also gather alt_domains for the candidate
+        candidate_alt_domains = set()
+        if candidate.alt_domains:
+            candidate_alt_domains = {d.lower() for d in candidate.alt_domains if d}
+
+        # Domain check: if both have domains, they must match (primary or alt)
         if incoming_domain and candidate_domain:
-            if incoming_domain != candidate_domain:
+            if incoming_domain != candidate_domain and incoming_domain not in candidate_alt_domains:
                 logger.info(
                     f"[supplier-match] '{name}' name-matched '{candidate.name}' "
                     f"but REJECTED: domain mismatch ({incoming_domain} vs {candidate_domain})"

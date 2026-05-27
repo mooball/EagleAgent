@@ -30,6 +30,8 @@ class Supplier(Base):
     modified_at = Column(DateTime(timezone=True), nullable=True)
     modified_by = Column(String, nullable=True)                # "user:tom", "netsuite", "ai:categorizer"
     source = Column(String(20), nullable=True, default='netsuite')  # 'netsuite' | 'web' | 'manual'
+    alt_names = Column(JSONB, nullable=True)                   # ["Variant Name 1", "Variant 2"]
+    alt_domains = Column(JSONB, nullable=True)                 # ["example.com.au", "example.au"]
 
     # 256 dimensions for Gemini embedding-2-preview (notes only)
     embedding = Column(Vector(256), nullable=True)
