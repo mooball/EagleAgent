@@ -140,7 +140,8 @@ def main():
 
         result = session.execute(stmt)
         session.commit()
-        print(f"\nInserted {result.rowcount} new supplier-brand links.")
+        inserted = result.rowcount if result.rowcount >= 0 else len(missing)
+        print(f"\nInserted {inserted} new supplier-brand links.")
 
     finally:
         session.close()
