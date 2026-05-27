@@ -96,9 +96,9 @@ def get_suppliers_to_process(force: bool = False, limit: int | None = None) -> l
         ).group_by(Supplier.id)
 
         if not force:
-            query = query.filter(
-                (Supplier.notes.is_(None)) | (Supplier.notes == "")
-            )
+            # Pick up suppliers with no notes_updated_at — either missing notes
+            # or notes flagged as bad quality (notes_updated_at left NULL)
+            query = query.filter(Supplier.notes_updated_at.is_(None))
 
         # Prioritise suppliers with more purchases (more likely to be important)
         query = query.order_by(func.count(Transaction.id).desc())
@@ -200,6 +200,7 @@ def save_to_db(supplier_id: str, result: dict, notes_text: str) -> None:
 
         supplier.modified_at = datetime.now(timezone.utc)
         supplier.modified_by = "ai:notes_generator"
+        supplier.notes_updated_at = datetime.now(timezone.utc)
         session.commit()
     except Exception:
         session.rollback()

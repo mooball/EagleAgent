@@ -21,6 +21,7 @@ class Supplier(Base):
     country = Column(String, nullable=True)
     hubspot_id = Column(String, unique=True, nullable=True)
     notes = Column(Text, nullable=True)
+    notes_updated_at = Column(DateTime(timezone=True), nullable=True)
     contacts = Column(JSONB, nullable=True)
     comments = Column(JSONB, nullable=True)                    # [{author, comment, ts}]
     supply_chain_position = Column(JSONB, nullable=True)       # {category, tier, confidence, reasoning}
