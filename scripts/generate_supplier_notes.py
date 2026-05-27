@@ -60,6 +60,13 @@ The description must help answer queries like:
 3. Note any alternative company names, trading names, or abbreviations they use.
 4. Note any alternative website domains (e.g. .com.au, .au, .com, .net.au variants).
 
+IMPORTANT — alt_names and alt_domains quality rules:
+- Only include names/domains you have CONFIRMED belong to this exact company (same ABN/entity, not just a similar name).
+- Do NOT include parent companies, subsidiaries, or sister companies as alt_names unless they truly trade under that name for the same products.
+- Do NOT include domains that merely mention the company — only domains the company owns and operates.
+- Do NOT guess or infer — if you are not confident, leave the array empty.
+- Prefer an empty array over including uncertain data.
+
 ## Required Output Format
 
 Respond with ONLY a JSON object (no markdown fences, no extra text):
