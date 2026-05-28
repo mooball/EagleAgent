@@ -305,6 +305,13 @@ def partial_supplier_update(request: Request, supplier_id: str,
 
     updates = {k: v for k, v in form.items() if k != "request"}
 
+    # Parse alt_names and alt_domains from comma-separated text to JSON arrays
+    for json_list_field in ("alt_names", "alt_domains"):
+        raw = updates.pop(json_list_field, None)
+        if raw is not None:
+            items = [x.strip() for x in raw.split(",") if x.strip()]
+            updates[json_list_field] = items if items else None
+
     # Build supply_chain_position JSONB from combined scp_position field ("tier|category")
     scp_position = updates.pop("scp_position", "")
     updates.pop("scp_category", None)  # clean up legacy field names

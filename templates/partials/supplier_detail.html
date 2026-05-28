@@ -113,6 +113,22 @@
                     <p class="text-sm whitespace-pre-wrap">{{ supplier.notes }}</p>
                 </div>
                 {% endif %}
+                {% if supplier.alt_names or supplier.alt_domains %}
+                <div class="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                    {% if supplier.alt_names %}
+                    <div class="mb-2">
+                        <span class="text-xs font-medium text-gray-500 dark:text-gray-400">Also known as:</span>
+                        <span class="text-sm ml-1">{{ supplier.alt_names | join(', ') }}</span>
+                    </div>
+                    {% endif %}
+                    {% if supplier.alt_domains %}
+                    <div>
+                        <span class="text-xs font-medium text-gray-500 dark:text-gray-400">Alt domains:</span>
+                        <span class="text-sm ml-1">{{ supplier.alt_domains | join(', ') }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
                 {% if supplier.modified_at %}
                 <div class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700">
                     <p class="text-xs text-gray-400 dark:text-gray-500">
@@ -177,6 +193,20 @@
                     <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Notes</label>
                     <textarea name="notes" rows="3"
                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">{{ supplier.notes or '' }}</textarea>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Alternative Names <span class="font-normal">(comma-separated)</span></label>
+                        <input type="text" name="alt_names" value="{{ (supplier.alt_names or []) | join(', ') }}"
+                               placeholder="e.g. Trading Name, Abbreviation"
+                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Alternative Domains <span class="font-normal">(comma-separated)</span></label>
+                        <input type="text" name="alt_domains" value="{{ (supplier.alt_domains or []) | join(', ') }}"
+                               placeholder="e.g. example.com.au, example.au"
+                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
                 </div>
                 <div class="flex items-center gap-2 pt-3">
                     <button type="submit"
