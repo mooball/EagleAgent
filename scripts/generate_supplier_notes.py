@@ -57,15 +57,19 @@ The description must help answer queries like:
 
 1. Search the web for this supplier — visit their website if available.
 2. Identify what they actually sell or manufacture, their specialisations, key brands they carry or represent, and the industries they serve.
-3. Note any alternative company names, trading names, or abbreviations they use.
-4. Note any alternative website domains (e.g. .com.au, .au, .com, .net.au variants).
+3. If the website does not respond or the business appears to have closed, set summary to "No information available" and leave other arrays empty.
+4. Note any alternative company names, trading names, or abbreviations they use — but ONLY if clearly confirmed on their own website or official registrations.
+5. Note any alternative website domains (e.g. .com.au, .au, .com, .net.au variants) — but ONLY if they redirect to or are owned by the same company.
 
 IMPORTANT — alt_names and alt_domains quality rules:
-- Only include names/domains you have CONFIRMED belong to this exact company (same ABN/entity, not just a similar name).
-- Do NOT include parent companies, subsidiaries, or sister companies as alt_names unless they truly trade under that name for the same products.
-- Do NOT include domains that merely mention the company — only domains the company owns and operates.
-- Do NOT guess or infer — if you are not confident, leave the array empty.
-- Prefer an empty array over including uncertain data.
+- MOST companies have NO alternative names. Only large or rebranded companies do. When in doubt, leave alt_names EMPTY.
+- A "trading as" name only counts if the company itself states "trading as X" on their own website or ABN registration.
+- Do NOT include names found on directory sites, marketplace profiles, or third-party sources.
+- Do NOT confuse two businesses that share a similar name or address — they are separate entities.
+- Do NOT include parent companies, subsidiaries, distributors, or affiliated brands as alt_names.
+- Do NOT include domains that merely mention the company — only domains the company owns and actively uses.
+- Do NOT guess or infer — if you are not 100% confident from the company's own website, leave the array EMPTY.
+- An empty array is ALWAYS better than an uncertain entry.
 
 ## Required Output Format
 
@@ -85,10 +89,10 @@ Rules:
 - services: List services they provide (e.g. "Engine Rebuilding", "On-site Installation"). Empty array if none.
 - industries: List industries they serve (e.g. "Mining", "Construction", "Agriculture", "Transport"). 1-5 items.
 - brands_carried: Major brands they distribute/represent. Empty array if not applicable (e.g. if they are an OEM).
-- alt_names: Other names this company is known by (abbreviations, former names, trading names). Empty array if none found.
-- alt_domains: Other website domains they use (without https://). Empty array if none found.
+- alt_names: Other names this company is known by. MOST companies have NONE — only include if explicitly confirmed on their own website. Empty array is the expected default.
+- alt_domains: Other website domains they use (without https://). MOST companies have NONE — only include confirmed owned domains. Empty array is the expected default.
 - summary: Focus on WHAT they supply and to whom. Do not repeat their location.
-- If you cannot find any information about the supplier, set summary to "No information available" and leave other arrays empty."""
+- If the website is dead/unresponsive or you cannot find any information about the supplier, set summary to "No information available" and leave ALL other arrays empty."""
 
 
 def get_suppliers_to_process(force: bool = False, limit: int | None = None) -> list[dict]:
