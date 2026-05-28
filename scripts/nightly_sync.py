@@ -19,11 +19,35 @@ Usage:
 """
 
 import argparse
+import base64
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
+
+
+def ensure_google_credentials():
+    """Decode GOOGLE_SERVICE_ACCOUNT_BASE64 to a temp file if needed.
+
+    Railway cron jobs don't go through start.sh, so the service account
+    JSON may not be written to disk yet.
+    """
+    creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+    if creds_path and os.path.isfile(creds_path):
+        return  # Already available
+
+    b64 = os.environ.get("GOOGLE_SERVICE_ACCOUNT_BASE64", "")
+    if not b64:
+        print("WARNING: No GOOGLE_SERVICE_ACCOUNT_BASE64 — embedding steps may fail")
+        return
+
+    creds_file = "/tmp/service-account-key.json"
+    with open(creds_file, "wb") as f:
+        f.write(base64.b64decode(b64))
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_file
+    print(f"✅ Decoded service account credentials to {creds_file}")
 
 STEPS = [
     {
@@ -111,6 +135,8 @@ def run_step(step: dict, dry_run: bool = False) -> bool:
 
 
 def main():
+    ensure_google_credentials()
+
     parser = argparse.ArgumentParser(description="Nightly NetSuite sync")
     parser.add_argument(
         "--dry-run",
