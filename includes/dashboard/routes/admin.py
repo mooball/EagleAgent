@@ -251,3 +251,151 @@ async def partial_netsuite_status(request: Request, user: dict = require_admin):
     return templates.TemplateResponse(request, "partials/admin_netsuite_status.html", {
         "netsuite": result,
     })
+
+
+# ---------------------------------------------------------------------------
+# Supplier Deduplication
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/duplicates")
+async def admin_duplicates(request: Request, user: dict = require_admin):
+    ctx = {"active_nav": "admin", "duplicates": None, "scanned": False}
+    return _render(request, "admin_duplicates.html", "partials/admin_duplicates.html", ctx, user)
+
+
+@router.get("/partial/admin/duplicates")
+async def partial_admin_duplicates(request: Request, user: dict = require_admin):
+    return templates.TemplateResponse(request, "partials/admin_duplicates.html", {
+        "user": user,
+        "active_nav": "admin",
+        "duplicates": None,
+        "scanned": False,
+    })
+
+
+@router.post("/admin/duplicates/scan")
+async def admin_duplicates_scan(request: Request, user: dict = require_admin):
+    import asyncio
+    from scripts.find_duplicate_suppliers import scan_duplicates
+
+    session = _helpers.get_session()
+    try:
+        duplicates = await asyncio.to_thread(scan_duplicates, session)
+    finally:
+        session.close()
+
+    return templates.TemplateResponse(request, "partials/_admin_dedup_results.html", {
+        "user": user,
+        "active_nav": "admin",
+        "duplicates": duplicates,
+        "scanned": True,
+    })
+
+
+@router.post("/admin/duplicates/merge")
+async def admin_duplicates_merge(request: Request, user: dict = require_admin):
+    import asyncio
+    from scripts.find_duplicate_suppliers import merge_supplier
+
+    form = await request.form()
+    keep_id = form.get("keep_id", "").strip()
+    remove_id = form.get("remove_id", "").strip()
+    merge_url = form.get("merge_url") == "1"
+    merge_contacts = form.get("merge_contacts") == "1"
+
+    if not keep_id or not remove_id:
+        return templates.TemplateResponse(request, "partials/_admin_dedup_results.html", {
+            "user": user, "active_nav": "admin",
+            "duplicates": None, "scanned": False,
+            "flash": "Missing supplier IDs.",
+        })
+
+    session = _helpers.get_session()
+    try:
+        merge_fields = {"url": merge_url, "contacts": merge_contacts}
+        result = await asyncio.to_thread(merge_supplier, session, keep_id, remove_id, merge_fields)
+        if result["status"] == "ok":
+            session.commit()
+            flash = f"Merged successfully. Updated {result['updated_rfq_items']} RFQ item(s)."
+        else:
+            session.rollback()
+            flash = f"Error: {result['message']}"
+    except Exception as e:
+        session.rollback()
+        flash = f"Error: {e}"
+        logger.exception("Merge failed")
+    finally:
+        session.close()
+
+    # Re-scan after merge
+    session = _helpers.get_session()
+    try:
+        from scripts.find_duplicate_suppliers import scan_duplicates
+        duplicates = await asyncio.to_thread(scan_duplicates, session)
+    finally:
+        session.close()
+
+    return templates.TemplateResponse(request, "partials/_admin_dedup_results.html", {
+        "user": user, "active_nav": "admin",
+        "duplicates": duplicates, "scanned": True,
+        "flash": flash,
+    })
+
+
+@router.post("/admin/duplicates/dismiss")
+async def admin_duplicates_dismiss(request: Request, user: dict = require_admin):
+    """Mark a non-netsuite supplier as 'not a duplicate' by adding a flag."""
+    import asyncio
+    import uuid
+    from sqlalchemy.orm.attributes import flag_modified
+    from includes.dashboard.models import Supplier
+
+    form = await request.form()
+    supplier_id = form.get("supplier_id", "").strip()
+
+    if not supplier_id:
+        return templates.TemplateResponse(request, "partials/_admin_dedup_results.html", {
+            "user": user, "active_nav": "admin",
+            "duplicates": None, "scanned": False,
+        })
+
+    session = _helpers.get_session()
+    try:
+        sup = session.query(Supplier).filter(Supplier.id == uuid.UUID(supplier_id)).first()
+        if sup:
+            # Store dismiss flag in comments JSONB
+            from datetime import datetime, timezone
+            comments = list(sup.comments or [])
+            comments.append({
+                "author": user.get("identifier", "admin"),
+                "comment": "Marked as not-a-duplicate during dedup review.",
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            sup.comments = comments
+            flag_modified(sup, "comments")
+            # Add a special alt_name so it won't match again
+            alt_names = list(sup.alt_names or [])
+            if "__dedup_reviewed__" not in alt_names:
+                alt_names.append("__dedup_reviewed__")
+                sup.alt_names = alt_names
+                flag_modified(sup, "alt_names")
+            session.commit()
+    except Exception as e:
+        session.rollback()
+        logger.warning(f"Dismiss failed: {e}")
+    finally:
+        session.close()
+
+    # Re-scan
+    session = _helpers.get_session()
+    try:
+        from scripts.find_duplicate_suppliers import scan_duplicates
+        duplicates = await asyncio.to_thread(scan_duplicates, session)
+    finally:
+        session.close()
+
+    return templates.TemplateResponse(request, "partials/_admin_dedup_results.html", {
+        "user": user, "active_nav": "admin",
+        "duplicates": duplicates, "scanned": True,
+        "flash": "Supplier dismissed from duplicate review.",
+    })

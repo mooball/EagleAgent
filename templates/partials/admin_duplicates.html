@@ -1,0 +1,27 @@
+<div class="pt-6 max-w-6xl mx-auto px-4">
+    <!-- Breadcrumb -->
+    <nav class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 mb-4">
+        <a hx-get="/partial/admin" hx-target="#main-content" hx-push-url="/admin"
+           class="hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer">Admin</a>
+        <span>›</span>
+        <span class="text-gray-900 dark:text-gray-100">Supplier Duplicates</span>
+    </nav>
+
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h1 class="text-xl font-bold text-gray-900 dark:text-gray-100">Supplier Deduplication</h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Find web-added suppliers that duplicate existing NetSuite suppliers. Merge or dismiss.</p>
+        </div>
+        <form hx-post="/admin/duplicates/scan" hx-target="#dedup-results" hx-swap="innerHTML" hx-indicator="#scan-spinner">
+            <button type="submit" class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                Scan for Duplicates
+                <svg id="scan-spinner" class="htmx-indicator w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+            </button>
+        </form>
+    </div>
+
+    <div id="dedup-results">
+    {% include "partials/_admin_dedup_results.html" %}
+    </div>
+</div>

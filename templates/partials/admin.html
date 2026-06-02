@@ -29,6 +29,21 @@
     </div>
 </section>
 
+{# ── Quick Actions ────────────────────────────────────────────── #}
+<section class="mb-12">
+    <h2 class="text-lg font-semibold mb-3">Quick Actions</h2>
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <a hx-get="/partial/admin/duplicates" hx-target="#main-content" hx-push-url="/admin/duplicates"
+           class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:border-blue-400 dark:hover:border-blue-500 cursor-pointer transition-colors block">
+            <div class="flex items-center gap-2 mb-1">
+                <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                <span class="text-sm font-medium text-gray-900 dark:text-gray-100">Supplier Deduplication</span>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400">Find and merge duplicate suppliers added from web searches.</p>
+        </a>
+    </div>
+</section>
+
 {# ── Available Scripts ────────────────────────────────────────── #}
 <section class="mb-12">
     <h2 class="text-lg font-semibold mb-3">Available Scripts</h2>
