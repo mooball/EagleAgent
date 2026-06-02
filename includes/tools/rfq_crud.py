@@ -126,6 +126,7 @@ def _item_to_dict(item) -> dict:
         "status": item.status or "unidentified",
         "notes": item.notes or "",
         "suppliers": item.suppliers or [],
+        "brand_suppliers": item.brand_suppliers or [],
     }
 
 

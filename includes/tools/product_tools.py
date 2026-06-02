@@ -976,3 +976,62 @@ def _find_suppliers_by_brand(brand: str, limit: int = 200) -> list[dict]:
         return out
     finally:
         session.close()
+
+
+def _find_brand_suppliers_with_tier(brand: str, limit: int = 200) -> list[dict]:
+    """Find suppliers linked to a brand, enriched with tier and transaction count.
+
+    Returns list sorted by tier (A first) then transaction count (desc).
+    Each dict: supplier_id, name, contacts, tier, transaction_count, country.
+    """
+    from sqlalchemy import func, desc
+
+    session = get_session()
+    try:
+        # Sub-query: count all transactions per supplier (any product)
+        tx_count_sub = (
+            session.query(
+                Transaction.supplier_id,
+                func.count(Transaction.id).label("tx_count"),
+            )
+            .group_by(Transaction.supplier_id)
+            .subquery()
+        )
+
+        results = (
+            session.query(
+                Supplier.id,
+                Supplier.name,
+                Supplier.contacts,
+                Supplier.country,
+                Supplier.supply_chain_position,
+                func.coalesce(tx_count_sub.c.tx_count, 0).label("tx_count"),
+            )
+            .join(SupplierBrand, SupplierBrand.supplier_id == Supplier.id)
+            .join(Brand, SupplierBrand.brand_id == Brand.id)
+            .outerjoin(tx_count_sub, tx_count_sub.c.supplier_id == Supplier.id)
+            .filter(Brand.name.ilike(brand), Brand.duplicate_of.is_(None))
+            .limit(limit)
+            .all()
+        )
+
+        _tier_order = {"A": 0, "B": 1, "C": 2, "D": 3}
+        out = []
+        for row in results:
+            scp = row.supply_chain_position or {}
+            tier = scp.get("tier")
+            contacts = row.contacts if isinstance(row.contacts, list) else []
+            out.append({
+                "supplier_id": str(row.id),
+                "name": row.name,
+                "contacts": contacts,
+                "tier": tier,
+                "transaction_count": row.tx_count,
+                "country": row.country,
+            })
+
+        # Sort: tier A first, then by transaction count desc
+        out.sort(key=lambda s: (_tier_order.get(s["tier"], 9), -s["transaction_count"]))
+        return out
+    finally:
+        session.close()
