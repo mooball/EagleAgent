@@ -178,6 +178,7 @@ class RFQItem(Base):
     status = Column(String, nullable=True, default='unidentified')  # unidentified/identified/confirmed/review
     notes = Column(Text, nullable=True)
     suppliers = Column(JSONB, nullable=True)                  # [{name, supplier_id, price, ...}, ...]
+    brand_suppliers = Column(JSONB, nullable=True)            # [{name, supplier_id, tier, transaction_count, ...}] — non-Tier-A overflow
 
     rfq = relationship('RFQ', back_populates='items')
 

@@ -490,8 +490,34 @@ async def on_rfq_find_all_suppliers(action: cl.Action):
 
 @cl.action_callback("rfq_find_previous_suppliers")
 async def on_rfq_find_previous_suppliers(action: cl.Action):
-    """Phase 1+2+2.5: Grouping, internal DB search, cross-apply."""
+    """Phase 1+2+2b+2.5: Grouping, internal DB search, brand lookup, cross-apply."""
     await _phase_previous_suppliers(action.payload or {})
+
+
+@cl.action_callback("rfq_add_brand_supplier")
+async def on_rfq_add_brand_supplier(action: cl.Action):
+    """Add a single brand-linked supplier to a line item from the modal."""
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id")
+    line = payload.get("line")
+    supplier = payload.get("supplier", {})
+    if not rfq_id or not line or not supplier.get("name"):
+        return
+    user_id = cl.user_session.get("user_id", "unknown")
+    sup_entry = {
+        "supplier_id": supplier.get("supplier_id"),
+        "name": supplier["name"],
+        "contacts": supplier.get("contacts", []),
+        "status": "candidate",
+        "price_type": "brand_link",
+        "notes": f"Brand-linked supplier (Tier {supplier.get('tier', '?')}, {supplier.get('transaction_count', 0)} transactions)",
+    }
+    await asyncio.to_thread(
+        _add_supplier_sync, rfq_id,
+        {"line": line, "suppliers": [sup_entry]},
+        user_id,
+    )
+    await notify_dashboard("dashboard_refresh")
 
 
 @cl.action_callback("rfq_find_new_suppliers")
@@ -656,12 +682,110 @@ async def _phase_previous_suppliers(payload: dict):
         if total_internal > 0:
             await notify_dashboard("dashboard_refresh")
             await cl.Message(
-                content=f"Found **{total_internal}** supplier(s) from our records. Now cross-applying within groups...",
+                content=f"Found **{total_internal}** supplier(s) from our records. Now checking brand links...",
                 author="EagleAgent",
             ).send()
         else:
             await cl.Message(
-                content=f"No matching suppliers in our records. Checking cross-apply...",
+                content=f"No matching suppliers in our records. Checking brand links...",
+                author="EagleAgent",
+            ).send()
+
+        # ================================================================
+        # Phase 2b: Brand-linked supplier lookup
+        # ================================================================
+        from includes.tools.product_tools import _find_brand_suppliers_with_tier
+        from includes.dashboard.models import RFQ, RFQItem
+        from includes.tools.rfq_crud import _get_session
+        from sqlalchemy.orm.attributes import flag_modified
+
+        def _save_brand_suppliers(rfq_number, line_num, sups):
+            sess = _get_session()
+            try:
+                rfq_obj = sess.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+                if not rfq_obj:
+                    return
+                item_obj = sess.query(RFQItem).filter(
+                    RFQItem.rfq_id == rfq_obj.id, RFQItem.line == line_num
+                ).first()
+                if not item_obj:
+                    return
+                item_obj.brand_suppliers = sups
+                flag_modified(item_obj, "brand_suppliers")
+                sess.commit()
+            except Exception:
+                sess.rollback()
+                raise
+            finally:
+                sess.close()
+
+        total_brand = 0
+        await notify_dashboard("agent_working", {"label": "Checking brand-linked suppliers..."})
+
+        for item in confirmed_items:
+            line = item.get("line")
+            brand = (item.get("brand") or "").strip()
+
+            # Skip items without a real brand
+            if not brand or brand.lower() == "other":
+                continue
+
+            try:
+                brand_sups = await asyncio.to_thread(_find_brand_suppliers_with_tier, brand)
+            except Exception as e:
+                logger.warning(f"Phase 2b brand lookup failed for line {line} brand={brand}: {e}")
+                continue
+
+            if not brand_sups:
+                continue
+
+            # Determine which suppliers are already on this line
+            existing_on_line = {s["name"].lower() for s in suppliers_by_line.get(line, [])}
+            item_ctx_existing = item.get("existing_suppliers", [])
+            existing_on_line.update(n.lower() for n in item_ctx_existing)
+
+            # Filter to only new suppliers (not already on the line)
+            new_brand_sups = [s for s in brand_sups if s["name"].lower() not in existing_on_line]
+
+            # Auto-add Tier A suppliers to the RFQ item
+            tier_a = [s for s in new_brand_sups if s.get("tier") == "A"]
+            if tier_a:
+                tier_a_entries = [
+                    {
+                        "supplier_id": s["supplier_id"],
+                        "name": s["name"],
+                        "contacts": s.get("contacts", []),
+                        "status": "candidate",
+                        "price_type": "brand_link",
+                        "notes": f"Brand-linked supplier (Tier A, {s['transaction_count']} transactions)",
+                    }
+                    for s in tier_a
+                ]
+                user_id = cl.user_session.get("user_id", "unknown")
+                await asyncio.to_thread(
+                    _add_supplier_sync, rfq_id,
+                    {"line": line, "suppliers": tier_a_entries},
+                    user_id,
+                )
+                total_brand += len(tier_a)
+                # Track them so cross-apply/dedup won't re-add
+                for s in tier_a:
+                    existing_on_line.add(s["name"].lower())
+                    suppliers_by_line.setdefault(line, []).append({
+                        "supplier_id": s["supplier_id"],
+                        "name": s["name"],
+                        "contacts": s.get("contacts", []),
+                        "status": "candidate",
+                        "price_type": "brand_link",
+                    })
+
+            # Store ALL brand suppliers (full list) for the modal reference
+            await asyncio.to_thread(_save_brand_suppliers, rfq_id, line, brand_sups)
+
+        if total_brand > 0:
+            await notify_dashboard("dashboard_refresh")
+            await cl.Message(
+                content=f"Added **{total_brand}** Tier A brand-linked supplier(s).",
                 author="EagleAgent",
             ).send()
 
@@ -731,7 +855,7 @@ async def _phase_previous_suppliers(payload: dict):
         await notify_dashboard("dashboard_refresh")
 
         await cl.Message(
-            content=f"✅ Previous supplier search complete. Found **{total_internal + total_cross}** supplier(s) from our records.",
+            content=f"✅ Previous supplier search complete. Found **{total_internal + total_brand + total_cross}** supplier(s) from our records.",
             author="EagleAgent",
         ).send()
 

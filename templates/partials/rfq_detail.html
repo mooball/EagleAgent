@@ -410,4 +410,72 @@
             </div>
         </div>
     </div>
+
+    <!-- Brand Suppliers Modal -->
+    <div x-show="brandSuppliersModal.open" x-cloak
+         class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50"
+         @click.self="closeBrandSuppliersModal()"
+         @keydown.escape.window="closeBrandSuppliersModal()">
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-lg mx-4 overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    Brand-linked suppliers for <span class="text-purple-600 dark:text-purple-400" x-text="brandSuppliersModal.brand"></span>
+                </h3>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Sorted by tier and transaction history. Toggle to add or remove from this item.</p>
+            </div>
+            <div class="px-5 py-3 max-h-96 overflow-y-auto">
+                <table class="w-full text-xs">
+                    <thead>
+                        <tr class="border-b border-gray-200 dark:border-gray-700">
+                            <th class="text-left py-1.5 font-medium text-gray-500">Supplier</th>
+                            <th class="text-center py-1.5 font-medium text-gray-500 w-12">Tier</th>
+                            <th class="text-center py-1.5 font-medium text-gray-500 w-16">Txns</th>
+                            <th class="text-center py-1.5 font-medium text-gray-500 w-14">Country</th>
+                            <th class="text-center py-1.5 font-medium text-gray-500 w-10"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="(sup, idx) in brandSuppliersModal.suppliers" :key="sup.supplier_id">
+                            <tr class="border-b last:border-b-0 border-gray-100 dark:border-gray-700 transition-colors"
+                                :class="sup.added ? 'bg-green-50 dark:bg-green-950/30' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'">
+                                <td class="py-1.5 pr-2">
+                                    <span x-text="sup.name" class="text-gray-900 dark:text-gray-100"></span>
+                                    <span x-show="sup.added" class="ml-1 text-[9px] px-1 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">added</span>
+                                </td>
+                                <td class="py-1.5 text-center">
+                                    <span x-show="sup.tier"
+                                          class="text-[9px] px-1.5 py-0.5 rounded font-medium"
+                                          :class="{
+                                              'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200': sup.tier === 'A',
+                                              'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200': sup.tier === 'B',
+                                              'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200': sup.tier === 'C',
+                                              'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200': sup.tier && sup.tier !== 'A' && sup.tier !== 'B' && sup.tier !== 'C'
+                                          }"
+                                          x-text="sup.tier"></span>
+                                    <span x-show="!sup.tier" class="text-gray-400">—</span>
+                                </td>
+                                <td class="py-1.5 text-center text-gray-600 dark:text-gray-400" x-text="sup.transaction_count || 0"></td>
+                                <td class="py-1.5 text-center text-gray-500" x-text="sup.country || '—'"></td>
+                                <td class="py-1.5 text-center">
+                                    <button @click="toggleBrandSupplier(sup)"
+                                            class="p-1 rounded transition-colors"
+                                            :class="sup.added ? 'hover:bg-red-100 dark:hover:bg-red-900 text-red-500 dark:text-red-400' : 'hover:bg-green-100 dark:hover:bg-green-900 text-green-600 dark:text-green-400'"
+                                            :title="sup.added ? 'Remove from this item' : 'Add to this item'">
+                                        <svg x-show="!sup.added" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                                        <svg x-show="sup.added" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"/></svg>
+                                    </button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+            <div class="px-5 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end">
+                <button @click="closeBrandSuppliersModal()"
+                        class="px-3 py-1.5 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
 </div>
