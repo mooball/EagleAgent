@@ -747,8 +747,8 @@ async def _phase_previous_suppliers(payload: dict):
             # Filter to only new suppliers (not already on the line)
             new_brand_sups = [s for s in brand_sups if s["name"].lower() not in existing_on_line]
 
-            # Auto-add Tier A suppliers to the RFQ item
-            tier_a = [s for s in new_brand_sups if s.get("tier") == "A"]
+            # Auto-add top 5 Tier A suppliers to the RFQ item
+            tier_a = [s for s in new_brand_sups if s.get("tier") == "A"][:5]
             if tier_a:
                 tier_a_entries = [
                     {
