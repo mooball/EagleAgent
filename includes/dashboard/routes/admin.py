@@ -295,6 +295,7 @@ async def admin_duplicates_scan(request: Request, user: dict = require_admin):
 @router.post("/admin/duplicates/merge")
 async def admin_duplicates_merge(request: Request, user: dict = require_admin):
     import asyncio
+    from starlette.responses import HTMLResponse
     from scripts.find_duplicate_suppliers import merge_supplier
 
     form = await request.form()
@@ -304,11 +305,7 @@ async def admin_duplicates_merge(request: Request, user: dict = require_admin):
     merge_contacts = form.get("merge_contacts") == "1"
 
     if not keep_id or not remove_id:
-        return templates.TemplateResponse(request, "partials/_admin_dedup_results.html", {
-            "user": user, "active_nav": "admin",
-            "duplicates": None, "scanned": False,
-            "flash": "Missing supplier IDs.",
-        })
+        return HTMLResponse('<div class="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200 dark:border-red-800 mb-3">Missing supplier IDs.</div>')
 
     session = _helpers.get_session()
     try:
@@ -316,37 +313,25 @@ async def admin_duplicates_merge(request: Request, user: dict = require_admin):
         result = await asyncio.to_thread(merge_supplier, session, keep_id, remove_id, merge_fields)
         if result["status"] == "ok":
             session.commit()
-            flash = f"Merged successfully. Updated {result['updated_rfq_items']} RFQ item(s)."
+            msg = f"Merged successfully. Updated {result['updated_rfq_items']} RFQ item(s)."
+            return HTMLResponse(f'<div class="px-4 py-3 rounded-lg text-sm bg-green-50 text-green-800 dark:bg-green-900/30 dark:text-green-300 border border-green-200 dark:border-green-800 mb-3">{msg}</div>')
         else:
             session.rollback()
-            flash = f"Error: {result['message']}"
+            msg = f"Error: {result['message']}"
+            return HTMLResponse(f'<div class="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200 dark:border-red-800 mb-3">{msg}</div>')
     except Exception as e:
         session.rollback()
-        flash = f"Error: {e}"
         logger.exception("Merge failed")
+        return HTMLResponse(f'<div class="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200 dark:border-red-800 mb-3">Error: {e}</div>')
     finally:
         session.close()
-
-    # Re-scan after merge
-    session = _helpers.get_session()
-    try:
-        from scripts.find_duplicate_suppliers import scan_duplicates
-        duplicates = await asyncio.to_thread(scan_duplicates, session)
-    finally:
-        session.close()
-
-    return templates.TemplateResponse(request, "partials/_admin_dedup_results.html", {
-        "user": user, "active_nav": "admin",
-        "duplicates": duplicates, "scanned": True,
-        "flash": flash,
-    })
 
 
 @router.post("/admin/duplicates/dismiss")
 async def admin_duplicates_dismiss(request: Request, user: dict = require_admin):
     """Mark a non-netsuite supplier as 'not a duplicate' by adding a flag."""
-    import asyncio
     import uuid
+    from starlette.responses import HTMLResponse
     from sqlalchemy.orm.attributes import flag_modified
     from includes.dashboard.models import Supplier
 
@@ -354,16 +339,12 @@ async def admin_duplicates_dismiss(request: Request, user: dict = require_admin)
     supplier_id = form.get("supplier_id", "").strip()
 
     if not supplier_id:
-        return templates.TemplateResponse(request, "partials/_admin_dedup_results.html", {
-            "user": user, "active_nav": "admin",
-            "duplicates": None, "scanned": False,
-        })
+        return HTMLResponse("")
 
     session = _helpers.get_session()
     try:
         sup = session.query(Supplier).filter(Supplier.id == uuid.UUID(supplier_id)).first()
         if sup:
-            # Store dismiss flag in comments JSONB
             from datetime import datetime, timezone
             comments = list(sup.comments or [])
             comments.append({
@@ -373,7 +354,6 @@ async def admin_duplicates_dismiss(request: Request, user: dict = require_admin)
             })
             sup.comments = comments
             flag_modified(sup, "comments")
-            # Add a special alt_name so it won't match again
             alt_names = list(sup.alt_names or [])
             if "__dedup_reviewed__" not in alt_names:
                 alt_names.append("__dedup_reviewed__")
@@ -383,19 +363,8 @@ async def admin_duplicates_dismiss(request: Request, user: dict = require_admin)
     except Exception as e:
         session.rollback()
         logger.warning(f"Dismiss failed: {e}")
+        return HTMLResponse(f'<div class="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200 dark:border-red-800 mb-3">Dismiss failed: {e}</div>')
     finally:
         session.close()
 
-    # Re-scan
-    session = _helpers.get_session()
-    try:
-        from scripts.find_duplicate_suppliers import scan_duplicates
-        duplicates = await asyncio.to_thread(scan_duplicates, session)
-    finally:
-        session.close()
-
-    return templates.TemplateResponse(request, "partials/_admin_dedup_results.html", {
-        "user": user, "active_nav": "admin",
-        "duplicates": duplicates, "scanned": True,
-        "flash": "Supplier dismissed from duplicate review.",
-    })
+    return HTMLResponse('<div class="px-4 py-3 rounded-lg text-sm bg-gray-50 text-gray-600 dark:bg-gray-800 dark:text-gray-400 border border-gray-200 dark:border-gray-700 mb-3">Dismissed.</div>')
