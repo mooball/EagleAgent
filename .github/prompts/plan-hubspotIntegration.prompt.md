@@ -15,13 +15,15 @@ inbox emails to deals is unreliable (client-confirmed). We use **explicit loggin
 ```
 EagleAgent sends via Gmail API (domain-wide delegation, impersonating staff user)
         ↓
+Outgoing message is labeled `agent-rfq` and subject includes `[RFQ-<id>]`
+  ↓
 Email logged to HubSpot immediately via Engagements API (explicit deal + contact association)
         ↓
-gmail_thread_id stored in our DB → tracked for replies
+gmail_thread_id + mailbox cursor (historyId) stored in our DB
         ↓
-Poll job (every 5 min) checks tracked threads for new messages
+Poll job (every 5 min) reads Gmail History API delta since last historyId
         ↓
-Reply detected → logged to HubSpot with same deal association
+New reply detected → map to tracked thread/deal → log to HubSpot with same deal association
 ```
 
 **Why this approach:**
@@ -29,7 +31,8 @@ Reply detected → logged to HubSpot with same deal association
 - Works when a supplier has multiple active deals
 - No per-user OAuth flow — service account impersonates any domain user
 - Same pattern handles supplier outreach AND customer invoices
-- Scales to 20+ users with minimal API calls (batch thread checks)
+- Efficient at scale: work is proportional to new mailbox changes, not all historical threads
+- RFQ token in subject adds deterministic fallback matching if supplier breaks thread continuity
 
 ---
 
@@ -50,7 +53,8 @@ Reply detected → logged to HubSpot with same deal association
 - **Service account**: `service-account-key.json` (already in project)
 - **Delegation scopes to configure in Google Admin**:
   - `https://www.googleapis.com/auth/gmail.send` (send as user)
-  - `https://www.googleapis.com/auth/gmail.readonly` (read tracked threads)
+  - `https://www.googleapis.com/auth/gmail.readonly` (read mailbox deltas and message content)
+  - `https://www.googleapis.com/auth/gmail.modify` (create/read labels such as `agent-rfq`)
 - **Domain**: `eagle-exports.com` (all staff mailboxes)
 - **Impersonation**: Service account impersonates individual staff users when sending/reading
 
@@ -69,13 +73,16 @@ google-api-python-client  # Gmail API client
 ```sql
 CREATE TABLE email_tracking (
     id              SERIAL PRIMARY KEY,
-    gmail_thread_id VARCHAR NOT NULL,        -- Gmail thread to monitor
+    gmail_thread_id VARCHAR NOT NULL,        -- Gmail thread mapped to deal
     gmail_message_id VARCHAR NOT NULL,       -- Specific message ID
+    gmail_history_id BIGINT,                 -- Last seen history event for this message
+    gmail_label      VARCHAR DEFAULT 'agent-rfq',
     user_email      VARCHAR NOT NULL,        -- Staff member's email (for impersonation)
     hubspot_deal_id VARCHAR NOT NULL,        -- HubSpot deal to associate with
     hubspot_contact_id VARCHAR,             -- HubSpot contact (supplier/customer)
     direction       VARCHAR NOT NULL,        -- 'sent' | 'received'
     purpose         VARCHAR NOT NULL,        -- 'rfq_outreach' | 'customer_invoice' | etc.
+    rfq_token       VARCHAR,                 -- e.g. RFQ-12345, embedded in subject
     subject         VARCHAR,
     recipient_email VARCHAR,
     created_at      TIMESTAMP DEFAULT NOW(),
@@ -84,6 +91,12 @@ CREATE TABLE email_tracking (
 
 CREATE INDEX ix_email_tracking_thread ON email_tracking(gmail_thread_id);
 CREATE INDEX ix_email_tracking_deal ON email_tracking(hubspot_deal_id);
+
+CREATE TABLE mailbox_sync_cursor (
+  user_email       VARCHAR PRIMARY KEY,
+  last_history_id  BIGINT NOT NULL,
+  updated_at       TIMESTAMP DEFAULT NOW()
+);
 ```
 
 ---
@@ -137,24 +150,31 @@ CREATE INDEX ix_email_tracking_deal ON email_tracking(hubspot_deal_id);
 - Add Gmail scopes to delegation config in Google Admin:
   - `https://www.googleapis.com/auth/gmail.send`
   - `https://www.googleapis.com/auth/gmail.readonly`
+  - `https://www.googleapis.com/auth/gmail.modify`
 - Test: send a test email impersonating a staff user
 - Test: read threads from a staff mailbox
 
 ### 3.2 Send supplier outreach emails
 - Compose email from RFQ data (AI-drafted or template)
+- Subject format includes RFQ token: `[RFQ-<rfq_id>] <subject text>`
 - Send via Gmail API impersonating the assigned staff member
+- Apply Gmail label `agent-rfq` to outgoing message/thread
 - Store `gmail_thread_id` + `gmail_message_id` in `email_tracking` table
 - Log to HubSpot via Engagements API with explicit deal + contact association
+- Keep Reply-To unchanged (normal user mailbox address)
 
 ### 3.3 Reply tracking (poll job)
 - Background job runs every 5 minutes
-- Query `email_tracking` for active threads (grouped by user_email)
-- Batch-fetch thread message counts via Gmail API (impersonating each user)
-- For threads with new messages:
-  - Fetch new message details
-  - Log reply to HubSpot (same deal association)
-  - Insert new row in `email_tracking` (direction='received')
-- Performance: 20 users × ~50 active threads = 1000 thread checks, batched 100/request = ~10 API calls
+- For each user mailbox, call Gmail `users.history.list` from `mailbox_sync_cursor.last_history_id`
+- Process only new `messageAdded` events (incremental delta sync)
+- For each added message:
+  - Resolve `threadId`
+  - If thread is tracked in `email_tracking`, log reply to HubSpot with mapped deal/contact
+  - If thread is not tracked, attempt fallback match by RFQ token in subject
+  - Insert new row in `email_tracking` (direction='received') when matched
+- Update `mailbox_sync_cursor.last_history_id` after successful processing
+- Handle Gmail history expiration (`404 historyId not found`) by reseeding cursor from recent labeled messages
+- Performance scales with new messages, not total historical thread count
 
 ### 3.4 Future: Customer invoice emails
 - Same infrastructure, different `purpose` value
@@ -195,12 +215,13 @@ CREATE INDEX ix_email_tracking_deal ON email_tracking(hubspot_deal_id);
   - Find service account client ID → Edit → Add scopes:
     - `https://www.googleapis.com/auth/gmail.send`
     - `https://www.googleapis.com/auth/gmail.readonly`
+    - `https://www.googleapis.com/auth/gmail.modify`
 
 
 ## Open Questions
 - ~~What deal pipeline/stages exist in your HubSpot portal?~~ **Answered — see below**
 - ~~Are there custom deal properties already set up, or do we create them?~~ **All properties already exist. Will discover via API.**
-- ~~Do you have transactional email enabled, or do we need to check?~~ **Believed enabled — will verify in Phase 1.**
+- ~~Do we need HubSpot transactional email?~~ **No. Sending will be via Gmail API; HubSpot is used for explicit CRM logging.**
 - Which email templates should we use (or create new ones)?
 - ~~Should contact sync be bidirectional (HubSpot → EagleAgent) or one-way?~~ **Bidirectional.**
 
