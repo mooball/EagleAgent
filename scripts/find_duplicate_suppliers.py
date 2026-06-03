@@ -177,6 +177,141 @@ def _name_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def scan_internal_duplicates(session: Session) -> list[dict]:
+    """Find duplicates among non-netsuite (web-added) suppliers themselves.
+
+    Compares every non-netsuite supplier against every other non-netsuite
+    supplier. Groups them so only the best match per cluster is returned.
+
+    Returns a list of dicts:
+    {
+        "new_supplier": {id, name, url, source, ...},  -- the one to remove
+        "match": {id, name, url, source, ...},          -- the one to keep
+        "confidence": float (0-1),
+        "reasons": [...],
+    }
+    """
+    new_suppliers = (
+        session.query(Supplier)
+        .filter(Supplier.netsuite_id.is_(None))
+        .all()
+    )
+
+    # Filter out previously dismissed
+    new_suppliers = [
+        s for s in new_suppliers
+        if "__dedup_reviewed__" not in (s.alt_names or [])
+    ]
+
+    if len(new_suppliers) < 2:
+        return []
+
+    # Pre-compute domains for all
+    domain_index: dict[str, list] = {}  # domain -> [supplier, ...]
+    for sup in new_suppliers:
+        for domain in _get_supplier_domains(sup):
+            domain_index.setdefault(domain, []).append(sup)
+
+    # Track which suppliers have already been matched (avoid dupes in results)
+    matched_ids: set[str] = set()
+    results = []
+
+    for i, sup_a in enumerate(new_suppliers):
+        if str(sup_a.id) in matched_ids:
+            continue
+
+        a_name_lower = (sup_a.name or "").strip().lower()
+        a_domains = _get_supplier_domains(sup_a)
+
+        best_match = None
+        best_confidence = 0.0
+        best_reasons = []
+
+        for j, sup_b in enumerate(new_suppliers):
+            if i >= j:
+                continue  # only compare forward to avoid double-counting
+            if str(sup_b.id) in matched_ids:
+                continue
+
+            b_name_lower = (sup_b.name or "").strip().lower()
+            b_domains = _get_supplier_domains(sup_b)
+
+            confidence = 0.0
+            reasons = []
+
+            # Check domain overlap
+            shared_domains = a_domains & b_domains
+            if shared_domains:
+                sim = _name_similarity(a_name_lower, b_name_lower)
+                confidence = max(0.8, sim)
+                reasons.append("domain_match")
+                if sim > 0.5:
+                    reasons.append(f"name_similarity:{sim:.2f}")
+
+            # Exact name match
+            if not reasons and a_name_lower and a_name_lower == b_name_lower:
+                confidence = 1.0
+                reasons.append("exact_name_match")
+
+            # Name containment
+            if not reasons and a_name_lower and b_name_lower:
+                if a_name_lower in b_name_lower or b_name_lower in a_name_lower:
+                    len_ratio = min(len(a_name_lower), len(b_name_lower)) / max(len(a_name_lower), len(b_name_lower))
+                    if len_ratio > 0.6:
+                        confidence = 0.6 + (len_ratio * 0.3)
+                        reasons.append("name_containment")
+                        reasons.append(f"len_ratio:{len_ratio:.2f}")
+
+            # Name similarity
+            if not reasons and a_name_lower and b_name_lower:
+                sim = _name_similarity(a_name_lower, b_name_lower)
+                if sim >= HIGH_CONFIDENCE_THRESHOLD:
+                    confidence = sim
+                    reasons.append(f"name_similarity:{sim:.2f}")
+
+            if confidence > best_confidence:
+                best_match = sup_b
+                best_confidence = confidence
+                best_reasons = reasons
+
+        if best_match and best_confidence >= 0.6:
+            # Pick the "keep" supplier: prefer the one with more data (url, contacts, etc.)
+            keep, remove = _pick_keep_remove(sup_a, best_match)
+            matched_ids.add(str(remove.id))
+            results.append({
+                "new_supplier": _supplier_summary(remove),
+                "match": _supplier_summary(keep),
+                "confidence": round(best_confidence, 3),
+                "reasons": best_reasons,
+            })
+
+    results.sort(key=lambda r: -r["confidence"])
+    return results
+
+
+def _pick_keep_remove(a, b):
+    """Decide which supplier to keep and which to remove.
+
+    Prefer the one with: netsuite_id > more contacts > has url > earlier created.
+    """
+    def _score(sup):
+        s = 0
+        if sup.netsuite_id:
+            s += 100
+        if sup.url:
+            s += 10
+        s += len(sup.contacts or []) * 2
+        s += len(sup.alt_names or [])
+        s += len(sup.alt_domains or [])
+        return s
+
+    score_a = _score(a)
+    score_b = _score(b)
+    if score_a >= score_b:
+        return a, b
+    return b, a
+
+
 def _supplier_summary(sup) -> dict:
     """Convert a Supplier ORM object to a summary dict for the UI."""
     contacts = sup.contacts if isinstance(sup.contacts, list) else []

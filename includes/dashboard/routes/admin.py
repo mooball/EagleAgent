@@ -276,11 +276,17 @@ async def partial_admin_duplicates(request: Request, user: dict = require_admin)
 @router.post("/admin/duplicates/scan")
 async def admin_duplicates_scan(request: Request, user: dict = require_admin):
     import asyncio
-    from scripts.find_duplicate_suppliers import scan_duplicates
+    from scripts.find_duplicate_suppliers import scan_duplicates, scan_internal_duplicates
+
+    form = await request.form()
+    scan_mode = form.get("scan_mode", "netsuite")
 
     session = _helpers.get_session()
     try:
-        duplicates = await asyncio.to_thread(scan_duplicates, session)
+        if scan_mode == "internal":
+            duplicates = await asyncio.to_thread(scan_internal_duplicates, session)
+        else:
+            duplicates = await asyncio.to_thread(scan_duplicates, session)
     finally:
         session.close()
 
@@ -289,6 +295,7 @@ async def admin_duplicates_scan(request: Request, user: dict = require_admin):
         "active_nav": "admin",
         "duplicates": duplicates,
         "scanned": True,
+        "scan_mode": scan_mode,
     })
 
 
@@ -368,3 +375,65 @@ async def admin_duplicates_dismiss(request: Request, user: dict = require_admin)
         session.close()
 
     return HTMLResponse('<div class="px-4 py-3 rounded-lg text-sm bg-gray-50 text-gray-600 dark:bg-gray-800 dark:text-gray-400 border border-gray-200 dark:border-gray-700 mb-3">Dismissed.</div>')
+
+
+@router.post("/admin/duplicates/delete")
+async def admin_duplicates_delete(request: Request, user: dict = require_admin):
+    """Delete a supplier outright (with RFQ cleanup)."""
+    import uuid
+    from starlette.responses import HTMLResponse
+    from sqlalchemy.orm.attributes import flag_modified
+    from includes.dashboard.models import Supplier, RFQItem, SupplierBrand
+
+    form = await request.form()
+    supplier_id = form.get("supplier_id", "").strip()
+
+    if not supplier_id:
+        return HTMLResponse("")
+
+    session = _helpers.get_session()
+    try:
+        sup_uuid = uuid.UUID(supplier_id)
+        sup = session.query(Supplier).filter(Supplier.id == sup_uuid).first()
+        if not sup:
+            return HTMLResponse('<div class="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200 dark:border-red-800 mb-3">Supplier not found.</div>')
+
+        sup_name = sup.name
+
+        # Remove from RFQ items suppliers JSONB
+        rfq_items = session.query(RFQItem).filter(RFQItem.suppliers.isnot(None)).all()
+        updated = 0
+        for item in rfq_items:
+            suppliers = item.suppliers or []
+            new_list = [s for s in suppliers if s.get("supplier_id") != supplier_id]
+            if len(new_list) != len(suppliers):
+                item.suppliers = new_list
+                flag_modified(item, "suppliers")
+                updated += 1
+
+        # Remove from RFQ items brand_suppliers JSONB
+        brand_items = session.query(RFQItem).filter(RFQItem.brand_suppliers.isnot(None)).all()
+        for item in brand_items:
+            brand_sups = item.brand_suppliers or []
+            new_list = [s for s in brand_sups if s.get("supplier_id") != supplier_id]
+            if len(new_list) != len(brand_sups):
+                item.brand_suppliers = new_list
+                flag_modified(item, "brand_suppliers")
+
+        # Remove supplier_brand links
+        session.query(SupplierBrand).filter(SupplierBrand.supplier_id == sup_uuid).delete()
+
+        # Delete the supplier
+        session.delete(sup)
+        session.commit()
+
+        msg = f"Deleted &ldquo;{sup_name}&rdquo;."
+        if updated:
+            msg += f" Removed from {updated} RFQ item(s)."
+        return HTMLResponse(f'<div class="px-4 py-3 rounded-lg text-sm bg-green-50 text-green-800 dark:bg-green-900/30 dark:text-green-300 border border-green-200 dark:border-green-800 mb-3">{msg}</div>')
+    except Exception as e:
+        session.rollback()
+        logger.exception("Delete supplier failed")
+        return HTMLResponse(f'<div class="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200 dark:border-red-800 mb-3">Delete failed: {e}</div>')
+    finally:
+        session.close()
