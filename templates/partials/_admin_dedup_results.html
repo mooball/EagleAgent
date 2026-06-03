@@ -33,10 +33,10 @@
 
                     <!-- Two-column comparison -->
                     <div class="grid grid-cols-2 gap-4">
-                        <!-- New (to remove) -->
+                        <!-- Supplier to remove -->
                         <div class="border border-red-200 dark:border-red-800 rounded-lg p-3 bg-red-50/50 dark:bg-red-950/20">
                             <div class="flex items-center gap-1.5 mb-1.5">
-                                <span class="text-[9px] uppercase tracking-wide font-medium text-red-600 dark:text-red-400">Web-added (remove)</span>
+                                <span class="text-[9px] uppercase tracking-wide font-medium text-red-600 dark:text-red-400">Remove</span>
                                 {% if new.source %}<span class="text-[9px] px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400">{{ new.source }}</span>{% endif %}
                             </div>
                             <p class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ new.name }}</p>
@@ -47,10 +47,10 @@
                             {% endif %}
                             {% if new.country %}<p class="text-xs text-gray-400 mt-0.5">{{ new.country }}</p>{% endif %}
                         </div>
-                        <!-- Netsuite (to keep) -->
+                        <!-- Supplier to keep -->
                         <div class="border border-green-200 dark:border-green-800 rounded-lg p-3 bg-green-50/50 dark:bg-green-950/20">
                             <div class="flex items-center gap-1.5 mb-1.5">
-                                <span class="text-[9px] uppercase tracking-wide font-medium text-green-600 dark:text-green-400">NetSuite (keep)</span>
+                                <span class="text-[9px] uppercase tracking-wide font-medium text-green-600 dark:text-green-400">Keep{% if match.netsuite_id %} (NetSuite){% endif %}</span>
                                 {% if match.tier %}<span class="text-[9px] px-1 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300">Tier {{ match.tier }}</span>{% endif %}
                             </div>
                             <p class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ match.name }}</p>
@@ -60,7 +60,7 @@
                             <p class="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">{{ match.contact_url }}</p>
                             {% endif %}
                             {% if match.country %}<p class="text-xs text-gray-400 mt-0.5">{{ match.country }}</p>{% endif %}
-                            <p class="text-[10px] text-gray-400 mt-0.5">NS: {{ match.netsuite_id }}</p>
+                            {% if match.netsuite_id %}<p class="text-[10px] text-gray-400 mt-0.5">NS: {{ match.netsuite_id }}</p>{% endif %}
                         </div>
                     </div>
                 </div>
@@ -95,6 +95,13 @@
                         <input type="hidden" name="supplier_id" value="{{ new.id }}">
                         <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 whitespace-nowrap">
                             Not a duplicate
+                        </button>
+                    </form>
+                    <form hx-post="/admin/duplicates/delete" hx-target="closest .dedup-card" hx-swap="outerHTML swap:200ms"
+                          hx-confirm="Delete this supplier permanently?">
+                        <input type="hidden" name="supplier_id" value="{{ new.id }}">
+                        <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded border border-red-300 dark:border-red-700 hover:bg-red-50 dark:hover:bg-red-900/30 text-red-600 dark:text-red-400 whitespace-nowrap">
+                            Delete
                         </button>
                     </form>
                 </div>
