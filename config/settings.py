@@ -118,6 +118,12 @@ class Config:
     NETSUITE_SYNC_BATCH_SIZE = int(os.getenv("NETSUITE_SYNC_BATCH_SIZE", "500"))
     
     
+    # ==================== HubSpot Integration ====================
+    
+    # Private App access token (long-lived, no refresh needed)
+    HUBSPOT_ACCESS_TOKEN = os.getenv("HUBSPOT_ACCESS_TOKEN", "")
+    
+    
     # ==================== Development Settings ====================
     
     # Enable debug mode
