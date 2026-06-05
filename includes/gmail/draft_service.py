@@ -54,22 +54,18 @@ def create_draft_email(
     try:
         service = get_gmail_client(user_email)
         
-        # Add RFQ token to subject if not already present
-        if not f"[RFQ-{rfq_id}]" in subject:
-            subject = f"[RFQ-{rfq_id}] {subject}"
-        
         # Create MIME message with custom headers
         msg = MIMEText(body_html, "html")
         msg["to"] = recipient_email
         msg["from"] = user_email
         msg["subject"] = subject
         
-        # Add custom tracking headers
-        msg["X-Agent-OP"] = rfq_id
-        msg["X-Agent-Type"] = email_type
-        msg["X-Agent-RFQ"] = rfq_id
+        # Add custom tracking headers (immutable — survive subject/body edits)
+        msg["X-Eagle-OP"] = rfq_id
+        msg["X-Eagle-Type"] = email_type
+        msg["X-Eagle-RFQ"] = rfq_id
         if opportunity_id:
-            msg["X-Agent-Opportunity"] = opportunity_id
+            msg["X-Eagle-Opportunity"] = opportunity_id
         
         # Encode message
         raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()
@@ -79,10 +75,12 @@ def create_draft_email(
         draft_result = service.users().drafts().create(userId="me", body=draft_body).execute()
         
         draft_id = draft_result.get("id")
+        message_id = draft_result.get("message", {}).get("id")
         thread_id = draft_result.get("message", {}).get("threadId")
         
-        # Generate compose URL
-        compose_url = generate_compose_url(draft_id, user_email)
+        # Use the draft route URL for reliable opening of the exact draft.
+        # This opens full Gmail UI (accepted UX) but avoids blank compose edge cases.
+        compose_url = generate_compose_url(message_id, user_email)
         
         # Log to database
         _save_draft_to_tracking(
@@ -127,24 +125,77 @@ def create_draft_email(
         }
 
 
-def generate_compose_url(draft_id: str, user_email: str) -> str:
-    """Generate Gmail compose URL for browser modal.
-    
-    Opens Gmail compose window with the given draft pre-loaded.
-    
+def send_email_direct(
+    user_email: str,
+    recipient_email: str,
+    subject: str,
+    body_html: str,
+    rfq_id: str,
+    email_type: str = "rfq_outreach",
+    opportunity_id: str | None = None,
+) -> dict:
+    """Send an HTML email directly via Gmail API and track it as sent."""
+    try:
+        service = get_gmail_client(user_email)
+
+        msg = MIMEText(body_html, "html")
+        msg["to"] = recipient_email
+        msg["from"] = user_email
+        msg["subject"] = subject
+
+        msg["X-Eagle-OP"] = rfq_id
+        msg["X-Eagle-Type"] = email_type
+        msg["X-Eagle-RFQ"] = rfq_id
+        if opportunity_id:
+            msg["X-Eagle-Opportunity"] = opportunity_id
+
+        raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        send_result = service.users().messages().send(userId="me", body={"raw": raw_message}).execute()
+
+        message_id = send_result.get("id")
+        thread_id = send_result.get("threadId")
+
+        _save_sent_to_tracking(
+            gmail_thread_id=thread_id,
+            gmail_message_id=message_id,
+            user_email=user_email,
+            rfq_id=rfq_id,
+            opportunity_id=opportunity_id,
+            email_type=email_type,
+            subject=subject,
+            recipient_email=recipient_email,
+        )
+
+        return {
+            "status": "ok",
+            "message_id": message_id,
+            "thread_id": thread_id,
+            "message": "Email sent successfully",
+        }
+    except HttpError as e:
+        error_details = e.content.decode() if e.content else str(e)
+        logger.error(f"[direct-send] Gmail API error: {error_details}")
+        return {"status": "error", "message": f"Failed to send email: {str(e)}", "details": error_details}
+    except Exception as e:
+        logger.error(f"[direct-send] Unexpected error: {e}")
+        return {"status": "error", "message": f"Unexpected error sending email: {str(e)}", "details": str(e)}
+
+
+def generate_compose_url(message_id: str, user_email: str) -> str:
+    """Generate a reliable Gmail URL that opens the exact draft.
+
+    Uses #drafts/<message_id> route which consistently opens the saved draft
+    (in full Gmail UI) for user editing and sending.
+
     Args:
-        draft_id: Gmail draft ID
+        message_id: Message ID from draft_result["message"]["id"]
         user_email: Staff member email (for authuser parameter)
-        
+
     Returns:
-        URL suitable for browser modal: https://mail.google.com/mail/u/?...
+        URL that opens the specific draft in Gmail
     """
-    # URL format: https://mail.google.com/mail/u/?authuser=<email>&view=cm&fs=1&compose=<draftId>
-    # fs=1 means "fullscreen" mode (opens in modal/new window)
-    # compose=<id> preloads the draft
-    
     encoded_email = quote(user_email)
-    return f"https://mail.google.com/mail/u/?authuser={encoded_email}&view=cm&fs=1&compose={draft_id}"
+    return f"https://mail.google.com/mail/u/?authuser={encoded_email}#drafts/{message_id}"
 
 
 def _save_draft_to_tracking(
@@ -226,6 +277,73 @@ def _save_draft_to_tracking(
             session.close()
     except Exception as e:
         logger.error(f"[draft-tracking] Error in _save_draft_to_tracking: {e}")
+
+
+def _save_sent_to_tracking(
+    gmail_thread_id: str,
+    gmail_message_id: str,
+    user_email: str,
+    rfq_id: str,
+    email_type: str,
+    subject: str,
+    recipient_email: str,
+    opportunity_id: str | None = None,
+) -> None:
+    """Save sent email info to email_tracking table."""
+    try:
+        from sqlalchemy import text
+
+        session = get_session()
+        try:
+            session.execute(
+                text("""
+                    INSERT INTO email_tracking (
+                        gmail_thread_id,
+                        gmail_message_id,
+                        user_email,
+                        rfq_id,
+                        opportunity_id,
+                        direction,
+                        email_type,
+                        subject,
+                        recipient_email,
+                        sent_at,
+                        created_at
+                    ) VALUES (
+                        :thread_id,
+                        :message_id,
+                        :user_email,
+                        :rfq_id,
+                        :opportunity_id,
+                        :direction,
+                        :email_type,
+                        :subject,
+                        :recipient_email,
+                        NOW(),
+                        NOW()
+                    )
+                """),
+                {
+                    "thread_id": gmail_thread_id,
+                    "message_id": gmail_message_id,
+                    "user_email": user_email,
+                    "rfq_id": rfq_id,
+                    "opportunity_id": opportunity_id,
+                    "direction": "sent",
+                    "email_type": email_type,
+                    "subject": subject,
+                    "recipient_email": recipient_email,
+                }
+            )
+            session.commit()
+            logger.info(f"[sent-tracking] Saved sent message {gmail_message_id} to email_tracking")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"[sent-tracking] Failed to save sent message to DB: {e}")
+        finally:
+            session.close()
+    except Exception as e:
+        logger.error(f"[sent-tracking] Error in _save_sent_to_tracking: {e}")
 
 
 def get_draft_info(draft_id: str, user_email: str) -> dict | None:

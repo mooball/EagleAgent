@@ -17,6 +17,9 @@
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <!-- HTMX -->
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <!-- Jodit (free rich text editor for in-app email compose) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jodit@4.2.27/es2021/jodit.fat.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/jodit@4.2.27/es2021/jodit.fat.min.js"></script>
     <script>htmx.config.allowScriptTags = true;</script>
     <style>[x-cloak] { display: none !important; }</style>
 </head>
@@ -578,10 +581,11 @@
                 editingHeader: false,
                 editingItem: null,
                 addingItem: false,
-                showEmailPanel: false,
                 copySupplierModal: { open: false, sourceLine: null, supplierName: '', items: [] },
                 brandSuppliersModal: { open: false, line: null, brand: '', suppliers: [] },
                 rfqId: '',
+                trackingId: '',
+                userEmail: '',
                 _allLines: [],
                 _items: {},
                 _unidentifiedItems: [],
@@ -589,6 +593,10 @@
                     var dataEl = document.getElementById('rfq-data');
                     var data = dataEl ? JSON.parse(dataEl.textContent) : {};
                     this.rfqId = data.rfqId || '';
+                    this.trackingId = data.trackingId || this.rfqId || '';
+                    this.userEmail = data.userEmail || '';
+                    this.emailModal.userEmail = this.userEmail;
+                    this.emailModal.trackingId = this.trackingId;
                     this._allLines = data.allLines || [];
                     this._unidentifiedItems = data.unidentified || [];
                     // Index items by line number for quick lookup
@@ -914,6 +922,404 @@
                             })
                         }).catch(function(err) { console.error('[add-brand-supplier]', err); });
                         supplier.added = true;
+                    }
+                },
+                emailModal: {
+                    isOpen: false,
+                    isLoading: false,
+                    mode: 'editor',
+                    isExpanded: false,
+                    _editor: null,
+                    _tablePickerCleanup: null,
+                    rfqId: null,
+                    trackingId: "",
+                    userEmail: "",
+                    recipientEmail: "",
+                    recipientName: "",
+                    subject: "",
+                    bodyHtml: "",
+                    composeUrl: null,
+                    error: null,
+                    success: null,
+
+                    _prepare(rfqId, recipientEmail, recipientName, subject, bodyHtml, trackingId = null, userEmail = null) {
+                        this.rfqId = rfqId;
+                        this.trackingId = trackingId || rfqId || "";
+                        this.userEmail = userEmail || this.userEmail || "";
+                        this.recipientEmail = recipientEmail;
+                        this.recipientName = recipientName;
+                        this.subject = this._withTrackingSubject(subject || 'Quote Request');
+                        this.bodyHtml = this._normalizeBodyHtml(this._withTrackingFooter(bodyHtml || ''));
+                        this.mode = 'editor';
+                        this.composeUrl = null;
+                        this.error = null;
+                        this.success = null;
+                    },
+
+                    // Opens in-app editor path
+                    open(rfqId, recipientEmail, recipientName, subject, bodyHtml, trackingId = null, userEmail = null) {
+                        this._prepare(rfqId, recipientEmail, recipientName, subject, bodyHtml, trackingId, userEmail);
+                        this.isOpen = true;
+                        this.isLoading = false;
+                        this._initEditorDeferred();
+                    },
+
+                    // One-click Gmail path (no in-app editing)
+                    quickEditInGmail(rfqId, recipientEmail, recipientName, subject, bodyHtml, trackingId = null, userEmail = null) {
+                        this._prepare(rfqId, recipientEmail, recipientName, subject, bodyHtml, trackingId, userEmail);
+                        this.mode = 'busy';
+                        this.isOpen = true;
+                        this._saveDraft(true);
+                    },
+
+                    close() {
+                        this._closeTablePicker();
+                        this._destroyEditor();
+                        this.isOpen = false;
+                        this.isLoading = false;
+                        this.mode = 'editor';
+                        this.isExpanded = false;
+                        this.rfqId = null;
+                        this.trackingId = "";
+                        this.recipientEmail = "";
+                        this.recipientName = "";
+                        this.subject = "";
+                        this.bodyHtml = "";
+                        this.composeUrl = null;
+                        this.error = null;
+                        this.success = null;
+                    },
+
+                    _initEditorDeferred() {
+                        const initFn = () => this._initEditor();
+                        if (window.Alpine && typeof Alpine.nextTick === 'function') {
+                            Alpine.nextTick(initFn);
+                        } else {
+                            setTimeout(initFn, 0);
+                        }
+                    },
+
+                    _initEditor() {
+                        const self = this;
+                        if (!window.Jodit) {
+                            this.error = 'Rich editor failed to load. Please refresh the page.';
+                            return;
+                        }
+
+                        if (this._editor) {
+                            this._editor.value = self.bodyHtml || '';
+                            return;
+                        }
+
+                        this._editor = Jodit.make('#email-editor', {
+                            height: this.isExpanded ? 520 : 320,
+                            toolbarAdaptive: false,
+                            toolbarSticky: false,
+                            saveSelectionOnBlur: true,
+                            askBeforePasteHTML: false,
+                            askBeforePasteFromWord: false,
+                            defaultActionOnPaste: 'insert_as_html',
+                            disablePlugins: 'ai-assistant',
+                            buttons: [
+                                'bold', 'italic', 'underline', '|',
+                                'ul', 'ol', '|',
+                                'outdent', 'indent', '|',
+                                'brush', '|',
+                                {
+                                    name: 'insertStyledTable',
+                                    icon: 'table',
+                                    tooltip: 'Insert styled table',
+                                    exec: (editor) => {
+                                        self._openTablePicker(editor);
+                                    }
+                                },
+                                'link', '|',
+                                'align', '|',
+                                'undo', 'redo'
+                            ]
+                        });
+                        // Keep a saved cursor range so toolbar actions (e.g., table insert)
+                        // can restore insertion at the user's last caret position.
+                        this._editor.events.on('change keyup mouseup', () => {
+                            try { this._editor.s.save(); } catch (_) {}
+                        });
+                        this._editor.events.on('beforeCommand', () => {
+                            try { this._editor.s.restore(); } catch (_) {}
+                        });
+                        this._editor.value = self.bodyHtml || '';
+                    },
+
+                    toggleExpand() {
+                        const currentHtml = this._getBodyHtml();
+                        this.isExpanded = !this.isExpanded;
+                        this.bodyHtml = currentHtml;
+                        this._destroyEditor();
+                        this._initEditorDeferred();
+                    },
+
+                    _destroyEditor() {
+                        this._closeTablePicker();
+                        if (this._editor && typeof this._editor.destruct === 'function') {
+                            this._editor.destruct();
+                        }
+                        this._editor = null;
+                    },
+
+                    _getBodyHtml() {
+                        if (this._editor) {
+                            return this._editor.value || '';
+                        }
+                        return this.bodyHtml || '';
+                    },
+
+                    _withTrackingSubject(subject) {
+                        const s = (subject || '').trim();
+                        if (!this.trackingId || s.includes(this.trackingId)) return s;
+                        return `[${this.trackingId}] ${s}`;
+                    },
+
+                    _withTrackingFooter(bodyHtml) {
+                        if (!this.trackingId) return bodyHtml;
+                        if (bodyHtml.includes(this.trackingId)) return bodyHtml;
+                        const footer = `<p style="margin-top:16px;font-size:10px;line-height:1.2;color:#6b7280;">Tracking ID: ${this.trackingId}</p>`;
+                        return `${bodyHtml}${footer}`;
+                    },
+
+                    _buildStyledTableHtml(colCount, rowCount) {
+                        const ths = Array.from({ length: colCount }, (_, i) =>
+                            `<th style="border: 1px solid #d1d5db; padding: 8px 12px; font-family: Arial, Helvetica, sans-serif; font-size: 14px; background-color: #f3f4f6;">Header ${i + 1}</th>`
+                        ).join('');
+                        const tds = Array.from({ length: colCount }, () =>
+                            '<td style="border: 1px solid #d1d5db; padding: 8px 12px; font-family: Arial, Helvetica, sans-serif; font-size: 14px;">&nbsp;</td>'
+                        ).join('');
+                        const rows = Array.from({ length: rowCount }, () => `<tr>${tds}</tr>`).join('');
+                        return `<table style="border-collapse: collapse; margin: 12px 0; font-family: Arial, Helvetica, sans-serif; font-size: 14px;"><thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table><p></p>`;
+                    },
+
+                    _openTablePicker(editor) {
+                        this._closeTablePicker();
+                        if (!editor) return;
+
+                        try { editor.s.save(); } catch (_) {}
+
+                        const overlay = document.createElement('div');
+                        overlay.style.position = 'fixed';
+                        overlay.style.inset = '0';
+                        overlay.style.background = 'rgba(0,0,0,0.15)';
+                        overlay.style.zIndex = '100000';
+                        overlay.style.display = 'flex';
+                        overlay.style.alignItems = 'center';
+                        overlay.style.justifyContent = 'center';
+
+                        const panel = document.createElement('div');
+                        panel.style.background = '#fff';
+                        panel.style.border = '1px solid #d1d5db';
+                        panel.style.borderRadius = '8px';
+                        panel.style.padding = '10px';
+                        panel.style.boxShadow = '0 12px 24px rgba(0,0,0,0.2)';
+                        panel.style.width = 'fit-content';
+
+                        const label = document.createElement('div');
+                        label.textContent = 'Insert table: 1 x 1';
+                        label.style.font = '600 13px Arial, sans-serif';
+                        label.style.marginBottom = '8px';
+                        panel.appendChild(label);
+
+                        const grid = document.createElement('div');
+                        grid.style.display = 'grid';
+                        grid.style.gridTemplateColumns = 'repeat(6, 22px)';
+                        grid.style.gap = '4px';
+
+                        const cells = [];
+                        for (let r = 1; r <= 6; r++) {
+                            for (let c = 1; c <= 6; c++) {
+                                const cell = document.createElement('button');
+                                cell.type = 'button';
+                                cell.dataset.rows = String(r);
+                                cell.dataset.cols = String(c);
+                                cell.style.width = '22px';
+                                cell.style.height = '22px';
+                                cell.style.border = '1px solid #cbd5e1';
+                                cell.style.background = '#f8fafc';
+                                cell.style.padding = '0';
+                                cell.style.cursor = 'pointer';
+
+                                cell.addEventListener('mouseenter', () => {
+                                    label.textContent = `Insert table: ${r} x ${c}`;
+                                    cells.forEach((btn) => {
+                                        const rr = parseInt(btn.dataset.rows || '0', 10);
+                                        const cc = parseInt(btn.dataset.cols || '0', 10);
+                                        btn.style.background = rr <= r && cc <= c ? '#bfdbfe' : '#f8fafc';
+                                        btn.style.borderColor = rr <= r && cc <= c ? '#60a5fa' : '#cbd5e1';
+                                    });
+                                });
+
+                                cell.addEventListener('click', (ev) => {
+                                    ev.preventDefault();
+                                    try { editor.s.restore(); } catch (_) {}
+                                    editor.s.focus();
+                                    editor.s.insertHTML(this._buildStyledTableHtml(c, r));
+                                    try { editor.s.save(); } catch (_) {}
+                                    this._closeTablePicker();
+                                });
+
+                                cells.push(cell);
+                                grid.appendChild(cell);
+                            }
+                        }
+                        panel.appendChild(grid);
+
+                        const help = document.createElement('div');
+                        help.textContent = 'Click outside to cancel';
+                        help.style.font = '12px Arial, sans-serif';
+                        help.style.color = '#64748b';
+                        help.style.marginTop = '8px';
+                        panel.appendChild(help);
+
+                        overlay.addEventListener('click', (ev) => {
+                            if (ev.target === overlay) this._closeTablePicker();
+                        });
+                        panel.addEventListener('click', (ev) => ev.stopPropagation());
+
+                        overlay.appendChild(panel);
+                        document.body.appendChild(overlay);
+
+                        this._tablePickerCleanup = () => {
+                            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                            this._tablePickerCleanup = null;
+                        };
+                    },
+
+                    _closeTablePicker() {
+                        if (typeof this._tablePickerCleanup === 'function') {
+                            this._tablePickerCleanup();
+                        }
+                    },
+
+                    _normalizeBodyHtml(bodyHtml) {
+                        if (!bodyHtml) {
+                            return '<div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.45;"></div>';
+                        }
+                        if (typeof DOMParser === 'undefined') return bodyHtml;
+
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(`<div id="email-root">${bodyHtml}</div>`, 'text/html');
+                        const root = doc.getElementById('email-root');
+                        if (!root) return bodyHtml;
+
+                        const stripFontStyle = (value) => {
+                            if (!value) return '';
+                            return value
+                                .replace(/font-size\s*:[^;]+;?/gi, '')
+                                .replace(/font-family\s*:[^;]+;?/gi, '')
+                                .replace(/\s{2,}/g, ' ')
+                                .trim();
+                        };
+
+                        const nodes = root.querySelectorAll('*');
+                        nodes.forEach((el) => {
+                            const cleaned = stripFontStyle(el.getAttribute('style') || '');
+                            if (cleaned) {
+                                el.setAttribute('style', cleaned);
+                            } else {
+                                el.removeAttribute('style');
+                            }
+                        });
+
+                        root.querySelectorAll('table').forEach((el) => {
+                            const base = el.getAttribute('style') || '';
+                            el.setAttribute('style', `${base}${base && !base.trim().endsWith(';') ? ';' : ''}font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.45; border-collapse: collapse; margin: 0 0 12px 0;`);
+                        });
+
+                        root.querySelectorAll('th').forEach((el) => {
+                            const base = el.getAttribute('style') || '';
+                            el.setAttribute('style', `${base}${base && !base.trim().endsWith(';') ? ';' : ''}font-family: Arial, Helvetica, sans-serif; font-size: 14px; border: 1px solid #d1d5db; padding: 8px 12px; background-color: #f3f4f6;`);
+                        });
+
+                        root.querySelectorAll('td').forEach((el) => {
+                            const base = el.getAttribute('style') || '';
+                            el.setAttribute('style', `${base}${base && !base.trim().endsWith(';') ? ';' : ''}font-family: Arial, Helvetica, sans-serif; font-size: 14px; border: 1px solid #d1d5db; padding: 8px 12px;`);
+                        });
+
+                        root.querySelectorAll('p, li, div, span, a').forEach((el) => {
+                            const base = el.getAttribute('style') || '';
+                            el.setAttribute('style', `${base}${base && !base.trim().endsWith(';') ? ';' : ''}font-family: Arial, Helvetica, sans-serif; font-size: 14px;`);
+                        });
+
+                        root.setAttribute('style', 'font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.45; color: #111827;');
+                        return root.outerHTML;
+                    },
+
+                    openPopup() {
+                        if (this.composeUrl) {
+                            window.open(this.composeUrl, 'gmail_compose', 'width=960,height=720,left=200,top=80');
+                        }
+                    },
+
+                    async sendDirect() {
+                        this.isLoading = true;
+                        this.error = null;
+                        this.success = null;
+                        try {
+                            const bodyHtml = this._normalizeBodyHtml(this._withTrackingFooter(this._getBodyHtml()));
+                            const response = await fetch(`/api/rfqs/${this.rfqId}/send-email-direct`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    recipient_email: this.recipientEmail,
+                                    recipient_name: this.recipientName,
+                                    subject: this._withTrackingSubject(this.subject),
+                                    body_html: bodyHtml,
+                                }),
+                            });
+                            const data = await response.json();
+                            if (data.status !== 'ok') throw new Error(data.message || 'Failed to send email');
+                            this.success = data.message || 'Email sent successfully';
+                            this.mode = 'result';
+                        } catch (err) {
+                            this.error = err.message || 'Failed to send email';
+                        } finally {
+                            this.isLoading = false;
+                        }
+                    },
+
+                    async saveToDraftInGmail() {
+                        await this._saveDraft(false);
+                    },
+
+                    async editDraftInGmail() {
+                        await this._saveDraft(true);
+                    },
+
+                    async _saveDraft(openAfter) {
+                        this.isLoading = true;
+                        this.error = null;
+                        this.composeUrl = null;
+                        try {
+                            const bodyHtml = this._normalizeBodyHtml(this._withTrackingFooter(this._getBodyHtml()));
+                            const response = await fetch(`/api/rfqs/${this.rfqId}/send-email-draft`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    recipient_email: this.recipientEmail,
+                                    recipient_name: this.recipientName,
+                                    subject: this._withTrackingSubject(this.subject),
+                                    body_html: bodyHtml,
+                                }),
+                            });
+                            const data = await response.json();
+                            if (data.status !== 'ok') throw new Error(data.message || 'Failed to create draft');
+                            this.composeUrl = data.compose_url;
+                            this.success = openAfter
+                                ? (data.message || 'Draft created and opened in Gmail')
+                                : 'Draft saved to Gmail successfully';
+                            this.mode = 'result';
+                            if (openAfter) this.openPopup();
+                        } catch (err) {
+                            this.error = err.message || 'Failed to create draft';
+                        } finally {
+                            this.isLoading = false;
+                        }
                     }
                 }
             };

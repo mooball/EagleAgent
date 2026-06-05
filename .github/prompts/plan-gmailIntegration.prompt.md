@@ -3,45 +3,44 @@
 ## Overview
 Integrate EagleAgent with Gmail using domain-wide delegation to:
 - Create draft emails via Gmail API with custom tracking headers
-- Direct users to complete and send draft emails via browser modal
-- Send emails directly (future: high-volume use cases)
+- Provide dual-path compose UX (in-app rich editor + Gmail draft handoff)
+- Send emails directly via API from the in-app editor path
 - Read and scan mailboxes for threads/new emails based on Opportunity ID or RFQ number
 - Track sent emails against RFQ records with persistent mapping
 
-## Architecture Decision: Draft-First Workflow
+## Architecture Decision: Dual-Path Workflow (In-App + Gmail)
 
-The agent creates draft emails in Gmail with custom headers and directs the user to
-complete/edit/send them in a browser modal. This approach:
-- Lets users add attachments, edit tone, and review before sending
-- Uses Gmail's native interface (familiar, feature-complete)
-- Avoids full-automation concerns for first contact emails
-- Scales to automated sending once domain/process is mature
-- Keeps audit trail: user confirms final send action
+EagleAgent now supports two compose/send paths from the same modal:
+- **In-app editor path** for fast edits and direct send via Gmail API
+- **Gmail draft path** for advanced edits, attachments, and Gmail-native compose controls
+
+This approach:
+- Preserves fast workflow for most supplier outreach messages
+- Keeps Gmail-native capability available for edge cases (attachments/advanced formatting)
+- Avoids full-automation concerns for first-contact emails
+- Scales toward automation once templates/process are mature
+- Keeps an audit trail across both draft and direct-send events
 
 ```
 Agent generates email content (template + dynamic data)
-        ↓
-Agent calls Gmail API to create draft with headers:
-  - X-Agent-OP: <opportunity_id>  (RFQ number or Deal ID)
-  - X-Agent-Type: <email_type>     (rfq_outreach, quote, invoice, etc.)
-  - X-Agent-RFQ: <rfq_id>          (for query-based tracking)
-        ↓
-Get draft draftId + compose URL → open modal in browser
-        ↓
-Modal URL: https://mail.google.com/mail/u/?authuser=${staffEmail}&view=cm&fs=1&compose=${draftId}
-        ↓
-User edits, adds attachments, reviews → clicks Send in Gmail
-        ↓
-Post-send: background job polls thread & reads sent message
-        ↓
-Extract headers, link to RFQ, store gmail_thread_id in email_tracking
-        ↓
-Future sends: poll for replies using History API (same as HubSpot plan)
+  ↓
+Modal opens with rich in-app editor + actions:
+  - Send (direct API send)
+  - Save to Draft in Gmail
+  - Edit Draft in Gmail
+  ↓
+Path A (in-app send): messages.send → store sent message_id/thread_id in email_tracking
+Path B (Gmail path): drafts.create → open #drafts/<messageId> → user sends in Gmail
+  ↓
+Mailbox sync/post-send detection associates outgoing events to RFQ tracking records
+  ↓
+Reply tracking uses thread IDs + fallback token matching
 ```
 
-**Why draft-first matters for the initial RFQ use case:**
+**Why dual-path matters for the RFQ use case:**
 - Quote Requests to suppliers are first-contact emails — trust and relationship matter
-- User can review/customize the template before sending to new contacts
+- User can quickly edit/send in-app for routine cases
+- User can switch to Gmail for attachments and advanced edits when needed
 - Reduces perceived "bot" risk with customers (personal touch maintained)
 - Future: once templates are proven, we can toggle to auto-send for repeat contacts
 
@@ -76,7 +75,7 @@ Future sends: poll for replies using History API (same as HubSpot plan)
 
 ## Data Model
 
-### email_tracking table (expanded from HubSpot plan)
+### email_tracking table
 ```sql
 CREATE TABLE email_tracking (
     id              SERIAL PRIMARY KEY,
@@ -93,7 +92,7 @@ CREATE TABLE email_tracking (
     
     -- RFQ/Opportunity tracking
     rfq_id          VARCHAR NOT NULL,        -- RFQ ID (primary tracking)
-    opportunity_id  VARCHAR,                 -- Fallback: HubSpot Deal ID or other ID
+    opportunity_id  VARCHAR,                 -- Fallback: external opportunity/deal ID
     rfq_token       VARCHAR,                 -- e.g. RFQ-12345 (in subject line)
     
     -- Email metadata
@@ -182,10 +181,10 @@ CREATE TABLE mailbox_sync_cursor (
 - [x] Returns: `{ status, draft_id, thread_id, compose_url, message }`
 - [x] Implementation:
   - [x] Build email message with custom headers:
-    - [x] `X-Agent-OP: <rfq_id>`
-    - [x] `X-Agent-Type: <email_type>`
-    - [x] `X-Agent-RFQ: <rfq_id>`
-    - [x] `X-Agent-Opportunity: <opportunity_id>` (optional)
+    - [x] `X-Eagle-OP: <rfq_id>`
+    - [x] `X-Eagle-Type: <email_type>`
+    - [x] `X-Eagle-RFQ: <rfq_id>`
+    - [x] `X-Eagle-Opportunity: <opportunity_id>` (optional)
   - [x] Create draft via `users().drafts().create()`
   - [x] Extract `draftId` and `threadId`
   - [x] Generate compose URL for browser modal
@@ -195,22 +194,55 @@ CREATE TABLE mailbox_sync_cursor (
 **Status**: ✅ Tested and working end-to-end. Creates drafts with proper headers, persists to database, generates correct compose URLs.
 
 ### 2.2 Compose URL generation ✅
-- [x] Function: `generate_compose_url(draft_id, user_email) -> str`
-- [x] URL format: `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(userEmail)}&view=cm&fs=1&compose=${draftId}`
+- [x] Function: `generate_compose_url(message_id, user_email) -> str`
+- [x] URL format (current): `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(userEmail)}#drafts/${messageId}`
 - [x] Special characters in email are properly URL-encoded
-- [x] Tested and verified with harry@eagle-exports.com
+- [x] Uses reliable existing-draft open behavior (full Gmail UI)
 
-### 2.3 Frontend modal integration ⏳ NOT YET STARTED
-- **UI**: RFQ detail page → "Send Supplier Email" button (planned)
-- **Flow**:
-  1. User clicks "Send Email"
-  2. Modal appears with email preview/form
-  3. Agent/template generates draft content
-  4. Backend creates draft via Gmail API
-  5. Modal opens iframe or new window to compose URL
-  6. User edits/adds attachments/sends in Gmail
-  7. User returns to RFQ UI (close modal or redirect)
-- **No blocking on send** — user is in charge; log draft as created
+### 2.3 Frontend modal integration ✅ COMPLETE
+- **UI**: RFQ detail page + supplier lists now use dual actions: `Edit` and `Edit in Gmail`.
+- **Flow (implemented)**:
+  1. User clicks `Edit` (in-app editor path) or `Edit in Gmail` (quick Gmail path)
+  2. Subject is normalized with tracking token (`[RFQ-...]`)
+  3. Rich HTML body (including product table) is injected from supplier template content
+  4. Body tracking marker is appended for scanner fallback
+  5. In-app editor path supports:
+     - `Send` (direct Gmail API send)
+     - `Save to Draft in Gmail`
+     - `Edit Draft in Gmail`
+  6. Gmail path opens exact draft via popup route (`#drafts/<messageId>`)
+  7. Modal only closes intentionally (X/Discard/Done), preventing accidental data loss
+
+- **Editor behaviors now implemented**:
+  - Free no-key rich editor (Jodit) in modal
+  - Expand/collapse compose view (~80% expanded)
+  - Editable `To` field
+  - Styled table insertion picker (grid-based)
+  - Outgoing HTML normalization for consistent 14px font and visible table formatting
+
+- **Implemented files**:
+  - `templates/partials/_rfq_email_suppliers.html`
+  - `templates/partials/_rfq_items_table.html`
+  - `templates/partials/_email_compose_modal.html`
+  - `templates/base.html`
+  - `includes/dashboard/routes/rfqs.py`
+
+### 2.3.1 Dual-path email compose UX ✅ COMPLETE
+- **Delivered outcomes**:
+  - Reusable in-app email editor modal component implemented
+  - Direct-send API endpoint implemented: `POST /api/rfqs/{rfq_id}/send-email-direct`
+  - Draft-save + draft-open actions implemented in modal footer
+  - RFQ supplier buttons updated to `Edit` + `Edit in Gmail`
+  - API-sent tracking persisted to `email_tracking` as `direction='sent'`
+
+- **Tracking behavior (implemented)**:
+  - Subject token remains mandatory (`[RFQ-...]`)
+  - Body tracking marker remains present as scanner fallback key
+  - `email_tracking` remains source of truth for draft/sent/reply lifecycle
+
+- **Remaining follow-on work**:
+  - Reuse same component pattern across additional non-RFQ email surfaces
+  - Complete Phase 3 mailbox sync/status surfacing
 
 ### 2.4 Post-send detection (polling + sync job) ⏳ PHASE 3
 - **Quick detection (optional poll)**: After draft created, can poll every 5-10 seconds for ~5 minutes
@@ -248,8 +280,9 @@ CREATE TABLE mailbox_sync_cursor (
 - Function: `search_thread_by_rfq(user_email, rfq_id, limit=10) -> list[dict]`
 - Search modes (in order of priority):
   1. Query `email_tracking` by `rfq_id` → return all threads
-  2. Query Gmail by `X-Agent-RFQ` header (via `users().messages().list()` with search query)
+  2. Query Gmail by `X-Eagle-RFQ` header (via `users().messages().get(format='full')` header extraction)
   3. Query Gmail by RFQ token in subject `[RFQ-<id>]`
+  4. Fallback: query body marker text `Tracking ID: RFQ-<id>`
 - Returns: list of threads with metadata: threadId, subject, participants, dates, last message preview
 
 ### 3.4 Thread details & message content
@@ -296,13 +329,22 @@ CREATE TABLE mailbox_sync_cursor (
 
 ### 4.2 RFQ UI enhancements
 - **RFQ detail page**:
-  - Add "Email Suppliers" button (instead of separate modal)
-  - Show email draft status and compose link
-  - Display email thread history inline (replies from suppliers)
-  - Track: who received email, when, any replies
+  - [x] "Email Suppliers" panel with dual actions (`Edit`, `Edit in Gmail`)
+  - [x] Reusable rich compose modal with loading/editor/result/error states
+  - [x] Buttons in both supplier row and supplier-contact popover
+  - [x] Rich email template injection (tables, formatting, signature)
+  - [x] Safer close behavior (no outside-click/Escape accidental close)
+  - [x] Tabbed RFQ subviews with stable routes:
+    - `/rfqs/{rfq_id}/items`
+    - `/rfqs/{rfq_id}/suppliers`
+    - `/rfqs/{rfq_id}/communications`
+    - `/rfqs/{rfq_id}/quotation`
+  - [x] Communications tab shows logged events from `email_tracking` (draft/sent visibility)
+  - [ ] Show reply thread messages inline (full thread drilldown)
+  - [ ] Show per-supplier sent/replied status indicators
 - **RFQ list page**:
-  - Add filter: "Has email sent" / "Awaiting supplier replies"
-  - Show email status indicator per RFQ
+  - [ ] Add filter: "Has email sent" / "Awaiting supplier replies"
+  - [ ] Show email status indicator per RFQ
 
 ### 4.3 Agent integration
 - **ProcurementAgent** has new tool: `create_and_open_supplier_email_draft`
@@ -482,12 +524,17 @@ GMAIL_COMPOSE_POLL_TIMEOUT=300
    - Then resume normal incremental sync from that point
    - This is a rare edge case (should sync at least every 5 min) but must be handled
 
-5. **HubSpot integration**: ✅ REMOVED FROM SCOPE
-   - We are moving away from HubSpot and integrating more deeply with NetSuite
-   - Future: will set up local DB tables for NetSuite Opportunities and Customers
-   - Will sync primary fields for search/linking (similar to current Suppliers table)
-   - Email tracking will link to NetSuite entities in addition to RFQs
-   - See Section 5.3 above and upcoming NetSuite integration plan
+5. **NetSuite alignment**: ✅ CURRENT DIRECTION
+  - Local DB sync for NetSuite Opportunities and Customers is planned
+  - Primary fields will be synced for search/linking (similar to current Suppliers table)
+  - Email tracking will link to NetSuite entities in addition to RFQs
+  - See Section 5.3 above and upcoming NetSuite integration plan
+
+6. **Custom email headers visibility**: ✅ EXPLAINED
+  - `X-Eagle-*` headers are embedded in API-created draft MIME content.
+  - Gmail UI sending may strip custom headers from externally delivered SMTP message headers.
+  - Subject token + body tracking text remain the primary resilient matching keys.
+  - For fully automated sends (`drafts.send` / `messages.send`), scanner can rely on Sent-copy metadata + immediate API response IDs.
 
 ---
 
@@ -502,19 +549,28 @@ GMAIL_COMPOSE_POLL_TIMEOUT=300
 - [x] Draft creation function working end-to-end
 - [x] Draft URL generates correctly and opens in Gmail
 - [x] User can edit draft and send from Gmail UI
-- [x] Custom headers embedded in draft messages
+- [x] In-app rich editor path can send directly via Gmail API
+- [x] Custom headers embedded in draft MIME messages (`X-Eagle-*`)
 - [x] Drafts persist to `email_tracking` table
+- [x] Direct sends persist to `email_tracking` table as `direction='sent'`
 - [x] `test_gmail_draft.py` passes all tests
 - [x] RFQ schema supports many-threads design
+- [x] RFQ supplier views use `Edit` + `Edit in Gmail` actions
+- [x] Modal supports both in-app send and Gmail draft handoff
+- [x] Product table + formatted HTML template injected into draft body
+- [x] Tracking token added to subject and body footer
+- [x] Modal UX finalized (editor, spinner, result, retry, intentional-close controls)
 
 ### Phase 3 ⏳ NOT YET STARTED
 - [ ] Post-send detection populates `email_tracking` within 1 minute (via optional polling)
 - [ ] Mailbox sync job detects sent emails within 5 minutes
 - [ ] Supplier reply is detected by sync job within 5 minutes
 
-### Phase 4 ⏳ NOT YET STARTED
-- [ ] RFQ UI shows email status and thread history
-- [ ] "Send Email" button creates draft and opens modal
+### Phase 4 🟡 IN PROGRESS
+- [x] "Send Email" buttons create draft and open modal
+- [x] RFQ tab routes implemented for Items/Suppliers/Communications/Quotation
+- [x] RFQ Communications tab shows logged email events for testing visibility
+- [ ] RFQ UI shows reply thread history details and status indicators
 
 ### End-to-End ⏳ PENDING PHASES 3-4
 - [ ] Create RFQ → send to supplier → reply received → verified in UI
