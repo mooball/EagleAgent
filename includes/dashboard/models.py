@@ -133,6 +133,12 @@ class RFQ(Base):
     notes = Column(Text, nullable=True)
     history = Column(JSONB, nullable=True)                    # [{date, user, action}, ...]
     item_groups = Column(JSONB, nullable=True)                # {groups: [...], ungrouped: [...]}
+    
+    # Gmail email tracking fields (summary only, email_tracking table is source of truth)
+    email_status = Column(String, nullable=True)              # 'no_email_sent' | 'draft_pending' | 'sent' | 'awaiting_reply'
+    last_email_sent_at = Column(DateTime(timezone=True), nullable=True)  # Most recent send time
+    supplier_emails = Column(JSONB, nullable=True)            # [{email, name}, ...] contact list for multi-supplier RFQs
+    
     updated_at = Column(DateTime(timezone=True), nullable=True)
 
     items = relationship('RFQItem', back_populates='rfq', order_by='RFQItem.line',
