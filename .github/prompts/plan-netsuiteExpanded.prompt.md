@@ -1,6 +1,30 @@
 # Plan: NetSuite Expanded Integration – Opportunities, Customers, & Team Members
 
-## Status: Planning
+## Status: Implementation in Progress (Phases 1-3 Complete, Phase 4-5 Pending)
+
+## Immediate Next Steps
+
+1. **Apply Alembic migration** to create the four new tables:
+   ```bash
+   uv run alembic upgrade head
+   ```
+
+2. **Populate employee mappings**:
+   ```bash
+   uv run python -m scripts.create_netsuite_employee_mappings
+   ```
+
+3. **Test sync scripts** with dry-runs:
+   ```bash
+   uv run python -m scripts.sync_netsuite_opportunities --dry-run --since "2014-01-01"
+   uv run python -m scripts.sync_netsuite_customers --dry-run --since "30 days"
+   uv run python -m scripts.sync_netsuite_contacts --dry-run --since "30 days"
+   ```
+
+4. **Migrate supplier contacts** (one-time):
+   ```bash
+   uv run python -m scripts.migrate_supplier_contacts
+   ```
 
 ## Context
 
@@ -429,38 +453,55 @@ EMPLOYEE_MAPPINGS = [
 
 ## Files to Create/Modify
 
-| File | Action | Purpose |
-|------|--------|---------|
-| `includes/dashboard/models.py` | Modify | Add Opportunity, Customer, Contact (unified), EmployeeMapping models; add `Supplier.contacts` relationship |
-| `alembic/versions/<timestamp>_*.py` | Create | Migration to add four new tables |
-| `includes/netsuite/queries.py` | Modify | Add query builders for opportunities, customers, contacts |
-| `scripts/sync_netsuite_opportunities.py` | Create | Sync opportunities from NetSuite |
-| `scripts/sync_netsuite_customers.py` | Create | Sync customers and trigger contact sync |
-| `scripts/sync_netsuite_contacts.py` | Create | Sync contacts from NetSuite (customer contacts only; supplier contacts via supplier sync) |
-| `scripts/migrate_supplier_contacts.py` | Create | One-time migration of supplier JSONB contacts into unified contacts table |
-| `scripts/list_netsuite_employees.py` | Create | List employees for manual mapping |
-| `scripts/generate_employee_mapping_data.py` | Create | Generate mapping CSV for manual matching |
-| `scripts/nightly_sync.py` | Modify | Add new sync jobs |
+| File | Action | Status | Purpose |
+|------|--------|--------|---------|
+| `includes/dashboard/models.py` | Modify | ✅ Complete | Add Opportunity, Customer, Contact (unified), EmployeeMapping models; add `Supplier.contacts` relationship |
+| `alembic/versions/e8f2a1b7c4d3_add_netsuite_expanded_tables.py` | Create | ✅ Complete | Migration to add four new tables (not yet applied) |
+| `includes/netsuite/queries.py` | Modify | ✅ Complete | Add query builders for opportunities, customers, contacts (all 4 builders added) |
+| `scripts/sync_netsuite_opportunities.py` | Create | ✅ Complete | Sync opportunities from NetSuite with --since/--resume/--dry-run |
+| `scripts/sync_netsuite_customers.py` | Create | ✅ Complete | Sync customers and trigger contact sync with --since/--resume/--dry-run |
+| `scripts/sync_netsuite_contacts.py` | Create | ✅ Complete | Sync contacts from NetSuite with --since/--resume/--dry-run/--customer-ids |
+| `scripts/migrate_supplier_contacts.py` | Create | ✅ Complete | One-time migration of supplier JSONB contacts into unified contacts table |
+| `scripts/create_netsuite_employee_mappings.py` | Create | ✅ Complete | Populate employee mappings table with 10 active + 7 inactive employees |
+| `scripts/list_netsuite_employees.py` | Create | ✅ Complete | List employees with --export flag for CSV output |
+| `scripts/sync_netsuite_suppliers.py` | Modify | ⏳ Pending | Update to write contacts to unified table instead of JSONB |
+| `scripts/nightly_sync.py` | Modify | ⏳ Pending | Add new sync jobs (opportunities, customers, contacts) |
 | `.github/prompts/plan-netsuiteExpanded.prompt.md` | Create | This plan document |
 
 ---
 
 ## Acceptance Criteria
 
-- ✅ All four models created and migrated
-- ✅ SuiteQL query builders added
-- ✅ Opportunities sync script working with incremental updates
-- ✅ Customers sync script working with contact expansion
-- ✅ Contacts sync script working and storing emails (customer contacts)
-- ✅ Supplier contacts migrated from JSONB to unified contacts table
-- ✅ Supplier sync updated to write contacts to unified table
-- ✅ Employee mapping table populated with initial mappings
-- ✅ Foreign key relationships validated in all sync scripts
-- ✅ `--since`, `--dry-run`, `--resume` flags working on all scripts
-- ✅ Integration tests passing
-- ✅ Nightly sync includes new sync jobs
-- ✅ RFQ models updated with opportunity/customer FKs
-- ✅ Email matching logic ready for implementation
+### Phase 1-3: Complete ✅
+- ✅ All four models created (Opportunity, Customer, Contact, NetSuiteEmployeeMapping)
+- ✅ Alembic migration created (e8f2a1b7c4d3_add_netsuite_expanded_tables.py, ready to apply)
+- ✅ SuiteQL query builders added (opportunities_updated_since, customers_updated_since, contacts_for_ids, contacts_updated_since)
+- ✅ Opportunities sync script complete with --since/--resume/--dry-run and batch commits
+- ✅ Customers sync script complete with contact expansion and contact sync trigger
+- ✅ Contacts sync script complete with --customer-ids support
+- ✅ Employee mapping script created with 10 active + 7 inactive employees
+- ✅ Employee listing script with CSV export capability
+- ✅ Supplier contacts migration script created
+- ✅ Date parsing fixed (NetSuite d/m/yyyy → ISO datetime)
+- ✅ Pagination fixed (all sync scripts use suiteql_iter with batch commits)
+- ✅ `--resume` flag working on opportunities, customers, contacts
+
+### Phase 4: Pending ⏳
+- ⏳ Run Alembic migration (`uv run alembic upgrade head`)
+- ⏳ Populate employee mappings (`uv run python -m scripts.create_netsuite_employee_mappings`)
+- ⏳ Test sync scripts against live NetSuite data
+
+### Phase 5: Pending ⏳
+- ⏳ Run supplier contacts migration
+- ⏳ Update sync_netsuite_suppliers.py to write contacts to unified table
+- ⏳ Update nightly_sync.py to include new sync jobs
+- ⏳ Add relationships to models.py (Opportunity.customer, Customer.contacts)
+
+### Phase 6: Future 🔮
+- ⏳ Integration tests for all new sync scripts
+- ⏳ RFQ models updated with opportunity/customer FKs
+- ⏳ Email matching logic implementation
+- ⏳ Admin UI for employee mapping management
 
 ---
 
@@ -477,8 +518,32 @@ EMPLOYEE_MAPPINGS = [
 
 ## Rollout Plan
 
-1. **Week 1:** Phases 1-2 (models + queries)
-2. **Week 2:** Phase 3 (sync scripts)
-3. **Week 3:** Phase 4 (employee mapping setup)
-4. **Week 4:** Phase 5 (integration, testing, deployment)
+1. **Week 1:** Phases 1-3 (models + queries + sync scripts) ✅ **COMPLETE**
+   - All database models created and migration file generated
+   - All SuiteQL query builders implemented
+   - All 3 sync scripts created with proper pagination, batching, and logging
+   - Employee mapping and listing scripts created
+   - Supplier contacts migration script created
+
+2. **Week 2:** Phase 4 (Database setup + testing)
+   - Apply Alembic migration to create tables
+   - Populate employee mappings
+   - Run dry-runs of all sync scripts to verify data
+   - Test end-to-end with real NetSuite data
+
+3. **Week 3:** Phase 5 (Integration + supplier contacts)
+   - Run supplier contacts migration
+   - Update sync_netsuite_suppliers.py to write to unified contacts table
+   - Update nightly_sync.py with new sync jobs
+   - Add model relationships for queries
+
+4. **Week 4:** Testing & Deployment
+   - Integration tests for all sync scripts
+   - Validate foreign key constraints
+   - Performance testing with large datasets
+   - Deploy to staging, then production
+
 5. **Future:** Phase 6 (RFQ linking + email matching)
+   - Add RFQ columns for opportunity/customer links
+   - Implement email matching logic
+   - Create admin UI for employee management

@@ -168,3 +168,95 @@ def quotes_updated_since(since_date: str) -> str:
         f"AND t.lastmodifieddate >= '{ns_date}' "
         "ORDER BY t.lastmodifieddate ASC"
     )
+
+
+def opportunities_updated_since(since_date: str) -> str:
+    """
+    SuiteQL query for Opportunity records modified on or after a given date.
+
+    Args:
+        since_date: ISO date string, e.g. '2026-04-01'
+
+    Returns:
+        SuiteQL SELECT statement sorted ASC for resumability.
+    """
+    dt = datetime.strptime(since_date, "%Y-%m-%d")
+    ns_date = f"{dt.day}/{dt.month}/{dt.year}"
+
+    return (
+        "SELECT o.id, o.tranid, o.title, o.entity, o.status, "
+        "o.salesrep, o.total, o.currency, o.lastmodifieddate "
+        "FROM opportunity o "
+        f"WHERE o.lastmodifieddate >= '{ns_date}' "
+        "ORDER BY o.lastmodifieddate ASC"
+    )
+
+
+def customers_updated_since(since_date: str) -> str:
+    """
+    SuiteQL query for Customer records modified on or after a given date.
+
+    Only returns active customers (isinactive = 'F').
+
+    Args:
+        since_date: ISO date string, e.g. '2026-04-01'
+
+    Returns:
+        SuiteQL SELECT statement sorted ASC for resumability.
+    """
+    dt = datetime.strptime(since_date, "%Y-%m-%d")
+    ns_date = f"{dt.day}/{dt.month}/{dt.year}"
+
+    return (
+        "SELECT c.id, c.entityid, c.companyname, c.fullname, c.email, c.phone, "
+        "c.isinactive, c.currency, c.salesrep, c.contactlist, c.lastmodifieddate "
+        "FROM customer c "
+        "WHERE c.isinactive = 'F' "
+        f"AND c.lastmodifieddate >= '{ns_date}' "
+        "ORDER BY c.lastmodifieddate ASC"
+    )
+
+
+def contacts_for_ids(contact_ids: list[str]) -> str:
+    """
+    SuiteQL query to fetch Contact records by ID list.
+
+    Args:
+        contact_ids: List of NetSuite contact IDs (e.g. ['5', '76893', '124327'])
+
+    Returns:
+        SuiteQL SELECT statement.
+    """
+    if not contact_ids:
+        return ""
+    
+    id_list = ", ".join(f"'{cid}'" for cid in contact_ids)
+    
+    return (
+        "SELECT c.id, c.firstname, c.lastname, c.email, c.phone, "
+        "c.company, c.isinactive, c.lastmodifieddate "
+        "FROM contact c "
+        f"WHERE c.id IN ({id_list})"
+    )
+
+
+def contacts_updated_since(since_date: str) -> str:
+    """
+    SuiteQL query for Contact records modified on or after a given date.
+
+    Args:
+        since_date: ISO date string, e.g. '2026-04-01'
+
+    Returns:
+        SuiteQL SELECT statement.
+    """
+    dt = datetime.strptime(since_date, "%Y-%m-%d")
+    ns_date = f"{dt.day}/{dt.month}/{dt.year}"
+
+    return (
+        "SELECT c.id, c.firstname, c.lastname, c.email, c.phone, "
+        "c.company, c.isinactive, c.lastmodifieddate "
+        "FROM contact c "
+        f"WHERE c.lastmodifieddate >= '{ns_date}' "
+        "ORDER BY c.lastmodifieddate ASC"
+    )
