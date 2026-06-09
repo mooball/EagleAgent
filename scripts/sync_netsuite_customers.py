@@ -136,7 +136,7 @@ def sync_customers(since_date: str, dry_run: bool = False, sync_contacts: bool =
 
                     cust_data = {
                         "entity_code": row.get("entityid"),
-                        "companyname": row.get("companyname"),
+                        "companyname": row.get("companyname") or row.get("fullname"),
                         "fullname": row.get("fullname"),
                         "email": row.get("email"),
                         "phone": row.get("phone"),

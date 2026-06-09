@@ -37,7 +37,7 @@ def upgrade() -> None:
         sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False, default=lambda: str(uuid.uuid4())),
         sa.Column('netsuite_id', sa.String(), nullable=False),
         sa.Column('entity_code', sa.String(), nullable=True),
-        sa.Column('companyname', sa.String(), nullable=False),
+        sa.Column('companyname', sa.String(), nullable=True),
         sa.Column('fullname', sa.String(), nullable=True),
         sa.Column('email', sa.String(), nullable=True),
         sa.Column('phone', sa.String(), nullable=True),

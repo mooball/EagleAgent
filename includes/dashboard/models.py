@@ -148,7 +148,7 @@ class Customer(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     netsuite_id = Column(String, unique=True, nullable=False, index=True)
     entity_code = Column(String, nullable=True)
-    companyname = Column(String, nullable=False)
+    companyname = Column(String, nullable=True)
     fullname = Column(String, nullable=True)
     email = Column(String, nullable=True, index=True)
     phone = Column(String, nullable=True)
