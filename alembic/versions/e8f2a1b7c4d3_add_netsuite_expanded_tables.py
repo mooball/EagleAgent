@@ -8,7 +8,6 @@ Create Date: 2026-06-08 15:30:00.000000
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
-import uuid
 
 # revision identifiers, used by Alembic.
 revision = 'e8f2a1b7c4d3'
@@ -34,7 +33,7 @@ def upgrade() -> None:
     # Create customers table
     op.create_table(
         'customers',
-        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False, default=lambda: str(uuid.uuid4())),
+        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False, server_default=sa.text('gen_random_uuid()')),
         sa.Column('netsuite_id', sa.String(), nullable=False),
         sa.Column('entity_code', sa.String(), nullable=True),
         sa.Column('companyname', sa.String(), nullable=True),
@@ -58,7 +57,7 @@ def upgrade() -> None:
     # Create opportunities table
     op.create_table(
         'opportunities',
-        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False, default=lambda: str(uuid.uuid4())),
+        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False, server_default=sa.text('gen_random_uuid()')),
         sa.Column('netsuite_id', sa.String(), nullable=False),
         sa.Column('opportunity_number', sa.String(), nullable=True),
         sa.Column('title', sa.String(), nullable=True),
@@ -84,7 +83,7 @@ def upgrade() -> None:
     # Create contacts table (unified for suppliers and customers)
     op.create_table(
         'contacts',
-        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False, default=lambda: str(uuid.uuid4())),
+        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False, server_default=sa.text('gen_random_uuid()')),
         sa.Column('netsuite_id', sa.String(), nullable=True),
         sa.Column('supplier_id', postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column('customer_id', postgresql.UUID(as_uuid=True), nullable=True),

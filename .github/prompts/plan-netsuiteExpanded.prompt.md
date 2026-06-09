@@ -126,7 +126,7 @@ class Opportunity(Base):
     status               = Column(String,  nullable=True)
                            # ← NetSuite field: status (e.g. "C" = Closed, "O" = Open)
 
-    total                = Column(Numeric, nullable=True)
+    total                = Column(Float,   nullable=True)
                            # ← NetSuite field: total
 
     currency             = Column(String,  nullable=True)
@@ -172,8 +172,8 @@ class Customer(Base):
                            # ← NetSuite field: entityid — a short code or display label NS assigns
                            #   (often same as companyname, but not always)
 
-    companyname          = Column(String,  nullable=False)
-                           # ← NetSuite field: companyname
+    companyname          = Column(String,  nullable=True)
+                           # ← NetSuite field: companyname (nullable for individual customers)
 
     fullname             = Column(String,  nullable=True)
                            # ← NetSuite field: fullname (used for individual customers/contacts)
@@ -290,12 +290,13 @@ class NetSuiteEmployeeMapping(Base):
        # SELECT id, entityid, companyname, fullname, email, phone, isinactive, currency, salesrep, contactlist, lastmodifieddate
        # WHERE isinactive = 'F' AND lastmodifieddate >= <date>
    
-   def contacts_for_customer(customer_netsuite_id: str) -> str:
-       # SELECT id, firstname, lastname, email, phone, isinactive, lastmodifieddate
-       # FROM contact WHERE company = <customer_id>
+   def contacts_for_ids(contact_ids: list[str]) -> str:
+       # SELECT id, firstname, lastname, email, phone, company, isinactive, lastmodifieddate
+       # FROM contact WHERE id IN (<ids>)
    
-   def all_contact_ids() -> str:
-       # SELECT DISTINCT id FROM contact (for bulk fetch if needed)
+   def contacts_updated_since(since_date: str) -> str:
+       # SELECT id, firstname, lastname, email, phone, company, isinactive, lastmodifieddate
+       # FROM contact WHERE lastmodifieddate >= <date>
    ```
 
 ---
