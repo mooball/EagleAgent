@@ -27,6 +27,7 @@ from includes.dashboard.models import Opportunity, Customer, NetSuiteEmployeeMap
 from includes.netsuite.client import NetSuiteClient
 from includes.netsuite.queries import opportunities_updated_since
 from includes.netsuite.sync_utils import parse_netsuite_date, parse_since, get_engine, normalize_currency
+from config.settings import Config
 
 
 def sync_opportunities(since_date: str, dry_run: bool = False):

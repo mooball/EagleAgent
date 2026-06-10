@@ -158,11 +158,12 @@
                 <button @click="
                     const iframe = document.getElementById('agent-iframe');
                     if (iframe) {
-                        {% if rfq_thread_id %}
-                            iframe.src = '/chat/thread/{{ rfq_thread_id }}';
-                        {% else %}
+                        const boundThread = currentContext?.thread_id || '{{ rfq_thread_id }}';
+                        if (boundThread) {
+                            iframe.src = '/chat/thread/' + boundThread;
+                        } else {
                             iframe.src = '/chat';
-                        {% endif %}
+                        }
                     }
                     agentState = 'panel';
                 " class="btn-sm text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30">

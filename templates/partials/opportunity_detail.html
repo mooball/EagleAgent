@@ -24,11 +24,11 @@
                     <dd>
                         {% if opp.status %}
                         <span class="px-2 py-0.5 text-xs rounded-full
-                            {% if opp.status == 'A' %}bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300
-                            {% elif opp.status == 'C' %}bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300
+                            {% if opp.status == 'C' %}bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300
+                            {% elif opp.status == 'D' %}bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300
                             {% elif opp.status == 'B' %}bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300
                             {% else %}bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300{% endif %}">
-                            {% if opp.status == 'A' %}Won{% elif opp.status == 'B' %}In Progress{% elif opp.status == 'C' %}Lost{% else %}{{ opp.status }}{% endif %}
+                            {% if opp.status == 'A' %}In Progress{% elif opp.status == 'B' %}Issued Quote{% elif opp.status == 'C' %}Closed - Won{% elif opp.status == 'D' %}Closed - Lost{% else %}{{ opp.status }}{% endif %}
                         </span>
                         {% else %}—{% endif %}
                     </dd>

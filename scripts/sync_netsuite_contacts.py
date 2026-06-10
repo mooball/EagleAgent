@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, func
 from sqlalchemy.orm import sessionmaker
 
+from config.settings import Config
 from includes.dashboard.models import Contact, Customer
 from includes.netsuite.client import NetSuiteClient
 from includes.netsuite.queries import contacts_for_ids, contacts_updated_since

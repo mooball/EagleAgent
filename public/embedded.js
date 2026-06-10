@@ -27,6 +27,73 @@
    */
   window.__dashboardContext = {};
 
+  // ---- Chat profile detection ----
+  // Chainlit renders the active profile name in a dropdown trigger button.
+  // We poll briefly after load/navigation to detect profile changes.
+  var REQUIRED_PROFILE = 'Eagle Agent';
+  var _currentProfile = null;
+
+  function detectChatProfile() {
+    // Chainlit 2.x renders the profile selector with id="chat-profiles".
+    // The selected profile name appears as text inside a trigger/value span.
+    var selector = document.getElementById('chat-profiles');
+    if (selector) {
+      // The trigger button/span contains the active profile name
+      var trigger = selector.querySelector('[class*="SelectValue"], [class*="placeholder"], span');
+      if (trigger && trigger.textContent.trim() && trigger.textContent.trim() !== 'Select profile') {
+        return trigger.textContent.trim();
+      }
+    }
+    // Fallback: look for the profile icon+name in the header area
+    // Chainlit shows "Eagle Agent ∨" style dropdown text
+    var headerText = document.querySelector('#chat-profiles span[class*="font-semibold"], #chat-profiles span');
+    if (headerText && headerText.textContent.trim()) {
+      var text = headerText.textContent.trim();
+      if (text !== 'Select profile') return text;
+    }
+    return _currentProfile; // retain last known
+  }
+
+  function startProfileWatcher() {
+    // Use MutationObserver to detect profile changes in the DOM
+    var observer = new MutationObserver(function () {
+      var profile = detectChatProfile();
+      if (profile && profile !== _currentProfile) {
+        _currentProfile = profile;
+        // Notify parent of profile change
+        window.parent.postMessage(
+          { type: 'chat_profile_change', profile: profile },
+          window.location.origin
+        );
+        // Re-evaluate banner with new profile info
+        updateRfqBanner(window.__dashboardContext);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    // Also detect on thread_id messages (profile may change on new thread)
+    setTimeout(function () {
+      var profile = detectChatProfile();
+      if (profile) {
+        _currentProfile = profile;
+        window.parent.postMessage(
+          { type: 'chat_profile_change', profile: profile },
+          window.location.origin
+        );
+      }
+    }, 1500);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startProfileWatcher);
+  } else {
+    startProfileWatcher();
+  }
+
+  function isOnRequiredProfile() {
+    return !_currentProfile || _currentProfile === REQUIRED_PROFILE;
+  }
+
   function pushContextToServer(ctx) {
     fetch('/api/dashboard-context', {
       method: 'POST',
@@ -74,10 +141,16 @@
     var boundThread = ctx.thread_id || null;
     var activeThread = ctx._activeThreadId || null;
     var isLinked = boundThread && activeThread && boundThread === activeThread;
+    var onCorrectProfile = isOnRequiredProfile();
 
     var label = rfqId + (customer ? ' \u2014 ' + customer : '');
 
-    if (isLinked) {
+    if (!onCorrectProfile) {
+      // Wrong profile — always show unlinked warning, no Link button
+      banner.className = 'rfq-banner rfq-banner--unlinked';
+      banner.innerHTML = '<span class="rfq-banner__icon">\u26A0\uFE0F</span>' +
+        '<span class="rfq-banner__label">Switch to Eagle Agent for ' + escapeHtml(rfqId) + '</span>';
+    } else if (isLinked) {
       banner.className = 'rfq-banner rfq-banner--linked';
       banner.innerHTML = '<span class="rfq-banner__icon">\uD83D\uDCCB</span>' +
         '<span class="rfq-banner__label">' + escapeHtml(label) + '</span>';

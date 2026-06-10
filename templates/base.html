@@ -210,6 +210,7 @@
                 currentContext: {},
                 agentWorking: false,
                 agentWorkingLabel: '',
+                _chatProfile: 'Eagle Agent',  // assume Eagle Agent until told otherwise
 
                 init() {
                     // Pre-set the iframe's theme in localStorage before it loads,
@@ -288,8 +289,13 @@
                             this.agentWorking = false;
                             clearTimeout(this._agentWorkingTimeout);
                         }
+                        if (event.data?.type === 'chat_profile_change' && event.data.profile) {
+                            this._chatProfile = event.data.profile;
+                        }
                         if (event.data?.type === 'bind_rfq_thread' && event.data.rfqId) {
                             // User clicked "Link" in the iframe banner — rebind
+                            // Only allow binding from Eagle Agent profile
+                            if (this._chatProfile !== 'Eagle Agent') return;
                             const rfqId = event.data.rfqId;
                             const threadId = this._activeThreadId;
                             if (threadId) {
@@ -314,11 +320,16 @@
                             // Re-push context so the iframe banner updates
                             this.pushContext();
 
-                            // If the RFQ context expected a different thread (stale/deleted),
-                            // rebind to the fresh thread that Chainlit created.
+                            // Only bind/rebind if on Eagle Agent profile
+                            if (this._chatProfile !== 'Eagle Agent') return;
+
+                            // Only rebind if we explicitly tried to load the bound thread
+                            // and Chainlit gave us a different one (thread was stale/deleted).
+                            // Do NOT rebind when the user manually switches threads in the sidebar.
                             const ctx = this.currentContext;
-                            if (ctx?.view === 'rfq_detail' && ctx?.id && ctx?.thread_id && ctx.thread_id !== newThreadId) {
+                            if (this._expectingBoundThread && this._expectingBoundThread !== newThreadId) {
                                 console.log('[bind] Stale thread detected, rebinding', ctx.id, 'to', newThreadId);
+                                this._expectingBoundThread = null;
                                 fetch('/api/rfq-thread', {
                                     method: 'POST',
                                     headers: {'Content-Type': 'application/json'},
@@ -331,6 +342,11 @@
                                         this.pushContext();
                                     }
                                 }).catch(() => {});
+                            } else {
+                                // Clear the expectation flag once matched
+                                if (this._expectingBoundThread === newThreadId) {
+                                    this._expectingBoundThread = null;
+                                }
                             }
 
                             // Auto-bind to RFQ if viewing one without a bound thread
@@ -464,6 +480,10 @@
                                 if (iframe) {
                                     iframe.src = '/chat/thread/' + newCtx.thread_id;
                                     this._activeThreadId = newCtx.thread_id;
+                                    // Flag: we expect the iframe to load this specific thread.
+                                    // If Chainlit reports a different thread_id back, it means
+                                    // the bound thread couldn't be resumed (stale/deleted).
+                                    this._expectingBoundThread = newCtx.thread_id;
                                 }
                                 // Track which RFQ owns this thread
                                 this._activeThreadRfqId = newCtx.id;
@@ -542,6 +562,8 @@
                     // If we're on an RFQ detail with no bound thread and we have
                     // an active thread, bind it immediately. Called from multiple
                     // points to guarantee binding regardless of message timing.
+                    // Only bind threads from the Eagle Agent profile.
+                    if (this._chatProfile !== 'Eagle Agent') return;
                     const ctx = this.currentContext;
                     if (ctx?.view === 'rfq_detail' && ctx?.id && !ctx?.thread_id && this._activeThreadId) {
                         const rfqId = ctx.id;
