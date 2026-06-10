@@ -22,12 +22,14 @@ from ._helpers import router, templates, require_user, config  # noqa: F401
 # Import sub-modules so their @router decorators register on the shared router.
 # Order determines route matching priority (first match wins for overlapping paths).
 from . import api          # noqa: F401  — /api/latest-thread, /api/rfq-thread
-from . import suppliers    # noqa: F401  — /suppliers, /partial/suppliers
-from . import products     # noqa: F401  — /products, /partial/products
-from . import transactions # noqa: F401  — /transactions, /partial/transactions
-from . import rfqs         # noqa: F401  — /rfqs, /partial/rfqs
-from . import netsuite     # noqa: F401  — /customers, /contacts, /opportunities
-from . import admin        # noqa: F401  — /users, /admin, /partial/admin
+from . import suppliers      # noqa: F401  — /suppliers, /partial/suppliers
+from . import products       # noqa: F401  — /products, /partial/products
+from . import transactions   # noqa: F401  — /transactions, /partial/transactions
+from . import rfqs           # noqa: F401  — /rfqs, /partial/rfqs
+from . import customers      # noqa: F401  — /customers, /partial/customers
+from . import contacts       # noqa: F401  — /contacts, /partial/contacts
+from . import opportunities  # noqa: F401  — /opportunities, /partial/opportunities
+from . import admin          # noqa: F401  — /users, /admin, /partial/admin
 
 # Also re-export helpers that tests patch via "includes.dashboard.routes.X"
 from ._helpers import _is_htmx, _render, require_role, require_admin, PAGE_SIZE  # noqa: F401
