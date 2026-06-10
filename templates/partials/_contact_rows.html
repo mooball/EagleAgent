@@ -1,0 +1,35 @@
+{% for c in contacts %}
+<tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+    <td class="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{{ c.fullname or '—' }}</td>
+    <td class="px-4 py-3 text-gray-500 dark:text-gray-400">{{ c.email or '' }}</td>
+    <td class="px-4 py-3 text-gray-500 dark:text-gray-400">{{ c.phone or '' }}</td>
+    <td class="px-4 py-3 text-gray-500 dark:text-gray-400">
+        {% if c.label %}
+        <span class="px-2 py-0.5 text-xs rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">{{ c.label }}</span>
+        {% endif %}
+    </td>
+    <td class="px-4 py-3 text-gray-500 dark:text-gray-400">
+        {% if c.parent_name %}
+        {% if c.parent_type == 'supplier' %}
+        <a href="/suppliers/{{ c.parent_id }}"
+           hx-get="/partial/suppliers/{{ c.parent_id }}" hx-target="#main-content" hx-push-url="/suppliers/{{ c.parent_id }}"
+           class="text-blue-600 dark:text-blue-400 hover:underline">{{ c.parent_name }}</a>
+        {% else %}
+        <span>{{ c.parent_name }}</span>
+        {% endif %}
+        {% endif %}
+    </td>
+</tr>
+{% endfor %}
+{% if has_more %}
+<tr id="contact-sentinel"
+    hx-get="/partial/contacts/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}"
+    hx-trigger="intersect"
+    hx-target="this"
+    hx-swap="outerHTML">
+    <td colspan="5" class="px-4 py-3 text-center text-gray-400 dark:text-gray-500">
+        <svg class="animate-spin inline-block w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+        Loading more…
+    </td>
+</tr>
+{% endif %}

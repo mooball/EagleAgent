@@ -11,7 +11,7 @@ Importing this package is a drop-in replacement for the old monolithic
 
 from sqlalchemy import func
 
-from includes.dashboard.models import Supplier, Product, Transaction
+from includes.dashboard.models import Supplier, Product, Transaction, Customer, Contact, Opportunity
 from fastapi import Request, Depends
 
 # Re-export the shared router so callers can do:
@@ -26,6 +26,7 @@ from . import suppliers    # noqa: F401  — /suppliers, /partial/suppliers
 from . import products     # noqa: F401  — /products, /partial/products
 from . import transactions # noqa: F401  — /transactions, /partial/transactions
 from . import rfqs         # noqa: F401  — /rfqs, /partial/rfqs
+from . import netsuite     # noqa: F401  — /customers, /contacts, /opportunities
 from . import admin        # noqa: F401  — /users, /admin, /partial/admin
 
 # Also re-export helpers that tests patch via "includes.dashboard.routes.X"
@@ -54,6 +55,10 @@ async def dashboard_home(request: Request, user: dict = Depends(require_user)):
             "suppliers_with_embedding": session.query(func.count(Supplier.id)).filter(Supplier.embedding.isnot(None)).scalar(),
             # Product sub-stats
             "products_with_embedding": session.query(func.count(Product.id)).filter(Product.embedding.isnot(None)).scalar(),
+            # NetSuite expanded
+            "customers": session.query(func.count(Customer.id)).scalar(),
+            "contacts": session.query(func.count(Contact.id)).scalar(),
+            "opportunities": session.query(func.count(Opportunity.id)).scalar(),
         }
     finally:
         session.close()

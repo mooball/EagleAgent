@@ -23,10 +23,10 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, func
 from sqlalchemy.orm import sessionmaker
 
-from includes.dashboard.models import Opportunity, Customer
+from includes.dashboard.models import Opportunity, Customer, NetSuiteEmployeeMapping
 from includes.netsuite.client import NetSuiteClient
 from includes.netsuite.queries import opportunities_updated_since
-from includes.netsuite.sync_utils import parse_netsuite_date, parse_since, get_engine
+from includes.netsuite.sync_utils import parse_netsuite_date, parse_since, get_engine, normalize_currency
 
 
 def sync_opportunities(since_date: str, dry_run: bool = False):
@@ -59,6 +59,11 @@ def sync_opportunities(since_date: str, dry_run: bool = False):
     fetched = 0
 
     with Session() as session:
+        # Build salesrep lookup map (netsuite_employee_id -> local id)
+        salesrep_map = {}
+        for emp in session.query(NetSuiteEmployeeMapping).all():
+            salesrep_map[str(emp.netsuite_employee_id)] = emp.id
+
         for page in client.suiteql_iter(query):
             page = [{k: v for k, v in row.items() if k != "links"} for row in page]
             fetched += len(page)
@@ -83,10 +88,11 @@ def sync_opportunities(since_date: str, dry_run: bool = False):
                         "title": row.get("title"),
                         "status": row.get("status"),
                         "total": row.get("total"),
-                        "currency": row.get("currency"),
+                        "currency": normalize_currency(row.get("currency")),
                         "netsuite_customer_id": customer_netsuite_id,
                         "customer_id": customer.id if customer else None,
                         "netsuite_salesrep_id": str(row.get("salesrep", "")).strip() if row.get("salesrep") else None,
+                        "salesrep_id": salesrep_map.get(str(row.get("salesrep", "")).strip()) if row.get("salesrep") else None,
                         "netsuite_last_modified": parse_netsuite_date(row.get("lastmodifieddate")),
                     }
 

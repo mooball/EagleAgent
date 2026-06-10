@@ -112,7 +112,7 @@ def sales_orders_updated_since(since_date: str) -> str:
     return (
         "SELECT t.tranid, t.trandate, t.status, "
         "BUILTIN.DF(t.currency) AS currency_name, "
-        "t.lastmodifieddate, "
+        "t.lastmodifieddate, t.opportunity, "
         "tl.item, BUILTIN.DF(tl.item) AS item_name, "
         "tl.quantity, tl.rate, "
         "tl.custcol_po_rate, tl.custcol_po_vendor, "
@@ -151,7 +151,7 @@ def quotes_updated_since(since_date: str) -> str:
     return (
         "SELECT t.tranid, t.trandate, t.status, "
         "BUILTIN.DF(t.currency) AS currency_name, "
-        "t.lastmodifieddate, "
+        "t.lastmodifieddate, t.opportunity, "
         "tl.item, BUILTIN.DF(tl.item) AS item_name, "
         "tl.quantity, tl.rate, "
         "tl.custcol_po_rate, tl.custcol_po_vendor, "
@@ -185,7 +185,7 @@ def opportunities_updated_since(since_date: str) -> str:
 
     return (
         "SELECT o.id, o.tranid, o.title, o.entity, o.status, "
-        "o.salesrep, o.total, o.currency, o.lastmodifieddate "
+        "o.salesrep, o.total, BUILTIN.DF(o.currency) AS currency, o.lastmodifieddate "
         "FROM opportunity o "
         f"WHERE o.lastmodifieddate >= '{ns_date}' "
         "ORDER BY o.lastmodifieddate ASC"
@@ -209,7 +209,7 @@ def customers_updated_since(since_date: str) -> str:
 
     return (
         "SELECT c.id, c.entityid, c.companyname, c.fullname, c.email, c.phone, "
-        "c.isinactive, c.currency, c.salesrep, c.contactlist, c.lastmodifieddate "
+        "c.isinactive, BUILTIN.DF(c.currency) AS currency, c.salesrep, c.contactlist, c.lastmodifieddate "
         "FROM customer c "
         "WHERE c.isinactive = 'F' "
         f"AND c.lastmodifieddate >= '{ns_date}' "

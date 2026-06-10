@@ -54,3 +54,57 @@ def get_engine():
         db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
     return create_engine(db_url)
+
+
+# ---------------------------------------------------------------------------
+# Currency normalisation
+# ---------------------------------------------------------------------------
+
+# Maps NetSuite display names (from BUILTIN.DF) to ISO 4217 codes.
+_CURRENCY_NAME_TO_ISO = {
+    "Australian Dollar": "AUD",
+    "US Dollar": "USD",
+    "Canadian Dollar": "CAD",
+    "New Zealand Dollar": "NZD",
+    "Euro": "EUR",
+    "British Pound": "GBP",
+    "Japanese Yen": "JPY",
+    "Indian Rupee": "INR",
+    "Philippine Peso": "PHP",
+    "Singapore Dollar": "SGD",
+    "South African Rand": "ZAR",
+    "Chinese Yuan": "CNY",
+    "Hong Kong Dollar": "HKD",
+    "Thai Baht": "THB",
+    "Malaysian Ringgit": "MYR",
+    "Indonesian Rupiah": "IDR",
+    "Korean Won": "KRW",
+    "Swiss Franc": "CHF",
+    "Swedish Krona": "SEK",
+    "Norwegian Krone": "NOK",
+    "Danish Krone": "DKK",
+}
+
+# Valid ISO codes (3 uppercase letters) — used for passthrough detection
+_ISO_CODE_RE = re.compile(r"^[A-Z]{3}$")
+
+
+def normalize_currency(value: str | None) -> str | None:
+    """Normalise a NetSuite currency value to an ISO 4217 code.
+
+    Handles three cases:
+      - None/empty → None
+      - Already an ISO code (e.g. 'AUD') → returned as-is (uppercased)
+      - Full name (e.g. 'Canadian Dollar') → mapped to ISO code
+
+    Returns None if the value cannot be recognised.
+    """
+    if not value:
+        return None
+    stripped = value.strip()
+    upper = stripped.upper()
+    # Already a 3-letter code
+    if _ISO_CODE_RE.match(upper):
+        return upper
+    # Try name lookup (case-insensitive)
+    return _CURRENCY_NAME_TO_ISO.get(stripped) or _CURRENCY_NAME_TO_ISO.get(stripped.title())

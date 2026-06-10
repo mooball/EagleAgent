@@ -1,0 +1,32 @@
+{% from "components.html" import page_header, search_form, table_wrapper, th, row_count, empty_state %}
+<div data-dashboard-context='{"view": "contact_list", "entity": "contact"}'>
+    {% call page_header("Contacts") %}
+        {{ search_form("/partial/contacts", "Search by name, email, phone…", q or '') }}
+    {% endcall %}
+
+    {% if contacts %}
+    {% call table_wrapper() %}
+        <thead class="border-b border-gray-200 dark:border-gray-700 sticky top-[72px] z-10">
+            <tr>
+                {{ th("Name") }}
+                {{ th("Email") }}
+                {{ th("Phone") }}
+                {{ th("Label") }}
+                {{ th("Parent") }}
+            </tr>
+        </thead>
+        <tbody id="contact-rows" class="divide-y divide-gray-100 dark:divide-gray-700">
+            {% include "partials/_contact_rows.html" %}
+        </tbody>
+    {% endcall %}
+
+    {{ row_count(total, "contacts") }}
+
+    {% else %}
+    {% if q %}
+    {{ empty_state('No contacts found matching "' ~ q ~ '".') }}
+    {% else %}
+    {{ empty_state("No contacts in the database yet.") }}
+    {% endif %}
+    {% endif %}
+</div>

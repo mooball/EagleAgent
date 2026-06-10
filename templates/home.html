@@ -51,6 +51,33 @@
         {{ tile_card("/rfqs", "/partial/rfqs", "RFQs",
             "Manage requests for quotes, supplier sourcing, and pricing.",
             rfq_icon, color="purple", stat=stats.rfqs if stats and stats.rfqs is not none else none) }}
+
+        {% set customer_icon %}
+            <svg class="w-5 h-5 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+            </svg>
+        {% endset %}
+        {{ tile_card("/customers", "/partial/customers", "Customers",
+            "NetSuite customer records synced locally.",
+            customer_icon, color="indigo", stat=stats.customers if stats and stats.customers is not none else none) }}
+
+        {% set contact_icon %}
+            <svg class="w-5 h-5 text-teal-600 dark:text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+            </svg>
+        {% endset %}
+        {{ tile_card("/contacts", "/partial/contacts", "Contacts",
+            "Customer and supplier contacts for email matching.",
+            contact_icon, color="teal", stat=stats.contacts if stats and stats.contacts is not none else none) }}
+
+        {% set opportunity_icon %}
+            <svg class="w-5 h-5 text-rose-600 dark:text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+            </svg>
+        {% endset %}
+        {{ tile_card("/opportunities", "/partial/opportunities", "Opportunities",
+            "Sales pipeline and opportunity tracking from NetSuite.",
+            opportunity_icon, color="rose", stat=stats.opportunities if stats and stats.opportunities is not none else none) }}
     </div>
 </div>
 {% endblock %}

@@ -1,0 +1,33 @@
+{% from "components.html" import page_header, search_form, table_wrapper, th, row_count, empty_state %}
+<div data-dashboard-context='{"view": "opportunity_list", "entity": "opportunity"}'>
+    {% call page_header("Opportunities") %}
+        {{ search_form("/partial/opportunities", "Search by title, number, customer…", q or '') }}
+    {% endcall %}
+
+    {% if opportunities %}
+    {% call table_wrapper() %}
+        <thead class="border-b border-gray-200 dark:border-gray-700 sticky top-[72px] z-10">
+            <tr>
+                {{ th("Number") }}
+                {{ th("Title") }}
+                {{ th("Customer") }}
+                {{ th("Status") }}
+                {{ th("Total", align="right") }}
+                {{ th("Modified") }}
+            </tr>
+        </thead>
+        <tbody id="opportunity-rows" class="divide-y divide-gray-100 dark:divide-gray-700">
+            {% include "partials/_opportunity_rows.html" %}
+        </tbody>
+    {% endcall %}
+
+    {{ row_count(total, "opportunities") }}
+
+    {% else %}
+    {% if q %}
+    {{ empty_state('No opportunities found matching "' ~ q ~ '".') }}
+    {% else %}
+    {{ empty_state("No opportunities in the database yet.") }}
+    {% endif %}
+    {% endif %}
+</div>

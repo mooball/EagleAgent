@@ -26,7 +26,7 @@ from sqlalchemy.orm import sessionmaker
 from includes.dashboard.models import Customer, Contact
 from includes.netsuite.client import NetSuiteClient
 from includes.netsuite.queries import customers_updated_since, contacts_for_ids
-from includes.netsuite.sync_utils import parse_netsuite_date, parse_since, get_engine
+from includes.netsuite.sync_utils import parse_netsuite_date, parse_since, get_engine, normalize_currency
 
 
 def parse_contact_list(contactlist_str: str) -> list[str]:
@@ -99,7 +99,7 @@ def sync_customers(since_date: str, dry_run: bool = False, sync_contacts: bool =
                         "email": row.get("email"),
                         "phone": row.get("phone"),
                         "isinactive": row.get("isinactive") == "T",
-                        "currency": row.get("currency"),
+                        "currency": normalize_currency(row.get("currency")),
                         "netsuite_salesrep_id": str(row.get("salesrep", "")).strip() if row.get("salesrep") else None,
                         "netsuite_last_modified": parse_netsuite_date(row.get("lastmodifieddate")),
                     }

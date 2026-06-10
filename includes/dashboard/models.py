@@ -37,6 +37,9 @@ class Supplier(Base):
     # 256 dimensions for Gemini embedding-2-preview (notes only)
     embedding = Column(Vector(256), nullable=True)
 
+    # Relationships
+    supplier_contacts = relationship("Contact", back_populates="supplier", foreign_keys="Contact.supplier_id")
+
     def __repr__(self):
         return f"<Supplier(name='{self.name}', netsuite_id='{self.netsuite_id}')>"
 
@@ -107,6 +110,13 @@ class Transaction(Base):
     status = Column(String, nullable=True)
     netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
 
+    # Opportunity link
+    netsuite_opportunity_id = Column(String, nullable=True, index=True)
+    opportunity_id = Column(UUID(as_uuid=True), ForeignKey('opportunities.id'), nullable=True, index=True)
+
+    # Relationships
+    opportunity = relationship("Opportunity", back_populates="transactions", foreign_keys=[opportunity_id])
+
     def __repr__(self):
         return f"<Transaction(doc_number='{self.doc_number}', product_id='{self.product_id}', supplier_id='{self.supplier_id}')>"
 
@@ -137,6 +147,11 @@ class Opportunity(Base):
     
     netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
 
+    # Relationships
+    customer = relationship("Customer", back_populates="opportunities", foreign_keys=[customer_id])
+    salesrep = relationship("NetSuiteEmployeeMapping", foreign_keys=[salesrep_id])
+    transactions = relationship("Transaction", back_populates="opportunity", foreign_keys="[Transaction.opportunity_id]")
+
     def __repr__(self):
         return f"<Opportunity(netsuite_id='{self.netsuite_id}', title='{self.title}')>"
 
@@ -160,6 +175,11 @@ class Customer(Base):
     salesrep_id = Column(Integer, ForeignKey('netsuite_employee_mappings.id'), nullable=True)
     
     netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    customer_contacts = relationship("Contact", back_populates="customer", foreign_keys="Contact.customer_id")
+    opportunities = relationship("Opportunity", back_populates="customer", foreign_keys="Opportunity.customer_id")
+    salesrep = relationship("NetSuiteEmployeeMapping", foreign_keys=[salesrep_id])
 
     def __repr__(self):
         return f"<Customer(netsuite_id='{self.netsuite_id}', companyname='{self.companyname}')>"
@@ -189,6 +209,10 @@ class Contact(Base):
     isinactive = Column(Boolean, nullable=False, default=False)
     
     netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    supplier = relationship("Supplier", back_populates="supplier_contacts", foreign_keys=[supplier_id])
+    customer = relationship("Customer", back_populates="customer_contacts", foreign_keys=[customer_id])
 
     def __repr__(self):
         if self.supplier_id:
