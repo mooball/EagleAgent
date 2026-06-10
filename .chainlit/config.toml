@@ -34,6 +34,9 @@ unsafe_allow_html = true
 # Process and display mathematical expressions. This can clash with "$" characters in messages.
 latex = false
 
+# Hide the readme button and settings gear from the header
+show_readme_button = false
+
 # Autoscroll new user messages at the top of the window
 user_message_autoscroll = true
 
