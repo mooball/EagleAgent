@@ -4,13 +4,16 @@ nightly_sync.py
 Orchestrates a full nightly sync from NetSuite in dependency order:
   1. Brands       (full sync — fast, no --resume)
   2. Products     (--resume — picks up from last sync)
-  3. Suppliers    (--since 2 days — no --resume available)
-  4. Sales Orders (--resume)
-  5. Quotes       (--resume)
-  6. Link Supplier Brands (--since 2d — post-sync linking)
-  7. Categorize Suppliers (--limit 100 — batch of uncategorized)
-  8. Generate Supplier Notes (--limit 100 — research missing notes)
-  9. Update Supplier Embeddings (re-embed any with NULL embedding)
+  3. Suppliers    (--resume — picks up from last sync)
+  4. Quotes       (--resume)
+  5. Sales Orders (--resume)
+  6. Contacts     (--resume)
+  7. Customers    (--resume)
+  8. Opportunities (--resume)
+  9. Link Supplier Brands (--since 2d — post-sync linking)
+  10. Categorize Suppliers (--limit 100 — batch of uncategorized)
+  11. Generate Supplier Notes (--limit 100 — research missing notes)
+  12. Update Supplier Embeddings (re-embed any with NULL embedding)
 
 Usage:
   uv run python -m scripts.nightly_sync
@@ -53,7 +56,7 @@ STEPS = [
     {
         "name": "brands",
         "module": "scripts.sync_netsuite_brands",
-        "args": [],  # full sync — fast enough
+        "args": [],
         "description": "Sync all brands",
     },
     {
@@ -69,16 +72,34 @@ STEPS = [
         "description": "Sync suppliers (resume from last sync)",
     },
     {
+        "name": "quotes",
+        "module": "scripts.sync_netsuite_quotes",
+        "args": ["--resume"],
+        "description": "Sync quotes (resume from last sync)",
+    },
+    {
         "name": "sales_orders",
         "module": "scripts.sync_netsuite_sales_orders",
         "args": ["--resume"],
         "description": "Sync sales orders (resume from last sync)",
     },
     {
-        "name": "quotes",
-        "module": "scripts.sync_netsuite_quotes",
+        "name": "contacts",
+        "module": "scripts.sync_netsuite_contacts",
         "args": ["--resume"],
-        "description": "Sync quotes (resume from last sync)",
+        "description": "Sync contacts (resume from last sync)",
+    },
+    {
+        "name": "customers",
+        "module": "scripts.sync_netsuite_customers",
+        "args": ["--resume"],
+        "description": "Sync customers (resume from last sync)",
+    },
+    {
+        "name": "opportunities",
+        "module": "scripts.sync_netsuite_opportunities",
+        "args": ["--resume"],
+        "description": "Sync opportunities (resume from last sync)",
     },
     {
         "name": "link_supplier_brands",
