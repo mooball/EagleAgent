@@ -24,9 +24,17 @@ QUOTE_STATUS = {
     "X": "Expired",
 }
 
+OPPORTUNITY_STATUS = {
+    "A": "In Progress",
+    "B": "Issued Quote",
+    "C": "Closed - Won",
+    "D": "Closed - Lost",
+}
+
 _STATUS_MAPS = {
     "SalesOrder": SALES_ORDER_STATUS,
     "Quote": QUOTE_STATUS,
+    "Opportunity": OPPORTUNITY_STATUS,
 }
 
 

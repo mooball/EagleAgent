@@ -1,0 +1,32 @@
+{% from "components.html" import page_header, search_form, table_wrapper, th, row_count, empty_state %}
+<div data-dashboard-context='{"view": "customer_list", "entity": "customer"}'>
+    {% call page_header("Customers") %}
+        {{ search_form("/partial/customers", "Search by name, email…", q or '') }}
+    {% endcall %}
+
+    {% if customers %}
+    {% call table_wrapper() %}
+        <thead class="border-b border-gray-200 dark:border-gray-700 sticky top-[72px] z-10">
+            <tr>
+                {{ th("Company") }}
+                {{ th("Name") }}
+                {{ th("Email") }}
+                {{ th("Phone") }}
+                {{ th("Currency") }}
+            </tr>
+        </thead>
+        <tbody id="customer-rows" class="divide-y divide-gray-100 dark:divide-gray-700">
+            {% include "partials/_customer_rows.html" %}
+        </tbody>
+    {% endcall %}
+
+    {{ row_count(total, "customers") }}
+
+    {% else %}
+    {% if q %}
+    {{ empty_state('No customers found matching "' ~ q ~ '".') }}
+    {% else %}
+    {{ empty_state("No customers in the database yet.") }}
+    {% endif %}
+    {% endif %}
+</div>

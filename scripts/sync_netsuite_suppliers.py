@@ -25,9 +25,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from config.settings import Config
-from includes.dashboard.models import Brand, Supplier, SupplierBrand
+from includes.dashboard.models import Brand, Contact, Supplier, SupplierBrand
 from includes.netsuite.client import NetSuiteClient
 from includes.netsuite.queries import suppliers_updated_since
+from includes.netsuite.sync_utils import normalize_currency
 
 
 def parse_since(value: str) -> str:
@@ -68,7 +69,7 @@ def parse_netsuite_date(date_str: str | None) -> datetime | None:
 
 
 def build_contacts(row: dict) -> list[dict]:
-    """Build the contacts JSONB list from NetSuite vendor fields."""
+    """Build contact entries from NetSuite vendor fields for the contacts table."""
     contacts = []
 
     # Main contact (email + phone from vendor record)
@@ -77,7 +78,7 @@ def build_contacts(row: dict) -> list[dict]:
     if email or phone:
         contacts.append({
             "label": "Main",
-            "name": None,
+            "fullname": None,
             "email": email,
             "phone": phone,
         })
@@ -94,7 +95,7 @@ def build_contacts(row: dict) -> list[dict]:
     if source_email or source_name:
         contacts.append({
             "label": "Source",
-            "name": source_name,
+            "fullname": source_name,
             "email": source_email,
             "phone": None,
         })
@@ -102,7 +103,7 @@ def build_contacts(row: dict) -> list[dict]:
     if source_cc:
         contacts.append({
             "label": "Source CC",
-            "name": None,
+            "fullname": None,
             "email": source_cc,
             "phone": None,
         })
@@ -124,9 +125,8 @@ def map_vendor_to_supplier(row: dict) -> dict:
         "country": row.get("country"),
         "notes": row.get("custentity_supplier_notes"),
         "terms": row.get("terms"),
-        "currency": row.get("currency"),
+        "currency": normalize_currency(row.get("currency")),
         "hubspot_id": row.get("custentity_ss_hubspot_id"),
-        "contacts": build_contacts(row),
         "netsuite_last_modified": parse_netsuite_date(row.get("lastmodifieddate")),
     }
 
@@ -135,7 +135,7 @@ def map_vendor_to_supplier(row: dict) -> dict:
 NETSUITE_OWNED_FIELDS = {
     "name", "url", "address_1", "address_2", "city", "state",
     "postcode", "country", "notes", "terms", "currency", "hubspot_id",
-    "contacts", "netsuite_last_modified",
+    "netsuite_last_modified",
 }
 
 
@@ -161,6 +161,48 @@ def sync_supplier_brands(session, supplier, brand_ids: list[str], brand_cache: d
             linked += 1
 
     return linked
+
+
+def sync_supplier_contacts(session, supplier, contact_entries: list[dict]):
+    """Upsert supplier contacts by label (Main, Source, Source CC).
+
+    For supplier contacts there is no netsuite_id — matching is by
+    supplier_id + label.  Contacts not present in the new list are
+    marked inactive.
+    """
+    existing = (
+        session.query(Contact)
+        .filter(Contact.supplier_id == supplier.id)
+        .all()
+    )
+    existing_by_label = {c.label: c for c in existing if c.label}
+
+    seen_labels = set()
+    for entry in contact_entries:
+        label = entry.get("label")
+        if not label:
+            continue
+        seen_labels.add(label)
+
+        if label in existing_by_label:
+            c = existing_by_label[label]
+            c.fullname = entry.get("fullname")
+            c.email = entry.get("email")
+            c.phone = entry.get("phone")
+            c.isinactive = False
+        else:
+            session.add(Contact(
+                supplier_id=supplier.id,
+                label=label,
+                fullname=entry.get("fullname"),
+                email=entry.get("email"),
+                phone=entry.get("phone"),
+            ))
+
+    # Mark contacts with labels no longer present as inactive
+    for label, c in existing_by_label.items():
+        if label not in seen_labels:
+            c.isinactive = True
 
 
 def main():
@@ -290,6 +332,9 @@ def main():
                     # Sync brand links
                     brand_ids = parse_brand_ids(row)
                     brands_linked += sync_supplier_brands(session, existing, brand_ids, brand_cache)
+
+                    # Sync contacts to contacts table
+                    sync_supplier_contacts(session, existing, build_contacts(row))
                 else:
                     # Check for existing web-sourced supplier that matches by domain or exact name
                     merged_web = None
@@ -313,6 +358,9 @@ def main():
 
                         brand_ids = parse_brand_ids(row)
                         brands_linked += sync_supplier_brands(session, merged_web, brand_ids, brand_cache)
+
+                        # Sync contacts to contacts table
+                        sync_supplier_contacts(session, merged_web, build_contacts(row))
                     else:
                         # Insert new supplier
                         supplier = Supplier(
@@ -328,18 +376,20 @@ def main():
                             notes=mapped["notes"],
                             terms=mapped["terms"],
                             hubspot_id=mapped["hubspot_id"],
-                            contacts=mapped["contacts"],
                             netsuite_last_modified=mapped["netsuite_last_modified"],
                             modified_by="netsuite",
                             source="netsuite",
                         )
                         session.add(supplier)
-                        session.flush()  # Get the supplier ID for brand linking
+                        session.flush()  # Get the supplier ID for brand/contact linking
                         inserted += 1
 
                         # Sync brand links for new supplier
                         brand_ids = parse_brand_ids(row)
                         brands_linked += sync_supplier_brands(session, supplier, brand_ids, brand_cache)
+
+                        # Sync contacts to contacts table
+                        sync_supplier_contacts(session, supplier, build_contacts(row))
 
                 processed += 1
 

@@ -1,0 +1,121 @@
+<div data-dashboard-context='{"view": "opportunity_detail", "entity": "opportunity", "id": "{{ opp.opportunity_number }}", "db_id": "{{ opp.id }}"}' class="pt-6">
+    <!-- Breadcrumb -->
+    <nav class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 mb-4">
+        <a hx-get="/partial/opportunities" hx-target="#main-content" hx-push-url="/opportunities"
+           class="hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer">Opportunities</a>
+        <span>/</span>
+        <span class="text-gray-900 dark:text-gray-100">{{ opp.opportunity_number or opp.title or '—' }}</span>
+    </nav>
+
+    <div class="mb-6">
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">{{ opp.title or '(Untitled)' }}</h1>
+        {% if opp.opportunity_number %}
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1 font-mono">{{ opp.opportunity_number }}</p>
+        {% endif %}
+    </div>
+
+    <div class="flex flex-col lg:flex-row gap-6">
+        <!-- Details card -->
+        <div class="flex-1 min-w-0 space-y-6">
+            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+                <h2 class="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">Details</h2>
+                <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                    <dt class="text-gray-500 dark:text-gray-400">Status</dt>
+                    <dd>
+                        {% if opp.status %}
+                        <span class="px-2 py-0.5 text-xs rounded-full
+                            {% if opp.status == 'C' %}bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300
+                            {% elif opp.status == 'D' %}bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300
+                            {% elif opp.status == 'B' %}bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300
+                            {% else %}bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300{% endif %}">
+                            {% if opp.status == 'A' %}In Progress{% elif opp.status == 'B' %}Issued Quote{% elif opp.status == 'C' %}Closed - Won{% elif opp.status == 'D' %}Closed - Lost{% else %}{{ opp.status }}{% endif %}
+                        </span>
+                        {% else %}—{% endif %}
+                    </dd>
+
+                    <dt class="text-gray-500 dark:text-gray-400">Total</dt>
+                    <dd>
+                        {% if opp.total is not none %}
+                            {% set sym = currency_symbol(opp.currency) %}
+                            {% if sym|length <= 1 %}{{ sym }}{{ "{:,.2f}".format(opp.total) }}{% else %}{{ "{:,.2f}".format(opp.total) }} <span class="text-xs opacity-60">{{ sym }}</span>{% endif %}
+                        {% else %}—{% endif %}
+                    </dd>
+
+                    <dt class="text-gray-500 dark:text-gray-400">Currency</dt>
+                    <dd>{{ opp.currency or '—' }}</dd>
+
+                    <dt class="text-gray-500 dark:text-gray-400">Customer</dt>
+                    <dd>
+                        {% if customer %}
+                        {{ customer.companyname or customer.fullname or '—' }}
+                        {% else %}—{% endif %}
+                    </dd>
+
+                    <dt class="text-gray-500 dark:text-gray-400">Sales Rep</dt>
+                    <dd>{{ salesrep_name or '—' }}</dd>
+
+                    <dt class="text-gray-500 dark:text-gray-400">NetSuite ID</dt>
+                    <dd class="font-mono text-xs">{{ opp.netsuite_id or '—' }}</dd>
+
+                    <dt class="text-gray-500 dark:text-gray-400">Last Modified</dt>
+                    <dd>{{ opp.netsuite_last_modified.strftime('%Y-%m-%d %H:%M') if opp.netsuite_last_modified else '—' }}</dd>
+                </dl>
+            </div>
+
+            <!-- Related Transactions -->
+            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+                <h2 class="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
+                    Related Transactions
+                    {% if transactions %}<span class="text-sm font-normal text-gray-400">({{ transactions|length }})</span>{% endif %}
+                </h2>
+
+                {% if transactions %}
+                <div class="overflow-x-auto -mx-5 -mb-5">
+                    <table class="min-w-full text-sm">
+                        <thead class="border-b border-gray-200 dark:border-gray-700">
+                            <tr>
+                                <th class="px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400">Doc #</th>
+                                <th class="px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400">Date</th>
+                                <th class="px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400">Supplier</th>
+                                <th class="px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400">Part Number</th>
+                                <th class="px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400">Brand</th>
+                                <th class="px-4 py-2 text-right font-medium text-gray-500 dark:text-gray-400">Qty</th>
+                                <th class="px-4 py-2 text-right font-medium text-gray-500 dark:text-gray-400">Cost</th>
+                                <th class="px-4 py-2 text-right font-medium text-gray-500 dark:text-gray-400">Price</th>
+                                <th class="px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+                            {% for t in transactions %}
+                            <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                                <td class="px-4 py-2 font-mono text-gray-900 dark:text-gray-100">{{ t.doc_number or '—' }}</td>
+                                <td class="px-4 py-2 text-gray-600 dark:text-gray-400 whitespace-nowrap">{{ t.date or '—' }}</td>
+                                <td class="px-4 py-2 text-gray-600 dark:text-gray-400">
+                                    <a href="/suppliers/{{ t.supplier_id }}"
+                                       hx-get="/partial/suppliers/{{ t.supplier_id }}" hx-target="#main-content" hx-push-url="/suppliers/{{ t.supplier_id }}"
+                                       class="text-blue-600 dark:text-blue-400 hover:underline">{{ t.supplier_name or '—' }}</a>
+                                </td>
+                                <td class="px-4 py-2 font-mono text-gray-600 dark:text-gray-400">
+                                    <a href="/products/{{ t.product_id }}"
+                                       hx-get="/partial/products/{{ t.product_id }}" hx-target="#main-content" hx-push-url="/products/{{ t.product_id }}"
+                                       class="text-blue-600 dark:text-blue-400 hover:underline">{{ t.product_part or '—' }}</a>
+                                </td>
+                                <td class="px-4 py-2 text-gray-600 dark:text-gray-400">{{ t.product_brand or '—' }}</td>
+                                <td class="px-4 py-2 text-right text-gray-600 dark:text-gray-400">{{ t.quantity if t.quantity is not none else '—' }}</td>
+                                <td class="px-4 py-2 text-right text-gray-600 dark:text-gray-400">
+                                    {% if t.cost is not none %}${{ '{:,.2f}'.format(t.cost) }}{% if t.cost_currency and t.cost_currency != 'AUD' %} <span class="text-[10px] opacity-60">{{ t.cost_currency }}</span>{% endif %}{% else %}—{% endif %}
+                                </td>
+                                <td class="px-4 py-2 text-right text-gray-600 dark:text-gray-400">{{ '${:,.2f}'.format(t.price) if t.price is not none else '—' }}</td>
+                                <td class="px-4 py-2 text-gray-600 dark:text-gray-400">{{ t.status or '—' }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-sm text-gray-400 dark:text-gray-500">No transactions linked to this opportunity yet.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>

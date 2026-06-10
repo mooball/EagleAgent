@@ -27,9 +27,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from config.settings import Config
-from includes.dashboard.models import Product, Supplier, Transaction
+from includes.dashboard.models import Opportunity, Product, Supplier, Transaction
 from includes.netsuite.client import NetSuiteClient
 from includes.netsuite.queries import quotes_updated_since
+from includes.netsuite.sync_utils import normalize_currency
 
 
 DOC_TYPE = "Quote"
@@ -68,7 +69,7 @@ def parse_netsuite_date(date_str: str | None) -> datetime | None:
 
 
 def build_lookup_maps(session):
-    """Build netsuite_id -> local UUID lookup maps for products and suppliers."""
+    """Build netsuite_id -> local UUID lookup maps for products, suppliers, and opportunities."""
     product_map = {}
     for nid, pid in session.query(Product.netsuite_id, Product.id).filter(
         Product.netsuite_id.isnot(None)
@@ -81,10 +82,16 @@ def build_lookup_maps(session):
     ):
         supplier_map[str(nid)] = sid
 
-    return product_map, supplier_map
+    opportunity_map = {}
+    for nid, oid in session.query(Opportunity.netsuite_id, Opportunity.id).filter(
+        Opportunity.netsuite_id.isnot(None)
+    ):
+        opportunity_map[str(nid)] = oid
+
+    return product_map, supplier_map, opportunity_map
 
 
-def map_line_to_transaction(row: dict, product_map: dict, supplier_map: dict) -> dict | None:
+def map_line_to_transaction(row: dict, product_map: dict, supplier_map: dict, opportunity_map: dict) -> dict | None:
     """Map a NetSuite transaction line row to Transaction column values.
 
     Returns None if the product or supplier can't be resolved locally.
@@ -119,6 +126,10 @@ def map_line_to_transaction(row: dict, product_map: dict, supplier_map: dict) ->
         except (ValueError, TypeError):
             cost = None
 
+    # Opportunity link
+    opp_ns_id = str(row.get("opportunity") or "").strip() or None
+    opportunity_uuid = opportunity_map.get(opp_ns_id) if opp_ns_id else None
+
     return {
         "netsuite_id": str(row.get("uniquekey", "")).strip(),
         "doc_type": DOC_TYPE,
@@ -129,9 +140,11 @@ def map_line_to_transaction(row: dict, product_map: dict, supplier_map: dict) ->
         "quantity": quantity,
         "price": rate,
         "cost": cost,
-        "cost_currency": (row.get("currency_name") or "").strip() or None,
+        "cost_currency": normalize_currency(row.get("currency_name")),
         "status": (row.get("status") or "").strip() or None,
         "netsuite_last_modified": parse_netsuite_date(row.get("lastmodifieddate")),
+        "netsuite_opportunity_id": opp_ns_id,
+        "opportunity_id": opportunity_uuid,
     }
 
 
@@ -139,7 +152,7 @@ def map_line_to_transaction(row: dict, product_map: dict, supplier_map: dict) ->
 SYNC_FIELDS = {
     "doc_number", "date", "product_id", "supplier_id",
     "quantity", "price", "cost", "cost_currency", "status",
-    "netsuite_last_modified",
+    "netsuite_last_modified", "netsuite_opportunity_id", "opportunity_id",
 }
 
 
@@ -184,10 +197,10 @@ def main():
     batch_size = Config.NETSUITE_SYNC_BATCH_SIZE
 
     # Build lookup maps
-    print("Loading product and supplier lookup maps...")
+    print("Loading product, supplier, and opportunity lookup maps...")
     with Session() as session:
-        product_map, supplier_map = build_lookup_maps(session)
-    print(f"  {len(product_map)} products, {len(supplier_map)} suppliers in lookup maps.")
+        product_map, supplier_map, opportunity_map = build_lookup_maps(session)
+    print(f"  {len(product_map)} products, {len(supplier_map)} suppliers, {len(opportunity_map)} opportunities in lookup maps.")
 
     # Connect to NetSuite
     print("Connecting to NetSuite...")
@@ -220,7 +233,7 @@ def main():
             fetched += len(page)
 
             for row in page:
-                mapped = map_line_to_transaction(row, product_map, supplier_map)
+                mapped = map_line_to_transaction(row, product_map, supplier_map, opportunity_map)
 
                 if mapped is None:
                     unresolved += 1

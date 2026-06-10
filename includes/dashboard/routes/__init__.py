@@ -11,7 +11,7 @@ Importing this package is a drop-in replacement for the old monolithic
 
 from sqlalchemy import func
 
-from includes.dashboard.models import Supplier, Product, Transaction
+from includes.dashboard.models import Supplier, Product, Transaction, Customer, Contact, Opportunity
 from fastapi import Request, Depends
 
 # Re-export the shared router so callers can do:
@@ -22,11 +22,14 @@ from ._helpers import router, templates, require_user, config  # noqa: F401
 # Import sub-modules so their @router decorators register on the shared router.
 # Order determines route matching priority (first match wins for overlapping paths).
 from . import api          # noqa: F401  — /api/latest-thread, /api/rfq-thread
-from . import suppliers    # noqa: F401  — /suppliers, /partial/suppliers
-from . import products     # noqa: F401  — /products, /partial/products
-from . import transactions # noqa: F401  — /transactions, /partial/transactions
-from . import rfqs         # noqa: F401  — /rfqs, /partial/rfqs
-from . import admin        # noqa: F401  — /users, /admin, /partial/admin
+from . import suppliers      # noqa: F401  — /suppliers, /partial/suppliers
+from . import products       # noqa: F401  — /products, /partial/products
+from . import transactions   # noqa: F401  — /transactions, /partial/transactions
+from . import rfqs           # noqa: F401  — /rfqs, /partial/rfqs
+from . import customers      # noqa: F401  — /customers, /partial/customers
+from . import contacts       # noqa: F401  — /contacts, /partial/contacts
+from . import opportunities  # noqa: F401  — /opportunities, /partial/opportunities
+from . import admin          # noqa: F401  — /users, /admin, /partial/admin
 
 # Also re-export helpers that tests patch via "includes.dashboard.routes.X"
 from ._helpers import _is_htmx, _render, require_role, require_admin, PAGE_SIZE  # noqa: F401
@@ -54,6 +57,10 @@ async def dashboard_home(request: Request, user: dict = Depends(require_user)):
             "suppliers_with_embedding": session.query(func.count(Supplier.id)).filter(Supplier.embedding.isnot(None)).scalar(),
             # Product sub-stats
             "products_with_embedding": session.query(func.count(Product.id)).filter(Product.embedding.isnot(None)).scalar(),
+            # NetSuite expanded
+            "customers": session.query(func.count(Customer.id)).scalar(),
+            "contacts": session.query(func.count(Contact.id)).scalar(),
+            "opportunities": session.query(func.count(Opportunity.id)).scalar(),
         }
     finally:
         session.close()

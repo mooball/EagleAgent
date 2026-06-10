@@ -13,6 +13,8 @@
 {% if rfq_thread_id %}{% set _ = ctx.update({"thread_id": rfq_thread_id}) %}{% endif %}
 <script id="rfq-data" type="application/json">{{ {
     "rfqId": rfq.id,
+    "trackingId": rfq.get('netsuite_opportunity') or rfq.id,
+    "userEmail": user.get('email', '') if user else '',
     "items": items,
     "supplierLines": items | selectattr('suppliers') | map(attribute='line') | list,
     "allLines": items | map(attribute='line') | list,
@@ -148,7 +150,7 @@
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                     Edit
                 </button>
-                <button hx-get="/partial/rfqs/{{ rfq.id }}" hx-target="#main-content"
+                <button hx-get="/partial/rfqs/{{ rfq.id }}/{{ active_tab }}" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}/{{ active_tab }}"
                         class="btn-sm">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
                     Refresh
@@ -156,11 +158,12 @@
                 <button @click="
                     const iframe = document.getElementById('agent-iframe');
                     if (iframe) {
-                        {% if rfq_thread_id %}
-                            iframe.src = '/chat/thread/{{ rfq_thread_id }}';
-                        {% else %}
+                        const boundThread = currentContext?.thread_id || '{{ rfq_thread_id }}';
+                        if (boundThread) {
+                            iframe.src = '/chat/thread/' + boundThread;
+                        } else {
                             iframe.src = '/chat';
-                        {% endif %}
+                        }
                     }
                     agentState = 'panel';
                 " class="btn-sm text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30">
@@ -177,6 +180,35 @@
     {% set identified = items | selectattr('status', 'equalto', 'identified') | list | length %}
     {% set review = items | selectattr('status', 'equalto', 'review') | list | length %}
     {% set unidentified = items | selectattr('status', 'equalto', 'unidentified') | list | length %}
+    {% set active_tab = active_tab | default('items') %}
+
+    <!-- Subview tabs -->
+    <div class="mb-4 border-b border-gray-200 dark:border-gray-700">
+        <nav class="-mb-px flex flex-wrap items-center gap-2" aria-label="RFQ sections">
+            <button type="button"
+                    hx-get="/partial/rfqs/{{ rfq.id }}/items" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}/items"
+                    class="px-3 py-2 text-sm border-b-2 transition-colors {% if active_tab == 'items' %}border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400 font-medium{% else %}border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200{% endif %}">
+                RFQ Items
+            </button>
+            <button type="button"
+                    hx-get="/partial/rfqs/{{ rfq.id }}/suppliers" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}/suppliers"
+                    class="px-3 py-2 text-sm border-b-2 transition-colors {% if active_tab == 'suppliers' %}border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400 font-medium{% else %}border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200{% endif %}">
+                Suppliers
+            </button>
+            <button type="button"
+                    hx-get="/partial/rfqs/{{ rfq.id }}/communications" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}/communications"
+                    class="px-3 py-2 text-sm border-b-2 transition-colors {% if active_tab == 'communications' %}border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400 font-medium{% else %}border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200{% endif %}">
+                Communications
+            </button>
+            <button type="button"
+                    hx-get="/partial/rfqs/{{ rfq.id }}/quotation" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}/quotation"
+                    class="px-3 py-2 text-sm border-b-2 transition-colors {% if active_tab == 'quotation' %}border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400 font-medium{% else %}border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200{% endif %}">
+                Quotation
+            </button>
+        </nav>
+    </div>
+
+    {% if active_tab == 'items' %}
 
     {% if items %}
     <!-- Summary bar -->
@@ -300,28 +332,6 @@
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             Add item
         </button>
-        <button hx-get="/partial/rfqs/{{ rfq.id }}/email-suppliers" hx-target="#email-suppliers-panel" hx-swap="innerHTML"
-                @click="showEmailPanel = true"
-                class="btn">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
-            Email Suppliers
-        </button>
-    </div>
-
-    <!-- Email Suppliers panel -->
-    <div x-show="showEmailPanel" x-cloak class="mt-6">
-        <div class="flex items-center justify-between mb-3">
-            <h2 class="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
-                Supplier Email Templates
-            </h2>
-            <button @click="showEmailPanel = false" class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
-                Close
-            </button>
-        </div>
-        <div id="email-suppliers-panel">
-            <p class="text-sm text-gray-400 italic">Loading...</p>
-        </div>
     </div>
 
     {% else %}
@@ -366,6 +376,77 @@
                 </div>
             </div>
         </form>
+    </div>
+    {% endif %}
+    {% elif active_tab == 'suppliers' %}
+    <div class="space-y-3">
+        <div class="flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                Supplier Email Templates
+            </h2>
+            <button type="button" hx-get="/partial/rfqs/{{ rfq.id }}/suppliers" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}/suppliers"
+                    class="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
+                Refresh
+            </button>
+        </div>
+        <div id="email-suppliers-panel" class="min-h-[96px]">{% include "partials/_rfq_email_suppliers.html" %}</div>
+    </div>
+
+    {% elif active_tab == 'communications' %}
+    <div
+         class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+        <h2 class="text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1">Communications</h2>
+        {% set events = email_events | default([]) %}
+        {% if events %}
+        <div class="overflow-x-auto mt-3">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-left border-b border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400">
+                        <th class="py-2 pr-3">When</th>
+                        <th class="py-2 pr-3">Direction</th>
+                        <th class="py-2 pr-3">Sender</th>
+                        <th class="py-2 pr-3">Type</th>
+                        <th class="py-2 pr-3">Recipient</th>
+                        <th class="py-2 pr-3">Subject</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for ev in events %}
+                    <tr class="border-b border-gray-100 dark:border-gray-700/60 align-top">
+                        <td class="py-2 pr-3 text-xs text-gray-600 dark:text-gray-300 whitespace-nowrap"
+                            title="Thread: {{ ev.gmail_thread_id or '—' }}&#10;Message: {{ ev.gmail_message_id or '—' }}&#10;Draft: {{ ev.gmail_draft_id or '—' }}">
+                            {{ ev.display_time or '—' }}
+                        </td>
+                        <td class="py-2 pr-3">
+                            {% set d = ev.direction or 'unknown' %}
+                            <span class="text-xs px-2 py-0.5 rounded-full
+                                {% if d == 'sent' %}bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300
+                                {% elif d == 'draft' %}bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300
+                                {% elif d == 'received' %}bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300
+                                {% else %}bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300{% endif %}">
+                                {{ d }}
+                            </span>
+                        </td>
+                        <td class="py-2 pr-3 text-xs text-gray-700 dark:text-gray-300">{{ ev.user_email or '—' }}</td>
+                        <td class="py-2 pr-3 text-xs text-gray-700 dark:text-gray-300">{{ ev.email_type or '—' }}</td>
+                        <td class="py-2 pr-3 text-xs text-gray-700 dark:text-gray-300">{{ ev.recipient_email or '—' }}</td>
+                        <td class="py-2 pr-3 text-xs text-gray-700 dark:text-gray-300 max-w-[360px] break-words">{{ ev.subject or '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-2">No logged emails yet for this RFQ.</p>
+        {% endif %}
+    </div>
+
+    {% elif active_tab == 'quotation' %}
+    <div
+         class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+        <h2 class="text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1">Quotation</h2>
+        <p class="text-sm text-gray-500 dark:text-gray-400">Quotation authoring workspace coming soon.</p>
     </div>
     {% endif %}
 
@@ -482,4 +563,7 @@
             </div>
         </div>
     </div>
+
+    {# Email Compose Modal - must be inside rfqDetail() x-data scope #}
+    {% include "partials/_email_compose_modal.html" %}
 </div>

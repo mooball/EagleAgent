@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, Integer, String, Text, Float, Date, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Text, Float, Date, DateTime, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 from pgvector.sqlalchemy import Vector
@@ -36,6 +36,9 @@ class Supplier(Base):
 
     # 256 dimensions for Gemini embedding-2-preview (notes only)
     embedding = Column(Vector(256), nullable=True)
+
+    # Relationships
+    supplier_contacts = relationship("Contact", back_populates="supplier", foreign_keys="Contact.supplier_id")
 
     def __repr__(self):
         return f"<Supplier(name='{self.name}', netsuite_id='{self.netsuite_id}')>"
@@ -107,12 +110,129 @@ class Transaction(Base):
     status = Column(String, nullable=True)
     netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
 
+    # Opportunity link
+    netsuite_opportunity_id = Column(String, nullable=True, index=True)
+    opportunity_id = Column(UUID(as_uuid=True), ForeignKey('opportunities.id'), nullable=True, index=True)
+
+    # Relationships
+    opportunity = relationship("Opportunity", back_populates="transactions", foreign_keys=[opportunity_id])
+
     def __repr__(self):
         return f"<Transaction(doc_number='{self.doc_number}', product_id='{self.product_id}', supplier_id='{self.supplier_id}')>"
 
 
 # Backwards-compatible alias
 ProductSupplier = Transaction
+
+
+class Opportunity(Base):
+    """NetSuite Opportunity records."""
+    __tablename__ = 'opportunities'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    netsuite_id = Column(String, unique=True, nullable=False, index=True)
+    opportunity_number = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    status = Column(String, nullable=True)
+    total = Column(Float, nullable=True)
+    currency = Column(String, nullable=True)
+    
+    # Customer link
+    netsuite_customer_id = Column(String, nullable=True, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey('customers.id'), nullable=True, index=True)
+    
+    # Sales rep link
+    netsuite_salesrep_id = Column(String, nullable=True)
+    salesrep_id = Column(Integer, ForeignKey('netsuite_employee_mappings.id'), nullable=True)
+    
+    netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    customer = relationship("Customer", back_populates="opportunities", foreign_keys=[customer_id])
+    salesrep = relationship("NetSuiteEmployeeMapping", foreign_keys=[salesrep_id])
+    transactions = relationship("Transaction", back_populates="opportunity", foreign_keys="[Transaction.opportunity_id]")
+
+    def __repr__(self):
+        return f"<Opportunity(netsuite_id='{self.netsuite_id}', title='{self.title}')>"
+
+
+class Customer(Base):
+    """NetSuite Customer records."""
+    __tablename__ = 'customers'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    netsuite_id = Column(String, unique=True, nullable=False, index=True)
+    entity_code = Column(String, nullable=True)
+    companyname = Column(String, nullable=True)
+    fullname = Column(String, nullable=True)
+    email = Column(String, nullable=True, index=True)
+    phone = Column(String, nullable=True)
+    isinactive = Column(Boolean, nullable=False, default=False)
+    currency = Column(String, nullable=True)
+    
+    # Sales rep link
+    netsuite_salesrep_id = Column(String, nullable=True)
+    salesrep_id = Column(Integer, ForeignKey('netsuite_employee_mappings.id'), nullable=True)
+    
+    netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    customer_contacts = relationship("Contact", back_populates="customer", foreign_keys="Contact.customer_id")
+    opportunities = relationship("Opportunity", back_populates="customer", foreign_keys="Opportunity.customer_id")
+    salesrep = relationship("NetSuiteEmployeeMapping", foreign_keys=[salesrep_id])
+
+    def __repr__(self):
+        return f"<Customer(netsuite_id='{self.netsuite_id}', companyname='{self.companyname}')>"
+
+
+class Contact(Base):
+    """Unified contact table for both suppliers and customers."""
+    __tablename__ = 'contacts'
+    __table_args__ = (
+        # Ensure exactly one of supplier_id or customer_id is set
+        # This is enforced at application level since PostgreSQL doesn't have a built-in for this
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    netsuite_id = Column(String, unique=True, nullable=True, index=True)
+    
+    # Parent link (exactly one must be set)
+    supplier_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id'), nullable=True, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey('customers.id'), nullable=True, index=True)
+    
+    label = Column(String, nullable=True)  # "Main", "Source", "Source CC" for suppliers
+    firstname = Column(String, nullable=True)
+    lastname = Column(String, nullable=True)
+    fullname = Column(String, nullable=True)
+    email = Column(String, nullable=True, index=True)
+    phone = Column(String, nullable=True)
+    isinactive = Column(Boolean, nullable=False, default=False)
+    
+    netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    supplier = relationship("Supplier", back_populates="supplier_contacts", foreign_keys=[supplier_id])
+    customer = relationship("Customer", back_populates="customer_contacts", foreign_keys=[customer_id])
+
+    def __repr__(self):
+        if self.supplier_id:
+            return f"<Contact(supplier_id='{self.supplier_id}', email='{self.email}')>"
+        else:
+            return f"<Contact(customer_id='{self.customer_id}', email='{self.email}')>"
+
+
+class NetSuiteEmployeeMapping(Base):
+    """Manual mapping of NetSuite employees to local users."""
+    __tablename__ = 'netsuite_employee_mappings'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    netsuite_employee_id = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=True, index=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    def __repr__(self):
+        return f"<NetSuiteEmployeeMapping(netsuite_employee_id='{self.netsuite_employee_id}', name='{self.name}')>"
 
 
 class RFQ(Base):
@@ -133,6 +253,12 @@ class RFQ(Base):
     notes = Column(Text, nullable=True)
     history = Column(JSONB, nullable=True)                    # [{date, user, action}, ...]
     item_groups = Column(JSONB, nullable=True)                # {groups: [...], ungrouped: [...]}
+    
+    # Gmail email tracking fields (summary only, email_tracking table is source of truth)
+    email_status = Column(String, nullable=True)              # 'no_email_sent' | 'draft_pending' | 'sent' | 'awaiting_reply'
+    last_email_sent_at = Column(DateTime(timezone=True), nullable=True)  # Most recent send time
+    supplier_emails = Column(JSONB, nullable=True)            # [{email, name}, ...] contact list for multi-supplier RFQs
+    
     updated_at = Column(DateTime(timezone=True), nullable=True)
 
     items = relationship('RFQItem', back_populates='rfq', order_by='RFQItem.line',

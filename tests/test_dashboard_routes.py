@@ -239,8 +239,9 @@ class TestDashboardHome:
 
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
-            # supplier count, product count, purchase count, rfq count
-            session.query.return_value.scalar.side_effect = [42, 100, 55, 8]
+            # supplier, product, purchase, sub-stats(3), product_embedding, customers, contacts, opportunities, rfq
+            session.query.return_value.scalar.side_effect = [42, 100, 55, 30, 20, 10, 80, 200, 50, 75, 8]
+            session.query.return_value.filter.return_value.scalar.return_value = 5
             mock_gs.return_value = session
 
             resp = client.get("/")

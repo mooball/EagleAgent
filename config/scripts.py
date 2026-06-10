@@ -57,6 +57,24 @@ SCRIPT_REGISTRY: dict[str, dict] = {
         "args_allowed": ["--since", "--resume", "--dry-run"],
         "long_running": True,
     },
+    "sync_netsuite_customers": {
+        "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_customers"],
+        "description": "Sync customers from NetSuite API (--since YYYY-MM-DD/Nd, --resume to continue)",
+        "args_allowed": ["--since", "--resume", "--dry-run"],
+        "long_running": True,
+    },
+    "sync_netsuite_contacts": {
+        "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_contacts"],
+        "description": "Sync contacts from NetSuite API (--since YYYY-MM-DD/Nd, --resume to continue)",
+        "args_allowed": ["--since", "--resume", "--dry-run"],
+        "long_running": True,
+    },
+    "sync_netsuite_opportunities": {
+        "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_opportunities"],
+        "description": "Sync opportunities from NetSuite API (--since YYYY-MM-DD/Nd, --resume to continue)",
+        "args_allowed": ["--since", "--resume", "--dry-run"],
+        "long_running": True,
+    },
     "categorize_suppliers": {
         "command": ["uv", "run", "python", "-m", "scripts.categorize_suppliers_job"],
         "description": "Categorize suppliers using search-grounded Gemini (default: uncategorized only)",

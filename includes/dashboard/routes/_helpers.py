@@ -40,6 +40,26 @@ def _css_hash() -> str:
 
 templates.env.globals["css_version"] = _css_hash()
 
+# Currency symbol mapping for display
+_CURRENCY_SYMBOLS = {
+    "AUD": "$", "USD": "$", "NZD": "$", "CAD": "$",
+    "GBP": "£", "EUR": "€", "JPY": "¥", "INR": "₹",
+}
+
+
+def _currency_symbol(code: str | None) -> str:
+    """Return a display-friendly currency prefix/suffix for a given ISO code.
+
+    Returns '$' for AUD/USD/NZD/CAD, proper symbols for GBP/EUR/JPY/INR,
+    or the code itself (e.g. 'SGD') for others.
+    """
+    if not code:
+        return "$"
+    return _CURRENCY_SYMBOLS.get(code.upper(), code)
+
+
+templates.env.globals["currency_symbol"] = _currency_symbol
+
 router = APIRouter()
 
 PAGE_SIZE = 50

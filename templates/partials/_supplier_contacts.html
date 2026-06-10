@@ -53,7 +53,7 @@
             </div>
         </template>
 
-        <button type="button" @click="rows.push({name: '', email: '', phone: '', label: ''})"
+        <button type="button" @click="rows.push({id: '', name: '', email: '', phone: '', label: ''})"
                 class="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 mt-2 mb-4">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             Add contact
@@ -78,13 +78,13 @@ function contactEditor(initial) {
             this._initial = JSON.parse(JSON.stringify(initial || []));
             this.rows = JSON.parse(JSON.stringify(this._initial));
             if (this.rows.length === 0) {
-                this.rows.push({name: '', email: '', phone: '', label: ''});
+                this.rows.push({id: '', name: '', email: '', phone: '', label: ''});
             }
         },
         cancel() {
             this.rows = JSON.parse(JSON.stringify(this._initial));
             if (this.rows.length === 0) {
-                this.rows.push({name: '', email: '', phone: '', label: ''});
+                this.rows.push({id: '', name: '', email: '', phone: '', label: ''});
             }
             this.editingContacts = false;
         },

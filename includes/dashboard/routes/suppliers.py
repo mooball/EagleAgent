@@ -6,9 +6,29 @@ from fastapi import Request, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from includes.dashboard.database import update_supplier, add_supplier_comment
-from includes.dashboard.models import Brand, Product, Transaction, Supplier, SupplierBrand
+from includes.dashboard.models import Brand, Contact, Product, Transaction, Supplier, SupplierBrand
 from . import _helpers
 from ._helpers import router, templates, require_user, _render, PAGE_SIZE
+
+
+def _load_contacts(session, supplier_id) -> list[dict]:
+    """Load contacts from the contacts table for a supplier."""
+    rows = (
+        session.query(Contact)
+        .filter(Contact.supplier_id == supplier_id, Contact.isinactive == False)
+        .order_by(Contact.label.nullsfirst(), Contact.fullname)
+        .all()
+    )
+    return [
+        {
+            "id": str(c.id),
+            "name": c.fullname or "",
+            "email": c.email or "",
+            "phone": c.phone or "",
+            "label": c.label or "",
+        }
+        for c in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -78,12 +98,7 @@ def supplier_detail(request: Request, supplier_id: str,
         if not supplier:
             return RedirectResponse("/suppliers")
 
-        # Contacts (JSONB field)
-        contacts = []
-        if supplier.contacts:
-            for c in supplier.contacts:
-                if isinstance(c, dict):
-                    contacts.append(c)
+        contacts = _load_contacts(session, supplier.id)
 
         # Brands via SupplierBrand join
         brands = (
@@ -247,11 +262,7 @@ def partial_supplier_detail(request: Request, supplier_id: str,
         if not supplier:
             return HTMLResponse("<p>Supplier not found.</p>")
 
-        contacts = []
-        if supplier.contacts:
-            for c in supplier.contacts:
-                if isinstance(c, dict):
-                    contacts.append(c)
+        contacts = _load_contacts(session, supplier.id)
 
         brands = (
             session.query(Brand)
@@ -333,11 +344,7 @@ def partial_supplier_update(request: Request, supplier_id: str,
     # Re-fetch full context for the detail partial
     session = _helpers.get_session()
     try:
-        contacts = []
-        if supplier.contacts:
-            for c in supplier.contacts:
-                if isinstance(c, dict):
-                    contacts.append(c)
+        contacts = _load_contacts(session, supplier.id)
 
         brands = (
             session.query(Brand)
@@ -384,7 +391,7 @@ def partial_supplier_update(request: Request, supplier_id: str,
 @router.post("/partial/suppliers/{supplier_id}/update-contacts")
 def partial_supplier_update_contacts(request: Request, supplier_id: str,
                                      user: dict = Depends(require_user)):
-    """Update the contacts JSONB from the structured editor form."""
+    """Update supplier contacts in the contacts table."""
     import asyncio
     import json
     loop = asyncio.new_event_loop()
@@ -397,33 +404,70 @@ def partial_supplier_update_contacts(request: Request, supplier_id: str,
     except (json.JSONDecodeError, TypeError):
         return HTMLResponse("<p>Invalid contacts data.</p>", status_code=400)
 
-    # Sanitize: keep only expected keys, strip whitespace
+    # Sanitize incoming data
     cleaned = []
     for c in contacts:
         if not isinstance(c, dict):
             continue
         entry = {
+            "id": (c.get("id") or "").strip() or None,
             "name": (c.get("name") or "").strip() or None,
             "email": (c.get("email") or "").strip() or None,
             "phone": (c.get("phone") or "").strip() or None,
             "label": (c.get("label") or "").strip() or None,
         }
         # Skip completely empty rows
-        if not any(entry.values()):
+        if not any(v for k, v in entry.items() if k != "id"):
             continue
         cleaned.append(entry)
 
-    author = user.get("name") or user.get("email", "unknown")
-    supplier = update_supplier(supplier_id, {"contacts": cleaned}, f"user:{author}")
-    if not supplier:
-        return HTMLResponse("<p>Supplier not found.</p>")
+    session = _helpers.get_session()
+    try:
+        supplier = session.query(Supplier).filter(Supplier.id == supplier_id).first()
+        if not supplier:
+            return HTMLResponse("<p>Supplier not found.</p>")
 
-    # Re-render just the contacts section
-    contacts_list = []
-    if supplier.contacts:
-        for c in supplier.contacts:
-            if isinstance(c, dict):
-                contacts_list.append(c)
+        # Get existing contacts for this supplier
+        existing = (
+            session.query(Contact)
+            .filter(Contact.supplier_id == supplier.id)
+            .all()
+        )
+        existing_by_id = {str(c.id): c for c in existing}
+
+        # Track which IDs are kept
+        kept_ids = set()
+        for entry in cleaned:
+            contact_id = entry["id"]
+            if contact_id and contact_id in existing_by_id:
+                # Update existing contact
+                c = existing_by_id[contact_id]
+                c.fullname = entry["name"]
+                c.email = entry["email"]
+                c.phone = entry["phone"]
+                c.label = entry["label"]
+                kept_ids.add(contact_id)
+            else:
+                # Insert new contact
+                new_contact = Contact(
+                    supplier_id=supplier.id,
+                    fullname=entry["name"],
+                    email=entry["email"],
+                    phone=entry["phone"],
+                    label=entry["label"],
+                )
+                session.add(new_contact)
+
+        # Delete removed contacts (soft-delete by marking inactive)
+        for cid, c in existing_by_id.items():
+            if cid not in kept_ids:
+                c.isinactive = True
+
+        session.commit()
+
+        contacts_list = _load_contacts(session, supplier.id)
+    finally:
+        session.close()
 
     return templates.TemplateResponse(request, "partials/_supplier_contacts.html", {
         "user": user,

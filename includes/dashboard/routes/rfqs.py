@@ -4,7 +4,7 @@ import asyncio
 import math
 
 from fastapi import Request, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
 from includes.dashboard.models import Supplier, Transaction
 from . import _helpers
@@ -12,6 +12,7 @@ from ._helpers import router, templates, require_user, _render
 from .api import _lookup_rfq_thread_id
 
 RFQ_PAGE_SIZE = 25
+RFQ_ALLOWED_TABS = {"items", "suppliers", "communications", "quotation"}
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +166,142 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
         session.close()
 
 
+def _normalize_rfq_tab(tab: str | None) -> str:
+    tab_norm = (tab or "items").strip().lower()
+    return tab_norm if tab_norm in RFQ_ALLOWED_TABS else "items"
+
+
+def _infer_rfq_tab_from_request(request: Request, default: str = "items") -> str:
+    """Infer active RFQ tab from explicit query, referer path, or fallback."""
+    explicit = _normalize_rfq_tab(request.query_params.get("tab"))
+    if explicit != "items" or request.query_params.get("tab"):
+        return explicit
+
+    referer = request.headers.get("referer", "")
+    if referer:
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(referer)
+            segment = (parsed.path.rstrip("/").split("/")[-1] or "").lower()
+            if segment in RFQ_ALLOWED_TABS:
+                return segment
+        except Exception:
+            pass
+
+    return _normalize_rfq_tab(default)
+
+
+def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
+    """Group shortlisted suppliers with their line items for email template rendering."""
+    supplier_map: dict[str, dict] = {}
+    for item in rfq.get("items", []):
+        for sup in item.get("suppliers", []):
+            if sup.get("status") != "shortlisted":
+                continue
+            name = (sup.get("name") or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key not in supplier_map:
+                email = None
+                url = None
+                contacts = sup.get("contacts") or []
+                for c in contacts:
+                    if isinstance(c, dict):
+                        if c.get("email") and not email:
+                            email = c["email"]
+                        if c.get("url") and not url:
+                            url = c["url"]
+                supplier_map[key] = {
+                    "name": name,
+                    "email": email,
+                    "url": url,
+                    "country": sup.get("country"),
+                    "currency": sup.get("currency"),
+                    "line_items": [],
+                }
+            supplier_map[key]["line_items"].append({
+                "line": item.get("line"),
+                "description": item.get("input_description") or "—",
+                "part_number": item.get("part_number") or "—",
+                "brand": item.get("brand") or "",
+                "quantity": item.get("quantity") or "—",
+                "uom": item.get("uom") or "",
+            })
+    return sorted(supplier_map.values(), key=lambda s: s["name"].lower())
+
+
+def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
+    ctx = {
+        "user": user,
+        "rfq": rfq,
+        "rfq_thread_id": _lookup_rfq_thread_id(rfq["id"], user.get("email", "")),
+        "active_tab": _normalize_rfq_tab(active_tab),
+    }
+    if ctx["active_tab"] == "suppliers":
+        ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
+    if ctx["active_tab"] == "communications":
+        ctx["email_events"] = _get_rfq_email_events(rfq["id"])
+    return ctx
+
+
+def _get_rfq_email_events(rfq_id: str) -> list[dict]:
+    """Fetch logged email events for an RFQ from email_tracking."""
+    from sqlalchemy import text
+    from datetime import datetime
+
+    session = _helpers.get_session()
+    try:
+        rows = session.execute(
+            text(
+                """
+                SELECT
+                    direction,
+                    email_type,
+                    subject,
+                    recipient_email,
+                    user_email,
+                    gmail_thread_id,
+                    gmail_message_id,
+                    gmail_draft_id,
+                    draft_url,
+                    sent_at,
+                    created_at
+                FROM email_tracking
+                WHERE rfq_id = :rfq_id
+                ORDER BY COALESCE(sent_at, created_at) DESC, created_at DESC
+                LIMIT 200
+                """
+            ),
+            {"rfq_id": rfq_id},
+        ).mappings().all()
+
+        events = []
+        for row in rows:
+            event = dict(row)
+            ts = event.get("sent_at") or event.get("created_at")
+            if isinstance(ts, datetime):
+                event["display_time"] = ts.strftime("%Y-%m-%d %H:%M")
+            elif isinstance(ts, str):
+                # Handles ISO timestamps from drivers that return strings.
+                event["display_time"] = ts[:16].replace("T", " ") if len(ts) >= 16 else ts
+            else:
+                event["display_time"] = "—"
+            events.append(event)
+
+        return events
+    except Exception:
+        return []
+    finally:
+        session.close()
+
+
+def _render_rfq_detail_partial_response(request: Request, user: dict, rfq: dict, default_tab: str = "items"):
+    active_tab = _infer_rfq_tab_from_request(request, default=default_tab)
+    return templates.TemplateResponse(request, "partials/rfq_detail.html", _rfq_detail_context(rfq, user, active_tab))
+
+
 # ---------------------------------------------------------------------------
 # Fetch helper
 # ---------------------------------------------------------------------------
@@ -308,7 +445,29 @@ async def rfq_detail(request: Request, rfq_id: str,
         "rfq": rfq,
         "active_nav": "rfqs",
         "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
+        "active_tab": "items",
     }
+    return _render(request, "rfq_detail.html", "partials/rfq_detail.html", ctx, user)
+
+
+@router.get("/rfqs/{rfq_id}/{tab}")
+async def rfq_detail_tab(request: Request, rfq_id: str, tab: str,
+                         user: dict = Depends(require_user)):
+    from includes.tools.quote_tools import _get_rfq_dict_sync
+    rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+    if not rfq:
+        return RedirectResponse("/rfqs")
+    _enrich_rfq_supplier_contacts(rfq)
+
+    active_tab = _normalize_rfq_tab(tab)
+    ctx = {
+        "rfq": rfq,
+        "active_nav": "rfqs",
+        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
+        "active_tab": active_tab,
+    }
+    if active_tab == "suppliers":
+        ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
     return _render(request, "rfq_detail.html", "partials/rfq_detail.html", ctx, user)
 
 
@@ -441,11 +600,7 @@ async def partial_rfq_detail(request: Request, rfq_id: str,
         return HTMLResponse("<p>RFQ not found.</p>")
     _enrich_rfq_supplier_contacts(rfq)
 
-    return templates.TemplateResponse(request, "partials/rfq_detail.html", {
-        "user": user,
-        "rfq": rfq,
-        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
-    })
+    return _render_rfq_detail_partial_response(request, user, rfq, default_tab="items")
 
 
 @router.post("/partial/rfqs/{rfq_id}/update")
@@ -474,10 +629,7 @@ async def partial_rfq_update(request: Request, rfq_id: str,
             return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
 
     _enrich_rfq_supplier_contacts(rfq)
-    return templates.TemplateResponse(request, "partials/rfq_detail.html", {
-        "user": user, "rfq": rfq,
-        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
-    })
+    return _render_rfq_detail_partial_response(request, user, rfq)
 
 
 @router.patch("/partial/rfqs/{rfq_id}/status")
@@ -495,10 +647,7 @@ async def partial_rfq_status(request: Request, rfq_id: str,
 
     rfq = result
     _enrich_rfq_supplier_contacts(rfq)
-    return templates.TemplateResponse(request, "partials/rfq_detail.html", {
-        "user": user, "rfq": rfq,
-        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
-    })
+    return _render_rfq_detail_partial_response(request, user, rfq)
 
 
 @router.post("/partial/rfqs/{rfq_id}/update-item")
@@ -531,10 +680,7 @@ async def partial_rfq_update_item(request: Request, rfq_id: str,
         return HTMLResponse(f"<p>{result}</p>", status_code=404)
     rfq = result
     _enrich_rfq_supplier_contacts(rfq)
-    return templates.TemplateResponse(request, "partials/rfq_detail.html", {
-        "user": user, "rfq": rfq,
-        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
-    })
+    return _render_rfq_detail_partial_response(request, user, rfq)
 
 
 @router.post("/partial/rfqs/{rfq_id}/add-item")
@@ -600,10 +746,7 @@ async def partial_rfq_add_item(request: Request, rfq_id: str,
     if not rfq:
         return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
     _enrich_rfq_supplier_contacts(rfq)
-    return templates.TemplateResponse(request, "partials/rfq_detail.html", {
-        "user": user, "rfq": rfq,
-        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
-    })
+    return _render_rfq_detail_partial_response(request, user, rfq)
 
 
 @router.post("/partial/rfqs/{rfq_id}/clear-suppliers")
@@ -931,48 +1074,196 @@ async def partial_rfq_email_suppliers(
         return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
     _enrich_rfq_supplier_contacts(rfq)
 
-    # Pivot: group items by supplier (only shortlisted suppliers)
-    supplier_map: dict[str, dict] = {}  # key (lower name) -> supplier info + items
-    for item in rfq.get("items", []):
-        for sup in item.get("suppliers", []):
-            if sup.get("status") != "shortlisted":
-                continue
-            name = (sup.get("name") or "").strip()
-            if not name:
-                continue
-            key = name.lower()
-            if key not in supplier_map:
-                # Extract best email from contacts
-                email = None
-                url = None
-                contacts = sup.get("contacts") or []
-                for c in contacts:
-                    if isinstance(c, dict):
-                        if c.get("email") and not email:
-                            email = c["email"]
-                        if c.get("url") and not url:
-                            url = c["url"]
-                supplier_map[key] = {
-                    "name": name,
-                    "email": email,
-                    "url": url,
-                    "country": sup.get("country"),
-                    "currency": sup.get("currency"),
-                    "line_items": [],
-                }
-            supplier_map[key]["line_items"].append({
-                "line": item.get("line"),
-                "description": item.get("input_description") or "—",
-                "part_number": item.get("part_number") or "—",
-                "brand": item.get("brand") or "",
-                "quantity": item.get("quantity") or "—",
-                "uom": item.get("uom") or "",
-            })
-
-    suppliers = sorted(supplier_map.values(), key=lambda s: s["name"].lower())
+    suppliers = _build_rfq_supplier_email_data(rfq)
 
     return templates.TemplateResponse(request, "partials/_rfq_email_suppliers.html", {
         "user": user,
         "rfq": rfq,
         "suppliers": suppliers,
     })
+
+
+@router.get("/partial/rfqs/{rfq_id}/{tab}")
+async def partial_rfq_detail_tab(request: Request, rfq_id: str, tab: str,
+                                 user: dict = Depends(require_user)):
+    """Load RFQ detail partial with a specific active tab."""
+    from includes.tools.quote_tools import _get_rfq_dict_sync
+
+    rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+    if not rfq:
+        return HTMLResponse("<p>RFQ not found.</p>")
+    _enrich_rfq_supplier_contacts(rfq)
+
+    return templates.TemplateResponse(
+        request,
+        "partials/rfq_detail.html",
+        _rfq_detail_context(rfq, user, _normalize_rfq_tab(tab)),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Email Integration: Draft Creation
+# ---------------------------------------------------------------------------
+
+@router.post("/api/rfqs/{rfq_id}/send-email-draft")
+async def api_create_email_draft(
+    request: Request,
+    rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Create a Gmail draft email for an RFQ and return the compose URL.
+    
+    Request body (JSON):
+    {
+        "recipient_email": "supplier@example.com",
+        "recipient_name": "Supplier Name",  (optional)
+        "subject": "RFQ-12345 - Quote Request",
+        "body_html": "<p>Dear Supplier,</p>..."
+    }
+    
+    Response:
+    {
+        "status": "ok" | "error",
+        "draft_id": "...",  (on success)
+        "compose_url": "https://mail.google.com/...",  (on success)
+        "message": "Draft created successfully" | error message
+    }
+    """
+    try:
+        from includes.tools.quote_tools import _get_rfq_dict_sync
+        from includes.gmail.draft_service import create_draft_email
+        
+        # Get RFQ
+        rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+        if not rfq:
+            return JSONResponse(
+                {"status": "error", "message": "RFQ not found"},
+                status_code=404
+            )
+        
+        # Parse request body
+        body = await request.json()
+        recipient_email = body.get("recipient_email", "").strip()
+        recipient_name = body.get("recipient_name", "").strip()
+        subject = body.get("subject", "").strip()
+        body_html = body.get("body_html", "").strip()
+        
+        # Validate
+        if not recipient_email or "@" not in recipient_email:
+            return JSONResponse(
+                {"status": "error", "message": "Invalid recipient email"},
+                status_code=400
+            )
+        if not subject:
+            return JSONResponse(
+                {"status": "error", "message": "Subject is required"},
+                status_code=400
+            )
+        if not body_html:
+            return JSONResponse(
+                {"status": "error", "message": "Email body is required"},
+                status_code=400
+            )
+        
+        # Get user email (impersonation target)
+        user_email = user.get("email", user.get("identifier", ""))
+        if not user_email:
+            return JSONResponse(
+                {"status": "error", "message": "User email not found"},
+                status_code=400
+            )
+        
+        # Create draft with Gmail API (runs in thread to avoid blocking)
+        draft_result = await asyncio.to_thread(
+            create_draft_email,
+            user_email=user_email,
+            recipient_email=recipient_email,
+            subject=subject,
+            body_html=body_html,
+            rfq_id=rfq_id,
+            email_type="rfq_outreach",  # Can be extended to support other types
+            opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal")
+        )
+        
+        if draft_result["status"] != "ok":
+            return JSONResponse(
+                {"status": "error", "message": draft_result.get("message", "Draft creation failed")},
+                status_code=500
+            )
+        
+        return JSONResponse({
+            "status": "ok",
+            "draft_id": draft_result["draft_id"],
+            "thread_id": draft_result["thread_id"],
+            "compose_url": draft_result["compose_url"],
+            "message": "Draft created successfully. Opening Gmail compose..."
+        })
+    
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error creating email draft for RFQ {rfq_id}: {e}", exc_info=True)
+        return JSONResponse(
+            {"status": "error", "message": f"Internal error: {str(e)}"},
+            status_code=500
+        )
+
+
+@router.post("/api/rfqs/{rfq_id}/send-email-direct")
+async def api_send_email_direct(
+    request: Request,
+    rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Send an RFQ email directly via Gmail API (no Gmail UI handoff)."""
+    try:
+        from includes.tools.quote_tools import _get_rfq_dict_sync
+        from includes.gmail.draft_service import send_email_direct
+
+        rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+        if not rfq:
+            return JSONResponse({"status": "error", "message": "RFQ not found"}, status_code=404)
+
+        body = await request.json()
+        recipient_email = body.get("recipient_email", "").strip()
+        recipient_name = body.get("recipient_name", "").strip()
+        subject = body.get("subject", "").strip()
+        body_html = body.get("body_html", "").strip()
+
+        if not recipient_email or "@" not in recipient_email:
+            return JSONResponse({"status": "error", "message": "Invalid recipient email"}, status_code=400)
+        if not subject:
+            return JSONResponse({"status": "error", "message": "Subject is required"}, status_code=400)
+        if not body_html:
+            return JSONResponse({"status": "error", "message": "Email body is required"}, status_code=400)
+
+        user_email = user.get("email", user.get("identifier", ""))
+        if not user_email:
+            return JSONResponse({"status": "error", "message": "User email not found"}, status_code=400)
+
+        send_result = await asyncio.to_thread(
+            send_email_direct,
+            user_email=user_email,
+            recipient_email=recipient_email,
+            subject=subject,
+            body_html=body_html,
+            rfq_id=rfq_id,
+            email_type="rfq_outreach",
+            opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal"),
+        )
+
+        if send_result["status"] != "ok":
+            return JSONResponse({"status": "error", "message": send_result.get("message", "Send failed")}, status_code=500)
+
+        return JSONResponse({
+            "status": "ok",
+            "message_id": send_result.get("message_id"),
+            "thread_id": send_result.get("thread_id"),
+            "message": "Email sent successfully."
+        })
+
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error sending direct email for RFQ {rfq_id}: {e}", exc_info=True)
+        return JSONResponse({"status": "error", "message": f"Internal error: {str(e)}"}, status_code=500)

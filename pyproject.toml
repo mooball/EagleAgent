@@ -11,6 +11,7 @@ dependencies = [
     "chainlit~=2.11.1",
     "fastapi~=0.136.1",
     "fastapi-sso>=0.17.0",
+    "google-api-python-client>=2.100.0",
     "google-genai>=1.68.0",
     "greenlet~=3.5.0",
     "httpx>=0.27.0",
