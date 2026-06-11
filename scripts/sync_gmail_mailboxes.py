@@ -201,10 +201,16 @@ def process_message(
                 existing_thread.updated_at = datetime.now(timezone.utc)
             else:
                 # New message on tracked thread — create a new row inheriting the RFQ link
+                if direction == "received":
+                    sender = from_addr
+                    recipient = user_email
+                else:
+                    sender = user_email
+                    recipient = msg_meta.get("to", "").split(",")[0].strip()
                 tracking = EmailTracking(
                     gmail_thread_id=thread_id,
                     gmail_message_id=msg_meta["id"],
-                    user_email=user_email,
+                    user_email=sender,
                     rfq_id=existing_thread.rfq_id,
                     rfq_token=existing_thread.rfq_token,
                     opportunity_id=existing_thread.opportunity_id,
@@ -213,7 +219,7 @@ def process_message(
                     match_type=existing_thread.match_type,
                     direction=direction,
                     subject=subject,
-                    recipient_email=msg_meta.get("to", "").split(",")[0].strip(),
+                    recipient_email=recipient,
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc),
                 )
@@ -239,16 +245,22 @@ def process_message(
                     f"rfq={rfq_number}, op={op_number}, direction={direction}"
                 )
             else:
+                if direction == "received":
+                    sender = from_addr
+                    recipient = user_email
+                else:
+                    sender = user_email
+                    recipient = msg_meta.get("to", "").split(",")[0].strip()
                 tracking = EmailTracking(
                     gmail_thread_id=thread_id,
                     gmail_message_id=msg_meta["id"],
-                    user_email=user_email,
+                    user_email=sender,
                     rfq_id=str(rfq.id) if rfq else None,
                     rfq_token=f"RFQ-{rfq_number}" if rfq_number else None,
                     opportunity_id=op_number,
                     direction=direction,
                     subject=subject,
-                    recipient_email=msg_meta.get("to", "").split(",")[0].strip(),
+                    recipient_email=recipient,
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc),
                 )
@@ -266,13 +278,19 @@ def process_message(
                 f"direction={direction}, subject='{subject[:60]}'"
             )
         else:
+            if direction == "received":
+                sender = from_addr
+                recipient = user_email
+            else:
+                sender = user_email
+                recipient = msg_meta.get("to", "").split(",")[0].strip()
             tracking = EmailTracking(
                 gmail_thread_id=thread_id,
                 gmail_message_id=msg_meta["id"],
-                user_email=user_email,
+                user_email=sender,
                 direction=direction,
                 subject=subject,
-                recipient_email=msg_meta.get("to", "").split(",")[0].strip(),
+                recipient_email=recipient,
                 supplier_id=contact_match["supplier_id"],
                 customer_id=contact_match["customer_id"],
                 match_type=contact_match["match_type"],
