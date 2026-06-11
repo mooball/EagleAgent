@@ -299,7 +299,9 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
 
 def _render_rfq_detail_partial_response(request: Request, user: dict, rfq: dict, default_tab: str = "items"):
     active_tab = _infer_rfq_tab_from_request(request, default=default_tab)
-    return templates.TemplateResponse(request, "partials/rfq_detail.html", _rfq_detail_context(rfq, user, active_tab))
+    response = templates.TemplateResponse(request, "partials/rfq_detail.html", _rfq_detail_context(rfq, user, active_tab))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 # ---------------------------------------------------------------------------
