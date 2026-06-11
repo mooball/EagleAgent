@@ -173,21 +173,51 @@ def process_message(
     direction = determine_direction(user_email, from_addr)
 
     # --- Tier 1: ID match ---
-    existing = match_by_id(session, thread_id, msg_meta["id"])
-    if existing:
-        # Update existing record (e.g., draft → sent transition)
+    # Check if this exact message is already tracked
+    existing_msg = session.query(EmailTracking).filter(
+        EmailTracking.gmail_message_id == msg_meta["id"]
+    ).first()
+    if existing_msg:
+        # Already tracked — nothing to do
+        return "tier1"
+
+    # Check if this thread is tracked (matches an existing record)
+    existing_thread = session.query(EmailTracking).filter(
+        EmailTracking.gmail_thread_id == thread_id
+    ).first()
+    if existing_thread:
         if dry_run:
-            logger.info(f"  [T1] ID match: thread={thread_id} → existing tracking id={existing.id}")
+            logger.info(
+                f"  [T1] Thread match: thread={thread_id}, direction={direction}, "
+                f"subject='{subject[:60]}'"
+            )
         else:
-            if existing.direction == "draft" and direction == "sent":
-                existing.direction = "sent"
-                existing.gmail_message_id = msg_meta["id"]
-                existing.sent_at = datetime.now(timezone.utc)
-                existing.sent_confirmed = True
-                existing.updated_at = datetime.now(timezone.utc)
-            elif direction == "received" and existing.direction != "received":
-                # New reply on tracked thread — could create new row or update
-                pass  # For now, just acknowledge it exists
+            # Draft → sent transition: update original record
+            if existing_thread.direction == "draft" and direction == "sent" and existing_thread.gmail_message_id is None:
+                existing_thread.direction = "sent"
+                existing_thread.gmail_message_id = msg_meta["id"]
+                existing_thread.sent_at = datetime.now(timezone.utc)
+                existing_thread.sent_confirmed = True
+                existing_thread.updated_at = datetime.now(timezone.utc)
+            else:
+                # New message on tracked thread — create a new row inheriting the RFQ link
+                tracking = EmailTracking(
+                    gmail_thread_id=thread_id,
+                    gmail_message_id=msg_meta["id"],
+                    user_email=user_email,
+                    rfq_id=existing_thread.rfq_id,
+                    rfq_token=existing_thread.rfq_token,
+                    opportunity_id=existing_thread.opportunity_id,
+                    supplier_id=existing_thread.supplier_id,
+                    customer_id=existing_thread.customer_id,
+                    match_type=existing_thread.match_type,
+                    direction=direction,
+                    subject=subject,
+                    recipient_email=msg_meta.get("to", "").split(",")[0].strip(),
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+                session.add(tracking)
         return "tier1"
 
     # --- Tier 2: Subject pattern match ---
