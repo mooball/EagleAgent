@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from urllib.parse import quote
 
-from includes.gmail import get_gmail_client
+from includes.gmail import get_gmail_client, check_recipient_allowed, RecipientBlockedError
 from includes.dashboard.database import get_session
 from googleapiclient.errors import HttpError
 
@@ -52,6 +52,7 @@ def create_draft_email(
             - details: Full response (on error)
     """
     try:
+        check_recipient_allowed(recipient_email)
         service = get_gmail_client(user_email)
         
         # Create MIME message with custom headers
@@ -136,6 +137,7 @@ def send_email_direct(
 ) -> dict:
     """Send an HTML email directly via Gmail API and track it as sent."""
     try:
+        check_recipient_allowed(recipient_email)
         service = get_gmail_client(user_email)
 
         msg = MIMEText(body_html, "html")

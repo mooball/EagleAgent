@@ -21,6 +21,27 @@ from config.settings import Config
 
 logger = logging.getLogger(__name__)
 
+
+class RecipientBlockedError(Exception):
+    """Raised when a recipient is not in the allowed domains list."""
+    pass
+
+
+def check_recipient_allowed(recipient_email: str) -> None:
+    """Validate recipient against GMAIL_ALLOW_DOMAINS. Raises RecipientBlockedError if blocked."""
+    allow_domains = Config.GMAIL_ALLOW_DOMAINS
+    if not allow_domains:
+        return  # no restriction
+    allowed = {d.strip().lower() for d in allow_domains.split(",") if d.strip()}
+    if not allowed:
+        return
+    domain = recipient_email.rsplit("@", 1)[-1].lower().strip()
+    if domain not in allowed:
+        raise RecipientBlockedError(
+            f"Recipient domain '{domain}' not in GMAIL_ALLOW_DOMAINS ({', '.join(sorted(allowed))}). "
+            f"Email to {recipient_email} blocked."
+        )
+
 # Cache for service account info
 _service_account_info: Optional[dict] = None
 _credentials_cache: dict = {}  # user_email -> credentials

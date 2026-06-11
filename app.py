@@ -60,6 +60,10 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Suppress noisy schema warnings from Gemini function utils (harmless — unsupported JSON Schema keys)
+logging.getLogger("langchain_google_genai._function_utils").setLevel(logging.ERROR)
+logging.getLogger("google_genai.models").setLevel(logging.ERROR)
+
 # Surface Google API retries to Chainlit UI in real-time
 _genai_logger = logging.getLogger("google_genai._api_client")
 _genai_logger.addHandler(GeminiRetryNotifier(level=logging.INFO))
