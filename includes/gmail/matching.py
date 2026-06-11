@@ -24,7 +24,8 @@ from includes.dashboard.models import (
 logger = logging.getLogger(__name__)
 
 # Patterns for subject line matching
-RFQ_PATTERN = re.compile(r'\bRFQ[-‑–](\d+)\b', re.IGNORECASE)
+# Matches RFQ-2026-0032, RFQ-12345, [RFQ-2026-0032], etc.
+RFQ_PATTERN = re.compile(r'\bRFQ[-‑–]([\d][\d\-]+\d)\b', re.IGNORECASE)
 OP_PATTERN = re.compile(r'\bOP(\d+)\b', re.IGNORECASE)
 
 
