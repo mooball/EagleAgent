@@ -196,10 +196,11 @@ def process_message(
         rfq_number = subject_match.get("rfq_number")
         op_number = subject_match.get("opportunity_number")
 
-        # Verify RFQ exists in DB
+        # Verify RFQ exists in DB (rfq_number in DB is 'RFQ-2026-0032' format)
         rfq = None
         if rfq_number:
-            rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+            full_rfq_number = f"RFQ-{rfq_number}" if not rfq_number.upper().startswith("RFQ-") else rfq_number
+            rfq = session.query(RFQ).filter(RFQ.rfq_number == full_rfq_number).first()
 
         if rfq or op_number:
             if dry_run:
@@ -262,8 +263,12 @@ def sync_mailbox(session, user_email: str, domain_index: dict, dry_run: bool = F
     """
     cursor = get_cursor(session, user_email)
     if cursor is None:
-        logger.warning(f"No cursor for {user_email} — run with --init first")
-        return {"error": "no_cursor"}
+        logger.info(f"No cursor for {user_email} — auto-initializing")
+        cursor = initialize_cursor(session, user_email, dry_run)
+        if cursor is None:
+            return {"error": "init_failed"}
+        # First run after init: cursor points to current state, nothing to process yet
+        return {"tier1": 0, "tier2": 0, "tier3": 0, "skipped": 0, "errors": 0, "initialized": True}
 
     service = get_gmail_client(user_email)
     counts = {"tier1": 0, "tier2": 0, "tier3": 0, "skipped": 0, "errors": 0}

@@ -242,11 +242,11 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
     if ctx["active_tab"] == "suppliers":
         ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
     if ctx["active_tab"] == "communications":
-        ctx["email_events"] = _get_rfq_email_events(rfq["id"])
+        ctx["email_events"] = _get_rfq_email_events(rfq["id"], rfq.get("rfq_number"))
     return ctx
 
 
-def _get_rfq_email_events(rfq_id: str) -> list[dict]:
+def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
     """Fetch logged email events for an RFQ from email_tracking."""
     from sqlalchemy import text
     from datetime import datetime
@@ -269,12 +269,12 @@ def _get_rfq_email_events(rfq_id: str) -> list[dict]:
                     sent_at,
                     created_at
                 FROM email_tracking
-                WHERE rfq_id = :rfq_id
+                WHERE rfq_id = :rfq_id OR rfq_id = :rfq_number OR rfq_token = :rfq_number
                 ORDER BY COALESCE(sent_at, created_at) DESC, created_at DESC
                 LIMIT 200
                 """
             ),
-            {"rfq_id": rfq_id},
+            {"rfq_id": rfq_id, "rfq_number": rfq_number or ""},
         ).mappings().all()
 
         events = []
