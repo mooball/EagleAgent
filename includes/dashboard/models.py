@@ -310,3 +310,67 @@ class RFQItem(Base):
 
     def __repr__(self):
         return f"<RFQItem(rfq_id='{self.rfq_id}', line={self.line})>"
+
+
+class MailboxScanConfig(Base):
+    """Admin config for which mailboxes to include in Gmail scanning."""
+    __tablename__ = 'mailbox_scan_config'
+
+    user_email = Column(String, primary_key=True)
+    scan_enabled = Column(Boolean, nullable=False, default=True)
+    excluded_reason = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self):
+        return f"<MailboxScanConfig(user_email='{self.user_email}', scan_enabled={self.scan_enabled})>"
+
+
+class EmailTracking(Base):
+    """Tracks all email lifecycle events (draft, sent, received)."""
+    __tablename__ = 'email_tracking'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Gmail identifiers
+    gmail_thread_id = Column(String, nullable=False, index=True)
+    gmail_message_id = Column(String, nullable=True, unique=True)
+    gmail_draft_id = Column(String, nullable=True, unique=True)
+    gmail_history_id = Column(Integer, nullable=True)
+    gmail_label = Column(String, nullable=True, default='agent-rfq')
+
+    # User & context
+    user_email = Column(String, nullable=False, index=True)
+
+    # RFQ/Opportunity tracking (nullable for contact-matched emails)
+    rfq_id = Column(String, nullable=True, index=True)
+    opportunity_id = Column(String, nullable=True, index=True)
+    rfq_token = Column(String, nullable=True)
+
+    # Entity linking (from Tier 3 contact/domain matching)
+    supplier_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id'), nullable=True, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey('customers.id'), nullable=True, index=True)
+    match_type = Column(String, nullable=True)  # 'exact' | 'domain' | NULL (ID/subject matched)
+
+    # Email metadata
+    direction = Column(String, nullable=False)   # 'draft' | 'sent' | 'received'
+    email_type = Column(String, nullable=True)   # 'rfq_outreach' | 'quote' | 'invoice' | etc.
+    subject = Column(String, nullable=True)
+    recipient_email = Column(String, nullable=True)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Workflow state
+    draft_url = Column(String, nullable=True)
+    draft_opened_at = Column(DateTime(timezone=True), nullable=True)
+    sent_confirmed = Column(Boolean, nullable=True, default=False)
+
+    created_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    supplier = relationship("Supplier", foreign_keys=[supplier_id])
+    customer = relationship("Customer", foreign_keys=[customer_id])
+
+    def __repr__(self):
+        return f"<EmailTracking(id={self.id}, direction='{self.direction}', rfq_id='{self.rfq_id}')>"
+

@@ -1,30 +1,12 @@
 # Plan: NetSuite Expanded Integration – Opportunities, Customers, & Team Members
 
-## Status: Implementation in Progress (Phases 1-3 Complete, Phase 4-5 Pending)
+## Status: Complete ✅ (All Phases Delivered)
 
 ## Immediate Next Steps
 
-1. **Apply Alembic migration** to create the four new tables:
-   ```bash
-   uv run alembic upgrade head
-   ```
+All implementation phases are complete. Remaining future work:
 
-2. **Populate employee mappings**:
-   ```bash
-   uv run python -m scripts.create_netsuite_employee_mappings
-   ```
-
-3. **Test sync scripts** with dry-runs:
-   ```bash
-   uv run python -m scripts.sync_netsuite_opportunities --dry-run --since "2014-01-01"
-   uv run python -m scripts.sync_netsuite_customers --dry-run --since "30 days"
-   uv run python -m scripts.sync_netsuite_contacts --dry-run --since "30 days"
-   ```
-
-4. **Migrate supplier contacts** (one-time):
-   ```bash
-   uv run python -m scripts.migrate_supplier_contacts
-   ```
+1. **Phase 6: RFQ Linking & Email Matching** — Add `opportunity_id`/`customer_id` to RFQs, implement email-to-contact matching logic
 
 ## Context
 
@@ -377,10 +359,9 @@ EMPLOYEE_MAPPINGS = [
    - Logs unmapped employees for manual review
    - Can be run once or as part of database initialization
 
-### 3. Add to `scripts/nightly_sync.py`
-   - After syncing customers/opportunities, validate all employee mappings exist
-   - Alert if unmapped employee IDs are encountered
-   - Store unmapped IDs for manual review/update UI
+### 3. Add to `scripts/nightly_sync.py` ✅
+   - Contacts, customers, opportunities added to nightly sync (steps 6-8)
+   - Nightly sync order: Brands → Products → Suppliers → Quotes → Sales Orders → Contacts → Customers → Opportunities → Link Brands → Categorize → Notes → Embeddings
 
 ### 4. Create admin UI (future phase)
    - Web form to add/update employee mappings
@@ -391,36 +372,33 @@ EMPLOYEE_MAPPINGS = [
 
 ## Phase 5: Integration & Testing
 
-### 1. Migrate supplier contacts from JSONB → `contacts` table
-   - Script: `scripts/migrate_supplier_contacts.py`
-   - Read existing `suppliers.contacts` JSONB and insert into `contacts` table
-   - Preserve `label` field ("Main", "Source", "Source CC")
-   - After migration, `suppliers.contacts` JSONB column can be kept as a cache or removed
-   - All future supplier syncs write to `contacts` table instead of JSONB
+### 1. Migrate supplier contacts from JSONB → `contacts` table ✅
+   - Script: `scripts/migrate_supplier_contacts.py` created and run
+   - Reads existing `suppliers.contacts` JSONB and inserts into `contacts` table
+   - Preserves `label` field ("Main", "Source", "Source CC")
 
-### 2. Update `scripts/sync_netsuite_suppliers.py`
-   - Replace `build_contacts()` → write to `contacts` table
-   - Upsert contacts by `supplier_id` + `label` (no `netsuite_id` for supplier contacts)
+### 2. Update `scripts/sync_netsuite_suppliers.py` ✅
+   - `build_contacts()` now writes to `contacts` table via `sync_supplier_contacts()`
+   - Upserts contacts by `supplier_id` + `label` (no `netsuite_id` for supplier contacts)
+   - Marks stale contacts as inactive
 
-### 3. Update `scripts/nightly_sync.py`
-   - Add calls to sync opportunities, customers, contacts
-   - Maintain resume checkpoints (similar to suppliers)
-   - Log sync summary (inserted, updated, skipped counts)
+### 3. Update `scripts/nightly_sync.py` ✅
+   - Added contacts, customers, opportunities sync jobs (steps 6-8)
+   - All scripts use `--resume` for incremental sync
 
-### 4. Add to `includes/dashboard/models.py`
-   - Add relationships: `Opportunity.customer`, `Opportunity.salesrep`, `Customer.contacts`, `Supplier.contacts`
-   - Add indexes for performance
+### 4. Add to `includes/dashboard/models.py` ✅
+   - Relationships added: `Opportunity.customer`, `Opportunity.salesrep`, `Opportunity.transactions`, `Customer.customer_contacts`, `Customer.opportunities`, `Supplier.supplier_contacts`
+   - Indexes on all FK columns
 
-### 5. Write integration tests
-   - Test opportunity sync with mock data
-   - Test customer sync with contact expansion
-   - Test employee mapping validation
-   - Test foreign key constraints
+### 5. Dashboard routes ✅
+   - Created `includes/dashboard/routes/opportunities.py` (list, detail, search)
+   - Created `includes/dashboard/routes/customers.py` (list, detail, search)
+   - Created `includes/dashboard/routes/contacts.py` (list, detail, search)
 
-### 4. End-to-end testing
-   - Run full sync on staging database
-   - Verify record counts and data integrity
-   - Test RFQ linking to opportunities/customers
+### 6. End-to-end testing ✅
+   - Full sync run against live NetSuite data in production
+   - Record counts and data integrity verified
+   - Opportunity totals and status codes validated
 
 ---
 
@@ -465,8 +443,13 @@ EMPLOYEE_MAPPINGS = [
 | `scripts/migrate_supplier_contacts.py` | Create | ✅ Complete | One-time migration of supplier JSONB contacts into unified contacts table |
 | `scripts/create_netsuite_employee_mappings.py` | Create | ✅ Complete | Populate employee mappings table with 10 active + 7 inactive employees |
 | `scripts/list_netsuite_employees.py` | Create | ✅ Complete | List employees with --export flag for CSV output |
-| `scripts/sync_netsuite_suppliers.py` | Modify | ⏳ Pending | Update to write contacts to unified table instead of JSONB |
-| `scripts/nightly_sync.py` | Modify | ⏳ Pending | Add new sync jobs (opportunities, customers, contacts) |
+| `scripts/sync_netsuite_suppliers.py` | Modify | ✅ Complete | Updated to write contacts to unified table via `sync_supplier_contacts()` |
+| `scripts/nightly_sync.py` | Modify | ✅ Complete | Added contacts, customers, opportunities sync jobs (12 steps total) |
+| `includes/dashboard/routes/opportunities.py` | Create | ✅ Complete | Dashboard list/detail/search routes for opportunities |
+| `includes/dashboard/routes/customers.py` | Create | ✅ Complete | Dashboard list/detail/search routes for customers |
+| `includes/dashboard/routes/contacts.py` | Create | ✅ Complete | Dashboard list/detail/search routes for contacts |
+| `includes/netsuite/constants.py` | Modify | ✅ Complete | Added OPPORTUNITY_STATUS mapping (A-D codes) |
+| `scripts/backfill_transaction_opportunities.py` | Create | ✅ Complete | Link existing transactions to opportunities by tranid prefix |
 | `.github/prompts/plan-netsuiteExpanded.prompt.md` | Create | This plan document |
 
 ---
@@ -475,7 +458,7 @@ EMPLOYEE_MAPPINGS = [
 
 ### Phase 1-3: Complete ✅
 - ✅ All four models created (Opportunity, Customer, Contact, NetSuiteEmployeeMapping)
-- ✅ Alembic migration created (e8f2a1b7c4d3_add_netsuite_expanded_tables.py, ready to apply)
+- ✅ Alembic migration applied (e8f2a1b7c4d3 + f1a2b3c4d5e6 at head)
 - ✅ SuiteQL query builders added (opportunities_updated_since, customers_updated_since, contacts_for_ids, contacts_updated_since)
 - ✅ Opportunities sync script complete with --since/--resume/--dry-run and batch commits
 - ✅ Customers sync script complete with contact expansion and contact sync trigger
@@ -487,16 +470,20 @@ EMPLOYEE_MAPPINGS = [
 - ✅ Pagination fixed (all sync scripts use suiteql_iter with batch commits)
 - ✅ `--resume` flag working on opportunities, customers, contacts
 
-### Phase 4: Pending ⏳
-- ⏳ Run Alembic migration (`uv run alembic upgrade head`)
-- ⏳ Populate employee mappings (`uv run python -m scripts.create_netsuite_employee_mappings`)
-- ⏳ Test sync scripts against live NetSuite data
+### Phase 4: Complete ✅
+- ✅ Alembic migration applied (`uv run alembic upgrade head`)
+- ✅ Employee mappings populated (`uv run python -m scripts.create_netsuite_employee_mappings`)
+- ✅ Sync scripts tested against live NetSuite data (production deployment)
 
-### Phase 5: Pending ⏳
-- ⏳ Run supplier contacts migration
-- ⏳ Update sync_netsuite_suppliers.py to write contacts to unified table
-- ⏳ Update nightly_sync.py to include new sync jobs
-- ⏳ Add relationships to models.py (Opportunity.customer, Customer.contacts)
+### Phase 5: Complete ✅
+- ✅ Supplier contacts migrated to unified contacts table
+- ✅ sync_netsuite_suppliers.py updated to write contacts to unified table
+- ✅ nightly_sync.py updated with 12 steps including new sync jobs
+- ✅ Relationships added to models.py (Opportunity.customer, Customer.contacts, Supplier.contacts)
+- ✅ Dashboard routes created for opportunities, customers, contacts
+- ✅ End-to-end sync verified in production
+- ✅ Opportunity status codes mapped (A=In Progress, B=Issued Quote, C=Closed Won, D=Closed Lost)
+- ✅ Transaction → Opportunity backfill script created
 
 ### Phase 6: Future 🔮
 - ⏳ Integration tests for all new sync scripts

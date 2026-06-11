@@ -242,41 +242,105 @@ CREATE TABLE mailbox_sync_cursor (
 
 - **Remaining follow-on work**:
   - Reuse same component pattern across additional non-RFQ email surfaces
-  - Complete Phase 3 mailbox sync/status surfacing
-
-### 2.4 Post-send detection (polling + sync job) ⏳ PHASE 3
-- **Quick detection (optional poll)**: After draft created, can poll every 5-10 seconds for ~5 minutes
-  - Check if draft was sent (moved from drafts to sent folder)
-  - Read sent message to extract headers and confirm RFQ association
-  - Move `email_tracking` row to 'sent' status, populate `gmail_message_id`, `sent_at`
-- **Reliable detection (mailbox sync)**: Primary detection via Phase 3 mailbox scanning job
-  - Next scheduled sync (every 5 min) will detect outgoing message in sent folder
-  - Read headers to match to RFQ and update `email_tracking`
-  - Guarantees we never miss a sent email, even if user closes modal immediately
-  - Approach: treat sent messages as outgoing events in history delta, log them if not already tracked
 
 ---
 
-## Phase 3: Mailbox Scanning & Reply Tracking
+## Phase 3: Mailbox Scanning, Email Matching & Reply Tracking
+
+### 3.0 Mailbox configuration & admin settings
+- **Admin setting**: Determine which mailboxes to scan
+  - Candidate mailboxes derived from logged-in users (all staff who have authenticated)
+  - Admin UI to flag individual mailboxes as "do not scan" (opt-out model)
+  - **Domain restriction**: Only scan `@eagle-exports.com` mailboxes — users may log in with `@mooball.net` accounts but those are excluded from scanning
+  - Store config in a `mailbox_scan_config` table or admin settings:
+    ```sql
+    CREATE TABLE mailbox_scan_config (
+        user_email       VARCHAR PRIMARY KEY,
+        scan_enabled     BOOLEAN DEFAULT TRUE,
+        excluded_reason  VARCHAR,             -- e.g. 'mooball domain', 'user opted out'
+        created_at       TIMESTAMP DEFAULT NOW(),
+        updated_at       TIMESTAMP DEFAULT NOW()
+    );
+    ```
+  - On sync job startup, query active mailboxes: `WHERE scan_enabled = TRUE AND user_email LIKE '%@eagle-exports.com'`
 
 ### 3.1 Mailbox sync cursor setup
-- Initialize `mailbox_sync_cursor` for each staff user
+- Initialize `mailbox_sync_cursor` for each enabled staff user
 - On first run, seed with `historyId` from most recent message (avoid scanning all history)
 - Store `updated_at` to track sync recency
 
 ### 3.2 Incremental sync job
 - **Trigger**: Background job every 5 minutes
-- **Per user**: Call `users().history().list(startHistoryId=last_cursor)` with label `agent-rfq`
-- **Process**:
-  - Iterate over `messageAdded` events
-  - For each event, fetch message details (subject, headers, thread)
-  - If direction is outgoing (check headers), log to `email_tracking` if not already logged
-  - If direction is incoming (reply), check for tracking in `email_tracking` by threadId
-  - If tracked, mark as 'received' in `email_tracking`
-  - If not tracked, attempt fallback: search by RFQ token in subject
+- **Per user**: For each enabled mailbox, call `users().history().list(startHistoryId=last_cursor)`
 - **Update cursor**: After successful processing, store new `historyId` in `mailbox_sync_cursor`
 
-### 3.3 Mailbox search by Opportunity ID
+### 3.3 Email matching pipeline (per message)
+
+For each new message detected in the history delta, run a three-tier matching pipeline:
+
+#### Tier 1: ID matching (exact record lookup)
+- Check if the message's `gmail_thread_id`, `gmail_message_id`, or `gmail_draft_id` matches an existing `email_tracking` record
+- **If match found**: Update the existing record (e.g. draft → sent transition, new reply on tracked thread)
+- This covers post-send detection for drafts created by EagleAgent — no separate polling needed
+
+#### Tier 2: Subject pattern matching (RFQ / Opportunity ID)
+- Parse the subject line for known tokens:
+  - RFQ token: `[RFQ-<id>]` or `RFQ-<id>` patterns
+  - Opportunity ID: `OP<number>` patterns (e.g. `OP1009`)
+- **Direction-agnostic**: Matches both outgoing and incoming messages. This covers:
+  - Emails sent outside EagleAgent (e.g. manual Gmail compose) that reference known entities
+  - Incoming replies where the subject carries forward an RFQ/OP token (even if there's no prior outgoing record in our system — e.g. a supplier replies to a manually-sent email)
+- **If match found**: Create or link an `email_tracking` record to the matched RFQ/opportunity
+
+#### Tier 3: Contact & domain matching (sender/recipient lookup)
+- Extract sender and all recipient email addresses from the message
+
+**Step A — Exact email match:**
+- Look up each address in the unified `contacts` table (`contacts.email`)
+- Also check `customers.email` for company-level email matches
+- **If match found**: Determine the linked entity:
+  - `contacts.supplier_id` → link to Supplier
+  - `contacts.customer_id` → link to Customer
+
+**Step B — Domain fallback match** (if Step A finds no match):
+- Extract the domain from the email address (e.g. `john@acme.com` → `acme.com`)
+- Look up the domain against known Supplier/Customer domains
+- Domain sources (build/cache a domain lookup table from):
+  - `contacts.email` domains (grouped by `supplier_id` / `customer_id`)
+  - `customers.email` domains
+  - `suppliers.website` domain (strip scheme/path, extract root domain)
+  - `customers.url` / any website field on customers
+- **If domain match found**: Link to the matched Supplier or Customer
+- Note: domain matching is lower confidence than exact email — flag as `match_type = 'domain'` vs `'exact'` in the tracking record
+
+**Storage for matched emails (both Step A and B):**
+- **If match found but no RFQ link**: Still store the record in `email_tracking` with:
+  - `rfq_id = NULL`
+  - `supplier_id` or `customer_id` populated (new nullable FK columns on `email_tracking`)
+  - `match_type` = 'exact' | 'domain' — indicates confidence level
+  - `direction` = 'sent' or 'received' based on message headers
+  - These "unlinked" records are surfaced in a UI for manual RFQ assignment
+
+#### No match
+- Messages that match none of the three tiers are **not stored** — they are normal email traffic unrelated to EagleAgent
+
+### 3.4 email_tracking schema updates for contact-matched emails
+- Add nullable columns to `email_tracking`:
+  ```sql
+  ALTER TABLE email_tracking ADD COLUMN supplier_id UUID REFERENCES suppliers(id);
+  ALTER TABLE email_tracking ADD COLUMN customer_id UUID REFERENCES customers(id);
+  ALTER TABLE email_tracking ADD COLUMN match_type VARCHAR;  -- 'exact' | 'domain' | NULL (for ID/subject matched)
+  ```
+- `rfq_id` becomes nullable (was NOT NULL) — contact-matched emails may not have an RFQ link yet
+- Add index: `CREATE INDEX ix_email_tracking_unlinked ON email_tracking(supplier_id, customer_id) WHERE rfq_id IS NULL;`
+
+### 3.5 Unlinked email UI
+- Dashboard view showing emails matched to a Supplier/Customer but not yet linked to an RFQ
+- Columns: date, subject, from/to, matched supplier/customer, action (link to RFQ)
+- User can select an RFQ to link the email to, or dismiss/ignore
+- Filter by supplier, customer, date range
+
+### 3.6 Mailbox search by Opportunity ID
 - Function: `search_thread_by_rfq(user_email, rfq_id, limit=10) -> list[dict]`
 - Search modes (in order of priority):
   1. Query `email_tracking` by `rfq_id` → return all threads
@@ -285,7 +349,7 @@ CREATE TABLE mailbox_sync_cursor (
   4. Fallback: query body marker text `Tracking ID: RFQ-<id>`
 - Returns: list of threads with metadata: threadId, subject, participants, dates, last message preview
 
-### 3.4 Thread details & message content
+### 3.7 Thread details & message content
 - Function: `get_thread_messages(user_email, thread_id) -> list[dict]`
 - Fetch full thread from Gmail
 - Normalize message data (extract headers, body, sender, timestamps)

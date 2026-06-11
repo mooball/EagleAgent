@@ -152,6 +152,12 @@
                        class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                         System Admin
                     </a>
+                    <a href="/admin/mailboxes"
+                       hx-get="/admin/mailboxes" hx-target="#main-content" hx-push-url="/admin/mailboxes"
+                       @click="userMenuOpen = false"
+                       class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        Mailbox Scanning
+                    </a>
                     {% endif %}
                     <a href="/logout"
                        class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
