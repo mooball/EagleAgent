@@ -135,8 +135,12 @@ def extract_email_address(header_value: str) -> str:
     return header_value.strip().lower()
 
 
+# Company-owned domains to exclude from external address extraction
+_OWN_DOMAINS = frozenset({"eagle-exports.com", "eaglexp.com.au"})
+
+
 def extract_all_addresses(msg_meta: dict) -> list[str]:
-    """Extract all email addresses from From, To, Cc headers (excluding @eagle-exports.com)."""
+    """Extract all email addresses from From, To, Cc headers (excluding own domains)."""
     addresses = []
     for field in ("from", "to", "cc"):
         raw = msg_meta.get(field, "")
@@ -145,8 +149,10 @@ def extract_all_addresses(msg_meta: dict) -> list[str]:
         # Split multiple recipients
         for part in raw.split(','):
             addr = extract_email_address(part)
-            if addr and '@' in addr and not addr.endswith(f'@{SCAN_DOMAIN}'):
-                addresses.append(addr)
+            if addr and '@' in addr:
+                domain = addr.rsplit('@', 1)[1]
+                if domain not in _OWN_DOMAINS:
+                    addresses.append(addr)
     return addresses
 
 
@@ -165,6 +171,11 @@ def process_message(
     msg_meta = extract_message_metadata(service, message_id)
     if not msg_meta:
         return "error"
+
+    # Skip promotional, social, spam, and forum emails — they shouldn't match entities
+    _SKIP_LABELS = {"CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS", "SPAM", "TRASH"}
+    if _SKIP_LABELS & set(msg_meta.get("labelIds", [])):
+        return "skip"
 
     thread_id = msg_meta["threadId"]
     subject = msg_meta["subject"]
