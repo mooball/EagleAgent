@@ -32,11 +32,18 @@ def get_service_account_info() -> dict:
     if _service_account_info is not None:
         return _service_account_info
     
-    key_path = Path("service-account-key.json")
+    import os
+    # Check GOOGLE_APPLICATION_CREDENTIALS first (set by start.sh in Docker)
+    env_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if env_path and Path(env_path).exists():
+        key_path = Path(env_path)
+    else:
+        key_path = Path("service-account-key.json")
+    
     if not key_path.exists():
         raise FileNotFoundError(
             f"Service account key not found at {key_path.absolute()}. "
-            "Expected: service-account-key.json in project root"
+            "Expected: service-account-key.json in project root or GOOGLE_APPLICATION_CREDENTIALS env var"
         )
     
     with open(key_path) as f:
