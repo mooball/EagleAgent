@@ -124,6 +124,15 @@ class Config:
     HUBSPOT_ACCESS_TOKEN = os.getenv("HUBSPOT_ACCESS_TOKEN", "")
     
     
+    # ==================== Gmail Integration ====================
+    
+    # Enable background Gmail mailbox sync (every 5 min). Disable for dev/staging.
+    GMAIL_SYNC_ENABLED = os.getenv("GMAIL_SYNC_ENABLED", "false").lower() == "true"
+    
+    # Sync interval in seconds (default 5 minutes)
+    GMAIL_SYNC_INTERVAL = int(os.getenv("GMAIL_SYNC_INTERVAL", "300"))
+    
+    
     # ==================== Development Settings ====================
     
     # Enable debug mode

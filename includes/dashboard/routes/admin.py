@@ -437,3 +437,85 @@ async def admin_duplicates_delete(request: Request, user: dict = require_admin):
         return HTMLResponse(f'<div class="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200 dark:border-red-800 mb-3">Delete failed: {e}</div>')
     finally:
         session.close()
+
+
+# ---------------------------------------------------------------------------
+# Mailbox Scan Config
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/mailboxes")
+async def admin_mailboxes(request: Request, user: dict = require_admin):
+    """Admin page for managing Gmail mailbox scanning config."""
+    session = _helpers.get_session()
+    try:
+        from includes.dashboard.models import MailboxScanConfig
+        configs = session.query(MailboxScanConfig).order_by(MailboxScanConfig.user_email).all()
+        ctx = {"mailboxes": configs, "page_title": "Mailbox Scanning"}
+        return _render(
+            request, "admin_mailboxes.html", "partials/admin_mailboxes.html", ctx, user
+        )
+    finally:
+        session.close()
+
+
+@router.post("/admin/mailboxes/add")
+async def admin_mailbox_add(request: Request, user: dict = require_admin):
+    """Add a mailbox to the scan config."""
+    from fastapi.responses import HTMLResponse
+    form = await request.form()
+    email = form.get("user_email", "").strip().lower()
+
+    if not email or "@" not in email:
+        return HTMLResponse('<div class="text-red-600 text-sm">Invalid email address</div>')
+
+    session = _helpers.get_session()
+    try:
+        from includes.dashboard.models import MailboxScanConfig
+        existing = session.query(MailboxScanConfig).filter_by(user_email=email).first()
+        if existing:
+            return HTMLResponse(f'<div class="text-yellow-600 text-sm">{email} already configured</div>')
+
+        # Auto-disable non-eagle-exports.com domains
+        scan_enabled = email.endswith("@eagle-exports.com")
+        excluded_reason = None if scan_enabled else "non-eagle-exports domain"
+
+        config_entry = MailboxScanConfig(
+            user_email=email,
+            scan_enabled=scan_enabled,
+            excluded_reason=excluded_reason,
+        )
+        session.add(config_entry)
+        session.commit()
+
+        # Return updated list via redirect
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url="/admin/mailboxes", status_code=303)
+    except Exception as e:
+        session.rollback()
+        return HTMLResponse(f'<div class="text-red-600 text-sm">Error: {e}</div>')
+    finally:
+        session.close()
+
+
+@router.post("/admin/mailboxes/{email:path}/toggle")
+async def admin_mailbox_toggle(request: Request, email: str, user: dict = require_admin):
+    """Toggle scanning on/off for a mailbox."""
+    from fastapi.responses import HTMLResponse
+    session = _helpers.get_session()
+    try:
+        from includes.dashboard.models import MailboxScanConfig
+        config_entry = session.query(MailboxScanConfig).filter_by(user_email=email).first()
+        if not config_entry:
+            return HTMLResponse(f'<div class="text-red-600 text-sm">Mailbox not found</div>')
+
+        config_entry.scan_enabled = not config_entry.scan_enabled
+        config_entry.excluded_reason = None if config_entry.scan_enabled else "disabled by admin"
+        session.commit()
+
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url="/admin/mailboxes", status_code=303)
+    except Exception as e:
+        session.rollback()
+        return HTMLResponse(f'<div class="text-red-600 text-sm">Error: {e}</div>')
+    finally:
+        session.close()

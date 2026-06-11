@@ -7,6 +7,7 @@ Dashboard UI will be added in Phase 2.
 
 import os
 import logging
+import asyncio
 import hashlib
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -43,6 +44,44 @@ google_sso = GoogleSSO(
 
 
 # ---------------------------------------------------------------------------
+# Background Gmail sync loop
+# ---------------------------------------------------------------------------
+async def _gmail_sync_loop():
+    """Periodically sync Gmail mailboxes in a background thread."""
+    await asyncio.sleep(30)  # let app fully start
+    while True:
+        try:
+            await asyncio.to_thread(_run_gmail_sync)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Gmail sync error: {e}")
+        await asyncio.sleep(config.GMAIL_SYNC_INTERVAL)
+
+
+def _run_gmail_sync():
+    """Run one sync cycle (called in thread pool)."""
+    from includes.dashboard.database import get_session
+    from includes.dashboard.models import MailboxScanConfig
+    from includes.gmail.matching import build_domain_index
+    from scripts.sync_gmail_mailboxes import get_enabled_mailboxes, sync_mailbox
+
+    session = get_session()
+    try:
+        mailboxes = get_enabled_mailboxes(session)
+        if not mailboxes:
+            return
+        domain_index = build_domain_index(session)
+        for email in mailboxes:
+            try:
+                sync_mailbox(session, email, domain_index)
+            except Exception as e:
+                logger.warning(f"Gmail sync failed for {email}: {e}")
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
 # Lifespan — initialise shared async resources (pg pool, store, agents, etc.)
 # so that dashboard routes can access the store before any chat session starts.
 # ---------------------------------------------------------------------------
@@ -51,7 +90,18 @@ async def lifespan(app: FastAPI):
     logger.info("FastAPI starting up")
     from includes.graph import setup_globals
     await setup_globals()
+
+    # Start background Gmail sync if enabled
+    gmail_task = None
+    if config.GMAIL_SYNC_ENABLED:
+        gmail_task = asyncio.create_task(_gmail_sync_loop())
+        logger.info(f"Gmail sync enabled (every {config.GMAIL_SYNC_INTERVAL}s)")
+
     yield
+
+    # Cancel background task on shutdown
+    if gmail_task:
+        gmail_task.cancel()
     logger.info("FastAPI shutting down")
 
 
