@@ -247,21 +247,13 @@ CREATE TABLE mailbox_sync_cursor (
 
 ## Phase 3: Mailbox Scanning, Email Matching & Reply Tracking
 
-### 3.0 Mailbox configuration & admin settings
-- **Admin setting**: Determine which mailboxes to scan
+### 3.0 Mailbox configuration & admin settings ✅ COMPLETE
+- [x] **Admin setting**: Determine which mailboxes to scan
   - Candidate mailboxes derived from logged-in users (all staff who have authenticated)
-  - Admin UI to flag individual mailboxes as "do not scan" (opt-out model)
-  - **Domain restriction**: Only scan `@eagle-exports.com` mailboxes — users may log in with `@mooball.net` accounts but those are excluded from scanning
-  - Store config in a `mailbox_scan_config` table or admin settings:
-    ```sql
-    CREATE TABLE mailbox_scan_config (
-        user_email       VARCHAR PRIMARY KEY,
-        scan_enabled     BOOLEAN DEFAULT TRUE,
-        excluded_reason  VARCHAR,             -- e.g. 'mooball domain', 'user opted out'
-        created_at       TIMESTAMP DEFAULT NOW(),
-        updated_at       TIMESTAMP DEFAULT NOW()
-    );
-    ```
+  - [x] Admin UI to flag individual mailboxes as "do not scan" (opt-out model)
+  - [x] **Domain restriction**: Only scan `@eagle-exports.com` mailboxes — users may log in with `@mooball.net` accounts but those are excluded from scanning
+  - [x] Config stored in `mailbox_scan_config` table (model: `MailboxScanConfig`)
+  - [x] Admin UI at `/admin/mailboxes` — add/toggle mailboxes for scanning
   - On sync job startup, query active mailboxes: `WHERE scan_enabled = TRUE AND user_email LIKE '%@eagle-exports.com'`
 
 ### 3.1 Mailbox sync cursor setup
@@ -334,11 +326,14 @@ For each new message detected in the history delta, run a three-tier matching pi
 - `rfq_id` becomes nullable (was NOT NULL) — contact-matched emails may not have an RFQ link yet
 - Add index: `CREATE INDEX ix_email_tracking_unlinked ON email_tracking(supplier_id, customer_id) WHERE rfq_id IS NULL;`
 
-### 3.5 Unlinked email UI
-- Dashboard view showing emails matched to a Supplier/Customer but not yet linked to an RFQ
-- Columns: date, subject, from/to, matched supplier/customer, action (link to RFQ)
-- User can select an RFQ to link the email to, or dismiss/ignore
-- Filter by supplier, customer, date range
+### 3.5 Unlinked email UI / Admin email logs ✅ PARTIAL
+- [x] Admin-only view at `/admin/emails` showing ALL tracked email communications
+  - Columns: ID, direction badge, RFQ link, customer, supplier, sender/recipient, subject, date (AEST)
+  - Shows up to 500 most recent entries
+  - Accessible from admin dropdown menu ("Email Logs")
+- [ ] Dashboard view showing emails matched to a Supplier/Customer but not yet linked to an RFQ
+- [ ] User can select an RFQ to link the email to, or dismiss/ignore
+- [ ] Filter by supplier, customer, date range
 
 ### 3.6 Mailbox search by Opportunity ID
 - Function: `search_thread_by_rfq(user_email, rfq_id, limit=10) -> list[dict]`
@@ -460,10 +455,35 @@ For each new message detected in the history delta, run a three-tier matching pi
   - Require supervisor approval for new suppliers
   - Log as 'sent' (direction='sent') immediately
 
-### 6.2 Email content analysis
-- On reply receipt: AI summarizes response
-- Extract key data: lead times, quotes, conditions
+### 6.2 Email content storage & analysis (Hybrid approach)
+
+**Strategy**: Store markdown body + attachment manifest on ingest, fetch full HTML on demand.
+
+**On ingest (during mailbox scan):**
+- Convert HTML body to Markdown via `html2text` (preserves tables, lists, links)
+- Store markdown body in `body_markdown` column (full content, not truncated)
+- Store attachment manifest as JSONB: `[{filename, mime_type, size, gmail_attachment_id}]`
+- This enables AI categorization, search, and preview without API calls
+
+**On demand (when user views or AI needs full content):**
+- Fetch original HTML body from Gmail API using stored `gmail_message_id`
+- Download attachment bytes from Gmail API using stored attachment IDs
+- Optional: cache fetched HTML in `body_html` column after first fetch
+
+**Schema additions needed:**
+```sql
+ALTER TABLE email_tracking ADD COLUMN body_markdown TEXT;          -- full markdown conversion
+ALTER TABLE email_tracking ADD COLUMN body_html TEXT;              -- cached on first fetch (nullable)
+ALTER TABLE email_tracking ADD COLUMN attachments_json JSONB;      -- [{filename, mime_type, size, gmail_attachment_id}]
+ALTER TABLE email_tracking ADD COLUMN sender_name VARCHAR;         -- display name from From header
+ALTER TABLE email_tracking ADD COLUMN all_recipients JSONB;        -- [{email, name, type: 'to'|'cc'|'bcc'}]
+```
+
+**AI analysis (after content is stored):**
+- On reply receipt: AI summarizes response from stored markdown
+- Extract key data: lead times, quotes, conditions, pricing tables
 - Populate RFQ data fields from supplier responses
+- Markdown tables parse reliably for structured data extraction
 
 ### 6.3 NetSuite Integration (future)
 - Link Gmail tracking to NetSuite Opportunities and Customers (once tables are synced)
@@ -625,10 +645,16 @@ GMAIL_COMPOSE_POLL_TIMEOUT=300
 - [x] Tracking token added to subject and body footer
 - [x] Modal UX finalized (editor, spinner, result, retry, intentional-close controls)
 
-### Phase 3 ⏳ NOT YET STARTED
+### Phase 3 🟡 IN PROGRESS
+- [x] Mailbox scan config admin UI (`/admin/mailboxes`) — add/toggle mailboxes
+- [x] Three-tier matching pipeline implemented (`includes/gmail/matching.py`)
+- [x] Incremental sync script (`scripts/sync_gmail_mailboxes.py`) — History API, cursor management
+- [x] `email_tracking` schema extended with `supplier_id`, `customer_id`, `match_type` columns
+- [x] Admin email logs view (`/admin/emails`) — shows all tracked emails with linked entities
+- [x] Background sync runs every 300s when enabled (`GMAIL_SYNC_ENABLED=true` in app startup)
 - [ ] Post-send detection populates `email_tracking` within 1 minute (via optional polling)
-- [ ] Mailbox sync job detects sent emails within 5 minutes
-- [ ] Supplier reply is detected by sync job within 5 minutes
+- [ ] Supplier reply is detected by sync job within 5 minutes (needs real-world testing)
+- [ ] Full thread drilldown in communications tab
 
 ### Phase 4 🟡 IN PROGRESS
 - [x] "Send Email" buttons create draft and open modal

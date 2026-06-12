@@ -440,6 +440,68 @@ async def admin_duplicates_delete(request: Request, user: dict = require_admin):
 
 
 # ---------------------------------------------------------------------------
+# Email Logs
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/emails")
+async def admin_email_logs(request: Request, user: dict = require_admin):
+    """Admin page showing all tracked email communications."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    local_tz = ZoneInfo(_helpers.config.TIMEZONE)
+    session = _helpers.get_session()
+    try:
+        rows = session.execute(
+            text("""
+                SELECT
+                    et.id,
+                    et.direction,
+                    et.email_type,
+                    et.subject,
+                    et.recipient_email,
+                    et.user_email,
+                    et.rfq_id,
+                    et.gmail_thread_id,
+                    et.gmail_message_id,
+                    et.gmail_draft_id,
+                    et.sent_at,
+                    et.created_at,
+                    et.match_type,
+                    s.name AS supplier_name,
+                    c.companyname AS customer_name
+                FROM email_tracking et
+                LEFT JOIN suppliers s ON et.supplier_id = s.id
+                LEFT JOIN customers c ON et.customer_id = c.id
+                ORDER BY COALESCE(et.sent_at, et.created_at) DESC
+                LIMIT 500
+            """)
+        ).mappings().all()
+
+        emails = []
+        for row in rows:
+            e = dict(row)
+            ts = e.get("sent_at") or e.get("created_at")
+            if isinstance(ts, datetime):
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                dt_local = ts.astimezone(local_tz)
+                e["display_time"] = dt_local.strftime("%Y-%m-%d %H:%M")
+            elif isinstance(ts, str):
+                e["display_time"] = ts[:16].replace("T", " ") if len(ts) >= 16 else ts
+            else:
+                e["display_time"] = "—"
+            emails.append(e)
+
+        ctx = {"emails": emails, "page_title": "Email Logs", "email_count": len(emails)}
+        return _render(
+            request, "admin_emails.html", "partials/admin_emails.html", ctx, user
+        )
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
 # Mailbox Scan Config
 # ---------------------------------------------------------------------------
 

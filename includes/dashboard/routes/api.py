@@ -1,6 +1,8 @@
 """API routes: latest-thread lookup and RFQ ↔ thread binding."""
 
 import logging
+import uuid
+from datetime import datetime, timezone
 
 from fastapi import Request, Depends
 from fastapi.responses import JSONResponse
@@ -23,12 +25,9 @@ def latest_thread(user: dict = Depends(require_user), rfq_id: str | None = None)
     try:
         # If rfq_id is provided, look up the bound thread first
         if rfq_id:
-            rfq_thread = session.query(RFQThread).filter(
-                RFQThread.rfq_number == rfq_id,
-                RFQThread.user_email == user["email"],
-            ).first()
-            if rfq_thread:
-                return JSONResponse({"thread_id": rfq_thread.thread_id})
+            thread_id = _lookup_rfq_thread_id(rfq_id, user["email"])
+            if thread_id:
+                return JSONResponse({"thread_id": thread_id})
 
         # Fall back to most recent thread
         row = session.execute(
@@ -53,16 +52,72 @@ def latest_thread(user: dict = Depends(require_user), rfq_id: str | None = None)
 # ---------------------------------------------------------------------------
 
 def _lookup_rfq_thread_id(rfq_number: str, user_email: str) -> str | None:
-    """Return the thread_id bound to this RFQ for the given user, or None."""
+    """Return the thread_id bound to this RFQ for the given user.
+
+    If no binding exists, creates a new Chainlit thread owned by the user,
+    binds it to the RFQ, and returns the new thread_id.
+
+    Verifies existing bindings point to a thread owned by this user.
+    If not, removes the stale binding and creates a fresh thread.
+    """
     session = _helpers.get_session()
     try:
         row = session.query(RFQThread).filter(
             RFQThread.rfq_number == rfq_number,
             RFQThread.user_email == user_email,
         ).first()
-        if not row:
-            return None
-        return row.thread_id
+
+        if row:
+            # Verify the thread is owned by this user
+            owner = session.execute(
+                text('SELECT "userIdentifier" FROM threads WHERE id = :tid'),
+                {"tid": row.thread_id},
+            ).scalar()
+            if owner and owner != user_email:
+                logger.warning(
+                    "RFQ %s: removing stale thread binding %s (owned by %s, not %s)",
+                    rfq_number, row.thread_id, owner, user_email,
+                )
+                session.delete(row)
+                session.commit()
+            else:
+                return row.thread_id
+
+        # No valid binding — create a new thread for this user+RFQ
+        new_thread_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Look up the user's Chainlit userId
+        user_id = session.execute(
+            text('SELECT id FROM users WHERE identifier = :email'),
+            {"email": user_email},
+        ).scalar()
+
+        # Insert the thread into Chainlit's threads table
+        session.execute(
+            text('''
+                INSERT INTO threads (id, "createdAt", name, "userId", "userIdentifier")
+                VALUES (:id, :created_at, :name, :user_id, :user_identifier)
+            '''),
+            {
+                "id": new_thread_id,
+                "created_at": now,
+                "name": rfq_number,
+                "user_id": str(user_id) if user_id else None,
+                "user_identifier": user_email,
+            },
+        )
+
+        # Bind the new thread to the RFQ for this user
+        session.add(RFQThread(
+            rfq_number=rfq_number,
+            user_email=user_email,
+            thread_id=new_thread_id,
+        ))
+        session.commit()
+
+        logger.info("RFQ %s: created new thread %s for user %s", rfq_number, new_thread_id, user_email)
+        return new_thread_id
     finally:
         session.close()
 
@@ -70,15 +125,8 @@ def _lookup_rfq_thread_id(rfq_number: str, user_email: str) -> str | None:
 @router.get("/api/rfq-thread")
 def get_rfq_thread(rfq_id: str, user: dict = Depends(require_user)):
     """Return the thread_id bound to this RFQ for the current user, or null."""
-    session = _helpers.get_session()
-    try:
-        row = session.query(RFQThread).filter(
-            RFQThread.rfq_number == rfq_id,
-            RFQThread.user_email == user["email"],
-        ).first()
-    finally:
-        session.close()
-    return JSONResponse({"thread_id": row.thread_id if row else None})
+    thread_id = _lookup_rfq_thread_id(rfq_id, user["email"])
+    return JSONResponse({"thread_id": thread_id})
 
 
 @router.post("/api/rfq-thread")

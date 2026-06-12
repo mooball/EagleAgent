@@ -565,6 +565,8 @@ class TestLookupRFQThreadId:
             row = MagicMock()
             row.thread_id = "thread-xyz"
             session.query.return_value.filter.return_value.first.return_value = row
+            # Ownership check returns the same user
+            session.execute.return_value.scalar.return_value = "user@eagle.com"
             mock_gs.return_value = session
 
             result = _lookup_rfq_thread_id("RFQ-2026-0001", "user@eagle.com")
@@ -575,10 +577,14 @@ class TestLookupRFQThreadId:
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
             session.query.return_value.filter.return_value.first.return_value = None
+            # No binding → creates a new thread; mock execute for INSERT + user lookup
+            session.execute.return_value.scalar.return_value = "user-uuid-123"
             mock_gs.return_value = session
 
             result = _lookup_rfq_thread_id("RFQ-2026-0001", "user@eagle.com")
-            assert result is None
+            # Should return a new UUID (auto-created thread)
+            assert result is not None
+            assert len(result) == 36  # UUID format
 
     def test_returns_thread_id_even_without_steps(self):
         """Thread bound but no steps yet — should still return it (auto-bind creates before interaction)."""
@@ -588,6 +594,8 @@ class TestLookupRFQThreadId:
             row = MagicMock()
             row.thread_id = "new-thread"
             session.query.return_value.filter.return_value.first.return_value = row
+            # Ownership check returns the same user
+            session.execute.return_value.scalar.return_value = "user@eagle.com"
             mock_gs.return_value = session
 
             result = _lookup_rfq_thread_id("RFQ-2026-0001", "user@eagle.com")
