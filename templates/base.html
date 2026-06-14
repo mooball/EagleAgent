@@ -158,6 +158,12 @@
                        class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                         Mailbox Scanning
                     </a>
+                    <a href="/admin/emails"
+                       hx-get="/admin/emails" hx-target="#main-content" hx-push-url="/admin/emails"
+                       @click="userMenuOpen = false"
+                       class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        Email Logs
+                    </a>
                     {% endif %}
                     <a href="/logout"
                        class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
@@ -1066,13 +1072,23 @@
                                 'undo', 'redo'
                             ]
                         });
-                        // Keep a saved cursor range so toolbar actions (e.g., table insert)
-                        // can restore insertion at the user's last caret position.
-                        this._editor.events.on('change keyup mouseup', () => {
-                            try { this._editor.s.save(); } catch (_) {}
+                        // Save cursor position when the editor loses focus (e.g. user
+                        // clicks a toolbar button) so we can restore it for insertions.
+                        // IMPORTANT: Do NOT save on 'keyup' — that interferes with native
+                        // text selection behaviour (selecting text + typing/deleting would
+                        // only affect the last character instead of the full selection).
+                        this._editor.events.on('blur', () => {
+                            // Skip if table picker is open — it will use _savedRange
+                            if (this._tablePickerActive) return;
+                            try { this._savedRange = this._editor.s.save(); } catch (_) {}
                         });
-                        this._editor.events.on('beforeCommand', () => {
-                            try { this._editor.s.restore(); } catch (_) {}
+                        // Restore saved cursor only for toolbar-initiated commands (not
+                        // for native keyboard commands which manage their own selection).
+                        this._editor.events.on('beforeCommand', (command) => {
+                            // Only restore for programmatic insertions (toolbar buttons)
+                            if (this._savedRange) {
+                                try { this._editor.s.restore(); } catch (_) {}
+                            }
                         });
                         this._editor.value = self.bodyHtml || '';
                     },
@@ -1127,8 +1143,15 @@
                     _openTablePicker(editor) {
                         this._closeTablePicker();
                         if (!editor) return;
+                        const self = this;
 
-                        try { editor.s.save(); } catch (_) {}
+                        // Save cursor now (exec fires while editor still has selection).
+                        // Flag prevents the blur handler from overwriting our markers.
+                        this._tablePickerActive = true;
+                        this._tableInsertMarkers = null;
+                        try {
+                            this._tableInsertMarkers = editor.s.save();
+                        } catch (_) {}
 
                         const overlay = document.createElement('div');
                         overlay.style.position = 'fixed';
@@ -1184,11 +1207,14 @@
 
                                 cell.addEventListener('click', (ev) => {
                                     ev.preventDefault();
+                                    // Close picker first so the overlay is gone
+                                    self._closeTablePicker();
+                                    self._tablePickerActive = false;
+                                    // Restore cursor from markers saved when picker opened
                                     try { editor.s.restore(); } catch (_) {}
+                                    self._tableInsertMarkers = null;
                                     editor.s.focus();
-                                    editor.s.insertHTML(this._buildStyledTableHtml(c, r));
-                                    try { editor.s.save(); } catch (_) {}
-                                    this._closeTablePicker();
+                                    editor.s.insertHTML(self._buildStyledTableHtml(c, r));
                                 });
 
                                 cells.push(cell);
@@ -1219,6 +1245,7 @@
                     },
 
                     _closeTablePicker() {
+                        this._tablePickerActive = false;
                         if (typeof this._tablePickerCleanup === 'function') {
                             this._tablePickerCleanup();
                         }

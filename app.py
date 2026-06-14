@@ -64,6 +64,11 @@ logger = logging.getLogger(__name__)
 logging.getLogger("langchain_google_genai._function_utils").setLevel(logging.ERROR)
 logging.getLogger("google_genai.models").setLevel(logging.ERROR)
 
+# Suppress "Gemini produced an empty response" warnings — these flood the logs
+# when LangGraph's ReAct loop retries after receiving empty model outputs.
+# The recursion limit will safely stop the loop; no need to log every iteration.
+logging.getLogger("langchain_google_genai.chat_models").setLevel(logging.ERROR)
+
 # Surface Google API retries to Chainlit UI in real-time
 _genai_logger = logging.getLogger("google_genai._api_client")
 _genai_logger.addHandler(GeminiRetryNotifier(level=logging.INFO))
@@ -83,6 +88,30 @@ def _research_graph():
 
 def _internal_graph():
     return _graph_module.internal_graph
+
+
+# ---------------------------------------------------------------------------
+# Helper: extract plain text from an AIMessage's content field
+# ---------------------------------------------------------------------------
+# AIMessage.content can be a plain string OR a list of content parts (e.g.
+# [{"type": "text", "text": "..."}, {"type": "tool_use", ...}]). This helper
+# normalizes both forms into a single plain-text string. Used by the
+# checkpoint-to-UI reconciliation and the streaming fallback paths.
+# ---------------------------------------------------------------------------
+def _extract_ai_text(ai_msg) -> str:
+    """Return the plain text content of an AIMessage, or '' if none."""
+    content = ai_msg.content
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and part.get("type") == "text":
+                parts.append(part.get("text", ""))
+        return "".join(parts).strip()
+    return ""
 
 
 @cl.header_auth_callback
@@ -391,7 +420,106 @@ async def on_chat_resume(thread: ThreadDict):
     
     # Log for debugging
     print(f"Resuming conversation with thread_id: {thread_id} (profile: {chat_profile_name})")
-    
+
+    # ---------------------------------------------------------------------------
+    # Checkpoint-to-UI reconciliation
+    # ---------------------------------------------------------------------------
+    # LangGraph and Chainlit maintain SEPARATE message stores:
+    #   - LangGraph checkpoint: the authoritative graph state (HumanMessage,
+    #     AIMessage, ToolMessage). Persisted to PostgreSQL by AsyncPostgresSaver
+    #     after every node execution. This is what the LLM sees as context.
+    #   - Chainlit steps: the UI thread history. Persisted via the data layer
+    #     when cl.Message.send()/update() succeeds.
+    #
+    # If the user navigates away mid-execution, the graph continues running and
+    # checkpoints correctly, but Chainlit's msg.update() may fail (dead socket),
+    # leaving the UI thread missing messages. The user returns and sees gaps.
+    #
+    # FIX: On resume, compare the LangGraph checkpoint against Chainlit's stored
+    # steps. Any AI responses in the checkpoint that aren't in the steps get
+    # back-filled into the data layer — so they appear in the UI immediately.
+    #
+    # We identify "missing" messages by comparing the count of AIMessage entries
+    # in the checkpoint against assistant_message steps in the thread. If the
+    # checkpoint has more, we take the newest N (the gap) and persist them.
+    # ---------------------------------------------------------------------------
+    try:
+        active_graph = cl.user_session.get("active_graph", _graph())
+        graph_config = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": config.GRAPH_RECURSION_LIMIT,
+        }
+        checkpoint_state = await active_graph.aget_state(graph_config)
+
+        if checkpoint_state and checkpoint_state.values.get("messages"):
+            from langchain_core.messages import AIMessage, HumanMessage as LCHumanMessage
+            from chainlit.data import get_data_layer as _get_dl_resume
+
+            ckpt_messages = checkpoint_state.values["messages"]
+
+            # Extract all AI responses from the checkpoint (these are the
+            # messages the LLM generated — each one should have a matching
+            # Chainlit step so the user can see it in the thread).
+            ai_messages = [
+                m for m in ckpt_messages
+                if isinstance(m, AIMessage) and _extract_ai_text(m)
+            ]
+
+            # Count how many assistant_message steps Chainlit already has stored.
+            # thread["steps"] contains all persisted steps for this thread.
+            existing_steps = thread.get("steps", [])
+            existing_assistant_steps = [
+                s for s in existing_steps
+                if s.get("type") == "assistant_message"
+                and s.get("output", "").strip()
+            ]
+
+            # If the checkpoint has more AI responses than the UI, back-fill the gap.
+            gap = len(ai_messages) - len(existing_assistant_steps)
+            if gap > 0:
+                logger.info(
+                    f"[checkpoint-reconcile] Thread {thread_id[:8]}... has {gap} "
+                    f"AI response(s) in checkpoint not in UI — back-filling"
+                )
+                data_layer = _get_dl_resume()
+                if data_layer:
+                    import uuid as _uuid
+                    from datetime import datetime as _dt, timezone as _tz
+
+                    # Take the last `gap` AI messages (the ones most likely missing)
+                    missing = ai_messages[-gap:]
+                    for ai_msg in missing:
+                        text = _extract_ai_text(ai_msg)
+                        if not text:
+                            continue
+                        _now = _dt.now(_tz.utc).isoformat()
+                        step_dict = {
+                            "id": str(_uuid.uuid4()),
+                            "threadId": thread_id,
+                            "name": "EagleAgent",
+                            "type": "assistant_message",
+                            "output": text,
+                            "createdAt": _now,
+                            "start": _now,
+                            "end": _now,
+                            "streaming": False,
+                            "metadata": {"recovered_from_checkpoint": True},
+                            "tags": None,
+                            "input": "",
+                            "isError": False,
+                            "parentId": None,
+                            "language": None,
+                            "showInput": None,
+                            "generation": None,
+                            "defaultOpen": None,
+                            "autoCollapse": None,
+                        }
+                        await data_layer.create_step(step_dict)
+                    logger.info(f"[checkpoint-reconcile] Back-filled {len(missing)} message(s)")
+    except Exception as reconcile_err:
+        # Reconciliation is best-effort — never block thread resume
+        logger.warning(f"[checkpoint-reconcile] Failed: {reconcile_err}")
+
     # Load/create user profile and resolve display name
     user_name = None
     if user:
@@ -755,6 +883,102 @@ async def main(message: cl.Message):
     last_ai_text = ""
     
     active_graph = cl.user_session.get("active_graph", _graph())
+    
+    # ---------------------------------------------------------------------------
+    # Repair corrupted checkpoint: dangling tool_calls without ToolMessages
+    # ---------------------------------------------------------------------------
+    # This can happen when a previous graph execution was interrupted mid-stream
+    # (e.g., user navigated away, Chainlit cancelled the task, or an error
+    # occurred between the LLM node checkpoint and the tool node checkpoint).
+    #
+    # LangGraph's _validate_chat_history() requires that EVERY AIMessage with
+    # tool_calls has a corresponding ToolMessage for each call. If not, the
+    # graph refuses to proceed with INVALID_CHAT_HISTORY.
+    #
+    # IMPORTANT: We scan ALL AIMessages in the history, not just the last one.
+    # A new HumanMessage may have been appended on top of the corrupted state
+    # (e.g., when the user clicks an action button that sends a synthetic
+    # message), so the dangling AIMessage may not be the final message.
+    #
+    # STRATEGY:
+    #   - Few dangling calls (1-2): inject synthetic error ToolMessages.
+    #     This is the minimal fix — the LLM sees "previous op interrupted" and
+    #     can decide to retry or move on.
+    #   - Many dangling calls (3+): the history is badly corrupted (e.g. from
+    #     multiple interrupted runs). Injecting many synthetic messages just
+    #     confuses the LLM and causes empty-response loops. Instead, DELETE the
+    #     corrupted AIMessages entirely using RemoveMessage, giving the LLM a
+    #     clean slate.
+    # ---------------------------------------------------------------------------
+    try:
+        checkpoint_state = await active_graph.aget_state(graph_config)
+        if checkpoint_state and checkpoint_state.values.get("messages"):
+            from langchain_core.messages import AIMessage, ToolMessage as LCToolMessage, RemoveMessage
+            ckpt_messages = checkpoint_state.values["messages"]
+
+            # Collect all tool_call_ids that already have a ToolMessage response
+            existing_tool_msg_ids = {
+                m.tool_call_id for m in ckpt_messages
+                if isinstance(m, LCToolMessage)
+            }
+
+            # Find AIMessages that have orphaned tool_calls (no ToolMessage response)
+            corrupted_ai_msgs = []
+            all_dangling = []
+            for m in ckpt_messages:
+                if isinstance(m, AIMessage) and m.tool_calls:
+                    dangling_in_msg = [tc for tc in m.tool_calls if tc["id"] not in existing_tool_msg_ids]
+                    if dangling_in_msg:
+                        corrupted_ai_msgs.append(m)
+                        all_dangling.extend(dangling_in_msg)
+
+            if all_dangling:
+                if len(all_dangling) <= 2:
+                    # LIGHT REPAIR: inject synthetic error ToolMessages.
+                    # The LLM sees "previous op interrupted" and can retry.
+                    logger.warning(
+                        f"[checkpoint-repair] Found {len(all_dangling)} dangling tool_call(s) "
+                        f"in thread {thread_id[:8]}... — injecting synthetic error ToolMessages"
+                    )
+                    repair_messages = [
+                        LCToolMessage(
+                            content="[Error: previous operation was interrupted. Please retry if needed.]",
+                            tool_call_id=tc["id"],
+                        )
+                        for tc in all_dangling
+                    ]
+                    await active_graph.aupdate_state(
+                        graph_config,
+                        {"messages": repair_messages},
+                    )
+                    logger.info(f"[checkpoint-repair] Injected {len(repair_messages)} repair message(s)")
+                else:
+                    # HEAVY REPAIR: too many dangling calls — the history is
+                    # badly corrupted. Remove the offending AIMessages entirely
+                    # so the LLM gets a clean conversation. This avoids the
+                    # "empty response loop" where Gemini is confused by dozens
+                    # of synthetic error messages.
+                    logger.warning(
+                        f"[checkpoint-repair] Found {len(all_dangling)} dangling tool_call(s) across "
+                        f"{len(corrupted_ai_msgs)} AIMessage(s) in thread {thread_id[:8]}... — "
+                        f"removing corrupted messages (too many to patch)"
+                    )
+                    remove_ops = [
+                        RemoveMessage(id=m.id)
+                        for m in corrupted_ai_msgs
+                        if m.id  # RemoveMessage requires a valid id
+                    ]
+                    if remove_ops:
+                        await active_graph.aupdate_state(
+                            graph_config,
+                            {"messages": remove_ops},
+                        )
+                        logger.info(
+                            f"[checkpoint-repair] Removed {len(remove_ops)} corrupted AIMessage(s)"
+                        )
+    except Exception as e:
+        logger.warning(f"[checkpoint-repair] Failed to check/repair checkpoint: {e}")
+
     last_event_time = request_start
     try:
       async for event in active_graph.astream_events(inputs, config=graph_config, version="v1"):
@@ -952,9 +1176,64 @@ async def main(message: cl.Message):
         token_info = f"\n\n<div style='margin-top:20px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Agent: {active_agent} | Tokens: {total_all_tokens:,} (Context: {total_prompt_tokens:,}, Generated: {total_completion_tokens:,}){routing_part} | Total: {total_elapsed:.1f}s{tools_part}</div>\n\n"
         await msg.stream_token(token_info)
 
-    await msg.update()
+    # ---------------------------------------------------------------------------
+    # Resilient message persistence
+    # ---------------------------------------------------------------------------
+    # Chainlit's msg.update() both persists the message to the data layer (DB)
+    # AND sends it over the WebSocket to the client. If the user navigated away
+    # (socket disconnected/session destroyed), the WebSocket emit fails — but we
+    # still want the message stored in the DB so it appears when the user returns.
+    #
+    # Strategy: try normal msg.update() first. If it fails (dead session), fall
+    # back to writing the step directly to the data layer. This guarantees the
+    # assistant response is never lost from the thread history.
+    # ---------------------------------------------------------------------------
+    try:
+        await msg.update()
+    except Exception as update_err:
+        logger.warning(
+            f"[resilient-persist] msg.update() failed (user likely navigated away): {update_err}"
+        )
+        # Fallback: persist the message content directly to the data layer.
+        # This ensures the response appears in the thread when the user returns.
+        try:
+            from chainlit.data import get_data_layer as _get_dl
+            _dl = _get_dl()
+            if _dl and msg.content.strip():
+                # Build a minimal step dict matching Chainlit's schema
+                from chainlit.step import StepDict
+                from datetime import datetime, timezone
+                _now = datetime.now(timezone.utc).isoformat()
+                fallback_step: StepDict = {
+                    "id": msg.id,
+                    "threadId": thread_id,
+                    "name": msg.author or "EagleAgent",
+                    "type": "assistant_message",
+                    "output": msg.content,
+                    "createdAt": msg.created_at or _now,
+                    "start": msg.created_at or _now,
+                    "end": _now,
+                    "streaming": False,
+                    "metadata": {},
+                    "tags": None,
+                    "input": "",
+                    "isError": False,
+                    "parentId": None,
+                    "language": None,
+                    "showInput": None,
+                    "generation": None,
+                    "defaultOpen": None,
+                    "autoCollapse": None,
+                }
+                await _dl.create_step(fallback_step)
+                logger.info(f"[resilient-persist] Persisted response to data layer for thread {thread_id[:8]}...")
+        except Exception as persist_err:
+            logger.error(f"[resilient-persist] Fallback persistence also failed: {persist_err}")
 
     # Clear single-use intent so the next message isn't influenced by the old button
     cl.user_session.set("intent_context", None)
 
-    await notify_dashboard("agent_done")
+    try:
+        await notify_dashboard("agent_done")
+    except Exception:
+        pass  # Dashboard notification is best-effort; don't crash if session is dead
