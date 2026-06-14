@@ -213,15 +213,13 @@ def process_message(
             else:
                 # New message on tracked thread — create a new row inheriting the RFQ link
                 if direction == "received":
-                    sender = from_addr
-                    recipient = user_email
+                    recipient = from_addr
                 else:
-                    sender = user_email
                     recipient = msg_meta.get("to", "").split(",")[0].strip()
                 tracking = EmailTracking(
                     gmail_thread_id=thread_id,
                     gmail_message_id=msg_meta["id"],
-                    user_email=sender,
+                    user_email=user_email,
                     rfq_id=existing_thread.rfq_id,
                     rfq_token=existing_thread.rfq_token,
                     opportunity_id=existing_thread.opportunity_id,
@@ -257,15 +255,13 @@ def process_message(
                 )
             else:
                 if direction == "received":
-                    sender = from_addr
-                    recipient = user_email
+                    recipient = from_addr
                 else:
-                    sender = user_email
                     recipient = msg_meta.get("to", "").split(",")[0].strip()
                 tracking = EmailTracking(
                     gmail_thread_id=thread_id,
                     gmail_message_id=msg_meta["id"],
-                    user_email=sender,
+                    user_email=user_email,
                     rfq_id=str(rfq.id) if rfq else None,
                     rfq_token=f"RFQ-{rfq_number}" if rfq_number else None,
                     opportunity_id=op_number,
@@ -290,15 +286,13 @@ def process_message(
             )
         else:
             if direction == "received":
-                sender = from_addr
-                recipient = user_email
+                recipient = from_addr
             else:
-                sender = user_email
                 recipient = msg_meta.get("to", "").split(",")[0].strip()
             tracking = EmailTracking(
                 gmail_thread_id=thread_id,
                 gmail_message_id=msg_meta["id"],
-                user_email=sender,
+                user_email=user_email,
                 direction=direction,
                 subject=subject,
                 recipient_email=recipient,

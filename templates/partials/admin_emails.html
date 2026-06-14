@@ -48,9 +48,11 @@
                 <td class="px-2 py-1.5">{{ e.supplier_name or '—' }}</td>
                 <td class="px-2 py-1.5">
                     {% if e.direction == 'received' %}
-                        <span class="text-gray-600 dark:text-gray-300">{{ e.user_email or '—' }}</span>
-                        <span class="text-gray-400">←</span>
-                        <span>{{ e.recipient_email or '?' }}</span>
+                        {% set staff = e.user_email if 'eagle-exports' in (e.user_email or '') else e.recipient_email %}
+                        {% set external = e.recipient_email if 'eagle-exports' in (e.user_email or '') else e.user_email %}
+                        <span class="text-gray-600 dark:text-gray-300">{{ external or '?' }}</span>
+                        <span class="text-gray-400">→</span>
+                        <span>{{ staff or '—' }}</span>
                     {% else %}
                         <span class="text-gray-600 dark:text-gray-300">{{ e.user_email or '—' }}</span>
                         <span class="text-gray-400">→</span>
