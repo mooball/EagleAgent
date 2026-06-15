@@ -680,6 +680,18 @@
                     console.log('[bridge] sending action', action.name);
                     // Ensure thread is bound to the RFQ before dispatching
                     window.dispatchEvent(new CustomEvent('ensure-rfq-bound'));
+                    // Inject the bound thread_id into the payload so the server
+                    // pins messages to the correct thread even if the user has
+                    // since navigated the chat iframe elsewhere.
+                    var dashCtx = null;
+                    try {
+                        var ctxEl = document.querySelector('[data-dashboard-context]');
+                        if (ctxEl) dashCtx = JSON.parse(ctxEl.dataset.dashboardContext);
+                    } catch(e) {}
+                    if (dashCtx && dashCtx.thread_id) {
+                        action.payload = action.payload || {};
+                        action.payload._thread_id = dashCtx.thread_id;
+                    }
                     // Signal the dashboard that agent work has started
                     window.dispatchEvent(new CustomEvent('agent-working', { detail: { label: action.label || 'Agent working...' } }));
                     fetch('/api/agent-bridge', {
