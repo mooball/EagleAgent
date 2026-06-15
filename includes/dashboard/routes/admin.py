@@ -462,6 +462,7 @@ async def admin_email_logs(request: Request, user: dict = require_admin):
                     et.recipient_email,
                     et.user_email,
                     et.rfq_id,
+                    et.rfq_token,
                     et.gmail_thread_id,
                     et.gmail_message_id,
                     et.gmail_draft_id,

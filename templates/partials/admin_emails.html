@@ -36,10 +36,13 @@
                     {% endif %}
                 </td>
                 <td class="px-2 py-1.5">
-                    {% if e.rfq_id %}
-                        <a href="/rfqs/{{ e.rfq_id }}"
-                           hx-get="/partial/rfqs/{{ e.rfq_id }}" hx-target="#main-content" hx-push-url="/rfqs/{{ e.rfq_id }}"
-                           class="text-blue-600 dark:text-blue-400 hover:underline">{{ e.rfq_id }}</a>
+                    {% set rfq_link = e.rfq_token or e.rfq_id %}
+                    {% if rfq_link and rfq_link.startswith('RFQ-') %}
+                        <a href="/rfqs/{{ rfq_link }}"
+                           hx-get="/partial/rfqs/{{ rfq_link }}" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq_link }}"
+                           class="text-blue-600 dark:text-blue-400 hover:underline">{{ rfq_link }}</a>
+                    {% elif rfq_link %}
+                        <span class="text-gray-500 font-mono text-[10px]">{{ rfq_link[:8] }}…</span>
                     {% else %}
                         <span class="text-gray-400">—</span>
                     {% endif %}

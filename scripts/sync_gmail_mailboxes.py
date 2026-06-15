@@ -243,15 +243,19 @@ def process_message(
 
         # Verify RFQ exists in DB (rfq_number in DB is 'RFQ-2026-0032' format)
         rfq = None
+        full_rfq_number = None
         if rfq_number:
             full_rfq_number = f"RFQ-{rfq_number}" if not rfq_number.upper().startswith("RFQ-") else rfq_number
             rfq = session.query(RFQ).filter(RFQ.rfq_number == full_rfq_number).first()
 
         if rfq or op_number:
+            # Also run Tier 3 contact matching to identify supplier/customer
+            contact_match = match_by_contact(session, external_addresses, domain_index)
             if dry_run:
                 logger.info(
                     f"  [T2] Subject match: '{subject}' → "
-                    f"rfq={rfq_number}, op={op_number}, direction={direction}"
+                    f"rfq={rfq_number}, op={op_number}, direction={direction}, "
+                    f"supplier={contact_match.get('supplier_id')}"
                 )
             else:
                 if direction == "received":
@@ -262,9 +266,12 @@ def process_message(
                     gmail_thread_id=thread_id,
                     gmail_message_id=msg_meta["id"],
                     user_email=user_email,
-                    rfq_id=str(rfq.id) if rfq else None,
-                    rfq_token=f"RFQ-{rfq_number}" if rfq_number else None,
+                    rfq_id=full_rfq_number if rfq else None,
+                    rfq_token=full_rfq_number,
                     opportunity_id=op_number,
+                    supplier_id=contact_match.get("supplier_id"),
+                    customer_id=contact_match.get("customer_id"),
+                    match_type=contact_match.get("match_type"),
                     direction=direction,
                     subject=subject,
                     recipient_email=recipient,
