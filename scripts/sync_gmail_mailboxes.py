@@ -13,6 +13,7 @@ Options:
 """
 
 import argparse
+import base64
 import logging
 import sys
 from datetime import datetime, timezone
@@ -156,6 +157,241 @@ def extract_all_addresses(msg_meta: dict) -> list[str]:
     return addresses
 
 
+def _split_html_quote(html: str) -> tuple[str, str | None]:
+    """Split HTML email into new content and quoted reply.
+
+    Detects Gmail's <div class="gmail_quote">, Outlook's forwarding blocks,
+    and generic <blockquote> patterns.
+
+    Returns: (new_html, quoted_html) — quoted_html is None if no quote found.
+    """
+    import re
+
+    # Gmail: <div class="gmail_quote">
+    gmail_pattern = re.search(r'<div\s+class="gmail_quote"', html, re.IGNORECASE)
+    if gmail_pattern:
+        return html[:gmail_pattern.start()], html[gmail_pattern.start():]
+
+    # Outlook: <div id="divRtagSignature"> or border-top separator
+    outlook_pattern = re.search(
+        r'<div\s+style="[^"]*border-top:\s*solid[^"]*"',
+        html, re.IGNORECASE
+    )
+    if outlook_pattern:
+        return html[:outlook_pattern.start()], html[outlook_pattern.start():]
+
+    # Generic: "On ... wrote:" followed by blockquote
+    wrote_pattern = re.search(
+        r'<div[^>]*>On\s+.{10,80}\s+wrote:\s*</div>\s*<blockquote',
+        html, re.IGNORECASE
+    )
+    if wrote_pattern:
+        return html[:wrote_pattern.start()], html[wrote_pattern.start():]
+
+    # Forwarding headers: "From: ... Sent: ... To: ..."
+    fwd_pattern = re.search(
+        r'<b>From:</b>.*?<b>Sent:</b>',
+        html, re.IGNORECASE | re.DOTALL
+    )
+    if fwd_pattern:
+        # Back up to the parent div/p
+        before = html[:fwd_pattern.start()]
+        # Find the start of the containing element
+        last_open = max(before.rfind('<div'), before.rfind('<p'))
+        if last_open > 0:
+            return html[:last_open], html[last_open:]
+        return html[:fwd_pattern.start()], html[fwd_pattern.start():]
+
+    return html, None
+
+
+def _split_plain_quote(text: str) -> tuple[str, str | None]:
+    """Split plain text email into new content and quoted reply using email-reply-parser."""
+    try:
+        from email_reply_parser import EmailReplyParser
+
+        reply = EmailReplyParser.parse_reply(text)
+        if reply and reply != text.strip():
+            # Find where the reply ends in the original text to get the quoted part
+            # email_reply_parser returns just the visible/reply portion
+            quoted_start = text.find(reply) + len(reply) if reply in text else -1
+            if quoted_start > 0 and quoted_start < len(text):
+                quoted = text[quoted_start:].strip()
+                return reply, quoted if quoted else None
+            return reply, None
+        return text, None
+    except Exception:
+        return text, None
+
+
+def _clean_email_markdown(md: str) -> str:
+    """Clean up email markdown for display:
+    - Strip long tracking/image URLs
+    - Collapse email signatures
+    - Remove excessive blank lines
+    """
+    import re
+
+    lines = md.split('\n')
+    cleaned = []
+    in_signature = False
+
+    for line in lines:
+        # Detect signature separator (--- or ___  or common sig patterns)
+        if re.match(r'^[-_]{3,}\s*$', line.strip()) and len(cleaned) > 3:
+            # Check if this looks like a signature separator (not a markdown HR in body)
+            in_signature = True
+            cleaned.append('---')
+            continue
+
+        if in_signature:
+            # In signature: strip long URLs but keep the text
+            # Replace [text](very-long-url) with just text
+            line = re.sub(r'\[([^\]]*)\]\(https?://[^\)]{80,}\)', r'\1', line)
+            # Strip standalone long URLs
+            line = re.sub(r'https?://\S{80,}', '', line)
+            # Strip image references
+            line = re.sub(r'!\[[^\]]*\]\([^\)]*\)', '', line)
+            # Skip lines that are now empty or just whitespace/pipes
+            if not line.strip() or re.match(r'^[\s|]*$', line):
+                continue
+            cleaned.append(line)
+        else:
+            # In body: replace long inline URLs but keep link text
+            line = re.sub(r'\[([^\]]*)\]\(https?://[^\)]{120,}\)', r'\1', line)
+            # Strip tracking pixel images
+            line = re.sub(r'!\[[^\]]*\]\(https?://[^\)]*\)', '', line)
+            cleaned.append(line)
+
+    # Remove excessive blank lines (3+ → 2)
+    result = '\n'.join(cleaned)
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    return result.strip()
+
+
+def fetch_message_content(service, message_id: str) -> dict | None:
+    """Fetch full message content (body + attachments manifest) from Gmail API.
+
+    Returns dict with keys: body_html, body_markdown, attachments_json,
+    sender_name, all_recipients. Returns None on failure.
+    """
+    try:
+        import html2text
+
+        msg = service.users().messages().get(
+            userId="me", id=message_id, format="full",
+        ).execute()
+
+        payload = msg.get("payload", {})
+        headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
+
+        # Extract sender display name
+        from_header = headers.get("from", "")
+        sender_name = None
+        if '<' in from_header:
+            sender_name = from_header.split('<')[0].strip().strip('"')
+        elif from_header:
+            sender_name = from_header.split('@')[0]
+
+        # Extract all recipients
+        all_recipients = []
+        for rtype in ("to", "cc", "bcc"):
+            raw = headers.get(rtype, "")
+            if not raw:
+                continue
+            for part in raw.split(','):
+                part = part.strip()
+                if '<' in part and '>' in part:
+                    name = part.split('<')[0].strip().strip('"')
+                    email = part.split('<')[1].split('>')[0].strip()
+                else:
+                    name = ""
+                    email = part.strip()
+                if email:
+                    all_recipients.append({"email": email.lower(), "name": name, "type": rtype})
+
+        # Extract body (prefer HTML, fallback to plain text)
+        body_html = None
+        body_plain = None
+        attachments = []
+
+        def _walk_parts(parts):
+            nonlocal body_html, body_plain
+            for part in parts:
+                mime = part.get("mimeType", "")
+                if mime == "text/html" and not body_html:
+                    data = part.get("body", {}).get("data", "")
+                    if data:
+                        body_html = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+                elif mime == "text/plain" and not body_plain:
+                    data = part.get("body", {}).get("data", "")
+                    if data:
+                        body_plain = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+                elif part.get("filename"):
+                    # Attachment
+                    attachments.append({
+                        "filename": part["filename"],
+                        "mime_type": mime,
+                        "size": part.get("body", {}).get("size", 0),
+                        "gmail_attachment_id": part.get("body", {}).get("attachmentId"),
+                    })
+                # Recurse into nested parts
+                if part.get("parts"):
+                    _walk_parts(part["parts"])
+
+        if payload.get("parts"):
+            _walk_parts(payload["parts"])
+        else:
+            # Single-part message
+            mime = payload.get("mimeType", "")
+            data = payload.get("body", {}).get("data", "")
+            if data:
+                decoded = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+                if mime == "text/html":
+                    body_html = decoded
+                else:
+                    body_plain = decoded
+
+        # Convert to markdown — strip quoted replies for cleaner display
+        body_markdown = None
+        body_quoted = None
+        if body_html:
+            # Strip Gmail quoted content before converting
+            new_html, quoted_html = _split_html_quote(body_html)
+            h = html2text.HTML2Text()
+            h.ignore_links = False
+            h.ignore_images = True
+            h.body_width = 0  # No wrapping
+            body_markdown = h.handle(new_html).strip()
+            if quoted_html:
+                body_quoted = h.handle(quoted_html).strip()
+        elif body_plain:
+            # Use email-reply-parser for plain text
+            new_text, quoted_text = _split_plain_quote(body_plain)
+            body_markdown = new_text.strip() if new_text else body_plain.strip()
+            body_quoted = quoted_text.strip() if quoted_text else None
+
+        # Clean up markdown for readability
+        if body_markdown:
+            body_markdown = _clean_email_markdown(body_markdown)
+        # Append quoted content with a marker the UI can detect
+        if body_quoted:
+            body_quoted = _clean_email_markdown(body_quoted)
+            body_markdown = (body_markdown or "") + "\n\n<!-- quoted -->\n" + body_quoted
+
+        return {
+            "body_html": body_html,
+            "body_markdown": body_markdown,
+            "body_quoted": body_quoted if body_quoted else None,
+            "attachments_json": attachments or None,
+            "sender_name": sender_name,
+            "all_recipients": all_recipients or None,
+        }
+    except Exception as e:
+        logger.warning(f"Failed to fetch content for message {message_id}: {e}")
+        return None
+
+
 def process_message(
     session,
     service,
@@ -210,12 +446,22 @@ def process_message(
                 existing_thread.sent_at = datetime.now(timezone.utc)
                 existing_thread.sent_confirmed = True
                 existing_thread.updated_at = datetime.now(timezone.utc)
+                # Fetch body content for the sent message
+                content = fetch_message_content(service, msg_meta["id"])
+                if content:
+                    existing_thread.body_markdown = content["body_markdown"]
+                    existing_thread.body_html = content["body_html"]
+                    existing_thread.attachments_json = content["attachments_json"]
+                    existing_thread.sender_name = content["sender_name"]
+                    existing_thread.all_recipients = content["all_recipients"]
             else:
                 # New message on tracked thread — create a new row inheriting the RFQ link
                 if direction == "received":
                     recipient = from_addr
                 else:
                     recipient = msg_meta.get("to", "").split(",")[0].strip()
+                # Fetch body content
+                content = fetch_message_content(service, msg_meta["id"])
                 tracking = EmailTracking(
                     gmail_thread_id=thread_id,
                     gmail_message_id=msg_meta["id"],
@@ -229,6 +475,11 @@ def process_message(
                     direction=direction,
                     subject=subject,
                     recipient_email=recipient,
+                    body_markdown=content["body_markdown"] if content else None,
+                    body_html=content["body_html"] if content else None,
+                    attachments_json=content["attachments_json"] if content else None,
+                    sender_name=content["sender_name"] if content else None,
+                    all_recipients=content["all_recipients"] if content else None,
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc),
                 )
@@ -262,6 +513,8 @@ def process_message(
                     recipient = from_addr
                 else:
                     recipient = msg_meta.get("to", "").split(",")[0].strip()
+                # Fetch body content for RFQ-linked emails
+                content = fetch_message_content(service, msg_meta["id"])
                 tracking = EmailTracking(
                     gmail_thread_id=thread_id,
                     gmail_message_id=msg_meta["id"],
@@ -275,6 +528,11 @@ def process_message(
                     direction=direction,
                     subject=subject,
                     recipient_email=recipient,
+                    body_markdown=content["body_markdown"] if content else None,
+                    body_html=content["body_html"] if content else None,
+                    attachments_json=content["attachments_json"] if content else None,
+                    sender_name=content["sender_name"] if content else None,
+                    all_recipients=content["all_recipients"] if content else None,
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc),
                 )

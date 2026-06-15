@@ -657,11 +657,13 @@ dependencies = [
     { name = "asyncpg" },
     { name = "boto3" },
     { name = "chainlit" },
+    { name = "email-reply-parser" },
     { name = "fastapi" },
     { name = "fastapi-sso" },
     { name = "google-api-python-client" },
     { name = "google-genai" },
     { name = "greenlet" },
+    { name = "html2text" },
     { name = "httpx" },
     { name = "hubspot-api-client" },
     { name = "itsdangerous" },
@@ -697,11 +699,13 @@ requires-dist = [
     { name = "asyncpg", specifier = "~=0.31.0" },
     { name = "boto3", specifier = ">=1.43.14" },
     { name = "chainlit", specifier = "~=2.11.1" },
+    { name = "email-reply-parser", specifier = ">=0.5.12" },
     { name = "fastapi", specifier = "~=0.136.1" },
     { name = "fastapi-sso", specifier = ">=0.17.0" },
     { name = "google-api-python-client", specifier = ">=2.100.0" },
     { name = "google-genai", specifier = ">=1.68.0" },
     { name = "greenlet", specifier = "~=3.5.0" },
+    { name = "html2text", specifier = ">=2025.4.15" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "hubspot-api-client", specifier = ">=12.0.0" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
@@ -729,6 +733,15 @@ dev = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
     { name = "pytest-timeout", specifier = ">=2.3.1" },
+]
+
+[[package]]
+name = "email-reply-parser"
+version = "0.5.12"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/f9/3fbd22530467a831a0506267477c5005d24661d07abf776678ab42d51b35/email_reply_parser-0.5.12.tar.gz", hash = "sha256:9dbf3eca69990932234f09e7f50aa73756574fc1f88e88c324fec1a741ee6a74", size = 4694, upload-time = "2020-10-07T17:26:34.734Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ab/8d/11696d31eafc68ceea8108f635d30aefc6df9cb27640949f45aec963d637/email_reply_parser-0.5.12-py3-none-any.whl", hash = "sha256:3499c02284679e020acf8aa30ef9e43c62f9ab5ccee0a35bfac85a0c1fa685fd", size = 4139, upload-time = "2020-10-07T17:26:46.835Z" },
 ]
 
 [[package]]
@@ -1125,6 +1138,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/08/9c/b667098a636a88358dbeb2caf90e3cb9e4b961f61f6c55bb312793424def/hf_xet-1.3.1-cp37-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:e5063789c9d21f51e9ed4edbee8539655d3486e9cad37e96b7af967da20e8b16", size = 4395743, upload-time = "2026-02-25T00:57:52.783Z" },
     { url = "https://files.pythonhosted.org/packages/70/37/4db0e4e1534270800cfffd5a7e0b338f2137f8ceb5768000147650d34ea9/hf_xet-1.3.1-cp37-abi3-win_amd64.whl", hash = "sha256:607d5bbc2730274516714e2e442a26e40e3330673ac0d0173004461409147dee", size = 3638145, upload-time = "2026-02-25T00:58:02.167Z" },
     { url = "https://files.pythonhosted.org/packages/4e/46/1ba8d36f8290a4b98f78898bdce2b0e8fe6d9a59df34a1399eb61a8d877f/hf_xet-1.3.1-cp37-abi3-win_arm64.whl", hash = "sha256:851b1be6597a87036fe7258ce7578d5df3c08176283b989c3b165f94125c5097", size = 3500490, upload-time = "2026-02-25T00:58:00.667Z" },
+]
+
+[[package]]
+name = "html2text"
+version = "2025.4.15"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/27/e158d86ba1e82967cc2f790b0cb02030d4a8bef58e0c79a8590e9678107f/html2text-2025.4.15.tar.gz", hash = "sha256:948a645f8f0bc3abe7fd587019a2197a12436cd73d0d4908af95bfc8da337588", size = 64316, upload-time = "2025-04-15T04:02:30.045Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1d/84/1a0f9555fd5f2b1c924ff932d99b40a0f8a6b12f6dd625e2a47f415b00ea/html2text-2025.4.15-py3-none-any.whl", hash = "sha256:00569167ffdab3d7767a4cdf589b7f57e777a5ed28d12907d8c58769ec734acc", size = 34656, upload-time = "2025-04-15T04:02:28.44Z" },
 ]
 
 [[package]]
