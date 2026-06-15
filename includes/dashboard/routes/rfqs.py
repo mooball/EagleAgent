@@ -2,11 +2,12 @@
 
 import asyncio
 import math
+from datetime import datetime, timezone
 
 from fastapi import Request, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
-from includes.dashboard.models import Supplier, Transaction
+from includes.dashboard.models import Supplier, Transaction, EmailTracking
 from . import _helpers
 from ._helpers import router, templates, require_user, _render
 from .api import _lookup_rfq_thread_id
@@ -242,14 +243,15 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
     if ctx["active_tab"] == "suppliers":
         ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
     if ctx["active_tab"] == "communications":
-        ctx["email_events"] = _get_rfq_email_events(rfq["id"], rfq.get("rfq_number"))
+        ctx["email_groups"] = _get_rfq_email_events(rfq["id"], rfq.get("rfq_number"))
     return ctx
 
 
 def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
-    """Fetch logged email events for an RFQ from email_tracking."""
+    """Fetch logged email events for an RFQ, grouped by source then by gmail thread."""
     from sqlalchemy import text
     from datetime import datetime
+    from collections import OrderedDict
 
     session = _helpers.get_session()
     try:
@@ -257,40 +259,107 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
             text(
                 """
                 SELECT
-                    direction,
-                    email_type,
-                    subject,
-                    recipient_email,
-                    user_email,
-                    gmail_thread_id,
-                    gmail_message_id,
-                    gmail_draft_id,
-                    draft_url,
-                    sent_at,
-                    created_at
-                FROM email_tracking
-                WHERE rfq_id = :rfq_id OR rfq_id = :rfq_number OR rfq_token = :rfq_number
-                ORDER BY COALESCE(sent_at, created_at) DESC, created_at DESC
+                    et.direction,
+                    et.email_type,
+                    et.subject,
+                    et.recipient_email,
+                    et.user_email,
+                    et.gmail_thread_id,
+                    et.gmail_message_id,
+                    et.gmail_draft_id,
+                    et.draft_url,
+                    et.sent_at,
+                    et.created_at,
+                    et.supplier_id,
+                    et.customer_id,
+                    et.body_markdown,
+                    et.sender_name,
+                    et.attachments_json,
+                    s.name AS supplier_name,
+                    c.companyname AS customer_name
+                FROM email_tracking et
+                LEFT JOIN suppliers s ON s.id = et.supplier_id
+                LEFT JOIN customers c ON c.id = et.customer_id
+                WHERE et.rfq_id = :rfq_id OR et.rfq_id = :rfq_number OR et.rfq_token = :rfq_number
+                ORDER BY COALESCE(et.sent_at, et.created_at) ASC, et.created_at ASC
                 LIMIT 200
                 """
             ),
             {"rfq_id": rfq_id, "rfq_number": rfq_number or ""},
         ).mappings().all()
 
-        events = []
+        threads: OrderedDict = OrderedDict()
         for row in rows:
             event = dict(row)
             ts = event.get("sent_at") or event.get("created_at")
             if isinstance(ts, datetime):
                 event["display_time"] = ts.strftime("%Y-%m-%d %H:%M")
             elif isinstance(ts, str):
-                # Handles ISO timestamps from drivers that return strings.
                 event["display_time"] = ts[:16].replace("T", " ") if len(ts) >= 16 else ts
             else:
                 event["display_time"] = "—"
-            events.append(event)
 
-        return events
+            # Determine external party for this message
+            event["external_party"] = event.get("recipient_email") or "Unknown"
+
+            tid = event.get("gmail_thread_id") or f"_no_thread_{id(event)}"
+            if tid not in threads:
+                # Determine source group for this thread
+                if event.get("supplier_id"):
+                    source_type = "supplier"
+                    source_id = str(event["supplier_id"])
+                    source_name = event.get("supplier_name") or "Unknown Supplier"
+                elif event.get("customer_id"):
+                    source_type = "customer"
+                    source_id = str(event["customer_id"])
+                    source_name = event.get("customer_name") or "Unknown Customer"
+                else:
+                    source_type = "unknown"
+                    source_id = "_unknown"
+                    source_name = "Other / Unmatched"
+
+                threads[tid] = {
+                    "thread_id": tid,
+                    "subject": event.get("subject") or "No subject",
+                    "external_party": event["external_party"],
+                    "first_time": event["display_time"],
+                    "last_time": event["display_time"],
+                    "message_count": 0,
+                    "has_reply": False,
+                    "messages": [],
+                    "source_type": source_type,
+                    "source_id": source_id,
+                    "source_name": source_name,
+                }
+            thread = threads[tid]
+            thread["messages"].append(event)
+            thread["message_count"] += 1
+            thread["last_time"] = event["display_time"]
+            if event.get("direction") == "received":
+                thread["has_reply"] = True
+
+        # Group threads by source
+        source_groups: OrderedDict = OrderedDict()
+        for thread in reversed(list(threads.values())):
+            key = f"{thread['source_type']}:{thread['source_id']}"
+            if key not in source_groups:
+                source_groups[key] = {
+                    "source_type": thread["source_type"],
+                    "source_id": thread["source_id"],
+                    "source_name": thread["source_name"],
+                    "threads": [],
+                    "total_messages": 0,
+                    "has_reply": False,
+                }
+            group = source_groups[key]
+            group["threads"].append(thread)
+            group["total_messages"] += thread["message_count"]
+            if thread["has_reply"]:
+                group["has_reply"] = True
+
+        # Sort: suppliers first, then customers, then unknown
+        type_order = {"supplier": 0, "customer": 1, "unknown": 2}
+        return sorted(source_groups.values(), key=lambda g: (type_order.get(g["source_type"], 9), g["source_name"].lower()))
     except Exception:
         return []
     finally:
@@ -461,15 +530,8 @@ async def rfq_detail_tab(request: Request, rfq_id: str, tab: str,
         return RedirectResponse("/rfqs")
     _enrich_rfq_supplier_contacts(rfq)
 
-    active_tab = _normalize_rfq_tab(tab)
-    ctx = {
-        "rfq": rfq,
-        "active_nav": "rfqs",
-        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
-        "active_tab": active_tab,
-    }
-    if active_tab == "suppliers":
-        ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
+    ctx = _rfq_detail_context(rfq, user, tab)
+    ctx["active_nav"] = "rfqs"
     return _render(request, "rfq_detail.html", "partials/rfq_detail.html", ctx, user)
 
 
@@ -1101,6 +1163,141 @@ async def partial_rfq_detail_tab(request: Request, rfq_id: str, tab: str,
         "partials/rfq_detail.html",
         _rfq_detail_context(rfq, user, _normalize_rfq_tab(tab)),
     )
+
+
+@router.get("/api/rfqs/email-content/{message_id}")
+async def api_get_email_content(
+    message_id: str,
+    user: dict = Depends(require_user),
+):
+    """Fetch email body on demand for a message that has no cached content.
+
+    Looks up the email_tracking row, fetches from Gmail if body_markdown is NULL,
+    caches it, and returns the content.
+    """
+    import asyncio as _aio
+
+    def _fetch_and_cache():
+        session = _helpers.get_session()
+        try:
+            tracking = session.query(EmailTracking).filter(
+                EmailTracking.gmail_message_id == message_id
+            ).first()
+            if not tracking:
+                return {"status": "error", "message": "Message not found"}
+
+            # If already cached, return it
+            if tracking.body_markdown:
+                return {
+                    "status": "ok",
+                    "body_markdown": tracking.body_markdown,
+                    "body_html": tracking.body_html,
+                    "attachments": tracking.attachments_json,
+                    "sender_name": tracking.sender_name,
+                }
+
+            # Fetch from Gmail API
+            from includes.gmail import get_gmail_client
+            from scripts.sync_gmail_mailboxes import fetch_message_content
+
+            try:
+                service = get_gmail_client(tracking.user_email)
+            except Exception as e:
+                logger.warning(f"Cannot get Gmail client for {tracking.user_email}: {e}")
+                return {"status": "error", "message": f"Gmail not configured for {tracking.user_email}"}
+
+            content = fetch_message_content(service, message_id)
+            if not content:
+                return {"status": "error", "message": "Email no longer available in Gmail (may have been deleted)"}
+
+            # Cache in DB
+            tracking.body_markdown = content["body_markdown"]
+            tracking.body_html = content["body_html"]
+            tracking.attachments_json = content["attachments_json"]
+            tracking.sender_name = content["sender_name"]
+            tracking.all_recipients = content["all_recipients"]
+            tracking.updated_at = datetime.now(timezone.utc)
+            session.commit()
+
+            return {
+                "status": "ok",
+                "body_markdown": content["body_markdown"],
+                "body_html": content["body_html"],
+                "attachments": content["attachments_json"],
+                "sender_name": content["sender_name"],
+            }
+        except Exception as e:
+            session.rollback()
+            return {"status": "error", "message": str(e)}
+        finally:
+            session.close()
+
+    result = await asyncio.to_thread(_fetch_and_cache)
+    return JSONResponse(result)
+
+
+@router.get("/api/email-body/{message_id}")
+async def api_get_email_body_rendered(
+    message_id: str,
+    user: dict = Depends(require_user),
+):
+    """Return structured email content for client-side rendering.
+
+    Used by both the RFQ communications tab and admin email logs modal.
+    Returns { status, body, quoted, attachments[] }.
+    Client renders markdown with marked.js — this endpoint handles fetch/cache
+    and splitting into body vs quoted portions.
+    """
+
+    def _fetch():
+        session = _helpers.get_session()
+        try:
+            tracking = session.query(EmailTracking).filter(
+                EmailTracking.gmail_message_id == message_id
+            ).first()
+            if not tracking:
+                return {"status": "error", "message": "Message not found"}
+
+            # Fetch from Gmail if not cached
+            if not tracking.body_markdown:
+                try:
+                    from includes.gmail import get_gmail_client
+                    from scripts.sync_gmail_mailboxes import fetch_message_content
+                    service = get_gmail_client(tracking.user_email)
+                    content = fetch_message_content(service, message_id)
+                    if not content:
+                        return {"status": "error", "message": "Email no longer available in Gmail (may have been deleted)"}
+                    tracking.body_markdown = content["body_markdown"]
+                    tracking.body_html = content["body_html"]
+                    tracking.attachments_json = content["attachments_json"]
+                    tracking.sender_name = content["sender_name"]
+                    tracking.all_recipients = content["all_recipients"]
+                    tracking.updated_at = datetime.now(timezone.utc)
+                    session.commit()
+                except Exception as e:
+                    session.rollback()
+                    return {"status": "error", "message": f"Failed to fetch: {e}"}
+
+            # Split body and quoted content
+            body_md = tracking.body_markdown or ""
+            parts = body_md.split("<!-- quoted -->")
+            main_body = parts[0].strip()
+            quoted_body = parts[1].strip() if len(parts) > 1 else None
+
+            return {
+                "status": "ok",
+                "body": main_body,
+                "quoted": quoted_body,
+                "attachments": tracking.attachments_json or [],
+            }
+        except Exception as e:
+            session.rollback()
+            return {"status": "error", "message": str(e)}
+        finally:
+            session.close()
+
+    result = await asyncio.to_thread(_fetch)
+    return JSONResponse(result)
 
 
 # ---------------------------------------------------------------------------

@@ -15,13 +15,33 @@
     </script>
     <!-- Alpine.js -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- Marked.js (lightweight markdown renderer) -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
     <!-- HTMX -->
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <!-- Jodit (free rich text editor for in-app email compose) -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jodit@4.2.27/es2021/jodit.fat.min.css">
     <script src="https://cdn.jsdelivr.net/npm/jodit@4.2.27/es2021/jodit.fat.min.js"></script>
     <script>htmx.config.allowScriptTags = true;</script>
-    <style>[x-cloak] { display: none !important; }</style>
+    <style>
+        [x-cloak] { display: none !important; }
+        .border-l-3 { border-left-width: 3px; }
+        .email-body { font-size: 12px; line-height: 1.5; color: #4b5563; }
+        .email-body p { margin: 0.25em 0; }
+        .email-body table { border-collapse: collapse; margin: 0.5em 0; font-size: 11px; }
+        .email-body th, .email-body td { border: 1px solid #e5e7eb; padding: 2px 6px; }
+        .email-body th { background: #f9fafb; font-weight: 600; }
+        .email-body hr { border-color: #d1d5db; margin: 0.75em 0; opacity: 0.5; }
+        .email-body strong { font-weight: 600; color: #374151; }
+        .email-body a { color: #2563eb; text-decoration: underline; }
+        .email-body ul, .email-body ol { padding-left: 1.2em; margin: 0.25em 0; }
+        .dark .email-body { color: #9ca3af; }
+        .dark .email-body strong { color: #e5e7eb; }
+        .dark .email-body th { background: #374151; }
+        .dark .email-body th, .dark .email-body td { border-color: #4b5563; }
+        .dark .email-body hr { border-color: #4b5563; }
+        .dark .email-body a { color: #60a5fa; }
+    </style>
 </head>
 <body class="h-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100"
       x-data="dashboard()" x-init="init()">
@@ -680,6 +700,18 @@
                     console.log('[bridge] sending action', action.name);
                     // Ensure thread is bound to the RFQ before dispatching
                     window.dispatchEvent(new CustomEvent('ensure-rfq-bound'));
+                    // Inject the bound thread_id into the payload so the server
+                    // pins messages to the correct thread even if the user has
+                    // since navigated the chat iframe elsewhere.
+                    var dashCtx = null;
+                    try {
+                        var ctxEl = document.querySelector('[data-dashboard-context]');
+                        if (ctxEl) dashCtx = JSON.parse(ctxEl.dataset.dashboardContext);
+                    } catch(e) {}
+                    if (dashCtx && dashCtx.thread_id) {
+                        action.payload = action.payload || {};
+                        action.payload._thread_id = dashCtx.thread_id;
+                    }
                     // Signal the dashboard that agent work has started
                     window.dispatchEvent(new CustomEvent('agent-working', { detail: { label: action.label || 'Agent working...' } }));
                     fetch('/api/agent-bridge', {

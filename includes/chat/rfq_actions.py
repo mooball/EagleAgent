@@ -625,10 +625,10 @@ async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
         # ================================================================
         # Phase 1: Item grouping (LLM) — identify brand/supply-chain groups
         # ================================================================
-        await cl.Message(
-            content=f"**Phase 1/2** — Grouping {len(confirmed_items)} confirmed item(s) by brand/supply chain...",
-            author="EagleAgent",
-        ).send()
+        await _send_pinned(
+            f"**Phase 1/2** — Grouping {len(confirmed_items)} confirmed item(s) by brand/supply chain...",
+            pinned_tid, author="EagleAgent",
+        )
 
         groups_result = None
         if len(confirmed_items) >= 2:
@@ -685,27 +685,27 @@ async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
 
                 n_groups = len(groups_result.get("groups", []))
                 n_ungrouped = len(groups_result.get("ungrouped", []))
-                await cl.Message(
-                    content=f"Grouped into **{n_groups}** group(s), **{n_ungrouped}** ungrouped. Now checking our records...",
-                    author="EagleAgent",
-                ).send()
+                await _send_pinned(
+                    f"Grouped into **{n_groups}** group(s), **{n_ungrouped}** ungrouped. Now checking our records...",
+                    pinned_tid, author="EagleAgent",
+                )
             except Exception as e:
                 logger.warning(f"Grouping failed, treating all items as ungrouped: {e}")
                 groups_result = None
         else:
-            await cl.Message(
-                content=f"Only 1 confirmed item, skipping grouping. Now checking our records...",
-                author="EagleAgent",
-            ).send()
+            await _send_pinned(
+                f"Only 1 confirmed item, skipping grouping. Now checking our records...",
+                pinned_tid, author="EagleAgent",
+            )
 
         # ================================================================
         # Phase 2: Internal DB search — batch across ALL confirmed items
         # ================================================================
         await notify_dashboard("agent_working", {"label": f"Phase 2/2: Checking records ({len(confirmed_items)} items)..."})
-        await cl.Message(
-            content=f"**Phase 2/2** — Searching our internal records for {len(confirmed_items)} confirmed item(s)...",
-            author="EagleAgent",
-        ).send()
+        await _send_pinned(
+            f"**Phase 2/2** — Searching our internal records for {len(confirmed_items)} confirmed item(s)...",
+            pinned_tid, author="EagleAgent",
+        )
 
         total_internal = 0
         # Track suppliers found per line for cross-apply in Phase 2.5
@@ -755,15 +755,15 @@ async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
 
         if total_internal > 0:
             await notify_dashboard("dashboard_refresh")
-            await cl.Message(
-                content=f"Found **{total_internal}** supplier(s) from our records. Now checking brand links...",
-                author="EagleAgent",
-            ).send()
+            await _send_pinned(
+                f"Found **{total_internal}** supplier(s) from our records. Now checking brand links...",
+                pinned_tid, author="EagleAgent",
+            )
         else:
-            await cl.Message(
-                content=f"No matching suppliers in our records. Checking brand links...",
-                author="EagleAgent",
-            ).send()
+            await _send_pinned(
+                f"No matching suppliers in our records. Checking brand links...",
+                pinned_tid, author="EagleAgent",
+            )
 
         # ================================================================
         # Phase 2b: Brand-linked supplier lookup
@@ -858,10 +858,10 @@ async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
 
         if total_brand > 0:
             await notify_dashboard("dashboard_refresh")
-            await cl.Message(
-                content=f"Added **{total_brand}** Tier A brand-linked supplier(s).",
-                author="EagleAgent",
-            ).send()
+            await _send_pinned(
+                f"Added **{total_brand}** Tier A brand-linked supplier(s).",
+                pinned_tid, author="EagleAgent",
+            )
 
         # ================================================================
         # Phase 2.5: Cross-apply suppliers within groups
@@ -913,32 +913,32 @@ async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
 
             if total_cross > 0:
                 await notify_dashboard("dashboard_refresh")
-                await cl.Message(
-                    content=f"Cross-applied **{total_cross}** supplier(s) within groups.",
-                    author="EagleAgent",
-                ).send()
+                await _send_pinned(
+                    f"Cross-applied **{total_cross}** supplier(s) within groups.",
+                    pinned_tid, author="EagleAgent",
+                )
             else:
-                await cl.Message(
-                    content=f"No additional cross-apply needed.",
-                    author="EagleAgent",
-                ).send()
+                await _send_pinned(
+                    f"No additional cross-apply needed.",
+                    pinned_tid, author="EagleAgent",
+                )
 
         # Sort suppliers on all line items
         from includes.tools.rfq_crud import _sort_rfq_suppliers_sync
         await asyncio.to_thread(_sort_rfq_suppliers_sync, rfq_id)
         await notify_dashboard("dashboard_refresh")
 
-        await cl.Message(
-            content=f"✅ Previous supplier search complete. Found **{total_internal + total_brand + total_cross}** supplier(s) from our records.",
-            author="EagleAgent",
-        ).send()
+        await _send_pinned(
+            f"✅ Previous supplier search complete. Found **{total_internal + total_brand + total_cross}** supplier(s) from our records.",
+            pinned_tid, author="EagleAgent",
+        )
 
     except Exception as e:
         logger.exception(f"Error in find previous suppliers for {rfq_id}")
-        await cl.Message(
-            content=f"Error finding previous suppliers: {e}",
-            author="EagleAgent",
-        ).send()
+        await _send_pinned(
+            f"Error finding previous suppliers: {e}",
+            pinned_tid, author="EagleAgent",
+        )
     finally:
         await notify_dashboard("agent_done")
 
@@ -957,10 +957,10 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
     confirmed_items = payload.get("items", [])
 
     if not confirmed_items:
-        await cl.Message(
-            content="No confirmed items to search for.",
-            author="EagleAgent",
-        ).send()
+        await _send_pinned(
+            "No confirmed items to search for.",
+            pinned_tid, author="EagleAgent",
+        )
         return
 
     await notify_dashboard("agent_working", {"label": "Preparing web search..."})
@@ -982,7 +982,7 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
         try:
             rfq_obj = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
             if not rfq_obj:
-                await cl.Message(content=f"RFQ {rfq_id} not found.", author="EagleAgent").send()
+                await _send_pinned(f"RFQ {rfq_id} not found.", pinned_tid, author="EagleAgent")
                 return
             db_items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq_obj.id).all()
             current_suppliers_by_line = {}
@@ -1109,19 +1109,19 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
                 ))
 
         total_searches = len(search_tasks)
-        await cl.Message(
-            content=f"**Web Search** — Searching the web: **{total_searches}** search(es) to perform...",
-            author="EagleAgent",
-        ).send()
+        await _send_pinned(
+            f"**Web Search** — Searching the web: **{total_searches}** search(es) to perform...",
+            pinned_tid, author="EagleAgent",
+        )
 
         for idx, (label, short_desc, _lines, rich_prompt) in enumerate(search_tasks, 1):
             await notify_dashboard("agent_working", {
                 "label": f"Web search {idx}/{total_searches}: {label[:50]}..."
             })
-            await cl.Message(
-                content=f"🔍 Search {idx}/{total_searches}: **{label}** (lines {', '.join(str(l) for l in _lines)})...",
-                author="EagleAgent",
-            ).send()
+            await _send_pinned(
+                f"🔍 Search {idx}/{total_searches}: **{label}** (lines {', '.join(str(l) for l in _lines)})...",
+                pinned_tid, author="EagleAgent",
+            )
 
             synthetic = cl.Message(content=f"Find suppliers for {short_desc} on {rfq_id}")
             synthetic.author = "User"
@@ -1135,16 +1135,16 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
         await asyncio.to_thread(_sort_rfq_suppliers_sync, rfq_id)
         await notify_dashboard("dashboard_refresh")
 
-        await cl.Message(
-            content=f"✅ Web supplier search complete.",
-            author="EagleAgent",
-        ).send()
+        await _send_pinned(
+            f"✅ Web supplier search complete.",
+            pinned_tid, author="EagleAgent",
+        )
 
     except Exception as e:
         logger.exception(f"Error in find new suppliers for {rfq_id}")
-        await cl.Message(
-            content=f"Error finding new suppliers: {e}",
-            author="EagleAgent",
-        ).send()
+        await _send_pinned(
+            f"Error finding new suppliers: {e}",
+            pinned_tid, author="EagleAgent",
+        )
     finally:
         await notify_dashboard("agent_done")

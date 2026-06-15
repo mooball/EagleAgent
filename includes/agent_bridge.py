@@ -20,6 +20,7 @@ Agent → Dashboard:
 See docs/AGENT_BRIDGE.md for the full architecture.
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, Optional
 
@@ -27,6 +28,10 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
+
+# Per-session lock: serializes concurrent action dispatches on the same
+# Chainlit session so that thread_id pinning cannot race.
+_session_locks: Dict[str, asyncio.Lock] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -81,37 +86,56 @@ async def dispatch_action(
     from chainlit.context import init_ws_context
     from chainlit.session import WebsocketSession
 
-    session = WebsocketSession.get_by_id(session_id)
-    if not session:
-        logger.warning(f"[agent_bridge] Session not found: {session_id}")
-        return {"error": "Chainlit session not found. Please reload the page."}
+    # Acquire a per-session lock so that concurrent bridge requests on the
+    # same session are serialized.  This prevents two actions from racing
+    # to set session.thread_id and corrupting each other's context.
+    if session_id not in _session_locks:
+        _session_locks[session_id] = asyncio.Lock()
+    lock = _session_locks[session_id]
 
-    # Set the Chainlit context so cl.user_session, cl.Message etc. work
-    init_ws_context(session)
+    async with lock:
+        session = WebsocketSession.get_by_id(session_id)
+        if not session:
+            logger.warning(f"[agent_bridge] Session not found: {session_id}")
+            return {"error": "Chainlit session not found. Please reload the page."}
 
-    callback = config.code.action_callbacks.get(action_name)
-    if callback:
-        # Native @cl.action_callback
-        try:
-            action = Action(name=action_name, payload=payload)
-            await callback(action)
-            return {"success": True}
-        except Exception as e:
-            logger.exception(f"[agent_bridge] Action {action_name} failed")
-            return {"error": str(e)}
+        # Set the Chainlit context so cl.user_session, cl.Message etc. work
+        init_ws_context(session)
 
-    # Fall back to custom action registry (includes/chat/actions.py)
-    from includes.chat.actions import dispatch_action as dispatch_custom_action, get_action
-    if get_action(action_name):
-        try:
-            await dispatch_custom_action(action_name, **payload)
-            return {"success": True}
-        except Exception as e:
-            logger.exception(f"[agent_bridge] Action {action_name} failed")
-            return {"error": str(e)}
+        # If the payload includes a _thread_id (injected by the dashboard),
+        # pin the session to that thread BEFORE the callback runs.  This
+        # prevents cross-thread contamination when the user has navigated the
+        # chat iframe to a different RFQ thread after clicking the button.
+        target_thread_id = payload.get("_thread_id")
+        if target_thread_id:
+            logger.info(f"[agent_bridge] Pinning session to thread {target_thread_id} (from payload)")
+            session.thread_id = target_thread_id
+            import chainlit as cl
+            cl.user_session.set("thread_id", target_thread_id)
 
-    logger.warning(f"[agent_bridge] No callback for action: {action_name}")
-    return {"error": f"Unknown action: {action_name}"}
+        callback = config.code.action_callbacks.get(action_name)
+        if callback:
+            # Native @cl.action_callback
+            try:
+                action = Action(name=action_name, payload=payload)
+                await callback(action)
+                return {"success": True}
+            except Exception as e:
+                logger.exception(f"[agent_bridge] Action {action_name} failed")
+                return {"error": str(e)}
+
+        # Fall back to custom action registry (includes/chat/actions.py)
+        from includes.chat.actions import dispatch_action as dispatch_custom_action, get_action
+        if get_action(action_name):
+            try:
+                await dispatch_custom_action(action_name, **payload)
+                return {"success": True}
+            except Exception as e:
+                logger.exception(f"[agent_bridge] Action {action_name} failed")
+                return {"error": str(e)}
+
+        logger.warning(f"[agent_bridge] No callback for action: {action_name}")
+        return {"error": f"Unknown action: {action_name}"}
 
 
 async def handle_bridge_request(request: Request) -> Response:

@@ -225,10 +225,21 @@ def _save_draft_to_tracking(
         opportunity_id: Optional secondary tracking ID
     """
     try:
-        from sqlalchemy import text
+        from sqlalchemy import text, func
+        from includes.dashboard.models import Contact
         
         session = get_session()
         try:
+            # Look up supplier from recipient email
+            supplier_id = None
+            if recipient_email:
+                contact = session.query(Contact).filter(
+                    func.lower(Contact.email) == recipient_email.lower().strip(),
+                    Contact.isinactive == False,
+                ).first()
+                if contact and contact.supplier_id:
+                    supplier_id = contact.supplier_id
+
             session.execute(
                 text("""
                     INSERT INTO email_tracking (
@@ -237,6 +248,7 @@ def _save_draft_to_tracking(
                         user_email,
                         rfq_id,
                         opportunity_id,
+                        supplier_id,
                         direction,
                         email_type,
                         subject,
@@ -249,6 +261,7 @@ def _save_draft_to_tracking(
                         :user_email,
                         :rfq_id,
                         :opportunity_id,
+                        :supplier_id,
                         :direction,
                         :email_type,
                         :subject,
@@ -263,6 +276,7 @@ def _save_draft_to_tracking(
                     "user_email": user_email,
                     "rfq_id": rfq_id,
                     "opportunity_id": opportunity_id,
+                    "supplier_id": str(supplier_id) if supplier_id else None,
                     "direction": "draft",
                     "email_type": email_type,
                     "subject": subject,
@@ -293,10 +307,21 @@ def _save_sent_to_tracking(
 ) -> None:
     """Save sent email info to email_tracking table."""
     try:
-        from sqlalchemy import text
+        from sqlalchemy import text, func
+        from includes.dashboard.models import Contact, Supplier
 
         session = get_session()
         try:
+            # Look up supplier from recipient email
+            supplier_id = None
+            if recipient_email:
+                contact = session.query(Contact).filter(
+                    func.lower(Contact.email) == recipient_email.lower().strip(),
+                    Contact.isinactive == False,
+                ).first()
+                if contact and contact.supplier_id:
+                    supplier_id = contact.supplier_id
+
             session.execute(
                 text("""
                     INSERT INTO email_tracking (
@@ -305,6 +330,7 @@ def _save_sent_to_tracking(
                         user_email,
                         rfq_id,
                         opportunity_id,
+                        supplier_id,
                         direction,
                         email_type,
                         subject,
@@ -317,6 +343,7 @@ def _save_sent_to_tracking(
                         :user_email,
                         :rfq_id,
                         :opportunity_id,
+                        :supplier_id,
                         :direction,
                         :email_type,
                         :subject,
@@ -331,6 +358,7 @@ def _save_sent_to_tracking(
                     "user_email": user_email,
                     "rfq_id": rfq_id,
                     "opportunity_id": opportunity_id,
+                    "supplier_id": str(supplier_id) if supplier_id else None,
                     "direction": "sent",
                     "email_type": email_type,
                     "subject": subject,

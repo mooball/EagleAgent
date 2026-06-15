@@ -364,6 +364,13 @@ class EmailTracking(Base):
     draft_opened_at = Column(DateTime(timezone=True), nullable=True)
     sent_confirmed = Column(Boolean, nullable=True, default=False)
 
+    # Email content (Phase 6.2)
+    body_markdown = Column(Text, nullable=True)
+    body_html = Column(Text, nullable=True)
+    attachments_json = Column(JSONB, nullable=True)
+    sender_name = Column(String, nullable=True)
+    all_recipients = Column(JSONB, nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=True)
     updated_at = Column(DateTime(timezone=True), nullable=True)
 

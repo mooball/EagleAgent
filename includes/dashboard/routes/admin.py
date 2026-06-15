@@ -2,7 +2,8 @@
 
 import logging
 
-from fastapi import Request
+from fastapi import Request, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from . import _helpers
@@ -462,6 +463,7 @@ async def admin_email_logs(request: Request, user: dict = require_admin):
                     et.recipient_email,
                     et.user_email,
                     et.rfq_id,
+                    et.rfq_token,
                     et.gmail_thread_id,
                     et.gmail_message_id,
                     et.gmail_draft_id,
@@ -581,3 +583,183 @@ async def admin_mailbox_toggle(request: Request, email: str, user: dict = requir
         return HTMLResponse(f'<div class="text-red-600 text-sm">Error: {e}</div>')
     finally:
         session.close()
+
+
+# ---------------------------------------------------------------------------
+# Email Linking API
+# ---------------------------------------------------------------------------
+
+@router.get("/api/admin/search-entities")
+async def api_search_entities(request: Request, type: str, q: str, user: dict = require_admin):
+    """Search suppliers or customers by name for the email linking UI."""
+    if not q or len(q) < 2:
+        return JSONResponse({"results": []})
+
+    session = _helpers.get_session()
+    try:
+        if type == "supplier":
+            rows = session.execute(
+                text("SELECT id, name FROM suppliers WHERE LOWER(name) LIKE :q ORDER BY name LIMIT 10"),
+                {"q": f"%{q.lower()}%"}
+            ).mappings().all()
+            return JSONResponse({"results": [{"id": str(r["id"]), "name": r["name"]} for r in rows]})
+        elif type == "customer":
+            rows = session.execute(
+                text("SELECT id, companyname FROM customers WHERE LOWER(companyname) LIKE :q AND isinactive = false ORDER BY companyname LIMIT 10"),
+                {"q": f"%{q.lower()}%"}
+            ).mappings().all()
+            return JSONResponse({"results": [{"id": str(r["id"]), "name": r["companyname"]} for r in rows]})
+        else:
+            return JSONResponse({"results": []})
+    finally:
+        session.close()
+
+
+@router.post("/api/admin/link-email")
+async def api_link_email(request: Request, user: dict = require_admin):
+    """Link an email to an RFQ, customer, or supplier. Optionally save domain for future matching."""
+    from includes.dashboard.models import EmailTracking, Supplier, Customer
+
+    body = await request.json()
+    email_id = body.get("email_id")
+    link_type = body.get("link_type")  # 'rfq', 'customer', 'supplier'
+    save_domain = body.get("save_domain", False)
+
+    if not email_id or not link_type:
+        return JSONResponse({"status": "error", "message": "Missing email_id or link_type"})
+
+    session = _helpers.get_session()
+    try:
+        tracking = session.query(EmailTracking).filter(EmailTracking.id == email_id).first()
+        if not tracking:
+            return JSONResponse({"status": "error", "message": "Email not found"})
+
+        if link_type == "rfq":
+            rfq_token = body.get("rfq_token", "").strip()
+            if not rfq_token:
+                return JSONResponse({"status": "error", "message": "No RFQ token provided"})
+            # Update this email and all others in the same thread
+            filters = [EmailTracking.id == email_id]
+            if tracking.gmail_thread_id:
+                filters = [EmailTracking.gmail_thread_id == tracking.gmail_thread_id]
+            session.execute(
+                text("""
+                    UPDATE email_tracking SET rfq_token = :token, match_type = 'manual'
+                    WHERE gmail_thread_id = :tid OR id = :eid
+                """),
+                {"token": rfq_token, "tid": tracking.gmail_thread_id or "", "eid": email_id}
+            )
+            session.commit()
+            return JSONResponse({"status": "ok", "message": f"Linked thread to {rfq_token}"})
+
+        elif link_type == "customer":
+            entity_id = body.get("entity_id")
+            if not entity_id:
+                return JSONResponse({"status": "error", "message": "No customer selected"})
+            # Link this email (and thread) to the customer
+            session.execute(
+                text("""
+                    UPDATE email_tracking SET customer_id = :cid, match_type = 'manual'
+                    WHERE gmail_thread_id = :tid OR id = :eid
+                """),
+                {"cid": entity_id, "tid": tracking.gmail_thread_id or "", "eid": email_id}
+            )
+
+            # Save domain if requested
+            domain_msg = ""
+            if save_domain:
+                domain_msg = _save_email_domain(session, tracking, "customer", entity_id)
+
+            session.commit()
+            customer = session.query(Customer).filter(Customer.id == entity_id).first()
+            name = customer.companyname if customer else "customer"
+            return JSONResponse({"status": "ok", "message": f"Linked to {name}. {domain_msg}".strip()})
+
+        elif link_type == "supplier":
+            entity_id = body.get("entity_id")
+            if not entity_id:
+                return JSONResponse({"status": "error", "message": "No supplier selected"})
+            # Link this email (and thread) to the supplier
+            session.execute(
+                text("""
+                    UPDATE email_tracking SET supplier_id = :sid, match_type = 'manual'
+                    WHERE gmail_thread_id = :tid OR id = :eid
+                """),
+                {"sid": entity_id, "tid": tracking.gmail_thread_id or "", "eid": email_id}
+            )
+
+            # Save domain if requested
+            domain_msg = ""
+            if save_domain:
+                domain_msg = _save_email_domain(session, tracking, "supplier", entity_id)
+
+            session.commit()
+            supplier = session.query(Supplier).filter(Supplier.id == entity_id).first()
+            name = supplier.name if supplier else "supplier"
+            return JSONResponse({"status": "ok", "message": f"Linked to {name}. {domain_msg}".strip()})
+
+        else:
+            return JSONResponse({"status": "error", "message": f"Unknown link type: {link_type}"})
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error linking email {email_id}: {e}")
+        return JSONResponse({"status": "error", "message": str(e)})
+    finally:
+        session.close()
+
+
+def _save_email_domain(session, tracking: "EmailTracking", entity_type: str, entity_id: str) -> str:
+    """Extract the external email domain and save it to the entity's alt_domains for future matching."""
+    from includes.dashboard.models import Supplier, Customer
+
+    # Determine the external email address
+    external_email = None
+    if tracking.direction == "received":
+        # External sender → staff recipient
+        if tracking.user_email and "eagle-exports" not in tracking.user_email:
+            external_email = tracking.user_email
+        elif tracking.recipient_email and "eagle-exports" not in tracking.recipient_email:
+            external_email = tracking.recipient_email
+    else:
+        # Staff → external recipient
+        external_email = tracking.recipient_email
+
+    if not external_email or "eagle-exports" in external_email:
+        return ""
+
+    domain = external_email.split("@")[-1].lower() if "@" in external_email else None
+    if not domain:
+        return ""
+
+    # Skip generic providers
+    generic = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "live.com",
+               "icloud.com", "aol.com", "protonmail.com", "zoho.com", "mail.com",
+               "ymail.com", "fastmail.com", "me.com", "msn.com", "googlemail.com",
+               "bigpond.com"}
+    if domain in generic:
+        return f"(skipped generic domain {domain})"
+
+    if entity_type == "supplier":
+        supplier = session.query(Supplier).filter(Supplier.id == entity_id).first()
+        if supplier:
+            existing = supplier.alt_domains or []
+            if domain not in existing:
+                supplier.alt_domains = existing + [domain]
+                return f"Domain '{domain}' saved to {supplier.name}."
+            else:
+                return f"Domain '{domain}' already registered."
+    elif entity_type == "customer":
+        # Customers don't have alt_domains, store domain in email field if empty
+        customer = session.query(Customer).filter(Customer.id == entity_id).first()
+        if customer:
+            if not customer.email:
+                customer.email = external_email
+                return f"Email '{external_email}' saved to {customer.companyname}."
+            elif domain in (customer.email or ""):
+                return f"Domain already registered via {customer.email}."
+            else:
+                # Add as a contact instead
+                return f"(customer already has email {customer.email}; domain not saved)"
+
+    return ""
