@@ -500,6 +500,12 @@ def process_message(
             full_rfq_number = f"RFQ-{rfq_number}" if not rfq_number.upper().startswith("RFQ-") else rfq_number
             rfq = session.query(RFQ).filter(RFQ.rfq_number == full_rfq_number).first()
 
+        # If no RFQ found by number, try matching by NetSuite Opportunity ID
+        if not rfq and op_number:
+            rfq = session.query(RFQ).filter(RFQ.netsuite_opportunity == op_number).first()
+            if rfq:
+                full_rfq_number = rfq.rfq_number
+
         if rfq or op_number:
             # Also run Tier 3 contact matching to identify supplier/customer
             contact_match = match_by_contact(session, external_addresses, domain_index)
