@@ -233,12 +233,26 @@ def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
     return sorted(supplier_map.values(), key=lambda s: s["name"].lower())
 
 
+def _get_all_user_emails() -> list[dict]:
+    """Return a list of users with email and name from netsuite_employee_mappings."""
+    from sqlalchemy import text
+    session = _helpers.get_session()
+    try:
+        rows = session.execute(
+            text("SELECT email, name FROM netsuite_employee_mappings WHERE email IS NOT NULL AND is_active = true ORDER BY name")
+        ).fetchall()
+        return [{"email": r[0], "name": r[1]} for r in rows]
+    finally:
+        session.close()
+
+
 def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
     ctx = {
         "user": user,
         "rfq": rfq,
         "rfq_thread_id": _lookup_rfq_thread_id(rfq["id"], user.get("email", "")),
         "active_tab": _normalize_rfq_tab(active_tab),
+        "all_users": _get_all_user_emails(),
     }
     if ctx["active_tab"] == "suppliers":
         ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
@@ -673,7 +687,7 @@ async def partial_rfq_update(request: Request, rfq_id: str,
     """Update RFQ header properties (customer, netsuite, hubspot, notes)."""
     form = await request.form()
     data = {}
-    updatable = ["customer", "reference", "notes", "netsuite_opportunity", "hubspot_deal"]
+    updatable = ["customer", "assigned_to", "notes", "netsuite_opportunity", "hubspot_deal"]
     for key in updatable:
         val = form.get(key)
         if val is not None:
@@ -742,6 +756,20 @@ async def partial_rfq_update_item(request: Request, rfq_id: str,
     result = await asyncio.to_thread(_update_item_sync, rfq_id, data, user_ident)
     if isinstance(result, str):
         return HTMLResponse(f"<p>{result}</p>", status_code=404)
+    rfq = result
+    _enrich_rfq_supplier_contacts(rfq)
+    return _render_rfq_detail_partial_response(request, user, rfq)
+
+
+@router.delete("/partial/rfqs/{rfq_id}/delete-item/{line}")
+async def partial_rfq_delete_item(request: Request, rfq_id: str, line: int,
+                                  user: dict = Depends(require_user)):
+    """Delete a single RFQ line item and renumber remaining items."""
+    from includes.tools.rfq_crud import _delete_item_sync
+    user_ident = user.get("identifier", "dashboard")
+    result = await asyncio.to_thread(_delete_item_sync, rfq_id, line, user_ident)
+    if isinstance(result, str):
+        return HTMLResponse(f"<p>{result}</p>", status_code=400)
     rfq = result
     _enrich_rfq_supplier_contacts(rfq)
     return _render_rfq_detail_partial_response(request, user, rfq)

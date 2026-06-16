@@ -522,6 +522,49 @@ def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+def _delete_item_sync(rfq_number: str, line_num: int, user_id: str) -> dict | str:
+    """Delete a single RFQ line item and renumber remaining items.
+    Returns full RFQ dict or error string."""
+    from includes.dashboard.models import RFQ, RFQItem
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+
+        line_item = session.query(RFQItem).filter(
+            RFQItem.rfq_id == rfq.id, RFQItem.line == line_num
+        ).first()
+        if not line_item:
+            return f"Error: line {line_num} not found in {rfq_number}."
+
+        desc = line_item.input_description or line_item.part_number or f"line {line_num}"
+        session.delete(line_item)
+        session.flush()  # commit delete before renumbering to avoid unique constraint
+
+        # Renumber remaining items using raw SQL to avoid ORM batch conflicts
+        from sqlalchemy import text
+        session.execute(
+            text("UPDATE rfq_items SET line = line - 1 WHERE rfq_id = :rfq_id AND line > :line"),
+            {"rfq_id": rfq.id, "line": line_num},
+        )
+
+        now = _now_iso()
+        history = list(rfq.history or [])
+        history.append({"date": now, "user": user_id, "action": f"Deleted item {line_num}: {desc}"})
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Add supplier(s) to a line item. Returns full RFQ dict or error string."""
     from includes.dashboard.models import RFQ, RFQItem

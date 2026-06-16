@@ -105,6 +105,11 @@
                 </td>
                 <td colspan="2" class="px-3 py-2.5 text-center">
                     <div class="flex items-center justify-center gap-1">
+                        <button type="button"
+                                hx-delete="/partial/rfqs/{{ rfq.id }}/delete-item/{{ item.line }}"
+                                hx-target="#main-content"
+                                hx-confirm="Delete line {{ item.line }} ({{ item.input_description or item.part_number or 'this item' }})?"
+                                class="px-2.5 py-1 text-xs font-medium rounded bg-red-600 text-white hover:bg-red-700">Delete</button>
                         <button type="submit" form="edit-item-{{ item.line }}"
                                 class="px-2.5 py-1 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700">Save</button>
                         <button type="button" @click="editingItem = null"

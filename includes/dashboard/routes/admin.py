@@ -444,61 +444,170 @@ async def admin_duplicates_delete(request: Request, user: dict = require_admin):
 # Email Logs
 # ---------------------------------------------------------------------------
 
-@router.get("/admin/emails")
-async def admin_email_logs(request: Request, user: dict = require_admin):
-    """Admin page showing all tracked email communications."""
+_EMAIL_PAGE_SIZE = 50
+
+
+def _query_email_logs(session, q: str = "", user_filter: str = "", page: int = 1):
+    """Query email_tracking with optional filters. Returns (emails, total, has_more, next_page)."""
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
 
     local_tz = ZoneInfo(_helpers.config.TIMEZONE)
+
+    where_clauses = []
+    params = {}
+
+    if q:
+        where_clauses.append(
+            "(et.subject ILIKE :q OR s.name ILIKE :q OR c.companyname ILIKE :q)"
+        )
+        params["q"] = f"%{q}%"
+
+    if user_filter:
+        where_clauses.append(
+            "(et.user_email = :uf OR et.recipient_email = :uf)"
+        )
+        params["uf"] = user_filter
+
+    where_sql = (" AND " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    count_row = session.execute(
+        text(f"""
+            SELECT COUNT(*) FROM email_tracking et
+            LEFT JOIN suppliers s ON et.supplier_id = s.id
+            LEFT JOIN customers c ON et.customer_id = c.id
+            WHERE 1=1 {where_sql}
+        """),
+        params,
+    ).scalar()
+
+    total = count_row or 0
+    import math
+    total_pages = max(1, math.ceil(total / _EMAIL_PAGE_SIZE))
+    page = max(1, min(page, total_pages))
+    offset = (page - 1) * _EMAIL_PAGE_SIZE
+
+    params["limit"] = _EMAIL_PAGE_SIZE
+    params["offset"] = offset
+
+    rows = session.execute(
+        text(f"""
+            SELECT
+                et.id,
+                et.direction,
+                et.email_type,
+                et.subject,
+                et.recipient_email,
+                et.user_email,
+                et.rfq_id,
+                et.rfq_token,
+                et.gmail_thread_id,
+                et.gmail_message_id,
+                et.gmail_draft_id,
+                et.sent_at,
+                et.created_at,
+                et.match_type,
+                s.name AS supplier_name,
+                c.companyname AS customer_name
+            FROM email_tracking et
+            LEFT JOIN suppliers s ON et.supplier_id = s.id
+            LEFT JOIN customers c ON et.customer_id = c.id
+            WHERE 1=1 {where_sql}
+            ORDER BY COALESCE(et.sent_at, et.created_at) DESC
+            LIMIT :limit OFFSET :offset
+        """),
+        params,
+    ).mappings().all()
+
+    emails = []
+    for row in rows:
+        e = dict(row)
+        ts = e.get("sent_at") or e.get("created_at")
+        if isinstance(ts, datetime):
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            dt_local = ts.astimezone(local_tz)
+            e["display_time"] = dt_local.strftime("%Y-%m-%d %H:%M")
+        elif isinstance(ts, str):
+            e["display_time"] = ts[:16].replace("T", " ") if len(ts) >= 16 else ts
+        else:
+            e["display_time"] = "—"
+        emails.append(e)
+
+    return emails, total, page < total_pages, page + 1
+
+
+def _get_email_user_list(session) -> list[dict]:
+    """Get active staff from netsuite_employee_mappings for the user filter."""
+    rows = session.execute(
+        text("SELECT email, name FROM netsuite_employee_mappings WHERE email IS NOT NULL AND is_active = true ORDER BY name")
+    ).fetchall()
+    return [{"email": r[0], "name": r[1]} for r in rows]
+
+
+@router.get("/admin/emails")
+async def admin_email_logs(request: Request, user: dict = require_admin,
+                           q: str = "", user_filter: str = "", page: int = 1):
+    """Admin page showing all tracked email communications."""
     session = _helpers.get_session()
     try:
-        rows = session.execute(
-            text("""
-                SELECT
-                    et.id,
-                    et.direction,
-                    et.email_type,
-                    et.subject,
-                    et.recipient_email,
-                    et.user_email,
-                    et.rfq_id,
-                    et.rfq_token,
-                    et.gmail_thread_id,
-                    et.gmail_message_id,
-                    et.gmail_draft_id,
-                    et.sent_at,
-                    et.created_at,
-                    et.match_type,
-                    s.name AS supplier_name,
-                    c.companyname AS customer_name
-                FROM email_tracking et
-                LEFT JOIN suppliers s ON et.supplier_id = s.id
-                LEFT JOIN customers c ON et.customer_id = c.id
-                ORDER BY COALESCE(et.sent_at, et.created_at) DESC
-                LIMIT 500
-            """)
-        ).mappings().all()
-
-        emails = []
-        for row in rows:
-            e = dict(row)
-            ts = e.get("sent_at") or e.get("created_at")
-            if isinstance(ts, datetime):
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                dt_local = ts.astimezone(local_tz)
-                e["display_time"] = dt_local.strftime("%Y-%m-%d %H:%M")
-            elif isinstance(ts, str):
-                e["display_time"] = ts[:16].replace("T", " ") if len(ts) >= 16 else ts
-            else:
-                e["display_time"] = "—"
-            emails.append(e)
-
-        ctx = {"emails": emails, "page_title": "Email Logs", "email_count": len(emails)}
+        emails, total, has_more, next_page = _query_email_logs(session, q, user_filter, page)
+        email_users = _get_email_user_list(session)
+        ctx = {
+            "emails": emails,
+            "page_title": "Email Logs",
+            "email_count": total,
+            "q": q,
+            "user_filter": user_filter,
+            "email_users": email_users,
+            "has_more": has_more,
+            "next_page": next_page,
+        }
         return _render(
             request, "admin_emails.html", "partials/admin_emails.html", ctx, user
         )
+    finally:
+        session.close()
+
+
+@router.get("/partial/admin/email-rows")
+async def partial_admin_email_rows(request: Request, user: dict = require_admin,
+                                   q: str = "", user_filter: str = "", page: int = 1):
+    """Return just the <tr> rows + sentinel for infinite scroll."""
+    session = _helpers.get_session()
+    try:
+        emails, total, has_more, next_page = _query_email_logs(session, q, user_filter, page)
+        return templates.TemplateResponse(request, "partials/_email_rows.html", {
+            "emails": emails,
+            "q": q,
+            "user_filter": user_filter,
+            "has_more": has_more,
+            "next_page": next_page,
+        })
+    finally:
+        session.close()
+
+
+@router.get("/partial/admin/emails")
+async def partial_admin_emails(request: Request, user: dict = require_admin,
+                               q: str = "", user_filter: str = "", page: int = 1):
+    """Return the full email logs partial (for filter form submissions via HTMX)."""
+    session = _helpers.get_session()
+    try:
+        emails, total, has_more, next_page = _query_email_logs(session, q, user_filter, page)
+        email_users = _get_email_user_list(session)
+        ctx = {
+            "user": user,
+            "emails": emails,
+            "page_title": "Email Logs",
+            "email_count": total,
+            "q": q,
+            "user_filter": user_filter,
+            "email_users": email_users,
+            "has_more": has_more,
+            "next_page": next_page,
+        }
+        return templates.TemplateResponse(request, "partials/admin_emails.html", ctx)
     finally:
         session.close()
 

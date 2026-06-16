@@ -1,10 +1,31 @@
-{% from "components.html" import page_header, badge %}
+{% from "components.html" import page_header, badge, row_count %}
 
 {{ page_header("Email Logs") }}
 
-<p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-    Showing {{ email_count }} tracked email{{ 's' if email_count != 1 else '' }} (most recent first).
-</p>
+<!-- Filter bar -->
+<form hx-get="/partial/admin/emails" hx-target="#main-content" hx-push-url="/admin/emails"
+      class="flex flex-wrap items-center gap-2 mb-4">
+    <input type="text" name="q" value="{{ q or '' }}"
+           placeholder="Search subject, customer, supplier…"
+           class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-64">
+    <select name="user_filter"
+            class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+        <option value="">All users</option>
+        {% for ue in email_users %}
+        <option value="{{ ue.email }}" {% if user_filter == ue.email %}selected{% endif %}>{{ ue.name }} ({{ ue.email }})</option>
+        {% endfor %}
+    </select>
+    <button type="submit"
+            class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">
+        Filter
+    </button>
+    {% if q or user_filter %}
+    <a href="/admin/emails" hx-get="/partial/admin/emails" hx-target="#main-content" hx-push-url="/admin/emails"
+       class="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200">
+        Clear
+    </a>
+    {% endif %}
+</form>
 
 <script>
 window._emailData = {
@@ -173,65 +194,12 @@ window._emailData = {
                 <th class="px-2 py-2 font-medium text-gray-500 dark:text-gray-400">Date (AEST)</th>
             </tr>
         </thead>
-        <tbody>
-            {% for e in emails %}
-            <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
-                @click="openEmail({{ e.id }})">
-                <td class="px-2 py-1.5 font-mono text-gray-400">{{ e.id }}</td>
-                <td class="px-2 py-1.5">
-                    {% if e.direction == 'sent' %}
-                        {{ badge("Sent", "green") }}
-                    {% elif e.direction == 'draft' %}
-                        {{ badge("Draft", "yellow") }}
-                    {% elif e.direction == 'received' %}
-                        {{ badge("Received", "blue") }}
-                    {% else %}
-                        {{ badge(e.direction or "—", "gray") }}
-                    {% endif %}
-                </td>
-                <td class="px-2 py-1.5" @click.stop>
-                    {% set rfq_link = e.rfq_token or e.rfq_id %}
-                    {% if rfq_link and rfq_link.startswith('RFQ-') %}
-                        <a href="/rfqs/{{ rfq_link }}"
-                           hx-get="/partial/rfqs/{{ rfq_link }}" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq_link }}"
-                           class="text-blue-600 dark:text-blue-400 hover:underline">{{ rfq_link }}</a>
-                    {% elif rfq_link %}
-                        <span class="text-gray-500 font-mono text-[10px]">{{ rfq_link[:8] }}…</span>
-                    {% else %}
-                        <span class="text-gray-400">—</span>
-                    {% endif %}
-                </td>
-                <td class="px-2 py-1.5">{{ e.customer_name or '—' }}</td>
-                <td class="px-2 py-1.5">{{ e.supplier_name or '—' }}</td>
-                <td class="px-2 py-1.5">
-                    {% if e.direction == 'received' %}
-                        {% set staff = e.user_email if 'eagle-exports' in (e.user_email or '') else e.recipient_email %}
-                        {% set external = e.recipient_email if 'eagle-exports' in (e.user_email or '') else e.user_email %}
-                        <span class="text-gray-600 dark:text-gray-300">{{ external or '?' }}</span>
-                        <span class="text-gray-400">→</span>
-                        <span>{{ staff or '—' }}</span>
-                    {% else %}
-                        <span class="text-gray-600 dark:text-gray-300">{{ e.user_email or '—' }}</span>
-                        <span class="text-gray-400">→</span>
-                        <span>{{ e.recipient_email or '?' }}</span>
-                    {% endif %}
-                </td>
-                <td class="px-2 py-1.5 max-w-[300px] truncate" title="{{ e.subject or '' }}">
-                    {{ e.subject or '(no subject)' }}
-                </td>
-                <td class="px-2 py-1.5 whitespace-nowrap text-gray-500 dark:text-gray-400">
-                    {{ e.display_time }}
-                </td>
-            </tr>
-            {% else %}
-            <tr>
-                <td colspan="8" class="px-4 py-8 text-center text-gray-400">
-                    No email communications tracked yet.
-                </td>
-            </tr>
-            {% endfor %}
+        <tbody id="email-rows">
+            {% include "partials/_email_rows.html" %}
         </tbody>
     </table>
+
+    {{ row_count(email_count, "emails") }}
 
     <!-- Email Detail Modal -->
     <div x-show="show" x-cloak
