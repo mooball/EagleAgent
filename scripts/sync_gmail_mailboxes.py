@@ -125,7 +125,8 @@ def extract_message_metadata(service, message_id: str) -> dict | None:
             "x_eagle_opportunity": headers.get("x-eagle-opportunity"),
         }
     except Exception as e:
-        logger.warning(f"Failed to fetch message {message_id}: {e}")
+        # 404s are expected for messages deleted between history fetch and metadata fetch
+        logger.debug(f"Failed to fetch message {message_id}: {e}")
         return None
 
 
@@ -499,6 +500,12 @@ def process_message(
             full_rfq_number = f"RFQ-{rfq_number}" if not rfq_number.upper().startswith("RFQ-") else rfq_number
             rfq = session.query(RFQ).filter(RFQ.rfq_number == full_rfq_number).first()
 
+        # If no RFQ found by number, try matching by NetSuite Opportunity ID
+        if not rfq and op_number:
+            rfq = session.query(RFQ).filter(RFQ.netsuite_opportunity == op_number).first()
+            if rfq:
+                full_rfq_number = rfq.rfq_number
+
         if rfq or op_number:
             # Also run Tier 3 contact matching to identify supplier/customer
             contact_match = match_by_contact(session, external_addresses, domain_index)
@@ -593,6 +600,8 @@ def sync_mailbox(session, user_email: str, domain_index: dict, dry_run: bool = F
     new_history_id = cursor
     seen_message_ids = set()
 
+    _SKIP_LABEL_IDS = {"SPAM", "TRASH", "CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"}
+
     try:
         # Fetch history delta
         page_token = None
@@ -615,6 +624,13 @@ def sync_mailbox(session, user_email: str, domain_index: dict, dry_run: bool = F
                     msg_id = msg.get("id")
                     if not msg_id or msg_id in seen_message_ids:
                         continue
+
+                    # Skip messages with labels indicating spam/trash/promo
+                    # (history response includes labelIds, avoids 404s on deleted msgs)
+                    msg_labels = set(msg.get("labelIds", []))
+                    if msg_labels & _SKIP_LABEL_IDS:
+                        continue
+
                     seen_message_ids.add(msg_id)
 
                     result = process_message(
