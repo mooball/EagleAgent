@@ -55,8 +55,10 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
     updated = 0
     skipped_404 = 0
     skipped_no_date = 0
+    skipped_no_access = 0
     errors = 0
     gmail_clients: dict[str, object] = {}  # user_email -> Gmail client
+    no_access_users: set[str] = set()  # users the service account can't impersonate
 
     for i, row in enumerate(rows):
         record_id = row[0]
@@ -64,9 +66,22 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
         user_email = row[2]
 
         try:
+            # Skip users we already know the service account can't impersonate
+            if user_email in no_access_users:
+                skipped_no_access += 1
+                continue
+
             # Get or reuse Gmail client for this user
             if user_email not in gmail_clients:
-                gmail_clients[user_email] = get_gmail_client(user_email)
+                try:
+                    gmail_clients[user_email] = get_gmail_client(user_email)
+                except Exception as e:
+                    error_str = str(e)
+                    if "invalid_grant" in error_str or "Invalid email" in error_str:
+                        no_access_users.add(user_email)
+                        skipped_no_access += 1
+                        continue
+                    raise
             service = gmail_clients[user_email]
 
             # Fetch just the Date header (metadata-only — 5 quota units)
@@ -94,7 +109,10 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
 
         except Exception as e:
             error_str = str(e)
-            if "404" in error_str or "not found" in error_str.lower():
+            if "invalid_grant" in error_str or "Invalid email" in error_str:
+                no_access_users.add(user_email)
+                skipped_no_access += 1
+            elif "404" in error_str or "not found" in error_str.lower():
                 skipped_404 += 1
             else:
                 logger.warning(f"  Error on id={record_id}, msg={message_id}: {e}")
@@ -103,10 +121,10 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
         # Progress & batch commit
         if (i + 1) % _BATCH_SIZE == 0:
             session.commit()
-            logger.info(f"  Progress: {i + 1}/{total} — {updated} updated, {skipped_404} not found, {skipped_no_date} no date, {errors} errors")
+            logger.info(f"  Progress: {i + 1}/{total} — {updated} updated, {skipped_404} not found, {skipped_no_access} no access, {skipped_no_date} no date, {errors} errors")
 
     session.commit()
-    logger.info(f"Backfill complete: {updated} updated, {skipped_404} not found, {skipped_no_date} no date, {errors} errors")
+    logger.info(f"Backfill complete: {updated} updated, {skipped_404} not found, {skipped_no_access} no access, {skipped_no_date} no date, {errors} errors")
 
 
 def main():
