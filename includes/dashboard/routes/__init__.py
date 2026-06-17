@@ -13,6 +13,7 @@ from sqlalchemy import func
 
 from includes.dashboard.models import Supplier, Product, Transaction, Customer, Contact, Opportunity
 from fastapi import Request, Depends
+from fastapi.responses import HTMLResponse
 
 # Re-export the shared router so callers can do:
 #   from includes.dashboard.routes import router
@@ -42,7 +43,7 @@ from .admin import _humanize_timestamp  # noqa: F401
 # Dashboard home (small enough to live here)
 # ---------------------------------------------------------------------------
 @router.get("/")
-async def dashboard_home(request: Request, user: dict = Depends(require_user)):
+async def dashboard_home(request: Request, user: dict = Depends(require_user)) -> HTMLResponse:
     session = _helpers.get_session()
     try:
         supplier_total = session.query(func.count(Supplier.id)).scalar()

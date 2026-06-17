@@ -1,12 +1,12 @@
 # EagleAgent Prompt Configuration (YAML Format)
 #
 # This file demonstrates the YAML equivalent of the current Python-based
-# configuration in includes/prompts.py
+# configuration in includes/prompts/ (config.py, builder.py, intents.py)
 #
 # To enable YAML-based configuration:
 # 1. Copy this file to config/prompts.yaml
 # 2. Install PyYAML: uv add pyyaml
-# 3. Update includes/prompts.py to load from this file:
+# 3. Update includes/prompts/config.py to load from this file:
 #
 #    import yaml
 #    from pathlib import Path

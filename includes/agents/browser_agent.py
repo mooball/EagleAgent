@@ -67,7 +67,7 @@ class BrowserAgent(BaseSubAgent):
         """
         return load_prompt("browser_agent")
     
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """
         Clean up browser session when done.
         """

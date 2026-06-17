@@ -31,7 +31,7 @@ class OAuthErrorRedirectMiddleware:
 
         status_code = None
 
-        async def send_wrapper(message):
+        async def send_wrapper(message) -> None:
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message["status"]

@@ -38,7 +38,7 @@ class FixedSQLAlchemyDataLayer(SQLAlchemyDataLayer):
         user_id: Optional[str] = None,
         metadata: Optional[Dict] = None,
         tags: Optional[List[str]] = None,
-    ):
+    ) -> None:
         if self.show_logger:
             logger.info(f"SQLAlchemy: update_thread, thread_id={thread_id}")
 
