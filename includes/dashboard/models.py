@@ -326,6 +326,18 @@ class MailboxScanConfig(Base):
         return f"<MailboxScanConfig(user_email='{self.user_email}', scan_enabled={self.scan_enabled})>"
 
 
+class MailboxSyncCursor(Base):
+    """Tracks the last-processed Gmail historyId per mailbox."""
+    __tablename__ = 'mailbox_sync_cursor'
+
+    user_email = Column(String, primary_key=True)
+    last_history_id = Column(BigInteger, nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self):
+        return f"<MailboxSyncCursor(user_email='{self.user_email}', history_id={self.last_history_id})>"
+
+
 class EmailTracking(Base):
     """Tracks all email lifecycle events (draft, sent, received)."""
     __tablename__ = 'email_tracking'
