@@ -21,23 +21,38 @@ from includes.gmail import get_gmail_client
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# Suppress noisy Google API client log messages
+for _name in ("googleapiclient.discovery_cache", "googleapiclient", "google.auth", "google_auth_httplib2", "urllib3"):
+    logging.getLogger(_name).setLevel(logging.ERROR)
 
 # Delay between Gmail API requests to stay under quota (250 units/sec, 5 units/req = 50 req/sec)
 _REQUEST_DELAY = 0.03  # ~33 req/sec — well under the 50/sec limit
 _BATCH_SIZE = 100  # commit every N records
 
+# Gmail auth errors that mean the service account will NEVER be able to impersonate this user.
+# Don't retry these — they're permanent.
+_PERMANENT_AUTH_ERRORS = (
+    "invalid_grant", "access_denied",
+    "Invalid email", "Requested client not authorized",
+)
+
+# Auth errors that may be transient — retry once before giving up
+_TRANSIENT_AUTH_ERRORS = (
+    "unauthorized_client",
+)
+
 
 def backfill(session, dry_run: bool = False, limit: int | None = None):
     """Backfill sent_at for all email_tracking records that are missing it."""
     query = text("""
-        SELECT id, gmail_message_id, user_email, gmail_thread_id
+        SELECT id, gmail_message_id, user_email, recipient_email, gmail_thread_id
         FROM email_tracking
         WHERE sent_at IS NULL AND gmail_message_id IS NOT NULL
         ORDER BY id
     """)
     if limit:
         query = text(f"""
-            SELECT id, gmail_message_id, user_email, gmail_thread_id
+            SELECT id, gmail_message_id, user_email, recipient_email, gmail_thread_id
             FROM email_tracking
             WHERE sent_at IS NULL AND gmail_message_id IS NOT NULL
             ORDER BY id
@@ -58,31 +73,59 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
     skipped_no_access = 0
     errors = 0
     gmail_clients: dict[str, object] = {}  # user_email -> Gmail client
-    no_access_users: set[str] = set()  # users the service account can't impersonate
+    no_access_users: set[str] = set()  # users the service account can't impersonate (permanent)
+    transient_failures: dict[str, int] = {}  # user_email -> retry count
+
+    def _is_eagle(email: str) -> bool:
+        return "@eagle-exports.com" in (email or "")
+
+    def _try_get_client(email: str) -> object | None:
+        """Try to get or reuse a Gmail client. Returns client or None if blacklisted."""
+        if not email or email in no_access_users:
+            return None
+        if email not in gmail_clients:
+            try:
+                gmail_clients[email] = get_gmail_client(email)
+            except Exception as e:
+                if any(err in str(e) for err in _PERMANENT_AUTH_ERRORS):
+                    no_access_users.add(email)
+                    logger.warning(f"  BLACKLISTED: {email} — {str(e)[:100]}")
+                    return None
+                raise
+        return gmail_clients[email]
+
+    def _get_client(email: str, recipient: str) -> object | None:
+        """Get a Gmail client, trying the most likely eagle-exports.com address first."""
+        # Try the record's user_email first
+        client = _try_get_client(email)
+        if client:
+            return client
+        # Try the recipient if it's an eagle address
+        if _is_eagle(recipient):
+            logger.debug(f"  Retrying with recipient: {recipient} (user_email {email} failed)")
+            return _try_get_client(recipient)
+        # If user_email is external, try the recipient anyway (one of them must be eagle)
+        if email and not _is_eagle(email) and recipient:
+            return _try_get_client(recipient)
+        return None
 
     for i, row in enumerate(rows):
         record_id = row[0]
         message_id = row[1]
         user_email = row[2]
+        recipient_email = row[3]
 
         try:
-            # Skip users we already know the service account can't impersonate
-            if user_email in no_access_users:
+            # Skip if both user_email and recipient are blacklisted
+            if user_email in no_access_users and (not recipient_email or recipient_email in no_access_users):
                 skipped_no_access += 1
                 continue
 
-            # Get or reuse Gmail client for this user
-            if user_email not in gmail_clients:
-                try:
-                    gmail_clients[user_email] = get_gmail_client(user_email)
-                except Exception as e:
-                    error_str = str(e)
-                    if "invalid_grant" in error_str or "Invalid email" in error_str:
-                        no_access_users.add(user_email)
-                        skipped_no_access += 1
-                        continue
-                    raise
-            service = gmail_clients[user_email]
+            # Get Gmail client — try user_email first, then recipient
+            service = _get_client(user_email, recipient_email)
+            if not service:
+                skipped_no_access += 1
+                continue
 
             # Fetch just the Date header (metadata-only — 5 quota units)
             msg = service.users().messages().get(
@@ -109,9 +152,18 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
 
         except Exception as e:
             error_str = str(e)
-            if "invalid_grant" in error_str or "Invalid email" in error_str:
+            if any(err in error_str for err in _PERMANENT_AUTH_ERRORS):
                 no_access_users.add(user_email)
                 skipped_no_access += 1
+                logger.warning(f"  BLACKLISTED (permanent): {user_email} — {error_str[:120]}")
+            elif any(err in error_str for err in _TRANSIENT_AUTH_ERRORS):
+                transient_failures[user_email] = transient_failures.get(user_email, 0) + 1
+                if transient_failures[user_email] >= 2:
+                    no_access_users.add(user_email)
+                    skipped_no_access += 1
+                    logger.warning(f"  BLACKLISTED (transient×2): {user_email} — {error_str[:120]}")
+                else:
+                    errors += 1
             elif "404" in error_str or "not found" in error_str.lower():
                 skipped_404 += 1
             else:
@@ -125,6 +177,10 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
 
     session.commit()
     logger.info(f"Backfill complete: {updated} updated, {skipped_404} not found, {skipped_no_access} no access, {skipped_no_date} no date, {errors} errors")
+    if no_access_users:
+        logger.info(f"Blacklisted addresses ({len(no_access_users)}):")
+        for addr in sorted(no_access_users):
+            logger.info(f"  {addr}")
 
 
 def main():
