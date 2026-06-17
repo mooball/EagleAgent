@@ -38,6 +38,8 @@ from includes.gmail.matching import (
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+from email.utils import parsedate_to_datetime
+
 logger = logging.getLogger(__name__)
 
 # Only scan @eagle-exports.com mailboxes
@@ -107,10 +109,20 @@ def extract_message_metadata(service, message_id: str) -> dict | None:
     try:
         msg = service.users().messages().get(
             userId="me", id=message_id, format="metadata",
-            metadataHeaders=["From", "To", "Cc", "Subject",
+            metadataHeaders=["From", "To", "Cc", "Subject", "Date",
                             "X-Eagle-RFQ", "X-Eagle-OP", "X-Eagle-Opportunity"],
         ).execute()
         headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+
+        # Parse the email's actual sent date from the Date header
+        sent_at = None
+        date_header = headers.get("date", "")
+        if date_header:
+            try:
+                sent_at = parsedate_to_datetime(date_header)
+            except (ValueError, TypeError):
+                logger.debug(f"Could not parse Date header for {message_id}: {date_header}")
+
         return {
             "id": msg["id"],
             "threadId": msg["threadId"],
@@ -120,6 +132,7 @@ def extract_message_metadata(service, message_id: str) -> dict | None:
             "to": headers.get("to", ""),
             "cc": headers.get("cc", ""),
             "subject": headers.get("subject", ""),
+            "date": sent_at,
             "x_eagle_rfq": headers.get("x-eagle-rfq"),
             "x_eagle_op": headers.get("x-eagle-op"),
             "x_eagle_opportunity": headers.get("x-eagle-opportunity"),
@@ -444,7 +457,7 @@ def process_message(
             if existing_thread.direction == "draft" and direction == "sent" and existing_thread.gmail_message_id is None:
                 existing_thread.direction = "sent"
                 existing_thread.gmail_message_id = msg_meta["id"]
-                existing_thread.sent_at = datetime.now(timezone.utc)
+                existing_thread.sent_at = msg_meta.get("date") or datetime.now(timezone.utc)
                 existing_thread.sent_confirmed = True
                 existing_thread.updated_at = datetime.now(timezone.utc)
                 # Fetch body content for the sent message
@@ -476,6 +489,7 @@ def process_message(
                     direction=direction,
                     subject=subject,
                     recipient_email=recipient,
+                    sent_at=msg_meta.get("date"),
                     body_markdown=content["body_markdown"] if content else None,
                     body_html=content["body_html"] if content else None,
                     attachments_json=content["attachments_json"] if content else None,
@@ -535,6 +549,7 @@ def process_message(
                     direction=direction,
                     subject=subject,
                     recipient_email=recipient,
+                    sent_at=msg_meta.get("date"),
                     body_markdown=content["body_markdown"] if content else None,
                     body_html=content["body_html"] if content else None,
                     attachments_json=content["attachments_json"] if content else None,
@@ -568,6 +583,7 @@ def process_message(
                 direction=direction,
                 subject=subject,
                 recipient_email=recipient,
+                sent_at=msg_meta.get("date"),
                 supplier_id=contact_match["supplier_id"],
                 customer_id=contact_match["customer_id"],
                 match_type=contact_match["match_type"],
