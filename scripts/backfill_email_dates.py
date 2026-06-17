@@ -127,19 +127,29 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
                 skipped_no_access += 1
                 continue
 
-            # Fetch just the Date header (metadata-only — 5 quota units)
+            # Fetch metadata — internalDate is more reliable than the Date header
             msg = service.users().messages().get(
                 userId="me",
                 id=message_id,
                 format="metadata",
-                metadataHeaders=["Date"],
             ).execute()
 
-            headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
-            date_header = headers.get("date", "")
+            # Prefer Gmail's internalDate (normalized Unix timestamp in ms)
+            sent_at = None
+            internal_ts = msg.get("internalDate")
+            if internal_ts:
+                sent_at = datetime.fromtimestamp(int(internal_ts) / 1000, tz=timezone.utc)
+            else:
+                # Fall back to Date header
+                headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                date_header = headers.get("date", "")
+                if date_header:
+                    try:
+                        sent_at = parsedate_to_datetime(date_header)
+                    except (ValueError, TypeError):
+                        pass
 
-            if date_header:
-                sent_at = parsedate_to_datetime(date_header)
+            if sent_at:
                 session.execute(
                     text("UPDATE email_tracking SET sent_at = :sent_at WHERE id = :id"),
                     {"sent_at": sent_at, "id": record_id},
