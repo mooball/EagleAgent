@@ -9,23 +9,50 @@ time.
 The store is in-process memory — perfectly fine for a single-worker
 deployment.  If we later move to multiple workers, switch to Redis or
 the database.
+
+Each entry has a 30-minute TTL (configurable via ``DASHBOARD_CONTEXT_TTL``
+env var).  Expired entries are lazily evicted on read and periodically
+cleaned up on write.
 """
 
+import os
+import time
 from typing import Any, Dict, Optional
 import threading
 
 _lock = threading.Lock()
-_store: Dict[str, Dict[str, Any]] = {}
+_store: Dict[str, tuple[Dict[str, Any], float]] = {}  # email → (context, timestamp)
+
+_CONTEXT_TTL = int(os.getenv("DASHBOARD_CONTEXT_TTL", "1800"))  # 30 minutes
 
 
 def set_context(user_email: str, context: Dict[str, Any]) -> None:
+    """Store context for a user and clean up expired entries."""
     with _lock:
-        _store[user_email] = context
+        _store[user_email] = (context, time.time())
+        # Opportunistic cleanup of expired entries
+        _cleanup_expired_locked()
 
 
 def get_context(user_email: str) -> Optional[Dict[str, Any]]:
+    """Return the user's context, or None if missing or expired."""
     with _lock:
-        return _store.get(user_email)
+        entry = _store.get(user_email)
+        if entry is None:
+            return None
+        ctx, ts = entry
+        if time.time() - ts > _CONTEXT_TTL:
+            del _store[user_email]
+            return None
+        return ctx
+
+
+def _cleanup_expired_locked() -> None:
+    """Remove all expired entries.  Must be called while holding _lock."""
+    now = time.time()
+    expired = [email for email, (_, ts) in _store.items() if now - ts > _CONTEXT_TTL]
+    for email in expired:
+        del _store[email]
 
 
 def format_context_for_prompt(user_email: str) -> str:

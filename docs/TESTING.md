@@ -4,12 +4,12 @@ This guide explains how to run tests for EagleAgent.
 
 ## Overview
 
-EagleAgent uses **PostgreSQL** for all persistence (checkpoints, cross-thread store, data layer). Tests use mocks and in-memory stores by default, so **no running database is required** for the standard test suite.
+EagleAgent uses **PostgreSQL** for all persistence (checkpoints, cross-thread store, data layer). Most tests use mocks and in-memory stores so they run fast without external services. A subset of tests (e.g., `test_database_matching.py`, `test_dashboard_routes.py`) require a running PostgreSQL instance — start it with `./start_postgres.sh` before running the full suite.
 
 This approach ensures:
 - ✅ **Zero production impact** — Tests never touch live data
-- ✅ **Fast execution** — No network calls or external services
-- ✅ **Offline capability** — Run tests without internet
+- ✅ **Fast execution** — Most tests use in-memory mocks
+- ✅ **Offline capability** — Mock-based tests run without internet
 - ✅ **No cost** — Completely free
 
 ---
@@ -17,6 +17,9 @@ This approach ensures:
 ## Quick Start
 
 ```bash
+# Start PostgreSQL (required for full test suite)
+./start_postgres.sh
+
 # Install dev dependencies
 uv sync --group dev
 
@@ -27,7 +30,7 @@ uv run pytest
 uv run pytest -v --tb=short      # Verbose with short tracebacks
 uv run pytest -x                 # Stop on first failure
 uv run pytest -k test_prompts    # Run only matching tests
-uv run pytest -m integration     # Run only integration tests
+uv run pytest -m "not slow"      # Skip slow tests
 uv run pytest -m "not slow"      # Skip slow tests
 ```
 

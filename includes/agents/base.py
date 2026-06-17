@@ -445,7 +445,7 @@ class BaseSubAgent(ABC):
         
         return {"messages": messages_to_remove + [response]}
     
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """
         Clean up agent resources (override if needed).
         

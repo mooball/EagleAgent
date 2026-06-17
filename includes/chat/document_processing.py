@@ -7,6 +7,8 @@ Supports:
 - Spreadsheets: Excel (.xlsx, .xls) via pandas/openpyxl
 - Text files: Direct reading
 - Audio: Placeholder for future transcription
+
+File size limits are enforced via ``MAX_FILE_SIZE_MB`` in config/settings.py.
 """
 
 import base64
@@ -16,7 +18,12 @@ from typing import Dict, Any, Optional
 from PIL import Image
 import pdfplumber
 
+from config import config
+
 logger = logging.getLogger(__name__)
+
+# Convert MB config to bytes for comparison
+_MAX_FILE_SIZE_BYTES = config.MAX_FILE_SIZE_MB * 1024 * 1024
 
 
 def process_image(file_bytes: bytes, mime_type: str) -> Dict[str, Any]:
@@ -248,6 +255,19 @@ def process_file(
         "mime_type": mime_type,
         "size_bytes": len(file_bytes)
     }
+
+    # Enforce file size limit
+    file_size = len(file_bytes)
+    if file_size > _MAX_FILE_SIZE_BYTES:
+        size_mb = file_size / (1024 * 1024)
+        limit_mb = config.MAX_FILE_SIZE_MB
+        logger.warning(f"File {filename} ({size_mb:.1f}MB) exceeds limit ({limit_mb}MB)")
+        result["processed_type"] = "error"
+        result["content"] = (
+            f"[File too large: {size_mb:.1f}MB exceeds the {limit_mb}MB limit. "
+            f"Please upload a smaller file.]"
+        )
+        return result
     
     try:
         # Process images

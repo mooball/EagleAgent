@@ -133,7 +133,7 @@ def _cross_apply_suppliers_sync(rfq_number: str, line_num: int, suppliers: list[
 
 
 @cl.action_callback("rfq_refresh")
-async def on_rfq_refresh(action: cl.Action):
+async def on_rfq_refresh(action: cl.Action) -> None:
     """Refresh the dashboard RFQ view with latest data."""
     payload = action.payload or {}
     rfq_id = payload.get("rfq_id")
@@ -144,7 +144,7 @@ async def on_rfq_refresh(action: cl.Action):
 
 
 @cl.action_callback("rfq_update_supplier")
-async def on_rfq_update_supplier(action: cl.Action):
+async def on_rfq_update_supplier(action: cl.Action) -> None:
     """Handle supplier status change from dashboard."""
     payload = action.payload or {}
     rfq_id = payload.get("rfq_id")
@@ -173,7 +173,7 @@ async def on_rfq_update_supplier(action: cl.Action):
 
 
 @cl.action_callback("rfq_identify_items")
-async def on_rfq_identify_items(action: cl.Action):
+async def on_rfq_identify_items(action: cl.Action) -> None:
     """Handle Identify Items button from RFQ custom element.
 
     Phase 1: Search internal product DB by part number, supplier code,
@@ -304,7 +304,7 @@ async def on_rfq_identify_items(action: cl.Action):
 
 
 @cl.action_callback("rfq_find_suppliers")
-async def on_rfq_find_suppliers(action: cl.Action):
+async def on_rfq_find_suppliers(action: cl.Action) -> None:
     """Handle Find Suppliers button from RFQ custom element.
 
     Phase 1: Search internal DB for suppliers (purchase history + supplier DB).
@@ -438,7 +438,7 @@ async def on_rfq_find_suppliers(action: cl.Action):
 
 
 @cl.action_callback("rfq_group_items")
-async def on_rfq_group_items(action: cl.Action):
+async def on_rfq_group_items(action: cl.Action) -> None:
     """Group confirmed RFQ items by brand/supply chain using LLM."""
     import json
     from pathlib import Path
@@ -546,7 +546,7 @@ async def on_rfq_group_items(action: cl.Action):
 
 
 @cl.action_callback("rfq_find_all_suppliers")
-async def on_rfq_find_all_suppliers(action: cl.Action):
+async def on_rfq_find_all_suppliers(action: cl.Action) -> None:
     """Handle batch Find Suppliers for all confirmed items on an RFQ.
 
     Runs both phases sequentially for backward-compatibility.
@@ -557,14 +557,14 @@ async def on_rfq_find_all_suppliers(action: cl.Action):
 
 
 @cl.action_callback("rfq_find_previous_suppliers")
-async def on_rfq_find_previous_suppliers(action: cl.Action):
+async def on_rfq_find_previous_suppliers(action: cl.Action) -> None:
     """Phase 1+2+2b+2.5: Grouping, internal DB search, brand lookup, cross-apply."""
     async with _pin_thread() as pinned_tid:
         await _phase_previous_suppliers(action.payload or {}, pinned_tid)
 
 
 @cl.action_callback("rfq_add_brand_supplier")
-async def on_rfq_add_brand_supplier(action: cl.Action):
+async def on_rfq_add_brand_supplier(action: cl.Action) -> None:
     """Add a single brand-linked supplier to a line item from the modal."""
     payload = action.payload or {}
     rfq_id = payload.get("rfq_id")
@@ -590,7 +590,7 @@ async def on_rfq_add_brand_supplier(action: cl.Action):
 
 
 @cl.action_callback("rfq_find_new_suppliers")
-async def on_rfq_find_new_suppliers(action: cl.Action):
+async def on_rfq_find_new_suppliers(action: cl.Action) -> None:
     """Phase 3: Web search via ResearchAgent."""
     async with _pin_thread() as pinned_tid:
         await _phase_new_suppliers(action.payload or {}, pinned_tid)

@@ -83,7 +83,7 @@ def require_user(request: Request) -> dict:
     return user
 
 
-def require_role(*allowed_roles: str):
+def require_role(*allowed_roles: str) -> Depends:
     """Dependency factory: restrict a route to users with one of the given roles."""
     def _guard(request: Request) -> dict:
         user = require_user(request)

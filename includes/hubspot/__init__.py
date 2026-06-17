@@ -1,7 +1,16 @@
-"""HubSpot integration client.
+"""HubSpot integration client — CURRENTLY INACTIVE.
 
 Provides a thin wrapper around the hubspot-api-client SDK
 using a Service Key access token for authentication.
+
+**Status (June 2026): Holding pattern.** This integration is not yet implemented
+and not wired into any agent or dashboard route. The ``hubspot-api-client``
+dependency is kept in ``pyproject.toml`` for potential future use. If the
+decision is made to remove HubSpot support entirely, this module and the
+dependency should be removed together.
+
+To activate: implement the client wrapper, add any needed tools/routes, and
+remove this notice.
 """
 
 import logging

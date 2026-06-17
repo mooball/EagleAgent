@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, Integer, String, Text, Float, Date, DateTime, Boolean, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, BigInteger, String, Text, Float, Date, DateTime, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 from pgvector.sqlalchemy import Vector
@@ -336,7 +336,7 @@ class EmailTracking(Base):
     gmail_thread_id = Column(String, nullable=False, index=True)
     gmail_message_id = Column(String, nullable=True, unique=True)
     gmail_draft_id = Column(String, nullable=True, unique=True)
-    gmail_history_id = Column(Integer, nullable=True)
+    gmail_history_id = Column(BigInteger, nullable=True)
     gmail_label = Column(String, nullable=True, default='agent-rfq')
 
     # User & context

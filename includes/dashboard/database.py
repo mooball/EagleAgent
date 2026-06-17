@@ -9,7 +9,7 @@ import logging
 from urllib.parse import urlparse
 
 from sqlalchemy import create_engine, func, or_, literal
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 
 from config import config
 
@@ -28,7 +28,7 @@ _engine = None
 _SessionLocal = None
 
 
-def get_session():
+def get_session() -> Session:
     """Return a new sync SQLAlchemy session (caller must close)."""
     global _engine, _SessionLocal
     if _engine is None:
@@ -284,7 +284,7 @@ def merge_supplier_contacts(sup: dict, db_contacts: list) -> None:
 _SUPPLIER_EDITABLE = {"name", "url", "address_1", "city", "country", "notes", "terms", "contacts", "supply_chain_position", "alt_names", "alt_domains"}
 
 
-def update_supplier(supplier_id: str, updates: dict, modified_by: str):
+def update_supplier(supplier_id: str, updates: dict, modified_by: str) -> None:
     """Update allowed supplier fields and set modified_at/modified_by.
 
     Returns the updated Supplier row or None if not found.

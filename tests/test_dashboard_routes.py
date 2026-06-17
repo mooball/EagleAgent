@@ -452,24 +452,34 @@ class TestPartialRoutes:
 class TestRFQThreadAPI:
     """Tests for GET/POST /api/rfq-thread endpoints."""
 
-    def test_get_rfq_thread_returns_null_when_none(self, client):
+    def test_get_rfq_thread_creates_new_when_none_exists(self, client):
+        """When no binding exists, the route auto-creates a thread and returns its ID."""
         _login(client)
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
+            # RFQThread query returns None (no existing binding)
             session.query.return_value.filter.return_value.first.return_value = None
+            # Thread creation flow: user lookup + insert
+            session.execute.return_value.scalar.return_value = "user-uuid-123"
             mock_gs.return_value = session
 
             resp = client.get("/api/rfq-thread?rfq_id=RFQ-2026-0001")
             assert resp.status_code == 200
-            assert resp.json() == {"thread_id": None}
+            data = resp.json()
+            # Route auto-creates a new thread — should return a UUID, not None
+            assert data["thread_id"] is not None
+            assert len(data["thread_id"]) > 0
 
-    def test_get_rfq_thread_returns_thread_id(self, client):
+    def test_get_rfq_thread_returns_existing_binding(self, client):
+        """When a valid binding exists, the route returns the existing thread_id."""
         _login(client)
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
             row = MagicMock()
             row.thread_id = "abc-123"
             session.query.return_value.filter.return_value.first.return_value = row
+            # Thread ownership check — confirm owner matches user
+            session.execute.return_value.scalar.return_value = "admin@eagle.com"
             mock_gs.return_value = session
 
             resp = client.get("/api/rfq-thread?rfq_id=RFQ-2026-0001")

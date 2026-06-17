@@ -3,7 +3,7 @@
 import logging
 
 from fastapi import Request, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from sqlalchemy import text
 
 from . import _helpers
@@ -126,7 +126,7 @@ async def _query_users_with_roles(session):
 
 
 @router.get("/users")
-async def user_list(request: Request, user: dict = require_admin):
+async def user_list(request: Request, user: dict = require_admin) -> HTMLResponse:
     session = _helpers.get_session()
     try:
         users = await _query_users_with_roles(session)
@@ -138,7 +138,7 @@ async def user_list(request: Request, user: dict = require_admin):
 
 
 @router.get("/partial/users")
-async def partial_user_list(request: Request, user: dict = require_admin):
+async def partial_user_list(request: Request, user: dict = require_admin) -> HTMLResponse:
     session = _helpers.get_session()
     try:
         users = await _query_users_with_roles(session)
@@ -177,7 +177,7 @@ def _job_to_dict(job) -> dict:
 
 
 @router.get("/admin")
-async def admin_page(request: Request, user: dict = require_admin):
+async def admin_page(request: Request, user: dict = require_admin) -> HTMLResponse:
     from config.scripts import list_scripts
     ctx = {
         "scripts": list_scripts(),
@@ -187,7 +187,7 @@ async def admin_page(request: Request, user: dict = require_admin):
 
 
 @router.get("/partial/admin")
-async def partial_admin(request: Request, user: dict = require_admin):
+async def partial_admin(request: Request, user: dict = require_admin) -> HTMLResponse:
     from config.scripts import list_scripts
     return templates.TemplateResponse(request, "partials/admin.html", {
         "user": user,
@@ -196,7 +196,7 @@ async def partial_admin(request: Request, user: dict = require_admin):
 
 
 @router.get("/partial/admin/jobs")
-async def partial_admin_jobs(request: Request, user: dict = require_admin):
+async def partial_admin_jobs(request: Request, user: dict = require_admin) -> HTMLResponse:
     from includes.graph import job_runner
     jobs = [_job_to_dict(j) for j in reversed(job_runner.list_jobs())]
     return templates.TemplateResponse(request, "partials/admin_jobs.html", {
@@ -205,7 +205,7 @@ async def partial_admin_jobs(request: Request, user: dict = require_admin):
 
 
 @router.post("/admin/run-script")
-async def admin_run_script(request: Request, user: dict = require_admin):
+async def admin_run_script(request: Request, user: dict = require_admin) -> HTMLResponse:
     from includes.graph import job_runner
     from config.scripts import validate_args
 
@@ -227,7 +227,7 @@ async def admin_run_script(request: Request, user: dict = require_admin):
 
 
 @router.post("/admin/cancel-job")
-async def admin_cancel_job(request: Request, user: dict = require_admin):
+async def admin_cancel_job(request: Request, user: dict = require_admin) -> HTMLResponse:
     from includes.graph import job_runner
 
     form = await request.form()
@@ -245,7 +245,7 @@ async def admin_cancel_job(request: Request, user: dict = require_admin):
 
 
 @router.get("/partial/admin/netsuite-status")
-async def partial_netsuite_status(request: Request, user: dict = require_admin):
+async def partial_netsuite_status(request: Request, user: dict = require_admin) -> HTMLResponse:
     from includes.netsuite import NetSuiteClient
     client = NetSuiteClient()
     result = client.test_connection()
@@ -259,13 +259,13 @@ async def partial_netsuite_status(request: Request, user: dict = require_admin):
 # ---------------------------------------------------------------------------
 
 @router.get("/admin/duplicates")
-async def admin_duplicates(request: Request, user: dict = require_admin):
+async def admin_duplicates(request: Request, user: dict = require_admin) -> HTMLResponse:
     ctx = {"active_nav": "admin", "duplicates": None, "scanned": False}
     return _render(request, "admin_duplicates.html", "partials/admin_duplicates.html", ctx, user)
 
 
 @router.get("/partial/admin/duplicates")
-async def partial_admin_duplicates(request: Request, user: dict = require_admin):
+async def partial_admin_duplicates(request: Request, user: dict = require_admin) -> HTMLResponse:
     return templates.TemplateResponse(request, "partials/admin_duplicates.html", {
         "user": user,
         "active_nav": "admin",
@@ -275,7 +275,7 @@ async def partial_admin_duplicates(request: Request, user: dict = require_admin)
 
 
 @router.post("/admin/duplicates/scan")
-async def admin_duplicates_scan(request: Request, user: dict = require_admin):
+async def admin_duplicates_scan(request: Request, user: dict = require_admin) -> HTMLResponse:
     import asyncio
     from scripts.find_duplicate_suppliers import scan_duplicates, scan_internal_duplicates
 
@@ -301,7 +301,7 @@ async def admin_duplicates_scan(request: Request, user: dict = require_admin):
 
 
 @router.post("/admin/duplicates/merge")
-async def admin_duplicates_merge(request: Request, user: dict = require_admin):
+async def admin_duplicates_merge(request: Request, user: dict = require_admin) -> HTMLResponse:
     import asyncio
     from starlette.responses import HTMLResponse
     from scripts.find_duplicate_suppliers import merge_supplier
@@ -336,7 +336,7 @@ async def admin_duplicates_merge(request: Request, user: dict = require_admin):
 
 
 @router.post("/admin/duplicates/dismiss")
-async def admin_duplicates_dismiss(request: Request, user: dict = require_admin):
+async def admin_duplicates_dismiss(request: Request, user: dict = require_admin) -> HTMLResponse:
     """Mark a non-netsuite supplier as 'not a duplicate' by adding a flag."""
     import uuid
     from starlette.responses import HTMLResponse
@@ -379,7 +379,7 @@ async def admin_duplicates_dismiss(request: Request, user: dict = require_admin)
 
 
 @router.post("/admin/duplicates/delete")
-async def admin_duplicates_delete(request: Request, user: dict = require_admin):
+async def admin_duplicates_delete(request: Request, user: dict = require_admin) -> HTMLResponse:
     """Delete a supplier outright (with RFQ cleanup)."""
     import uuid
     from starlette.responses import HTMLResponse
@@ -572,7 +572,7 @@ async def admin_email_logs(request: Request, user: dict = require_admin,
 
 @router.get("/partial/admin/email-rows")
 async def partial_admin_email_rows(request: Request, user: dict = require_admin,
-                                   q: str = "", user_filter: str = "", page: int = 1):
+                                   q: str = "", user_filter: str = "", page: int = 1) -> HTMLResponse:
     """Return just the <tr> rows + sentinel for infinite scroll."""
     session = _helpers.get_session()
     try:
@@ -590,7 +590,7 @@ async def partial_admin_email_rows(request: Request, user: dict = require_admin,
 
 @router.get("/partial/admin/emails")
 async def partial_admin_emails(request: Request, user: dict = require_admin,
-                               q: str = "", user_filter: str = "", page: int = 1):
+                               q: str = "", user_filter: str = "", page: int = 1) -> HTMLResponse:
     """Return the full email logs partial (for filter form submissions via HTMX)."""
     session = _helpers.get_session()
     try:

@@ -116,14 +116,24 @@ Deploying EagleAgent on Railway simply involves binding a PostgreSQL database to
 ## Documentation
 
 - [Agent Bridge](./docs/AGENT_BRIDGE.md): Dashboard ↔ Chainlit bidirectional communication architecture.
+- [Agent Graph Architecture](./docs/AGENT_GRAPH_ARCHITECTURE.md): Multi-agent graph design, routing, and state schema.
 - [Context Architecture](./docs/CONTEXT_ARCHITECTURE.md): How context and messages flow through the multi-agent system.
 - [Cross-Thread Memory](./docs/CROSS_THREAD_MEMORY.md): Persistent user profiles across conversation threads.
 - [Development Workflow](./docs/DEVELOPMENT_WORKFLOW.md): Daily dev cycle, database migrations, deployment.
 - [File Attachments](./docs/FILE_ATTACHMENTS.md): File upload, processing, and storage.
+- [Future Agent Planning](./docs/FUTURE_AGENT_PLANNING.md): Planned features and architecture roadmap.
+- [Gmail — Getting Started](./docs/GMAIL_GETTING_STARTED.md): User-facing Gmail OAuth setup guide.
+- [Gmail — Technical Setup](./docs/GMAIL_SETUP.md): Domain-wide delegation and service account configuration.
 - [Google OAuth Setup](./docs/GOOGLE_OAUTH_SETUP.md): Setting up Google OAuth authentication.
 - [MCP Integration](./docs/MCP_INTEGRATION.md): Model Context Protocol server integration.
+- [NetSuite Integration](./docs/NETSUITE_INTEGRATION.md): OAuth setup, REST client, SuiteQL queries, and sync scripts.
+- [RFQ Workflow](./docs/RFQ_WORKFLOW.md): Multi-step quote request lifecycle, supplier matching, and rendering pipeline.
+- [Supplier Categorization](./docs/SUPPLIER_CATEGORIZATION.md): Gemini-powered supplier category assignment.
+- [Currency Conversion](./docs/CURRENCY_CONVERSION.md): ECB rate fetching with 24-hour caching.
+- [Internal Agent](./docs/INTERNAL_AGENT.md): DB-only search profile — no web, no MCP.
 - [Server Scripts](./docs/SERVER_SCRIPTS.md): Admin script execution from the chat UI.
 - [Testing Guide](./docs/TESTING.md): Running tests and writing new ones.
+- [Testing — Auto Memory](./docs/TEST_AUTO_MEMORY.md): Cross-thread memory testing strategies.
 
 ## License
 MIT
