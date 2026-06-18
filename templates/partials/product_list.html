@@ -1,7 +1,24 @@
 {% from "components.html" import page_header, search_form, table_wrapper, th, row_count, empty_state %}
 <div data-dashboard-context='{"view": "product_list", "entity": "product"}'>
     {% call page_header("Products") %}
-        {{ search_form("/partial/products", "Search by part number, brand…", q or '') }}
+        <form hx-get="/partial/products" hx-target="#main-content" hx-push-url="/products"
+              class="flex items-center gap-2">
+            <input type="text" name="q" value="{{ q or '' }}"
+                   placeholder="Search by part number, brand…"
+                   class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-64">
+            <label class="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 cursor-pointer select-none"
+                   title="Also search by meaning using AI embeddings (pgvector)">
+                <input type="checkbox" name="semantic" value="1"
+                       {% if semantic %}checked{% endif %}
+                       onchange="this.form.dispatchEvent(new Event('change', {bubbles: true}))"
+                       class="rounded border-gray-300 dark:border-gray-600 text-purple-600 focus:ring-purple-500">
+                <span class="whitespace-nowrap">Semantic</span>
+            </label>
+            <button type="submit"
+                    class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                Search
+            </button>
+        </form>
     {% endcall %}
 
     {% if products %}
@@ -11,6 +28,7 @@
                 {{ th("Part Number") }}
                 {{ th("Brand") }}
                 {{ th("Description") }}
+                {{ th("Match", align="center") }}
                 {{ th("No. Transactions", align="right") }}
             </tr>
         </thead>

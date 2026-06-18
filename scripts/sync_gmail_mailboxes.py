@@ -109,19 +109,23 @@ def extract_message_metadata(service, message_id: str) -> dict | None:
     try:
         msg = service.users().messages().get(
             userId="me", id=message_id, format="metadata",
-            metadataHeaders=["From", "To", "Cc", "Subject", "Date",
+            metadataHeaders=["From", "To", "Cc", "Subject",
                             "X-Eagle-RFQ", "X-Eagle-OP", "X-Eagle-Opportunity"],
         ).execute()
         headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
 
-        # Parse the email's actual sent date from the Date header
+        # Prefer Gmail's internalDate (normalized Unix timestamp) over the Date header
         sent_at = None
-        date_header = headers.get("date", "")
-        if date_header:
-            try:
-                sent_at = parsedate_to_datetime(date_header)
-            except (ValueError, TypeError):
-                logger.debug(f"Could not parse Date header for {message_id}: {date_header}")
+        internal_ts = msg.get("internalDate")
+        if internal_ts:
+            sent_at = datetime.fromtimestamp(int(internal_ts) / 1000, tz=timezone.utc)
+        else:
+            date_header = headers.get("date", "")
+            if date_header:
+                try:
+                    sent_at = parsedate_to_datetime(date_header)
+                except (ValueError, TypeError):
+                    pass
 
         return {
             "id": msg["id"],
@@ -144,10 +148,18 @@ def extract_message_metadata(service, message_id: str) -> dict | None:
 
 
 def extract_email_address(header_value: str) -> str:
-    """Extract bare email from a header value like 'Name <email@domain.com>'."""
-    if '<' in header_value and '>' in header_value:
-        return header_value.split('<')[1].split('>')[0].strip().lower()
-    return header_value.strip().lower()
+    """Extract bare email from a header value like 'Name <email@domain.com>'.
+
+    Handles folded headers (embedded newlines), commas in display names,
+    and other RFC 2822 quirks.
+    """
+    # Collapse newlines and normalize whitespace
+    cleaned = ' '.join(header_value.split())
+    if '<' in cleaned and '>' in cleaned:
+        return cleaned.split('<')[1].split('>')[0].strip().lower()
+    # No angle brackets — the whole value might be a bare email
+    cleaned = cleaned.strip().lower()
+    return cleaned if '@' in cleaned else ''
 
 
 # Company-owned domains to exclude from external address extraction
@@ -473,7 +485,7 @@ def process_message(
                 if direction == "received":
                     recipient = from_addr
                 else:
-                    recipient = msg_meta.get("to", "").split(",")[0].strip()
+                    recipient = extract_email_address(msg_meta.get("to", ""))
                 # Fetch body content
                 content = fetch_message_content(service, msg_meta["id"])
                 tracking = EmailTracking(
@@ -533,7 +545,7 @@ def process_message(
                 if direction == "received":
                     recipient = from_addr
                 else:
-                    recipient = msg_meta.get("to", "").split(",")[0].strip()
+                    recipient = extract_email_address(msg_meta.get("to", ""))
                 # Fetch body content for RFQ-linked emails
                 content = fetch_message_content(service, msg_meta["id"])
                 tracking = EmailTracking(
@@ -575,7 +587,7 @@ def process_message(
             if direction == "received":
                 recipient = from_addr
             else:
-                recipient = msg_meta.get("to", "").split(",")[0].strip()
+                recipient = extract_email_address(msg_meta.get("to", ""))
             tracking = EmailTracking(
                 gmail_thread_id=thread_id,
                 gmail_message_id=msg_meta["id"],

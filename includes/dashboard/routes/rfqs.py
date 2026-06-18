@@ -3,6 +3,7 @@
 import asyncio
 import math
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import Request, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -307,6 +308,9 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
             event = dict(row)
             ts = event.get("sent_at") or event.get("created_at")
             if isinstance(ts, datetime):
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                ts = ts.astimezone(ZoneInfo(_helpers.config.TIMEZONE))
                 event["display_time"] = ts.strftime("%Y-%m-%d %H:%M")
             elif isinstance(ts, str):
                 event["display_time"] = ts[:16].replace("T", " ") if len(ts) >= 16 else ts
@@ -479,6 +483,9 @@ async def rfq_new(request: Request, user: dict = Depends(require_user)):
         "user": user,
         "rfq": rfq,
         "rfq_thread_id": None,
+        "active_tab": "items",
+        "all_users": _get_all_user_emails(),
+        "header_auto_edit": True,
     })
     response.headers["HX-Push-Url"] = f"/rfqs/{rfq_id}"
     return response
@@ -691,7 +698,10 @@ async def partial_rfq_update(request: Request, rfq_id: str,
     for key in updatable:
         val = form.get(key)
         if val is not None:
-            data[key] = val.strip() if val.strip() else None
+            stripped = val.strip()
+            if key == "customer" and not stripped:
+                continue  # customer is NOT NULL — don't clear it
+            data[key] = stripped if stripped else None
 
     if data:
         from includes.tools.quote_tools import _update_rfq_sync

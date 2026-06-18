@@ -1,19 +1,31 @@
 {% for p in products %}
+{% set types = p._match_types or [] %}
 <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
     hx-get="/partial/products/{{ p.id }}" hx-target="#main-content" hx-push-url="/products/{{ p.id }}">
     <td class="px-4 py-3 font-mono text-gray-900 dark:text-gray-100">{{ p.part_number }}</td>
     <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ p.brand or '—' }}</td>
     <td class="px-4 py-3 text-gray-600 dark:text-gray-400 max-w-md truncate">{{ p.description or '—' }}</td>
+    <td class="px-4 py-3 text-center">
+        {% if types %}
+        <span class="inline-flex items-center gap-0.5">
+            {% if 'P' in types %}<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300" title="Matched on Part Number">P</span>{% endif %}
+            {% if 'B' in types %}<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title="Matched on Brand">B</span>{% endif %}
+            {% if 'D' in types %}<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title="Matched on Description">D</span>{% endif %}
+            {% if 'S1' in types %}<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" title="Semantic: near identical (&lt; 0.2)">S1</span>{% endif %}
+            {% if 'S2' in types %}<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300" title="Semantic: very similar (0.2–0.4)">S2</span>{% endif %}
+        </span>
+        {% endif %}
+    </td>
     <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ p.txn_count or '—' }}</td>
 </tr>
 {% endfor %}
 {% if has_more %}
 <tr id="product-sentinel"
-    hx-get="/partial/products/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}"
+    hx-get="/partial/products/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}{% if semantic %}&semantic={{ semantic }}{% endif %}"
     hx-trigger="intersect"
     hx-target="this"
     hx-swap="outerHTML">
-    <td colspan="4" class="px-4 py-3 text-center text-gray-400 dark:text-gray-500">
+    <td colspan="5" class="px-4 py-3 text-center text-gray-400 dark:text-gray-500">
         <svg class="animate-spin inline-block w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
         Loading more…
     </td>

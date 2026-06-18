@@ -660,7 +660,7 @@
                     if (ctxEl) {
                         try {
                             var ctx = JSON.parse(ctxEl.dataset.dashboardContext);
-                            if (ctx.view === 'rfq_detail' && !ctx.customer) {
+                            if (ctx.header_auto_edit && !ctx.customer) {
                                 this.editingHeader = true;
                             }
                         } catch(e) {}
