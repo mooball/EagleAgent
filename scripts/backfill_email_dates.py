@@ -95,18 +95,17 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
         return gmail_clients[email]
 
     def _get_client(email: str, recipient: str) -> object | None:
-        """Get a Gmail client, trying the most likely eagle-exports.com address first."""
-        # Try the record's user_email first
-        client = _try_get_client(email)
-        if client:
-            return client
-        # Try the recipient if it's an eagle address
-        if _is_eagle(recipient):
-            logger.debug(f"  Retrying with recipient: {recipient} (user_email {email} failed)")
-            return _try_get_client(recipient)
-        # If user_email is external, try the recipient anyway (one of them must be eagle)
-        if email and not _is_eagle(email) and recipient:
-            return _try_get_client(recipient)
+        """Get a Gmail client, trying the eagle-exports.com address first."""
+        # Always try the Eagle address first to avoid blacklisting external contacts
+        eagle_addr = email if _is_eagle(email) else (recipient if _is_eagle(recipient) else None)
+        other_addr = recipient if eagle_addr == email else (email if _is_eagle(email) else recipient)
+
+        if eagle_addr:
+            client = _try_get_client(eagle_addr)
+            if client:
+                return client
+        if other_addr and other_addr != eagle_addr:
+            return _try_get_client(other_addr)
         return None
 
     for i, row in enumerate(rows):
