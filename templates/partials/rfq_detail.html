@@ -8,7 +8,8 @@
     "status": rfq.get('status', ''),
     "assigned_to": rfq.get('assigned_to', ''),
     "item_count": items | length,
-    "identified_count": identified_count
+    "identified_count": identified_count,
+    "header_auto_edit": header_auto_edit | default(false)
 } %}
 {% if rfq_thread_id %}{% set _ = ctx.update({"thread_id": rfq_thread_id}) %}{% endif %}
 <script id="rfq-data" type="application/json">{{ {
