@@ -35,8 +35,8 @@ window._emailData = {
         messageId: {{ (e.gmail_message_id or '') | tojson }},
         subject: {{ (e.subject or '(no subject)') | tojson }},
         direction: {{ (e.direction or '') | tojson }},
-        from: {{ (e.user_email or '') | tojson }},
-        to: {{ (e.recipient_email or '') | tojson }},
+        from: {{ ((e.recipient_email or '') if e.direction == 'received' else (e.user_email or '')) | tojson }},
+        to: {{ ((e.user_email or '') if e.direction == 'received' else (e.recipient_email or '')) | tojson }},
         date: {{ e.display_time | tojson }},
         hasRfq: {{ 'true' if (e.rfq_token or e.rfq_id) else 'false' }},
         hasCustomer: {{ 'true' if e.customer_name else 'false' }},
@@ -109,21 +109,15 @@ window._emailData = {
             async fetchBody(messageId) {
                 this.loading = true;
                 this.error = null;
-                try {
-                    const resp = await fetch(`/api/email-body/${messageId}`);
-                    const data = await resp.json();
-                    if (data.status === 'ok') {
-                        this.bodyHtml = data.body ? marked.parse(data.body) : '';
-                        this.quotedHtml = data.quoted ? marked.parse(data.quoted) : '';
-                        this.attachHtml = (data.attachments||[]).map(a => `<span class="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-gray-600 dark:text-gray-400">\uD83D\uDCCE ${a.filename}</span>`).join('');
-                    } else {
-                        this.error = data.message || 'No content available';
-                    }
-                } catch (e) {
-                    this.error = 'Failed to load email content';
-                } finally {
-                    this.loading = false;
-                }
+                _fetchEmailBody(messageId,
+                    (result) => {
+                        this.bodyHtml = result.bodyHtml;
+                        this.quotedHtml = result.quotedHtml;
+                        this.attachHtml = result.attachHtml;
+                        this.loading = false;
+                    },
+                    (err) => { this.error = err; this.loading = false; }
+                );
             },
 
             async searchEntities(type) {
@@ -202,66 +196,7 @@ window._emailData = {
     {{ row_count(email_count, "emails") }}
 
     <!-- Email Detail Modal -->
-    <div x-show="show" x-cloak
-         class="fixed inset-0 z-[9999] flex items-center justify-center p-4"
-         @keydown.escape.window="close()">
-        <!-- Backdrop -->
-        <div class="absolute inset-0 bg-black/50" @click="close()" x-transition.opacity></div>
-        <!-- Modal panel -->
-        <div class="relative w-full bg-white dark:bg-gray-900 rounded-lg shadow-xl flex flex-col overflow-hidden"
-             style="max-width: 850px; max-height: 85vh"
-             x-transition @click.stop>
-            <!-- Header -->
-            <div class="flex items-start justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
-                <div class="min-w-0 pr-4">
-                    <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate" x-text="email.subject"></h3>
-                    <div class="mt-1 flex items-center justify-between gap-x-4 text-xs text-gray-500 dark:text-gray-400">
-                        <span>
-                            <template x-if="email.direction === 'received'">
-                                <span><span class="font-medium text-gray-700 dark:text-gray-300" x-text="email.from || '?'"></span> <span class="text-gray-400">→</span> <span x-text="email.to"></span></span>
-                            </template>
-                            <template x-if="email.direction !== 'received'">
-                                <span><span x-text="email.from"></span> <span class="text-gray-400">→</span> <span class="font-medium text-gray-700 dark:text-gray-300" x-text="email.to || '?'"></span></span>
-                            </template>
-                        </span>
-                        <span class="text-gray-400 whitespace-nowrap" x-text="email.date"></span>
-                    </div>
-                    <!-- Existing associations -->
-                    <div class="mt-1.5 flex flex-wrap gap-2 text-[10px]">
-                        <span x-show="email.rfqToken" class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded" x-text="'RFQ: ' + email.rfqToken"></span>
-                        <span x-show="email.customerName" class="px-1.5 py-0.5 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded" x-text="'Customer: ' + email.customerName"></span>
-                        <span x-show="email.supplierName" class="px-1.5 py-0.5 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded" x-text="'Supplier: ' + email.supplierName"></span>
-                    </div>
-                </div>
-                <button @click="close()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 shrink-0 mt-0.5">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                </button>
-            </div>
-
-            <!-- Body -->
-            <div class="flex-1 overflow-y-auto px-5 py-4 min-h-0">
-                <!-- Loading -->
-                <p x-show="loading" class="text-sm text-gray-400 italic">Loading email content...</p>
-                <!-- Error -->
-                <div x-show="error" x-cloak class="flex items-center gap-2 text-sm text-gray-500 bg-gray-100 dark:bg-gray-800 rounded p-3">
-                    <svg class="w-5 h-5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    <span x-text="error"></span>
-                </div>
-                <!-- Email content -->
-                <div x-show="bodyHtml" x-cloak>
-                    <div class="email-body text-sm leading-relaxed" x-html="bodyHtml"></div>
-                    <div x-show="quotedHtml" class="mt-4" x-data="{ showQuoted: false }">
-                        <button @click="showQuoted = !showQuoted" class="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1">
-                            <span x-text="showQuoted ? '▾ Hide quoted text' : '▸ Show quoted text'"></span>
-                        </button>
-                        <div x-show="showQuoted" x-transition.duration.150ms class="mt-2 pl-3 border-l-2 border-gray-200 dark:border-gray-600 opacity-70">
-                            <div class="email-body text-sm leading-relaxed" x-html="quotedHtml"></div>
-                        </div>
-                    </div>
-                    <div x-show="attachHtml" class="mt-3 pt-2 border-t border-gray-100 dark:border-gray-700/60 flex flex-wrap gap-1" x-html="attachHtml"></div>
-                </div>
-            </div>
-
+    {% set extraFooter %}
             <!-- Footer: Linking controls -->
             <div x-show="needsRfq || needsCustomer || needsSupplier" x-cloak
                  class="shrink-0 border-t border-gray-200 dark:border-gray-700 px-5 py-3 bg-gray-50 dark:bg-gray-800/50 rounded-b-lg">
@@ -316,15 +251,13 @@ window._emailData = {
                             </template>
                         </ul>
                     </div>
-                    <!-- Save domain checkbox -->
-                    <label x-show="needsCustomer || needsSupplier" class="flex items-center gap-1.5 text-xs text-gray-500 self-center">
-                        <input type="checkbox" x-model="saveDomain" class="rounded border-gray-300">
-                        <span>Remember domain</span>
+                    <label class="flex items-center gap-1 text-[10px] text-gray-500 cursor-pointer mb-1.5">
+                        <input type="checkbox" x-model="saveDomain" class="rounded">
+                        Save domain for future matching
                     </label>
                 </div>
-                <!-- Link status -->
-                <p x-show="linkMsg" x-cloak class="text-xs mt-2" :class="linkError ? 'text-red-500' : 'text-green-600'" x-text="linkMsg"></p>
+                <p x-show="linkMsg" class="mt-2 text-xs" :class="linkError ? 'text-red-600' : 'text-green-600'" x-text="linkMsg"></p>
             </div>
-        </div>
-    </div>
+    {% endset %}
+    {% include "partials/_email_viewer_modal.html" %}
 </div>
