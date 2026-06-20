@@ -55,28 +55,33 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
         record_id = row[0]
         user_email = row[1]
         recipient_email = row[2]
+        direction = row[3]
 
         if not user_email:
             continue
 
-        if "eagle-exports" in user_email:
+        if direction in ("sent", "draft"):
+            # Sender is the Eagle user, recipient stays as external
             session.execute(
                 text("UPDATE email_tracking SET sender_email = :ue WHERE id = :id"),
                 {"ue": user_email, "id": record_id},
             )
             updated += 1
-        elif recipient_email and "eagle-exports" in recipient_email:
+        elif direction == "received":
+            # Sender is the external party (stored in recipient_email)
+            # Recipient is the Eagle user (stored in user_email)
             session.execute(
                 text("""
                     UPDATE email_tracking
-                    SET sender_email = user_email,
-                        user_email = recipient_email
+                    SET sender_email = recipient_email,
+                        recipient_email = user_email
                     WHERE id = :id
                 """),
                 {"id": record_id},
             )
             swapped += 1
         else:
+            # Unknown direction — just copy
             session.execute(
                 text("UPDATE email_tracking SET sender_email = :ue WHERE id = :id"),
                 {"ue": user_email, "id": record_id},
