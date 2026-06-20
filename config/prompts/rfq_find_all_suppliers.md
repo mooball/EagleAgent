@@ -41,9 +41,17 @@ For each **ungrouped item**, perform an individual web search just like the stan
 
 ## Geographic Priority
 
-1. FIRST search for Australian-based suppliers (add 'Australia' to your search queries).
-2. If fewer than 3 Australian suppliers are found, expand to international suppliers.
-3. Present Australian suppliers before international ones.
+Search globally by default — do NOT restrict searches to Australia. For OEMs,
+distributors, and trade wholesalers (tiers A/B/C), location is irrelevant:
+select the best suppliers regardless of country.
+
+Apply geographic preference ONLY for retail-level suppliers (tier D):
+- Prefer Australian-based retail suppliers
+- Only include international retailers if no suitable Australian options exist
+- Add "Australia" to your search query when specifically hunting for retail suppliers
+
+When presenting results, list tier A/B/C suppliers first (global), then tier D
+retailers (Australian-first).
 
 ## Supplier Selection
 

@@ -34,6 +34,7 @@
         .email-body hr { border-color: #d1d5db; margin: 0.75em 0; opacity: 0.5; }
         .email-body strong { font-weight: 600; color: #374151; }
         .email-body a { color: #2563eb; text-decoration: underline; }
+        .email-body img { max-width: 100%; height: auto; background: #e5e7eb; min-width: 32px; min-height: 32px; border-radius: 2px; }
         .email-body ul, .email-body ol { padding-left: 1.2em; margin: 0.25em 0; }
         .dark .email-body { color: #9ca3af; }
         .dark .email-body strong { color: #e5e7eb; }
@@ -624,6 +625,54 @@
                         }).catch(() => {});
                     }
                 }
+            };
+        }
+
+        // Shared email fetch + render — used by emailViewer and admin emailModal
+        function _fetchEmailBody(messageId, onSuccess, onError) {
+            fetch('/api/email-body/' + messageId).then(function(r) { return r.json(); }).then(function(d) {
+                if (d.status === 'ok') {
+                    var html = d.body ? marked.parse(d.body) : '';
+                    var quoted = d.quoted ? marked.parse(d.quoted) : '';
+                    var attach = (d.attachments||[])
+                        .filter(function(a) { return !a.inline; })
+                        .map(function(a) { return '<a href="/api/gmail/attachments/' + messageId + '/' + a.gmail_attachment_id + '"'
+                            + ' class="inline-flex items-center gap-1 text-[14px] px-2 py-1 bg-gray-100 dark:bg-gray-700 rounded text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30"'
+                            + ' download="' + a.filename + '">\uD83D\uDCCE ' + a.filename + '</a>'; }).join('');
+                    onSuccess({bodyHtml: html, quotedHtml: quoted, attachHtml: attach});
+                } else {
+                    onError(d.message || 'Failed to load');
+                }
+            }).catch(function() { onError('Email no longer available in Gmail'); });
+        }
+
+        // Shared email viewer modal — used by RFQ comms tab and admin emails page
+        function emailViewer() {
+            return {
+                show: false,
+                email: {},
+                bodyHtml: '', quotedHtml: '', attachHtml: '',
+                loading: false, error: '',
+                init() { window._openEmailViewer = this.open.bind(this); },
+                open(meta) {
+                    this.email = meta || {};
+                    this.bodyHtml = ''; this.quotedHtml = ''; this.attachHtml = '';
+                    this.loading = true; this.error = '';
+                    this.show = true;
+                    var messageId = this.email.messageId;
+                    if (!messageId) { this.loading = false; this.error = 'No message ID'; return; }
+                    var self = this;
+                    _fetchEmailBody(messageId,
+                        function(result) {
+                            self.bodyHtml = result.bodyHtml;
+                            self.quotedHtml = result.quotedHtml;
+                            self.attachHtml = result.attachHtml;
+                            self.loading = false;
+                        },
+                        function(err) { self.error = err; self.loading = false; }
+                    );
+                },
+                close() { this.show = false; }
             };
         }
 

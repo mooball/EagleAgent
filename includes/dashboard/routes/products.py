@@ -82,7 +82,7 @@ def _hybrid_product_search(session, q: str, semantic: bool = False):
     if semantic and q:
         try:
             emb_model = _get_embeddings_model()
-            query_vector = emb_model.embed_query(q)
+            query_vector = emb_model.embed_query(q, task_type="SEMANTIC_SIMILARITY")
             # Only search products that HAVE embeddings; hard cutoff at 0.4
             sem_query = (
                 session.query(Product, txn_count, Product.embedding.cosine_distance(query_vector).label("distance"))

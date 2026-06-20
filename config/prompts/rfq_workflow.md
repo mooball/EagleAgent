@@ -50,7 +50,7 @@ When the user asks you to find or identify products:
    - **currency** — 3-letter ISO currency code for the supplier's trading currency (e.g. 'AUD', 'USD', 'GBP'). REQUIRED.
    - **tier** — supply chain tier (A/B/C/D) if obvious. Optional — the system will auto-classify new suppliers using the full taxonomy.
    - **category** — specific role (e.g. 'OEM', 'Trade Wholesaler', 'Online Distributor') if obvious. Optional — the system will auto-classify.
-   **Geographic preference:** Always search for Australian suppliers first. Present AU-based suppliers before international ones. Only expand internationally if fewer than 3 Australian options are found.
+   **Geographic preference:** Search globally by default. For tiers A/B/C (OEMs, distributors, trade wholesalers), location is irrelevant — select the best suppliers regardless of country. Geographic preference applies ONLY to retail-level suppliers (tier D): prefer Australian retailers, only include international retailers if no suitable Australian options exist.
    **Pricing currency:** If a supplier quotes prices in a foreign currency, store the original price with the correct currency — do NOT convert to AUD.
 3. **Immediately add them** to the relevant RFQ line items using `manage_rfq(action='add_supplier', data={line, suppliers: [...]})`. Add ALL suppliers for a line in a single call.
 4. Present the updated RFQ summary after adding suppliers.

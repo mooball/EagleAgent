@@ -1,4 +1,28 @@
 {% from "components.html" import badge %}
+{% if emails %}
+<script>
+// Extend _emailData for infinite-scroll rows
+Object.assign(window._emailData || {}, {
+    {% for e in emails %}
+    {{ e.id }}: {
+        id: {{ e.id }},
+        messageId: {{ (e.gmail_message_id or '') | tojson }},
+        subject: {{ (e.subject or '(no subject)') | tojson }},
+        direction: {{ (e.direction or '') | tojson }},
+        from: {{ ((e.recipient_email or '') if e.direction == 'received' else (e.user_email or '')) | tojson }},
+        to: {{ ((e.user_email or '') if e.direction == 'received' else (e.recipient_email or '')) | tojson }},
+        date: {{ e.display_time | tojson }},
+        hasRfq: {{ 'true' if (e.rfq_token or e.rfq_id) else 'false' }},
+        hasCustomer: {{ 'true' if e.customer_name else 'false' }},
+        hasSupplier: {{ 'true' if e.supplier_name else 'false' }},
+        rfqToken: {{ (e.rfq_token or e.rfq_id or '') | tojson }},
+        customerName: {{ (e.customer_name or '') | tojson }},
+        supplierName: {{ (e.supplier_name or '') | tojson }}
+    },
+    {% endfor %}
+});
+</script>
+{% endif %}
 {% for e in emails %}
 <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
     @click="openEmail({{ e.id }})">

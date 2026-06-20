@@ -1,14 +1,16 @@
-"""API routes: latest-thread lookup and RFQ ↔ thread binding."""
+"""API routes: latest-thread lookup, RFQ ↔ thread binding, Gmail attachment proxy."""
 
+import base64
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import Request, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 
-from includes.dashboard.models import RFQThread
+from includes.dashboard.models import RFQThread, EmailTracking
 from . import _helpers
 from ._helpers import router, require_user
 
@@ -169,3 +171,67 @@ async def bind_rfq_thread(request: Request, user: dict = Depends(require_user)):
         session.close()
 
     return JSONResponse({"ok": True, "rfq_id": rfq_id, "thread_id": thread_id})
+
+
+# ---------------------------------------------------------------------------
+# Gmail attachment proxy
+# ---------------------------------------------------------------------------
+# Simple in-memory cache to avoid repeated Gmail API calls for the same attachment.
+# Key: "{message_id}:{attachment_id}" → (expiry_timestamp, bytes)
+_attach_cache: dict[str, tuple[float, bytes]] = {}
+_ATTACH_CACHE_TTL = 3600  # 1 hour
+
+
+@router.get("/api/gmail/attachments/{message_id}/{attachment_id}")
+async def get_gmail_attachment(
+    message_id: str,
+    attachment_id: str,
+    user: dict = Depends(require_user),
+):
+    """Proxy a Gmail attachment — fetches from Gmail API on demand, caches in memory."""
+    cache_key = f"{message_id}:{attachment_id}"
+    now = time.monotonic()
+
+    # Check cache
+    if cache_key in _attach_cache:
+        expiry, data = _attach_cache[cache_key]
+        if now < expiry:
+            return Response(content=data, media_type="application/octet-stream")
+
+    # Look up the email_tracking record to find the mailbox user
+    session = _helpers.get_session()
+    try:
+        tracking = session.query(EmailTracking).filter(
+            EmailTracking.gmail_message_id == message_id
+        ).first()
+        if not tracking:
+            return Response(content=b"Not found", status_code=404, media_type="text/plain")
+    finally:
+        session.close()
+
+    # Fetch from Gmail API
+    try:
+        from includes.gmail import get_gmail_client
+
+        service = get_gmail_client(tracking.user_email)
+        attachment = (
+            service.users().messages().attachments()
+            .get(userId="me", messageId=message_id, id=attachment_id)
+            .execute()
+        )
+        data = base64.urlsafe_b64decode(attachment["data"])
+    except Exception as e:
+        logger.warning(f"Failed to fetch Gmail attachment {message_id}/{attachment_id}: {e}")
+        return Response(content=b"Attachment unavailable", status_code=404, media_type="text/plain")
+
+    # Determine MIME type from the stored attachments_json
+    mime_type = "application/octet-stream"
+    if tracking.attachments_json:
+        for a in tracking.attachments_json:
+            if a.get("gmail_attachment_id") == attachment_id:
+                mime_type = a.get("mime_type", mime_type)
+                break
+
+    # Cache and return
+    _attach_cache[cache_key] = (now + _ATTACH_CACHE_TTL, data)
+    return Response(content=data, media_type=mime_type)

@@ -1,0 +1,74 @@
+{#
+  Shared email viewer modal — used by RFQ communications tab and admin emails page.
+
+  Requires the Alpine component `emailViewer()` to be registered (in base.html).
+  Usage:
+    <div x-data="emailViewer">
+      {% include "partials/_email_viewer_modal.html" %}
+    </div>
+
+  To open: call `open({messageId, subject, from, to, time, ...})`
+  Admin linking footer: pass extraFooter block.
+#}
+<div x-show="show" x-cloak
+     class="fixed inset-0 z-[9999] flex items-center justify-center p-4"
+     @keydown.escape.window="close()">
+    <!-- Backdrop -->
+    <div class="absolute inset-0 bg-black/50" @click="close()" x-transition.opacity></div>
+    <!-- Modal panel -->
+    <div class="relative w-full bg-white dark:bg-gray-900 rounded-lg shadow-xl flex flex-col overflow-hidden"
+         style="max-width: 850px; max-height: 85vh"
+         x-transition @click.stop>
+        <!-- Header -->
+        <div class="flex items-start justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
+            <div class="min-w-0 pr-4">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate" x-text="email.subject"></h3>
+                <div class="mt-1 flex items-center justify-between gap-x-4 text-xs text-gray-500 dark:text-gray-400">
+                    <span>
+                        <span class="font-medium text-gray-700 dark:text-gray-300" x-text="email.from || '?'"></span>
+                        <span class="text-gray-400">→</span>
+                        <span x-text="email.to || '?'"></span>
+                    </span>
+                    <span class="text-gray-400 whitespace-nowrap" x-text="email.time || email.date"></span>
+                </div>
+                <!-- Associations (admin: RFQ / Customer / Supplier badges) -->
+                <div class="mt-1.5 flex flex-wrap gap-2 text-[10px]">
+                    <span x-show="email.rfqToken" class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded" x-text="'RFQ: ' + email.rfqToken"></span>
+                    <span x-show="email.customerName" class="px-1.5 py-0.5 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded" x-text="'Customer: ' + email.customerName"></span>
+                    <span x-show="email.supplierName" class="px-1.5 py-0.5 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded" x-text="'Supplier: ' + email.supplierName"></span>
+                </div>
+            </div>
+            <button @click="close()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 shrink-0 mt-0.5">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+
+        <!-- Body -->
+        <div class="flex-1 overflow-y-auto px-5 py-4 min-h-0">
+            <div x-show="loading" class="flex items-center gap-2 text-sm text-gray-400">
+                <svg class="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                Loading...
+            </div>
+            <div x-show="error" x-cloak class="flex items-center gap-2 text-sm text-gray-500 bg-gray-100 dark:bg-gray-800 rounded p-3">
+                <svg class="w-5 h-5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span x-text="error"></span>
+            </div>
+            <div x-show="bodyHtml" x-cloak>
+                <div class="email-body text-sm leading-relaxed" x-html="bodyHtml"></div>
+                <div x-show="quotedHtml" class="mt-4" x-data="{ showQuoted: false }">
+                    <button @click="showQuoted = !showQuoted" class="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1">
+                        <span x-text="showQuoted ? '▾ Hide quoted text' : '▸ Show quoted text'"></span>
+                    </button>
+                    <div x-show="showQuoted" x-transition.duration.150ms class="mt-2 pl-3 border-l-2 border-gray-200 dark:border-gray-600 opacity-70">
+                        <div class="email-body text-sm leading-relaxed" x-html="quotedHtml"></div>
+                    </div>
+                </div>
+                <div x-show="attachHtml" class="mt-3 pt-2 border-t border-gray-100 dark:border-gray-700/60 flex flex-wrap gap-1" x-html="attachHtml"></div>
+            </div>
+        </div>
+
+        {% if extraFooter %}
+        {{ extraFooter }}
+        {% endif %}
+    </div>
+</div>

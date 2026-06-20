@@ -298,11 +298,13 @@ def _clean_email_markdown(md: str) -> str:
 def fetch_message_content(service, message_id: str) -> dict | None:
     """Fetch full message content (body + attachments manifest) from Gmail API.
 
-    Returns dict with keys: body_html, body_markdown, attachments_json,
+    Returns dict with keys: body_html, body_markdown, attachments_json
+    (inline/decorative images flagged with "inline": true),
     sender_name, all_recipients. Returns None on failure.
     """
     try:
         import html2text
+        import re
 
         msg = service.users().messages().get(
             userId="me", id=message_id, format="full",
@@ -340,11 +342,44 @@ def fetch_message_content(service, message_id: str) -> dict | None:
         body_html = None
         body_plain = None
         attachments = []
+        cid_map: dict[str, str] = {}  # contentId (stripped) → attachmentId
+
+        # Patterns for decorative footer images (logos, signatures, tracking pixels)
+        _DECORATIVE_RE = re.compile(
+            r'(logo|sig(nature)?|icon|header|footer|banner|image00\d|spacer|divider)',
+            re.IGNORECASE,
+        )
+
+        def _is_decorative(filename: str, size: int, has_content_id: bool) -> bool:
+            """True if this part is likely a decorative footer/signature image."""
+            # Any part with a Content-ID is an inline embedded image — not a real attachment
+            if has_content_id:
+                return True
+            fname = (filename or "").lower()
+            # Filename-based heuristics for footer images
+            if _DECORATIVE_RE.search(fname):
+                return True
+            # Small images (< 50KB) without Content-ID are likely decorative
+            if size > 0 and size < 50000:
+                return True
+            return False
 
         def _walk_parts(parts):
             nonlocal body_html, body_plain
             for part in parts:
+                # Check for Content-ID header (inline image, not a real attachment)
+                content_id = None
+                headers_list = part.get("headers", [])
+                for h in headers_list:
+                    if h.get("name", "").lower() == "content-id":
+                        content_id = h.get("value", "").strip().strip("<>")
+                        break
+
                 mime = part.get("mimeType", "")
+                filename = part.get("filename", "")
+                size = part.get("body", {}).get("size", 0)
+                att_id = part.get("body", {}).get("attachmentId")
+
                 if mime == "text/html" and not body_html:
                     data = part.get("body", {}).get("data", "")
                     if data:
@@ -353,14 +388,26 @@ def fetch_message_content(service, message_id: str) -> dict | None:
                     data = part.get("body", {}).get("data", "")
                     if data:
                         body_plain = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
-                elif part.get("filename"):
-                    # Attachment
-                    attachments.append({
-                        "filename": part["filename"],
-                        "mime_type": mime,
-                        "size": part.get("body", {}).get("size", 0),
-                        "gmail_attachment_id": part.get("body", {}).get("attachmentId"),
-                    })
+                elif filename and att_id:
+                    # Has a filename and attachmentId
+                    if content_id or _is_decorative(filename, size, bool(content_id)):
+                        # Inline or decorative image — store for proxy serving but flag as inline
+                        cid_map[content_id] = att_id if content_id else None
+                        attachments.append({
+                            "filename": filename,
+                            "mime_type": mime,
+                            "size": size,
+                            "gmail_attachment_id": att_id,
+                            "inline": True,
+                        })
+                    else:
+                        # Real attachment
+                        attachments.append({
+                            "filename": filename,
+                            "mime_type": mime,
+                            "size": size,
+                            "gmail_attachment_id": att_id,
+                        })
                 # Recurse into nested parts
                 if part.get("parts"):
                     _walk_parts(part["parts"])
@@ -378,6 +425,45 @@ def fetch_message_content(service, message_id: str) -> dict | None:
                 else:
                     body_plain = decoded
 
+        # Rewrite cid: references to proxy URLs before markdown conversion
+        if body_html and cid_map:
+            for cid, att_id in cid_map.items():
+                proxy_url = f"/api/gmail/attachments/{message_id}/{att_id}"
+                body_html = body_html.replace(f"cid:{cid}", proxy_url)
+
+        # Preserve img dimensions through markdown conversion.
+        # html2text discards width/height/style, so we tokenize <img> tags,
+        # convert to markdown (ignoring images), then restore them as raw HTML
+        # with inline width constraints. marked.js renders raw HTML unchanged.
+        _img_tokens: dict[str, str] = {}
+        if body_html:
+            def _preserve_img(match):
+                tag = match.group(0)
+                w = re.search(r'width\s*=\s*["\']?(\d+)', tag, re.IGNORECASE)
+                h = re.search(r'height\s*=\s*["\']?(\d+)', tag, re.IGNORECASE)
+                src = re.search(r'src\s*=\s*["\']([^"\']*)', tag, re.IGNORECASE)
+                src_val = (src.group(1) or "").strip() if src else ""
+                # Discard: broken src, tracking pixels, cid: leftovers, Gmail-internal URLs
+                if not src_val or src_val.startswith("cid:"):
+                    return ""
+                if "mail.google.com" in src_val:
+                    return ""
+                width_px = int(w.group(1)) if w else None
+                height_px = int(h.group(1)) if h else None
+                if width_px is not None and width_px <= 1:
+                    return ""
+                if height_px is not None and height_px <= 1:
+                    return ""
+                # Build a clean <img> tag with width constraint
+                width_px = int(w.group(1)) if w else None
+                height_px = int(h.group(1)) if h else None
+                style = f'width:{width_px}px;height:auto;max-width:100%' if width_px else 'max-width:100%;height:auto'
+                new_tag = f'<img src="{src.group(1)}" style="{style}" alt="" loading="lazy">'
+                token = f'%%IMG_{len(_img_tokens)}%%'
+                _img_tokens[token] = new_tag
+                return token
+            body_html = re.sub(r'<img\b[^>]*>', _preserve_img, body_html, flags=re.IGNORECASE)
+
         # Convert to markdown — strip quoted replies for cleaner display
         body_markdown = None
         body_quoted = None
@@ -386,11 +472,16 @@ def fetch_message_content(service, message_id: str) -> dict | None:
             new_html, quoted_html = _split_html_quote(body_html)
             h = html2text.HTML2Text()
             h.ignore_links = False
-            h.ignore_images = True
+            h.ignore_images = True  # images handled via token restoration
             h.body_width = 0  # No wrapping
             body_markdown = h.handle(new_html).strip()
+            # Restore preserved img tags
+            for token, tag in _img_tokens.items():
+                body_markdown = body_markdown.replace(token, tag)
             if quoted_html:
                 body_quoted = h.handle(quoted_html).strip()
+                for token, tag in _img_tokens.items():
+                    body_quoted = body_quoted.replace(token, tag)
         elif body_plain:
             # Use email-reply-parser for plain text
             new_text, quoted_text = _split_plain_quote(body_plain)
@@ -400,9 +491,12 @@ def fetch_message_content(service, message_id: str) -> dict | None:
         # Clean up markdown for readability
         if body_markdown:
             body_markdown = _clean_email_markdown(body_markdown)
+            # Strip any remaining broken img tags (empty src, cid leftovers)
+            body_markdown = re.sub(r'<img\b[^>]*\bsrc\s*=\s*["\']\s*["\'][^>]*>', '', body_markdown, flags=re.IGNORECASE)
         # Append quoted content with a marker the UI can detect
         if body_quoted:
             body_quoted = _clean_email_markdown(body_quoted)
+            body_quoted = re.sub(r'<img\b[^>]*\bsrc\s*=\s*["\']\s*["\'][^>]*>', '', body_quoted, flags=re.IGNORECASE)
             body_markdown = (body_markdown or "") + "\n\n<!-- quoted -->\n" + body_quoted
 
         return {

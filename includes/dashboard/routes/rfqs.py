@@ -287,9 +287,6 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
                     et.created_at,
                     et.supplier_id,
                     et.customer_id,
-                    et.body_markdown,
-                    et.sender_name,
-                    et.attachments_json,
                     s.name AS supplier_name,
                     c.companyname AS customer_name
                 FROM email_tracking et
@@ -304,14 +301,14 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
         ).mappings().all()
 
         threads: OrderedDict = OrderedDict()
+        local_tz = ZoneInfo(_helpers.config.TIMEZONE)
         for row in rows:
             event = dict(row)
             ts = event.get("sent_at") or event.get("created_at")
             if isinstance(ts, datetime):
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
-                ts = ts.astimezone(ZoneInfo(_helpers.config.TIMEZONE))
-                event["display_time"] = ts.strftime("%Y-%m-%d %H:%M")
+                event["display_time"] = ts.astimezone(local_tz).strftime("%Y-%m-%d %H:%M")
             elif isinstance(ts, str):
                 event["display_time"] = ts[:16].replace("T", " ") if len(ts) >= 16 else ts
             else:

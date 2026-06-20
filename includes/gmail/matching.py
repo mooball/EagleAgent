@@ -178,7 +178,7 @@ def match_by_contact(
             func.lower(Contact.email) == email_lower,
             Contact.isinactive == False,
         ).first()
-        if contact:
+        if contact and (contact.supplier_id or contact.customer_id):
             return {
                 "match_type": "exact",
                 "supplier_id": contact.supplier_id,
