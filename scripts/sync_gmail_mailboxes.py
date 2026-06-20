@@ -578,7 +578,7 @@ def process_message(
             else:
                 # New message on tracked thread — create a new row inheriting the RFQ link
                 if direction == "received":
-                    recipient = from_addr
+                    recipient = user_email
                 else:
                     recipient = extract_email_address(msg_meta.get("to", ""))
                 # Fetch body content
@@ -639,7 +639,7 @@ def process_message(
                 )
             else:
                 if direction == "received":
-                    recipient = from_addr
+                    recipient = user_email
                 else:
                     recipient = extract_email_address(msg_meta.get("to", ""))
                 # Fetch body content for RFQ-linked emails
@@ -682,7 +682,7 @@ def process_message(
             )
         else:
             if direction == "received":
-                recipient = from_addr
+                recipient = user_email
             else:
                 recipient = extract_email_address(msg_meta.get("to", ""))
             tracking = EmailTracking(
