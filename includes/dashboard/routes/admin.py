@@ -499,6 +499,7 @@ def _query_email_logs(session, q: str = "", user_filter: str = "", page: int = 1
                 et.subject,
                 et.recipient_email,
                 et.user_email,
+                et.sender_email,
                 et.rfq_id,
                 et.rfq_token,
                 et.gmail_thread_id,

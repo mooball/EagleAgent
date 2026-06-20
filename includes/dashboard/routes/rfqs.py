@@ -279,6 +279,7 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
                     et.subject,
                     et.recipient_email,
                     et.user_email,
+                    et.sender_email,
                     et.gmail_thread_id,
                     et.gmail_message_id,
                     et.gmail_draft_id,
