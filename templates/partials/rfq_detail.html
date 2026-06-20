@@ -408,8 +408,8 @@
             {% for group in groups %}{% for thread in group.threads %}{% for msg in thread.messages %}
             {{ msg.gmail_message_id | tojson }}: {
                 subject: {{ (msg.subject or '(no subject)') | tojson }},
-                from: {{ ((msg.recipient_email or '') if msg.direction == 'received' else (msg.user_email or '')) | tojson }},
-                to: {{ ((msg.user_email or '') if msg.direction == 'received' else (msg.recipient_email or '')) | tojson }},
+                from: {{ (msg.sender_email or msg.user_email or '') | tojson }},
+                to: {{ (msg.recipient_email or '') | tojson }},
                 direction: {{ msg.direction | tojson }},
                 time: {{ msg.display_time | tojson }},
                 messageId: {{ msg.gmail_message_id | tojson }}
@@ -484,7 +484,7 @@
                                         {{ msg.direction }}
                                     </span>
                                     <span class="text-xs font-medium text-gray-700 dark:text-gray-300">
-                                        {% if msg.direction == 'received' %}{{ msg.recipient_email or '—' }}{% else %}{{ msg.user_email or '—' }}{% endif %}
+                                        {{ msg.sender_email or msg.user_email or '—' }}
                                     </span>
                                     <span class="text-[10px] text-gray-400">→</span>
                                     <span class="text-xs text-gray-500 dark:text-gray-400">
