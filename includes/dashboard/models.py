@@ -369,6 +369,7 @@ class EmailTracking(Base):
     email_type = Column(String, nullable=True)   # 'rfq_outreach' | 'quote' | 'invoice' | etc.
     subject = Column(String, nullable=True)
     recipient_email = Column(String, nullable=True)
+    sender_email = Column(String, nullable=True)
     sent_at = Column(DateTime(timezone=True), nullable=True)
 
     # Workflow state

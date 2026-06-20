@@ -563,6 +563,7 @@ def process_message(
             if existing_thread.direction == "draft" and direction == "sent" and existing_thread.gmail_message_id is None:
                 existing_thread.direction = "sent"
                 existing_thread.gmail_message_id = msg_meta["id"]
+                existing_thread.sender_email = user_email
                 existing_thread.sent_at = msg_meta.get("date") or datetime.now(timezone.utc)
                 existing_thread.sent_confirmed = True
                 existing_thread.updated_at = datetime.now(timezone.utc)
@@ -586,6 +587,7 @@ def process_message(
                     gmail_thread_id=thread_id,
                     gmail_message_id=msg_meta["id"],
                     user_email=user_email,
+                    sender_email=from_addr if direction == "received" else user_email,
                     rfq_id=existing_thread.rfq_id,
                     rfq_token=existing_thread.rfq_token,
                     opportunity_id=existing_thread.opportunity_id,
@@ -646,6 +648,7 @@ def process_message(
                     gmail_thread_id=thread_id,
                     gmail_message_id=msg_meta["id"],
                     user_email=user_email,
+                    sender_email=from_addr if direction == "received" else user_email,
                     rfq_id=full_rfq_number if rfq else None,
                     rfq_token=full_rfq_number,
                     opportunity_id=op_number,
@@ -686,6 +689,7 @@ def process_message(
                 gmail_thread_id=thread_id,
                 gmail_message_id=msg_meta["id"],
                 user_email=user_email,
+                sender_email=from_addr if direction == "received" else user_email,
                 direction=direction,
                 subject=subject,
                 recipient_email=recipient,

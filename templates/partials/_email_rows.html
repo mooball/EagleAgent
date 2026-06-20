@@ -9,8 +9,8 @@ Object.assign(window._emailData || {}, {
         messageId: {{ (e.gmail_message_id or '') | tojson }},
         subject: {{ (e.subject or '(no subject)') | tojson }},
         direction: {{ (e.direction or '') | tojson }},
-        from: {{ ((e.recipient_email or '') if e.direction == 'received' else (e.user_email or '')) | tojson }},
-        to: {{ ((e.user_email or '') if e.direction == 'received' else (e.recipient_email or '')) | tojson }},
+        from: {{ (e.sender_email or e.user_email or '') | tojson }},
+        to: {{ (e.recipient_email or '') | tojson }},
         date: {{ e.display_time | tojson }},
         hasRfq: {{ 'true' if (e.rfq_token or e.rfq_id) else 'false' }},
         hasCustomer: {{ 'true' if e.customer_name else 'false' }},
@@ -53,14 +53,13 @@ Object.assign(window._emailData || {}, {
     <td class="px-2 py-1.5">{{ e.customer_name or '—' }}</td>
     <td class="px-2 py-1.5">{{ e.supplier_name or '—' }}</td>
     <td class="px-2 py-1.5">
+        {% set from_addr = e.sender_email or e.user_email %}
         {% if e.direction == 'received' %}
-            {% set staff = e.user_email if 'eagle-exports' in (e.user_email or '') else e.recipient_email %}
-            {% set external = e.recipient_email if 'eagle-exports' in (e.user_email or '') else e.user_email %}
-            <span class="text-gray-600 dark:text-gray-300">{{ external or '?' }}</span>
+            <span class="text-gray-600 dark:text-gray-300">{{ from_addr or '?' }}</span>
             <span class="text-gray-400">→</span>
-            <span>{{ staff or '—' }}</span>
+            <span>{{ e.user_email or '—' }}</span>
         {% else %}
-            <span class="text-gray-600 dark:text-gray-300">{{ e.user_email or '—' }}</span>
+            <span class="text-gray-600 dark:text-gray-300">{{ from_addr or '—' }}</span>
             <span class="text-gray-400">→</span>
             <span>{{ e.recipient_email or '?' }}</span>
         {% endif %}

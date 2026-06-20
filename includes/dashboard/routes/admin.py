@@ -465,7 +465,7 @@ def _query_email_logs(session, q: str = "", user_filter: str = "", page: int = 1
 
     if user_filter:
         where_clauses.append(
-            "(et.user_email = :uf OR et.recipient_email = :uf)"
+            "(et.user_email = :uf OR et.sender_email = :uf OR et.recipient_email = :uf)"
         )
         params["uf"] = user_filter
 
@@ -823,15 +823,9 @@ def _save_email_domain(session, tracking: "EmailTracking", entity_type: str, ent
     from includes.dashboard.models import Supplier, Customer
 
     # Determine the external email address
-    external_email = None
     if tracking.direction == "received":
-        # External sender → staff recipient
-        if tracking.user_email and "eagle-exports" not in tracking.user_email:
-            external_email = tracking.user_email
-        elif tracking.recipient_email and "eagle-exports" not in tracking.recipient_email:
-            external_email = tracking.recipient_email
+        external_email = tracking.sender_email or tracking.recipient_email
     else:
-        # Staff → external recipient
         external_email = tracking.recipient_email
 
     if not external_email or "eagle-exports" in external_email:
