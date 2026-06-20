@@ -19,32 +19,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema and backfill sender_email from existing data."""
-    # Add column
+    """Upgrade schema — data backfill handled by scripts/backfill_sender_email.py."""
     op.add_column('email_tracking', sa.Column('sender_email', sa.String(), nullable=True))
-
-    # Backfill: Case 1 — user_email is the Eagle mailbox owner (normal case)
-    op.execute("""
-        UPDATE email_tracking
-        SET sender_email = user_email
-        WHERE user_email LIKE '%@eagle-exports.com'
-    """)
-
-    # Backfill: Case 2 — user_email is external, recipient_email is Eagle (legacy swap)
-    op.execute("""
-        UPDATE email_tracking
-        SET sender_email = user_email,
-            user_email = recipient_email
-        WHERE user_email NOT LIKE '%@eagle-exports.com'
-          AND recipient_email LIKE '%@eagle-exports.com'
-    """)
-
-    # Backfill: Case 3 — both external (rare edge case, just copy)
-    op.execute("""
-        UPDATE email_tracking
-        SET sender_email = user_email
-        WHERE sender_email IS NULL
-    """)
 
 
 def downgrade() -> None:

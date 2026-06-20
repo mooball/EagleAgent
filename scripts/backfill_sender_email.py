@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 
 def backfill(session, dry_run: bool = False, limit: int | None = None):
-    """Backfill sender_email for records missing it."""
+    """Backfill sender_email for records missing it, in small batches."""
     query = text("""
         SELECT id, user_email, recipient_email, direction
         FROM email_tracking
@@ -37,7 +37,7 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
 
     rows = session.execute(query).fetchall()
     total = len(rows)
-    logger.info(f"Found {total} records with NULL sender_email")
+    logger.info(f"Found {total} records with NULL sender_email (processing in batches of 50)")
 
     if dry_run:
         case1 = sum(1 for r in rows if "eagle-exports" in (r[1] or ""))
@@ -48,8 +48,10 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
 
     updated = 0
     swapped = 0
+    batch = 0
+    BATCH_SIZE = 50
 
-    for row in rows:
+    for i, row in enumerate(rows):
         record_id = row[0]
         user_email = row[1]
         recipient_email = row[2]
@@ -58,14 +60,12 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
             continue
 
         if "eagle-exports" in user_email:
-            # Case 1: user_email is the Eagle mailbox owner
             session.execute(
                 text("UPDATE email_tracking SET sender_email = :ue WHERE id = :id"),
                 {"ue": user_email, "id": record_id},
             )
             updated += 1
         elif recipient_email and "eagle-exports" in recipient_email:
-            # Case 2: user_email is external — swap
             session.execute(
                 text("""
                     UPDATE email_tracking
@@ -77,18 +77,21 @@ def backfill(session, dry_run: bool = False, limit: int | None = None):
             )
             swapped += 1
         else:
-            # Case 3: both external (rare) — just copy
             session.execute(
                 text("UPDATE email_tracking SET sender_email = :ue WHERE id = :id"),
                 {"ue": user_email, "id": record_id},
             )
             updated += 1
 
-        if (updated + swapped) % 500 == 0:
+        batch += 1
+        if batch >= BATCH_SIZE:
             session.commit()
-            logger.info(f"  Progress: {updated + swapped}/{total}")
+            logger.info(f"  Progress: {i + 1}/{total} ({updated} updated, {swapped} swapped)")
+            batch = 0
 
-    session.commit()
+    if batch > 0:
+        session.commit()
+
     logger.info(f"Done: {updated} updated in place, {swapped} swapped")
 
 
