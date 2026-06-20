@@ -53,16 +53,9 @@ Object.assign(window._emailData || {}, {
     <td class="px-2 py-1.5">{{ e.customer_name or '—' }}</td>
     <td class="px-2 py-1.5">{{ e.supplier_name or '—' }}</td>
     <td class="px-2 py-1.5">
-        {% set from_addr = e.sender_email or e.user_email %}
-        {% if e.direction == 'received' %}
-            <span class="text-gray-600 dark:text-gray-300">{{ from_addr or '?' }}</span>
-            <span class="text-gray-400">→</span>
-            <span>{{ e.user_email or '—' }}</span>
-        {% else %}
-            <span class="text-gray-600 dark:text-gray-300">{{ from_addr or '—' }}</span>
-            <span class="text-gray-400">→</span>
-            <span>{{ e.recipient_email or '?' }}</span>
-        {% endif %}
+        <span class="text-gray-600 dark:text-gray-300">{{ e.sender_email or e.user_email or '—' }}</span>
+        <span class="text-gray-400">→</span>
+        <span>{{ e.recipient_email or '—' }}</span>
     </td>
     <td class="px-2 py-1.5 max-w-[300px] truncate" title="{{ e.subject or '' }}">
         {{ e.subject or '(no subject)' }}

@@ -488,7 +488,7 @@
                                     </span>
                                     <span class="text-[10px] text-gray-400">→</span>
                                     <span class="text-xs text-gray-500 dark:text-gray-400">
-                                        {% if msg.direction == 'received' %}{{ msg.user_email or '—' }}{% else %}{{ msg.recipient_email or '—' }}{% endif %}
+                                        {{ msg.recipient_email or '—' }}
                                     </span>
                                     <span class="text-[10px] text-gray-400 dark:text-gray-500 ml-auto whitespace-nowrap">{{ msg.display_time }}</span>
                                 </div>
