@@ -418,6 +418,7 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
                 str(r.get("id", "")),
                 r.get("customer", ""),
                 r.get("reference", ""),
+                r.get("netsuite_opportunity", ""),
                 r.get("assigned_to", ""),
                 r.get("status", ""),
             ])).lower()
