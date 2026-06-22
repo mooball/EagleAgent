@@ -392,8 +392,12 @@ def _render_rfq_detail_partial_response(request: Request, user: dict, rfq: dict,
 # ---------------------------------------------------------------------------
 # Fetch helper
 # ---------------------------------------------------------------------------
-async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: str = ""):
-    """Fetch RFQs from SQL with optional text search and pagination."""
+async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: str = "", status: str = "active"):
+    """Fetch RFQs from SQL with optional text search and pagination.
+    
+    Args:
+        status: 'active' (in_progress + awaiting_quotes), 'all' (no filter), or a specific status value.
+    """
     from includes.tools.quote_tools import _list_rfqs_sync, _rfq_to_dict
 
     def _query():
@@ -403,6 +407,10 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
             query = session.query(RFQ)
             if mine == "1" and user_email:
                 query = query.filter(RFQ.assigned_to.ilike(user_email))
+            if status == "active":
+                query = query.filter(RFQ.status.in_(["in_progress", "awaiting_quotes"]))
+            elif status and status != "all":
+                query = query.filter(RFQ.status == status)
             query = query.order_by(RFQ.rfq_number.desc())
             return [_rfq_to_dict(r) for r in query.limit(1000).all()]
         finally:
@@ -418,6 +426,7 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
                 str(r.get("id", "")),
                 r.get("customer", ""),
                 r.get("reference", ""),
+                r.get("netsuite_opportunity", ""),
                 r.get("assigned_to", ""),
                 r.get("status", ""),
             ])).lower()
@@ -446,9 +455,9 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
 # ---------------------------------------------------------------------------
 @router.get("/rfqs")
 async def rfq_list(request: Request, user: dict = Depends(require_user),
-                   q: str = "", page: int = 1, mine: str = "1"):
+                   q: str = "", page: int = 1, mine: str = "1", status: str = "active"):
     rfqs, total, has_more, next_page = await _fetch_rfqs(
-        q, page, mine=mine, user_email=user.get("email", ""))
+        q, page, mine=mine, user_email=user.get("email", ""), status=status)
 
     ctx = {
         "rfqs": rfqs,
@@ -459,6 +468,7 @@ async def rfq_list(request: Request, user: dict = Depends(require_user),
         "next_page": next_page,
         "active_nav": "rfqs",
         "mine": mine,
+        "status": status,
     }
     return _render(request, "rfqs.html", "partials/rfq_list.html", ctx, user)
 
@@ -556,9 +566,9 @@ async def rfq_detail_tab(request: Request, rfq_id: str, tab: str,
 
 @router.get("/partial/rfqs")
 async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
-                           q: str = "", page: int = 1, mine: str = "1"):
+                           q: str = "", page: int = 1, mine: str = "1", status: str = "active"):
     rfqs, total, has_more, next_page = await _fetch_rfqs(
-        q, page, mine=mine, user_email=user.get("email", ""))
+        q, page, mine=mine, user_email=user.get("email", ""), status=status)
 
     return templates.TemplateResponse(request, "partials/rfq_list.html", {
         "user": user,
@@ -569,15 +579,16 @@ async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
         "has_more": has_more,
         "next_page": next_page,
         "mine": mine,
+        "status": status,
     })
 
 
 @router.get("/partial/rfqs/rows")
 async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
-                           q: str = "", page: int = 1, mine: str = "1"):
+                           q: str = "", page: int = 1, mine: str = "1", status: str = "active"):
     """Return just the RFQ card rows + sentinel for infinite scroll."""
     rfqs, total, has_more, next_page = await _fetch_rfqs(
-        q, page, mine=mine, user_email=user.get("email", ""))
+        q, page, mine=mine, user_email=user.get("email", ""), status=status)
 
     return templates.TemplateResponse(request, "partials/_rfq_rows.html", {
         "rfqs": rfqs,
@@ -585,6 +596,7 @@ async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
         "has_more": has_more,
         "next_page": next_page,
         "mine": mine,
+        "status": status,
     })
 
 
@@ -1194,11 +1206,7 @@ async def partial_rfq_detail_tab(request: Request, rfq_id: str, tab: str,
         return HTMLResponse("<p>RFQ not found.</p>")
     _enrich_rfq_supplier_contacts(rfq)
 
-    return templates.TemplateResponse(
-        request,
-        "partials/rfq_detail.html",
-        _rfq_detail_context(rfq, user, _normalize_rfq_tab(tab)),
-    )
+    return _render_rfq_detail_partial_response(request, user, rfq, default_tab=tab)
 
 
 @router.get("/api/rfqs/email-content/{message_id}")

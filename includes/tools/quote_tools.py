@@ -140,14 +140,17 @@ def _search_supplier_url(
 def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> None:
     """Fuzzy-match supplier names against the DB and enrich with supplier_id + contacts.
 
-    Uses the stricter match_supplier() which verifies domain and country
-    in addition to name similarity.
+    Strategy (optimised for speed):
+    1. Match by name + country against DB first — no web lookups.
+    2. If matched → enrich from DB (contacts, URL, currency, tier, category).
+    3. If NOT matched → only THEN search the web for a URL, and create a new record.
+
     Mutates supplier dicts in-place.
 
     Args:
         suppliers: List of supplier dicts to match/create.
         product_hint: Optional product context (part number, brand, description)
-                      used to improve URL search accuracy when verification fails.
+                      used to improve URL search accuracy for NEW suppliers only.
     """
     # Collect names that need matching (no supplier_id yet)
     names_to_match = {}  # lower name -> list of supplier dicts
@@ -175,39 +178,10 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
     session = get_session()
     try:
         for name_lower, sup_list in names_to_match.items():
-            # Extract url and country from the supplier dict for verification
-            sup_url = None
-            for c in sup_list[0].get("contacts", []):
-                if isinstance(c, dict) and c.get("url"):
-                    sup_url = c["url"]
-                    break
             sup_country = sup_list[0].get("country")
 
-            # Verify/correct the URL before matching or persisting
-            verified_url = _verify_supplier_url(
-                sup_list[0].get("name", "").strip(),
-                sup_url,
-                sup_country,
-                product_hint=product_hint,
-            )
-            if verified_url != sup_url:
-                if verified_url:
-                    logger.info(
-                        f"[url-verify] Corrected URL for '{sup_list[0].get('name')}': "
-                        f"{sup_url} → {verified_url}"
-                    )
-                else:
-                    logger.info(
-                        f"[url-verify] Could not verify URL for '{sup_list[0].get('name')}': {sup_url}"
-                    )
-                # Update the contacts in the supplier dicts
-                for sup in sup_list:
-                    for c in sup.get("contacts", []):
-                        if isinstance(c, dict) and c.get("url") == sup_url:
-                            c["url"] = verified_url or sup_url
-                sup_url = verified_url or sup_url
-
-            row = match_supplier(name_lower, url=sup_url, country=sup_country, session=session)
+            # --- Step 1: Try name-only DB match first (no URL, fast) ---
+            row = match_supplier(name_lower, url=None, country=sup_country, session=session)
             if row:
                 logger.info(
                     f"[supplier-match] '{name_lower}' → '{row.name}' (id={row.id})"
@@ -227,74 +201,123 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                             sup["category"] = scp["category"]
                     if row.contacts:
                         merge_supplier_contacts(sup, row.contacts)
-            else:
-                # No match — create a new web-sourced Supplier record
-                ref_sup = sup_list[0]
-                new_supplier = Supplier(
-                    name=ref_sup.get("name", "").strip(),
-                    country=ref_sup.get("country"),
-                    currency=ref_sup.get("currency"),
-                    url=sup_url,
-                    contacts=ref_sup.get("contacts"),
-                    source="web",
-                )
-                session.add(new_supplier)
-                session.flush()  # get the generated id
+                continue  # ← Done — skip URL verification for matched suppliers
+
+            # --- Step 2: Not in DB — extract any URL the agent provided ---
+            sup_url = None
+            for c in sup_list[0].get("contacts", []):
+                if isinstance(c, dict) and c.get("url"):
+                    sup_url = c["url"]
+                    break
+
+            # --- Step 3: Verify/find URL (web search) only for NEW suppliers ---
+            verified_url = _verify_supplier_url(
+                sup_list[0].get("name", "").strip(),
+                sup_url,
+                sup_country,
+                product_hint=product_hint,
+            )
+            if verified_url and verified_url != sup_url:
                 logger.info(
-                    f"[supplier-create] Created new web supplier '{new_supplier.name}' (id={new_supplier.id})"
+                    f"[url-verify] Found URL for new supplier '{sup_list[0].get('name')}': "
+                    f"{verified_url}"
                 )
-
-                # Run proper categorization using the full taxonomy
-                try:
-                    from includes.supplier_categorization import (
-                        categorize_supplier,
-                        load_taxonomy,
-                    )
-                    from google import genai as _genai
-
-                    _client = _genai.Client()
-                    _taxonomy = load_taxonomy()
-                    _cat_input = {
-                        "name": new_supplier.name,
-                        "url": new_supplier.url,
-                        "city": None,
-                        "country": new_supplier.country,
-                        "purchase_count": 0,
-                    }
-                    cat_result = categorize_supplier(
-                        _client, Config.DEFAULT_MODEL, _taxonomy, _cat_input
-                    )
-                    new_supplier.supply_chain_position = {
-                        "category": cat_result.get("category"),
-                        "tier": cat_result.get("tier"),
-                        "confidence": cat_result.get("confidence"),
-                        "reasoning": cat_result.get("reasoning"),
-                    }
-                    new_supplier.modified_by = "ai:categorizer"
-                    session.flush()
-                    logger.info(
-                        f"[supplier-categorize] '{new_supplier.name}' → "
-                        f"{cat_result.get('tier')}/{cat_result.get('category')} "
-                        f"(confidence={cat_result.get('confidence')})"
-                    )
-                    # Update supplier dicts with proper categorization
-                    for sup in sup_list:
-                        if cat_result.get("tier"):
-                            sup["tier"] = cat_result["tier"]
-                        if cat_result.get("category"):
-                            sup["category"] = cat_result["category"]
-                except Exception as cat_err:
-                    logger.warning(
-                        f"[supplier-categorize] Failed for '{new_supplier.name}': {cat_err}"
-                    )
-                    # Fall back to whatever the agent provided
-                    if ref_sup.get("tier") and ref_sup.get("category"):
-                        new_supplier.supply_chain_position = {
-                            "tier": ref_sup["tier"],
-                            "category": ref_sup["category"],
-                        }
-
                 for sup in sup_list:
+                    for c in sup.get("contacts", []):
+                        if isinstance(c, dict) and c.get("url") == sup_url:
+                            c["url"] = verified_url
+                sup_url = verified_url
+
+            # --- Step 4: Retry match with URL (may help disambiguate) ---
+            if sup_url:
+                row = match_supplier(name_lower, url=sup_url, country=sup_country, session=session)
+                if row:
+                    logger.info(
+                        f"[supplier-match] '{name_lower}' matched via URL → '{row.name}' (id={row.id})"
+                    )
+                    for sup in sup_list:
+                        sup["supplier_id"] = str(row.id)
+                        if row.currency and not sup.get("currency"):
+                            sup["currency"] = row.currency
+                        if row.country and not sup.get("country"):
+                            sup["country"] = row.country
+                        if row.supply_chain_position:
+                            scp = row.supply_chain_position
+                            if scp.get("tier") and not sup.get("tier"):
+                                sup["tier"] = scp["tier"]
+                            if scp.get("category") and not sup.get("category"):
+                                sup["category"] = scp["category"]
+                        if row.contacts:
+                            merge_supplier_contacts(sup, row.contacts)
+                    continue
+
+            # --- Step 5: Still no match — create a new web-sourced Supplier ---
+            ref_sup = sup_list[0]
+            new_supplier = Supplier(
+                name=ref_sup.get("name", "").strip(),
+                country=ref_sup.get("country"),
+                currency=ref_sup.get("currency"),
+                url=sup_url,
+                contacts=ref_sup.get("contacts"),
+                source="web",
+            )
+            session.add(new_supplier)
+            session.flush()  # get the generated id
+            logger.info(
+                f"[supplier-create] Created new web supplier '{new_supplier.name}' (id={new_supplier.id})"
+            )
+
+            # Run proper categorization using the full taxonomy
+            try:
+                from includes.supplier_categorization import (
+                    categorize_supplier,
+                    load_taxonomy,
+                )
+                from google import genai as _genai
+
+                _client = _genai.Client()
+                _taxonomy = load_taxonomy()
+                _cat_input = {
+                    "name": new_supplier.name,
+                    "url": new_supplier.url,
+                    "city": None,
+                    "country": new_supplier.country,
+                    "purchase_count": 0,
+                }
+                cat_result = categorize_supplier(
+                    _client, Config.DEFAULT_MODEL, _taxonomy, _cat_input
+                )
+                new_supplier.supply_chain_position = {
+                    "category": cat_result.get("category"),
+                    "tier": cat_result.get("tier"),
+                    "confidence": cat_result.get("confidence"),
+                    "reasoning": cat_result.get("reasoning"),
+                }
+                new_supplier.modified_by = "ai:categorizer"
+                session.flush()
+                logger.info(
+                    f"[supplier-categorize] '{new_supplier.name}' → "
+                    f"{cat_result.get('tier')}/{cat_result.get('category')} "
+                    f"(confidence={cat_result.get('confidence')})"
+                )
+                # Update supplier dicts with proper categorization
+                for sup in sup_list:
+                    if cat_result.get("tier"):
+                        sup["tier"] = cat_result["tier"]
+                    if cat_result.get("category"):
+                        sup["category"] = cat_result["category"]
+            except Exception as cat_err:
+                logger.warning(
+                    f"[supplier-categorize] Failed for '{new_supplier.name}': {cat_err}"
+                )
+                # Fall back to whatever the agent provided
+                if ref_sup.get("tier") and ref_sup.get("category"):
+                    new_supplier.supply_chain_position = {
+                        "tier": ref_sup["tier"],
+                        "category": ref_sup["category"],
+                    }
+
+            for sup in sup_list:
                     sup["supplier_id"] = str(new_supplier.id)
         session.commit()
     except Exception as e:

@@ -239,12 +239,21 @@ class TestMatchSuppliersToDb:
         assert suppliers[0]["supplier_id"] == existing_id
 
     @patch("includes.tools.quote_tools._verify_supplier_url")
-    def test_url_correction_updates_contacts(self, mock_verify, db_session):
-        """When URL is corrected, the contacts in the supplier dict should be updated."""
-        mock_verify.return_value = "https://btpgroup.com.au"
+    def test_db_matched_supplier_skips_url_verification(self, mock_verify, db_session):
+        """When a supplier is already in the DB, URL verification should be skipped."""
+        sup = Supplier(
+            id=uuid.uuid4(),
+            name="BTPZZUnique Test Co",
+            url="https://btpzzunique.com.au",
+            country="AU",
+            contacts=[{"email": "info@btpzzunique.com.au"}],
+            source="netsuite",
+        )
+        db_session.add(sup)
+        db_session.flush()
 
         suppliers = [{
-            "name": "BTP Group",
+            "name": "BTPZZUnique Test Co",
             "country": "AU",
             "contacts": [{"url": "https://btp.com.au", "email": "info@btp.com.au"}],
         }]
@@ -252,8 +261,10 @@ class TestMatchSuppliersToDb:
         with patch("includes.dashboard.database.get_session", return_value=db_session):
             _match_suppliers_to_db(suppliers)
 
-        # The contact URL should have been corrected
-        assert suppliers[0]["contacts"][0]["url"] == "https://btpgroup.com.au"
+        # DB match should have succeeded
+        assert suppliers[0].get("supplier_id") is not None
+        # URL verification should NOT have been called (DB is authoritative)
+        mock_verify.assert_not_called()
 
     @patch("includes.tools.quote_tools._verify_supplier_url", return_value=None)
     def test_empty_suppliers_list(self, mock_verify):
@@ -261,12 +272,12 @@ class TestMatchSuppliersToDb:
         _match_suppliers_to_db([])
         mock_verify.assert_not_called()
 
-    @patch("includes.tools.quote_tools._verify_supplier_url", return_value="https://zyxhinttest.com.au")
+    @patch("includes.tools.quote_tools._verify_supplier_url", return_value="https://zyxhinttest-unique.com.au")
     def test_product_hint_forwarded(self, mock_verify, db_session):
-        """product_hint should be passed to _verify_supplier_url."""
+        """product_hint should be passed to _verify_supplier_url for a truly new supplier."""
         suppliers = [{
-            "name": "ZyxHintTest Supplier",
-            "contacts": [{"url": "https://zyxhinttest.com.au"}],
+            "name": "ZyxHintTest-UNIQUE-XYZ Supplier",
+            "contacts": [{"url": "https://zyxhinttest-unique.com.au"}],
         }]
 
         with patch("includes.dashboard.database.get_session", return_value=db_session):

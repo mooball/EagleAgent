@@ -57,38 +57,12 @@
         </div>
 
         <nav class="hidden md:flex items-center gap-1 text-sm font-medium">
-            <a href="/suppliers"
-               hx-get="/partial/suppliers" hx-target="#main-content" hx-push-url="/suppliers"
-               class="nav-link px-3 py-1.5 rounded-md transition-colors
-                      {% if active_nav == 'suppliers' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
-                Suppliers
-            </a>
-            <a href="/products"
-               hx-get="/partial/products" hx-target="#main-content" hx-push-url="/products"
-               class="nav-link px-3 py-1.5 rounded-md transition-colors
-                      {% if active_nav == 'products' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
-                Products
-            </a>
-            <a href="/transactions"
-               hx-get="/partial/transactions" hx-target="#main-content" hx-push-url="/transactions"
-               class="nav-link px-3 py-1.5 rounded-md transition-colors
-                      {% if active_nav == 'transactions' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
-                Transactions
-            </a>
             <a href="/rfqs"
                hx-get="/partial/rfqs" hx-target="#main-content" hx-push-url="/rfqs"
                class="nav-link px-3 py-1.5 rounded-md transition-colors
                       {% if active_nav == 'rfqs' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
                 RFQs
             </a>
-            {% if user and user.role == 'Admin' %}
-            <a href="/users"
-               hx-get="/partial/users" hx-target="#main-content" hx-push-url="/users"
-               class="nav-link px-3 py-1.5 rounded-md transition-colors
-                      {% if active_nav == 'users' %}bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700{% endif %}">
-                Users
-            </a>
-            {% endif %}
         </nav>
 
         <div class="flex items-center gap-1">
@@ -167,6 +141,12 @@
                         <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ user.email }}</p>
                     </div>
                     {% if user and user.role == 'Admin' %}
+                    <a href="/users"
+                       hx-get="/partial/users" hx-target="#main-content" hx-push-url="/users"
+                       @click="userMenuOpen = false"
+                       class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        Users
+                    </a>
                     <a href="/admin"
                        hx-get="/partial/admin" hx-target="#main-content" hx-push-url="/admin"
                        @click="userMenuOpen = false"

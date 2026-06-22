@@ -112,5 +112,12 @@ def _render(request: Request, full_template: str, partial_template: str,
     """Return a partial if HTMX, else the full page."""
     context["user"] = user
     if _is_htmx(request):
-        return templates.TemplateResponse(request, partial_template, context)
-    return templates.TemplateResponse(request, full_template, context)
+        response = templates.TemplateResponse(request, partial_template, context)
+    else:
+        response = templates.TemplateResponse(request, full_template, context)
+    # Prevent browser/edge caching — dashboard data must always be fresh.
+    # Communications tab especially needs real-time email updates.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response

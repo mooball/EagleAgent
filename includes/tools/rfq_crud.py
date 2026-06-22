@@ -613,30 +613,32 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             has_db_link = bool(sup.get("supplier_id"))
             if not has_db_link and name.lower() in _bad_names:
                 skipped_names.append(name or "Unknown")
-            elif not has_db_link and not _has_contact_url(sup):
-                skipped_names.append(name or "Unknown")
             else:
                 valid_suppliers.append(sup)
 
         if skipped_names and not valid_suppliers:
             return (
-                f"REJECTED: All {len(skipped_names)} supplier(s) were rejected because they have no contact URL: "
-                f"{', '.join(skipped_names)}. "
-                f"You MUST provide contacts with at least a url (website) for each supplier. "
-                f"Look up their website and retry with: contacts=[{{\"url\": \"https://...\"}}]"
+                f"REJECTED: All {len(skipped_names)} supplier(s) have blank or unknown names. "
+                f"Please provide actual supplier names."
             )
-        if skipped_names and valid_suppliers:
-            # Partial rejection — continue with valid ones but warn loudly
-            pass
 
-        _match_suppliers_to_db(
-            valid_suppliers,
-            product_hint=" ".join(filter(None, [
-                line_item.part_number,
-                line_item.brand,
-                line_item.input_description,
-            ])),
-        )
+        # Split: suppliers with a DB id (no matching needed) vs those that need lookup
+        db_linked = [s for s in valid_suppliers if s.get("supplier_id")]
+        needs_match = [s for s in valid_suppliers if not s.get("supplier_id")]
+
+        if needs_match:
+            _match_suppliers_to_db(
+                needs_match,
+                product_hint=" ".join(filter(None, [
+                    line_item.part_number,
+                    line_item.brand,
+                    line_item.input_description,
+                ])),
+            )
+            # Recombine: matched suppliers now have supplier_id set
+            valid_suppliers = db_linked + needs_match
+        else:
+            valid_suppliers = db_linked
 
         # Auto-resolve product_id if the item has a part_number but no product_id
         product_id = line_item.product_id

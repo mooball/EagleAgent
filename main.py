@@ -204,7 +204,7 @@ async def google_callback(request: Request):
     }
     logger.info(f"User logged in: {email}")
 
-    return RedirectResponse("/")
+    return RedirectResponse("/rfqs")
 
 
 @app.get("/logout")

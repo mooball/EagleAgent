@@ -142,6 +142,49 @@ All sub-agents must extend `BaseSubAgent` (`includes/agents/base.py`). The base 
 - **Migrations**: Alembic (`alembic/versions/`).
 - Connection URLs configured in `config/settings.py` (`DATABASE_URL`, `CHECKPOINT_DATABASE_URL`).
 
+### Connecting to Databases
+
+When you need to run ad-hoc SQL queries or inspect data directly, use this pattern:
+
+**Local database:**
+```python
+from sqlalchemy import create_engine, text
+# Local: postgresql+psycopg://postgres:postgres@localhost:5432/eagleagent
+e = create_engine("postgresql+psycopg://postgres:postgres@localhost:5432/eagleagent")
+```
+
+**Production database (from local machine):**
+```python
+import os
+from sqlalchemy import create_engine, text
+
+# Read PROD_DATABASE_URL from .env (NOT DATABASE_URL — that's local)
+with open('.env') as f:
+    for line in f:
+        if line.strip() and not line.startswith('#') and '=' in line:
+            k, v = line.split('=', 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
+url = os.environ['PROD_DATABASE_URL']
+# Convert postgresql:// → postgresql+psycopg:// so SQLAlchemy uses the psycopg driver
+if url.startswith('postgresql://'):
+    url = 'postgresql+psycopg://' + url[13:]
+
+e = create_engine(url)
+with e.connect() as c:
+    result = c.execute(text("SELECT id, subject FROM email_tracking WHERE id = 6738"))
+    for row in result:
+        print(dict(row._mapping))
+e.dispose()
+```
+
+**Key points:**
+- Always use `postgresql+psycopg://` (not plain `postgresql://`) — SQLAlchemy needs the driver specified.
+- Production URL is in `.env` as `PROD_DATABASE_URL` (Railway proxy: `shortline.proxy.rlwy.net`).
+- Close the engine with `.dispose()` when done — don't leave connections open.
+- For async connections (used in the app itself), see `config/settings.py` and the `asyncpg` driver.
+- Dashboard routes use `get_session()` from `includes/dashboard/database.py` for sync reads.
+
 ### File Attachments
 - Stored on local disk via `LocalStorageClient` at `DATA_DIR/attachments/`.
 - Served to browser via Starlette `StaticFiles` mount at `/files`.
