@@ -350,11 +350,14 @@ def fetch_message_content(service, message_id: str) -> dict | None:
             re.IGNORECASE,
         )
 
-        def _is_decorative(filename: str, size: int, has_content_id: bool) -> bool:
+        def _is_decorative(filename: str, size: int, has_content_id: bool, mime_type: str = "") -> bool:
             """True if this part is likely a decorative footer/signature image."""
             # Any part with a Content-ID is an inline embedded image — not a real attachment
             if has_content_id:
                 return True
+            # Only apply image heuristics to image/* mime types
+            if not (mime_type or "").startswith("image/"):
+                return False
             fname = (filename or "").lower()
             # Filename-based heuristics for footer images
             if _DECORATIVE_RE.search(fname):
@@ -390,7 +393,7 @@ def fetch_message_content(service, message_id: str) -> dict | None:
                         body_plain = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
                 elif filename and att_id:
                     # Has a filename and attachmentId
-                    if content_id or _is_decorative(filename, size, bool(content_id)):
+                    if content_id or _is_decorative(filename, size, bool(content_id), mime):
                         # Inline or decorative image — store for proxy serving but flag as inline
                         cid_map[content_id] = att_id if content_id else None
                         attachments.append({
@@ -437,6 +440,19 @@ def fetch_message_content(service, message_id: str) -> dict | None:
         # with inline width constraints. marked.js renders raw HTML unchanged.
         _img_tokens: dict[str, str] = {}
         if body_html:
+            # Pre-process: strip table tags before html2text conversion.
+            # Zendesk/Gmail use <table>/<tr>/<td> for layout, not data — html2text
+            # produces broken markdown tables from these. We strip the table markup
+            # but keep all inner content (text, links, images).
+            def _strip_table_tags(html_str: str) -> str:
+                """Remove <table>/<tr>/<td>/<th>/<tbody>/<thead> tags, keep content."""
+                for tag in ('table', '/table', 'tbody', '/tbody', 'thead', '/thead',
+                           'tr', '/tr', 'td', '/td', 'th', '/th'):
+                    html_str = re.sub(rf'<{tag}\b[^>]*>', '', html_str, flags=re.IGNORECASE)
+                    html_str = re.sub(rf'</{tag}>', '', html_str, flags=re.IGNORECASE)
+                return html_str
+            body_html = _strip_table_tags(body_html)
+
             def _preserve_img(match):
                 tag = match.group(0)
                 w = re.search(r'width\s*=\s*["\']?(\d+)', tag, re.IGNORECASE)
