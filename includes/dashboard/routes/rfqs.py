@@ -1194,11 +1194,7 @@ async def partial_rfq_detail_tab(request: Request, rfq_id: str, tab: str,
         return HTMLResponse("<p>RFQ not found.</p>")
     _enrich_rfq_supplier_contacts(rfq)
 
-    return templates.TemplateResponse(
-        request,
-        "partials/rfq_detail.html",
-        _rfq_detail_context(rfq, user, _normalize_rfq_tab(tab)),
-    )
+    return _render_rfq_detail_partial_response(request, user, rfq, default_tab=tab)
 
 
 @router.get("/api/rfqs/email-content/{message_id}")
