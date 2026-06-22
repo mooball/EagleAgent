@@ -11,32 +11,40 @@
     {% endcall %}
 
     <div class="flex items-center gap-3 mb-3 text-xs">
-        <span class="text-gray-400 dark:text-gray-500 select-none">|</span>
-        <a hx-get="/partial/rfqs?mine=1&status={{ status or 'active' }}{% if q %}&q={{ q }}{% endif %}"
-           hx-target="#main-content" hx-push-url="/rfqs?mine=1&status={{ status or 'active' }}{% if q %}&q={{ q }}{% endif %}"
-           class="px-2.5 py-1 rounded-full cursor-pointer transition-colors
-                  {% if mine == '1' %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
-            My RFQs
-        </a>
-        <a hx-get="/partial/rfqs?mine=0&status={{ status or 'active' }}{% if q %}&q={{ q }}{% endif %}"
-           hx-target="#main-content" hx-push-url="/rfqs?mine=0&status={{ status or 'active' }}{% if q %}&q={{ q }}{% endif %}"
-           class="px-2.5 py-1 rounded-full cursor-pointer transition-colors
-                  {% if mine != '1' %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
-            Everyone's RFQs
-        </a>
+        <!-- Owner toggle group -->
+        <span class="inline-flex rounded-full shadow-sm">
+            <a hx-get="/partial/rfqs?mine=1&status={{ status or 'active' }}{% if q %}&q={{ q }}{% endif %}"
+               hx-target="#main-content" hx-push-url="/rfqs?mine=1&status={{ status or 'active' }}{% if q %}&q={{ q }}{% endif %}"
+               class="px-2.5 py-1 rounded-l-full cursor-pointer transition-colors border border-r-0
+                      {% if mine == '1' %}bg-blue-600 text-white border-blue-600{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
+                My RFQs
+            </a>
+            <a hx-get="/partial/rfqs?mine=0&status={{ status or 'active' }}{% if q %}&q={{ q }}{% endif %}"
+               hx-target="#main-content" hx-push-url="/rfqs?mine=0&status={{ status or 'active' }}{% if q %}&q={{ q }}{% endif %}"
+               class="px-2.5 py-1 rounded-r-full cursor-pointer transition-colors border
+                      {% if mine != '1' %}bg-blue-600 text-white border-blue-600{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
+                Everyone's RFQs
+            </a>
+        </span>
+
+        <!-- Separator -->
         <span class="text-gray-400 dark:text-gray-500 select-none mx-1">—</span>
-        <a hx-get="/partial/rfqs?mine={{ mine or '1' }}&status=active{% if q %}&q={{ q }}{% endif %}"
-           hx-target="#main-content" hx-push-url="/rfqs?mine={{ mine or '1' }}&status=active{% if q %}&q={{ q }}{% endif %}"
-           class="px-2.5 py-1 rounded-full cursor-pointer transition-colors
-                  {% if status == 'active' or not status %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
-            In Progress
-        </a>
-        <a hx-get="/partial/rfqs?mine={{ mine or '1' }}&status=all{% if q %}&q={{ q }}{% endif %}"
-           hx-target="#main-content" hx-push-url="/rfqs?mine={{ mine or '1' }}&status=all{% if q %}&q={{ q }}{% endif %}"
-           class="px-2.5 py-1 rounded-full cursor-pointer transition-colors
-                  {% if status == 'all' %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
-            All States
-        </a>
+
+        <!-- Status toggle group -->
+        <span class="inline-flex rounded-full shadow-sm">
+            <a hx-get="/partial/rfqs?mine={{ mine or '1' }}&status=active{% if q %}&q={{ q }}{% endif %}"
+               hx-target="#main-content" hx-push-url="/rfqs?mine={{ mine or '1' }}&status=active{% if q %}&q={{ q }}{% endif %}"
+               class="px-2.5 py-1 rounded-l-full cursor-pointer transition-colors border border-r-0
+                      {% if status == 'active' or not status %}bg-blue-600 text-white border-blue-600{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
+                In Progress
+            </a>
+            <a hx-get="/partial/rfqs?mine={{ mine or '1' }}&status=all{% if q %}&q={{ q }}{% endif %}"
+               hx-target="#main-content" hx-push-url="/rfqs?mine={{ mine or '1' }}&status=all{% if q %}&q={{ q }}{% endif %}"
+               class="px-2.5 py-1 rounded-r-full cursor-pointer transition-colors border
+                      {% if status == 'all' %}bg-blue-600 text-white border-blue-600{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
+                All States
+            </a>
+        </span>
     </div>
 
     {% if rfqs %}
