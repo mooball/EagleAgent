@@ -4,6 +4,15 @@
 
 You are performing a batch web supplier search across multiple RFQ line items. Items have already been grouped by brand/supply chain, and internal DB suppliers have already been added. Your job is to find **web-based suppliers** for the remaining items that need them.
 
+## Step 0 — Search local database first (ALWAYS)
+
+Before any web search, you MUST first check our internal database for every group and ungrouped item:
+1. Search products by part number or brand using `search_products`
+2. Check purchase history using `part_purchase_history`
+3. Search existing suppliers using `search_suppliers`
+4. **Once the local search is complete, ALWAYS ask the user:** "Would you like me to search the internet for additional suppliers?"
+5. Only proceed to the web search below if the user says yes. Never search the web preemptively.
+
 ## Input
 
 You will receive a structured task with:
