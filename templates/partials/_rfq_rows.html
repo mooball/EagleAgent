@@ -38,7 +38,7 @@
 {% endfor %}
 {% if has_more %}
 <tr id="rfq-sentinel"
-    hx-get="/partial/rfqs/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}{% if mine %}&mine={{ mine }}{% endif %}"
+    hx-get="/partial/rfqs/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}{% if mine %}&mine={{ mine }}{% endif %}{% if status %}&status={{ status }}{% endif %}"
     hx-trigger="intersect"
     hx-target="this"
     hx-swap="outerHTML">
