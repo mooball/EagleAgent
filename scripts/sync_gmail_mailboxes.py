@@ -440,17 +440,37 @@ def fetch_message_content(service, message_id: str) -> dict | None:
         # with inline width constraints. marked.js renders raw HTML unchanged.
         _img_tokens: dict[str, str] = {}
         if body_html:
-            # Pre-process: strip table tags before html2text conversion.
-            # Zendesk/Gmail use <table>/<tr>/<td> for layout, not data — html2text
-            # produces broken markdown tables from these. We strip the table markup
-            # but keep all inner content (text, links, images).
+            # Pre-process: strip LAYOUT table tags before html2text conversion.
+            # Zendesk/Gmail use <table role="presentation"> for layout — html2text
+            # produces broken markdown tables from these.  We strip layout tables
+            # but KEEP data tables that have <th> headers (like RFQ item tables).
             def _strip_table_tags(html_str: str) -> str:
-                """Remove <table>/<tr>/<td>/<th>/<tbody>/<thead> tags, keep content."""
-                for tag in ('table', '/table', 'tbody', '/tbody', 'thead', '/thead',
-                           'tr', '/tr', 'td', '/td', 'th', '/th'):
-                    html_str = re.sub(rf'<{tag}\b[^>]*>', '', html_str, flags=re.IGNORECASE)
-                    html_str = re.sub(rf'</{tag}>', '', html_str, flags=re.IGNORECASE)
-                return html_str
+                """Strip layout <table> tags, keep data tables (those with <th>)."""
+                def _process_table(match):
+                    full_attrs = match.group(1)  # attributes inside <table ...>
+                    inner = match.group(2)       # content between <table> and </table>
+                    # Keep data tables: have <th> elements (e.g., RFQ items table)
+                    if '<th' in inner.lower():
+                        return match.group(0)
+                    # Keep if not explicitly a presentation/layout table
+                    has_presentation = 'role="presentation"' in full_attrs.lower()
+                    if not has_presentation:
+                        tr_count = len(re.findall(r'<tr[\s>]', inner, re.IGNORECASE))
+                        td_count = len(re.findall(r'<td[\s>]', inner, re.IGNORECASE))
+                        if tr_count > 1 or td_count > 2:
+                            return match.group(0)  # keep — likely data table
+                    # Strip layout table tags but keep inner content
+                    for tag in ('table', '/table', 'tbody', '/tbody', 'thead', '/thead',
+                               'tr', '/tr', 'td', '/td', 'th', '/th'):
+                        inner = re.sub(rf'<{tag}\b[^>]*>', '', inner, flags=re.IGNORECASE)
+                        inner = re.sub(rf'</{tag}>', '', inner, flags=re.IGNORECASE)
+                    return inner
+                return re.sub(
+                    r'<table\b([^>]*)>(.*?)</table>',
+                    _process_table,
+                    html_str,
+                    flags=re.IGNORECASE | re.DOTALL,
+                )
             body_html = _strip_table_tags(body_html)
 
             def _preserve_img(match):
@@ -459,11 +479,39 @@ def fetch_message_content(service, message_id: str) -> dict | None:
                 h = re.search(r'height\s*=\s*["\']?(\d+)', tag, re.IGNORECASE)
                 src = re.search(r'src\s*=\s*["\']([^"\']*)', tag, re.IGNORECASE)
                 src_val = (src.group(1) or "").strip() if src else ""
-                # Discard: broken src, tracking pixels, cid: leftovers, Gmail-internal URLs
+                # Discard: broken src, cid: leftovers
                 if not src_val or src_val.startswith("cid:"):
                     return ""
+                # Handle Gmail-internal URLs (tracking pixels vs inline images)
                 if "mail.google.com" in src_val:
-                    return ""
+                    # Gmail-internal inline images can't be reliably displayed
+                    # outside Gmail — the CDN tokens expire and rate-limit.
+                    # Replace with a link to view the email in Gmail.
+                    has_att_ref = bool(
+                        re.search(r'realattid=([^&\s"]+)', src_val) or
+                        re.search(r'attbid=([^&\s"]+)', src_val)
+                    )
+                    if has_att_ref:
+                        # Use placeholder — resolved to user-specific URL by the API endpoint
+                        gmail_url = f"https://mail.google.com/mail/u/?authuser=%%GMAIL_USER%%#inbox/{message_id}"
+                        new_tag = (
+                            f'<a href="{gmail_url}" target="_blank" rel="noopener" '
+                            f'style="display:inline-block;padding:4px 10px;border:1px solid #d1d5db;'
+                            f'border-radius:6px;color:#2563eb;text-decoration:none;font-size:13px;">'
+                            f'📷 View inline image in Gmail</a>'
+                        )
+                        token = f'%%IMG_{len(_img_tokens)}%%'
+                        _img_tokens[token] = new_tag
+                        return token
+                    else:
+                        # No att reference — tracking pixel, strip it
+                        width_px = int(w.group(1)) if w else None
+                        height_px = int(h.group(1)) if h else None
+                        if width_px is not None and width_px <= 1:
+                            return ""
+                        if height_px is not None and height_px <= 1:
+                            return ""
+                        return ""
                 width_px = int(w.group(1)) if w else None
                 height_px = int(h.group(1)) if h else None
                 if width_px is not None and width_px <= 1:
@@ -474,7 +522,7 @@ def fetch_message_content(service, message_id: str) -> dict | None:
                 width_px = int(w.group(1)) if w else None
                 height_px = int(h.group(1)) if h else None
                 style = f'width:{width_px}px;height:auto;max-width:100%' if width_px else 'max-width:100%;height:auto'
-                new_tag = f'<img src="{src.group(1)}" style="{style}" alt="" loading="lazy">'
+                new_tag = f'<img src="{src_val}" style="{style}" alt="" loading="lazy">'
                 token = f'%%IMG_{len(_img_tokens)}%%'
                 _img_tokens[token] = new_tag
                 return token

@@ -219,6 +219,40 @@
     restoreSidebarState();
   }
 
+  // ---- Enforce sidebar state on resize ----
+  // Chainlit's responsive layout can re-open the sidebar when the iframe is
+  // resized, ignoring the cookie.  We watch for this and re-close it.
+
+  var _enforceTimer = null;
+  function enforceSidebarState() {
+    var saved = getSidebarCookie();
+    if (saved !== 'false') return;
+    // Debounce — React may take a frame or two to re-render after resize
+    clearTimeout(_enforceTimer);
+    _enforceTimer = setTimeout(function () {
+      // Check whether the sidebar toggle button reports "open" state
+      var btn = document.querySelector('[aria-label="Toggle Sidebar"]');
+      if (!btn) return;
+      // aria-expanded is "true" when sidebar is open; "false" when collapsed
+      var expanded = btn.getAttribute('aria-expanded');
+      if (expanded === 'true') {
+        btn.click();
+      }
+    }, 150);
+  }
+
+  // Listen for iframe/window resize
+  window.addEventListener('resize', enforceSidebarState);
+
+  // Also use ResizeObserver as a more reliable signal (catches CSS-driven
+  // layout changes that don't fire the window resize event)
+  if (typeof ResizeObserver !== 'undefined') {
+    try {
+      var _ro = new ResizeObserver(enforceSidebarState);
+      _ro.observe(document.body);
+    } catch (_) { /* ignore */ }
+  }
+
   // ---- Agent → Dashboard communication ----
 
   /**

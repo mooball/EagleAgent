@@ -174,22 +174,14 @@ def _normalize_rfq_tab(tab: str | None) -> str:
 
 
 def _infer_rfq_tab_from_request(request: Request, default: str = "items") -> str:
-    """Infer active RFQ tab from explicit query, referer path, or fallback."""
+    """Infer active RFQ tab from explicit query, or fall back to default.
+
+    Referer-based inference is intentionally NOT used — it caused double-click
+    issues where the old tab from the referer would override the requested tab.
+    """
     explicit = _normalize_rfq_tab(request.query_params.get("tab"))
     if explicit != "items" or request.query_params.get("tab"):
         return explicit
-
-    referer = request.headers.get("referer", "")
-    if referer:
-        try:
-            from urllib.parse import urlparse
-
-            parsed = urlparse(referer)
-            segment = (parsed.path.rstrip("/").split("/")[-1] or "").lower()
-            if segment in RFQ_ALLOWED_TABS:
-                return segment
-        except Exception:
-            pass
 
     return _normalize_rfq_tab(default)
 
@@ -208,6 +200,7 @@ def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
             if key not in supplier_map:
                 email = None
                 url = None
+                supplier_id = sup.get("supplier_id")
                 contacts = sup.get("contacts") or []
                 for c in contacts:
                     if isinstance(c, dict):
@@ -219,6 +212,7 @@ def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
                     "name": name,
                     "email": email,
                     "url": url,
+                    "supplier_id": supplier_id,
                     "country": sup.get("country"),
                     "currency": sup.get("currency"),
                     "line_items": [],
@@ -231,7 +225,80 @@ def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
                 "quantity": item.get("quantity") or "—",
                 "uom": item.get("uom") or "",
             })
+    
+    # Check email_tracking to see which suppliers have been contacted on this RFQ
+    _enrich_supplier_contact_status(rfq.get("rfq_number") or rfq.get("id", ""), supplier_map)
+    
     return sorted(supplier_map.values(), key=lambda s: s["name"].lower())
+
+
+def _enrich_supplier_contact_status(rfq_id: str, supplier_map: dict[str, dict]) -> None:
+    """Add has_been_emailed flag to each supplier in the map.
+
+    Checks email_tracking for any sent or received email linked to this RFQ
+    and matched to the supplier (by supplier_id or email address).
+    """
+    if not rfq_id or not supplier_map:
+        return
+
+    from sqlalchemy import text
+    from uuid import UUID
+
+    session = _helpers.get_session()
+    try:
+        # Build lookup: supplier_id → key, email → key
+        id_to_key: dict[str, str] = {}
+        email_to_key: dict[str, str] = {}
+        for key, sup in supplier_map.items():
+            sid = sup.get("supplier_id")
+            if sid:
+                try:
+                    UUID(str(sid))
+                    id_to_key[str(sid)] = key
+                except (ValueError, TypeError):
+                    pass
+            if sup.get("email"):
+                email_to_key[sup["email"].lower().strip()] = key
+
+        if not id_to_key and not email_to_key:
+            return
+
+        # Build OR conditions for supplier_id matches
+        conditions = []
+        params = {"rfq_id": rfq_id}
+        if id_to_key:
+            conditions.append("et.supplier_id = ANY(:supplier_ids)")
+            params["supplier_ids"] = list(id_to_key.keys())
+
+        rows = session.execute(
+            text(f"""
+                SELECT DISTINCT
+                    et.supplier_id::text AS sid,
+                    et.recipient_email,
+                    et.sender_email
+                FROM email_tracking et
+                WHERE (et.rfq_id = :rfq_id OR et.rfq_token = :rfq_id)
+                  AND et.direction IN ('sent', 'received')
+                  AND (
+                    {' OR '.join(conditions) if conditions else 'FALSE'}
+                  )
+            """),
+            params,
+        ).mappings().all()
+
+        # Mark contacted suppliers
+        for row in rows:
+            key = None
+            if row["sid"] and row["sid"] in id_to_key:
+                key = id_to_key[row["sid"]]
+            if not key and row["recipient_email"]:
+                key = email_to_key.get(row["recipient_email"].lower().strip())
+            if not key and row["sender_email"]:
+                key = email_to_key.get(row["sender_email"].lower().strip())
+            if key and key in supplier_map:
+                supplier_map[key]["has_been_emailed"] = True
+    finally:
+        session.close()
 
 
 def _get_all_user_emails() -> list[dict]:
@@ -605,16 +672,20 @@ async def partial_rfq_price_history(
     request: Request,
     product_id: str = "",
     supplier_id: str = "",
+    part_number: str = "",
     user: dict = Depends(require_user),
 ):
     """Return HTML fragment with last 5 transactions for a product+supplier pair."""
     def _fetch_history():
         import uuid
         from sqlalchemy import and_, desc
-        from includes.dashboard.models import Transaction
+        from includes.dashboard.models import Transaction, Product as ProductModel
 
         try:
             pid = uuid.UUID(product_id)
+        except (ValueError, TypeError):
+            pid = None
+        try:
             sid = uuid.UUID(supplier_id)
         except (ValueError, TypeError):
             return []
@@ -638,6 +709,32 @@ async def partial_rfq_price_history(
                 .limit(5)
                 .all()
             )
+            
+            # Fallback: if no rows by product_id and part_number is provided,
+            # look up the correct product_id from the part_number and retry
+            if not rows and part_number:
+                prod = session.query(ProductModel).filter(
+                    ProductModel.part_number.ilike(part_number.strip())
+                ).first()
+                if prod and prod.id != pid:
+                    rows = (
+                        session.query(
+                            Transaction.date,
+                            Transaction.doc_type,
+                            Transaction.doc_number,
+                            Transaction.quantity,
+                            Transaction.cost,
+                            Transaction.price,
+                        )
+                        .filter(and_(
+                            Transaction.product_id == prod.id,
+                            Transaction.supplier_id == sid,
+                        ))
+                        .order_by(desc(Transaction.date))
+                        .limit(5)
+                        .all()
+                    )
+            
             return [
                 {
                     "date": r.date.isoformat() if r.date else "—",
@@ -995,6 +1092,52 @@ async def partial_rfq_drop_supplier_all(
     return Response(status_code=204)
 
 
+@router.post("/partial/rfqs/{rfq_id}/shortlist-supplier-all-items")
+async def partial_rfq_shortlist_supplier_all_items(
+    request: Request, rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Shortlist a supplier on all line items where they already appear."""
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+
+    form = await request.form()
+    supplier_name = (form.get("supplier_name") or "").strip()
+    if not supplier_name:
+        return HTMLResponse("<p>Missing supplier name.</p>", status_code=400)
+
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if not rfq:
+            return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+
+        items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()
+        name_lower = supplier_name.lower()
+        count = 0
+        for item in items:
+            suppliers = list(item.suppliers or [])
+            changed = False
+            for sup in suppliers:
+                if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
+                    if sup.get("status") != "shortlisted":
+                        sup["status"] = "shortlisted"
+                        changed = True
+                        count += 1
+            if changed:
+                item.suppliers = suppliers
+                flag_modified(item, "suppliers")
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    from starlette.responses import Response
+    return Response(status_code=204)
+
+
 @router.post("/partial/rfqs/{rfq_id}/copy-supplier-to-all")
 async def partial_rfq_copy_supplier_to_all(
     request: Request, rfq_id: str,
@@ -1324,6 +1467,9 @@ async def api_get_email_body_rendered(
 
             # Split body and quoted content
             body_md = tracking.body_markdown or ""
+            # Replace Gmail user placeholder with actual user email
+            if tracking.user_email:
+                body_md = body_md.replace("%%GMAIL_USER%%", tracking.user_email)
             parts = body_md.split("<!-- quoted -->")
             main_body = parts[0].strip()
             quoted_body = parts[1].strip() if len(parts) > 1 else None

@@ -640,17 +640,33 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         else:
             valid_suppliers = db_linked
 
-        # Auto-resolve product_id if the item has a part_number but no product_id
+        # Auto-resolve product_id if the item has a part_number
         product_id = line_item.product_id
-        if not product_id and line_item.part_number:
+        if line_item.part_number:
             from includes.dashboard.models import Product as ProductModel
-            prod = session.query(ProductModel).filter(
-                ProductModel.part_number.ilike(line_item.part_number)
-            ).first()
-            if prod:
-                line_item.product_id = prod.id
-                product_id = prod.id
-                logger.info(f"[auto-resolve] Set product_id={prod.id} for part_number={line_item.part_number}")
+            
+            # Validate existing product_id: does it actually match the part_number?
+            if product_id:
+                existing = session.query(ProductModel).filter(
+                    ProductModel.id == product_id
+                ).first()
+                if not existing or (existing.part_number or "").strip().lower() != line_item.part_number.strip().lower():
+                    logger.warning(
+                        f"[auto-resolve] product_id={product_id} (part={existing.part_number if existing else 'N/A'}) "
+                        f"does not match line part_number={line_item.part_number} — re-resolving"
+                    )
+                    product_id = None
+                    line_item.product_id = None
+            
+            # Resolve from part_number if needed
+            if not product_id:
+                prod = session.query(ProductModel).filter(
+                    ProductModel.part_number.ilike(line_item.part_number.strip())
+                ).first()
+                if prod:
+                    line_item.product_id = prod.id
+                    product_id = prod.id
+                    logger.info(f"[auto-resolve] Set product_id={prod.id} (part={prod.part_number}) for part_number={line_item.part_number}")
 
         # Enrich with historical pricing from Transaction table
         _enrich_supplier_pricing(valid_suppliers, str(product_id) if product_id else None)
