@@ -897,6 +897,19 @@
                         }
                     }).catch(function(err) { console.error('[drop-supplier-all]', err); });
                 },
+                shortlistSupplierAll(supplierName) {
+                    var rfqId = this.rfqId;
+                    fetch('/partial/rfqs/' + rfqId + '/shortlist-supplier-all-items', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        credentials: 'same-origin',
+                        body: 'supplier_name=' + encodeURIComponent(supplierName)
+                    }).then(function(resp) {
+                        if (resp.ok) {
+                            htmx.ajax('GET', '/partial/rfqs/' + rfqId, { target: '#main-content' });
+                        }
+                    }).catch(function(err) { console.error('[shortlist-supplier-all]', err); });
+                },
                 copySupplierToAll(line, supplierName) {
                     var rfqId = this.rfqId;
                     fetch('/partial/rfqs/' + rfqId + '/copy-supplier-to-all', {

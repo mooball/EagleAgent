@@ -315,3 +315,13 @@ When asked to create a prompt, plan, or task list, always:
 - Do not commit `.env`, `.venv`, secrets, or `__pycache__/`.
 - `pyproject.toml` is the single source of truth for dependencies.
 - Shell scripts: `run.sh` (start dev server), `kill-8000.sh` (clear stuck port), `start.sh` (production entry).
+
+## AI Assistant Rules
+
+### Production Safety
+- **Never modify production data** without explicit approval. Do not run UPDATE/INSERT/DELETE on the production database or production server unless the user explicitly says to proceed. Always stop at diagnosis and ask for permission.
+- Production database connection details are in `.env` as `PROD_DATABASE_URL` (Railway proxy: `shortline.proxy.rlwy.net`). See "Connecting to Databases" above for the connection pattern.
+
+### Change Workflow
+- **Diagnose first, propose second, implement only after approval.** When the user reports an issue: (1) investigate and explain the root cause, (2) propose a fix with specific files and changes, (3) wait for explicit approval before making any code changes.
+- **Ask before committing.** Present the diff and ask before `git commit` + `git push`. The user wants the opportunity to test changes first.
