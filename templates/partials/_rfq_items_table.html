@@ -8,7 +8,7 @@
                 <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Part Number</th>
                 <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Brand</th>
                 <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Qty</th>
-                <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-16">Status</th>
+                <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-16">Match</th>
                 <th class="text-right px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Action</th>
             </tr>
         </thead>
@@ -45,24 +45,23 @@
                 <td class="px-3 py-2.5">{{ item.brand or '—' }}</td>
                 <td class="px-3 py-2.5 text-center">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
                 <td class="px-3 py-2.5 text-center">
-                    {% if item.status == 'confirmed' %}
-                    <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-green-500" data-tip="Confirmed"></span>
-                    {% elif item.status == 'identified' %}
-                    <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-blue-500" data-tip="Identified"></span>
-                    {% elif item.status == 'review' %}
-                    <span class="tip tip-end inline-flex items-center gap-0.5" data-tip="{{ item.notes or 'Needs Review' }}">
-                        <span class="inline-block w-2.5 h-2.5 rounded-full bg-amber-500"></span>
-                        <svg class="w-3 h-3 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
-                    </span>
+                    {% if item.match == 'specific' %}
+                    <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-green-500" data-tip="Specific — part number + description (brand discoverable)"></span>
+                    {% elif item.match == 'branded' %}
+                    <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-blue-500" data-tip="Branded — brand + description, no part number"></span>
+                    {% elif item.match == 'generic' %}
+                    <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-purple-500" data-tip="Generic — description only"></span>
+                    {% elif item.match == 'discrepancy' %}
+                    <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-orange-500" data-tip="{{ item.notes or 'Discrepancy — part number mismatch or unverifiable' }}"></span>
                     {% else %}
-                    <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-gray-400" data-tip="Unidentified"></span>
+                    <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-gray-400" data-tip="Unmatched — not yet classified"></span>
                     {% endif %}
                 </td>
                 <td class="px-3 py-2.5 text-right whitespace-nowrap">
                     <div class="flex items-center justify-end gap-1">
                         {% if suppliers %}
                         <span class="tabular-nums text-xs text-gray-500">{{ active_suppliers | length }} suppliers</span>
-                        {% elif item.status == 'confirmed' %}
+                        {% elif item.match == 'specific' %}
                         <button class="btn-sm"
                                 @click.stop="findSuppliers({{ item.line }})">
                             Find Suppliers
@@ -70,7 +69,7 @@
                         {% else %}
                         <button class="btn-sm btn-accent"
                                 @click.stop="identifyItem({{ item.line }})">
-                            Identify Item
+                            Classify &amp; Validate
                         </button>
                         {% endif %}
                         <button class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"

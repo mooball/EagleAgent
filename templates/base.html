@@ -671,7 +671,7 @@
                 userEmail: '',
                 _allLines: [],
                 _items: {},
-                _unidentifiedItems: [],
+                _unmatchedItems: [],
                 init() {
                     var dataEl = document.getElementById('rfq-data');
                     var data = dataEl ? JSON.parse(dataEl.textContent) : {};
@@ -681,7 +681,7 @@
                     this.emailModal.userEmail = this.userEmail;
                     this.emailModal.trackingId = this.trackingId;
                     this._allLines = data.allLines || [];
-                    this._unidentifiedItems = data.unidentified || [];
+                    this._unmatchedItems = data.unmatched || [];
                     // Index items by line number for quick lookup
                     (data.items || []).forEach(i => this._items[i.line] = i);
                     // Auto-open header edit form for blank RFQs (no customer yet)
@@ -774,7 +774,7 @@
                 identifyItems() {
                     var payload = {
                         rfq_id: this.rfqId,
-                        items: this._unidentifiedItems.map(function(i) {
+                        items: this._unmatchedItems.map(function(i) {
                             return {
                                 line: i.line,
                                 description: i.input_description,
@@ -783,7 +783,7 @@
                             };
                         })
                     };
-                    this._sendAction({ name: 'rfq_identify_items', label: 'AI confirming items...', payload: payload });
+                    this._sendAction({ name: 'rfq_identify_items', label: 'Classifying & validating items...', payload: payload });
                 },
                 identifyItem(line) {
                     var item = this._items[line];
@@ -797,7 +797,7 @@
                             brand: item.brand
                         }]
                     };
-                    this._sendAction({ name: 'rfq_identify_items', label: 'Identifying line ' + item.line + '...', payload: payload });
+                    this._sendAction({ name: 'rfq_identify_items', label: 'Classifying line ' + item.line + '...', payload: payload });
                 },
                 findSuppliers(line) {
                     var item = this._items[line];
@@ -816,12 +816,12 @@
                     this._sendAction({ name: 'rfq_find_suppliers', label: 'Finding suppliers for line ' + item.line + '...', payload: payload });
                 },
                 groupItems() {
-                    var confirmed = [];
+                    var specificItems = [];
                     var self = this;
                     this._allLines.forEach(function(line) {
                         var item = self._items[line];
-                        if (item && item.status === 'confirmed') {
-                            confirmed.push({
+                        if (item && item.match === 'specific') {
+                            specificItems.push({
                                 line: item.line,
                                 input_description: item.input_description,
                                 part_number: item.part_number || item.input_code,
@@ -829,10 +829,10 @@
                             });
                         }
                     });
-                    if (confirmed.length < 2) { return; }
+                    if (specificItems.length < 2) { return; }
                     var payload = {
                         rfq_id: this.rfqId,
-                        items: confirmed
+                        items: specificItems
                     };
                     this._sendAction({ name: 'rfq_group_items', label: 'Grouping items...', payload: payload });
                 },
@@ -840,7 +840,7 @@
                     // Legacy: runs both phases sequentially
                     var payload = this._buildSupplierPayload();
                     if (!payload) return;
-                    this._sendAction({ name: 'rfq_find_all_suppliers', label: 'Finding suppliers for all confirmed items...', payload: payload });
+                    this._sendAction({ name: 'rfq_find_all_suppliers', label: 'Finding suppliers for all specific items...', payload: payload });
                 },
                 findPreviousSuppliers() {
                     var payload = this._buildSupplierPayload();
@@ -853,13 +853,13 @@
                     this._sendAction({ name: 'rfq_find_new_suppliers', label: 'Searching the web for new suppliers...', payload: payload });
                 },
                 _buildSupplierPayload() {
-                    var confirmedItems = [];
+                    var specificItems = [];
                     var self = this;
                     this._allLines.forEach(function(line) {
                         var item = self._items[line];
-                        if (item && item.status === 'confirmed') {
+                        if (item && item.match === 'specific') {
                             var suppliers = (item.suppliers || []).filter(function(s) { return s.status !== 'dropped'; }).map(function(s) { return s.name; });
-                            confirmedItems.push({
+                            specificItems.push({
                                 line: item.line,
                                 description: item.input_description,
                                 part_number: item.part_number || item.input_code,
@@ -870,8 +870,8 @@
                             });
                         }
                     });
-                    if (confirmedItems.length < 1) return null;
-                    return { rfq_id: this.rfqId, items: confirmedItems };
+                    if (specificItems.length < 1) return null;
+                    return { rfq_id: this.rfqId, items: specificItems };
                 },
                 shortlistAll() {
                     var rfqId = this.rfqId;

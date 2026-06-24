@@ -107,7 +107,7 @@ def migrate(dry_run: bool = False):
                     product_id=product_id,
                     quantity=item_data.get("quantity"),
                     uom=item_data.get("uom", "ea"),
-                    status=item_data.get("status", "unidentified"),
+                    match=item_data.get("match") or item_data.get("status") or "unmatched",
                     notes=item_data.get("notes") or None,
                     suppliers=item_data.get("suppliers", []),
                 )

@@ -797,32 +797,16 @@ async def search_purchase_history(
 # Structured DB helpers — return dicts with IDs for RFQ linking
 # ---------------------------------------------------------------------------
 
-def _find_product_exact(part_number: str, brand: str = None) -> Optional[dict]:
-    """Find a product by exact part number match. Returns dict with id, part_number, brand or None."""
+def _find_product_by_code(part_number: str, brand: str = None) -> Optional[dict]:
+    """Find a product by part_number OR supplier_code. Returns dict or None."""
     session = get_session()
     try:
-        query = session.query(Product).filter(Product.part_number.ilike(part_number))
-        if brand:
-            query = query.filter(Product.brand.ilike(brand))
-        product = query.first()
-        if product:
-            return {
-                "id": str(product.id),
-                "part_number": product.part_number,
-                "brand": product.brand,
-                "description": product.description,
-                "supplier_code": product.supplier_code,
-            }
-        return None
-    finally:
-        session.close()
-
-
-def _find_product_by_supplier_code(supplier_code: str, brand: str = None) -> Optional[dict]:
-    """Find a product by supplier code. Returns dict with id, part_number, brand or None."""
-    session = get_session()
-    try:
-        query = session.query(Product).filter(Product.supplier_code.ilike(supplier_code))
+        query = session.query(Product).filter(
+            or_(
+                Product.part_number.ilike(part_number),
+                Product.supplier_code.ilike(part_number),
+            )
+        )
         if brand:
             query = query.filter(Product.brand.ilike(brand))
         product = query.first()

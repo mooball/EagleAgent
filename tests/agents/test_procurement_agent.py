@@ -21,9 +21,9 @@ class TestGetTools:
     async def test_returns_search_products_tool(self):
         # Ensure that it correctly wires all procurement tools
         tools = await self.agent.get_tools_async(user_id="test_user") if hasattr(self.agent, "get_tools_async") else self.agent.get_tools(user_id="test_user")
-        assert len(tools) == 7
+        assert len(tools) == 11
         tool_names = {t.name for t in tools}
-        assert tool_names == {"search_products", "search_brands", "search_suppliers", "part_purchase_history", "search_purchase_history", "manage_rfq", "get_rfq"}
+        assert tool_names == {"search_products", "search_brands", "search_suppliers", "part_purchase_history", "search_purchase_history", "manage_rfq", "get_rfq", "classify_items", "validate_items", "find_previous_suppliers", "group_items"}
 
 class TestSystemPrompt:
     def setup_method(self):

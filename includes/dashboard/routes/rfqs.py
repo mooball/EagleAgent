@@ -927,7 +927,7 @@ async def partial_rfq_add_item(request: Request, rfq_id: str,
                 brand=(form.get("brand") or "").strip() or None,
                 quantity=qty,
                 uom=(form.get("uom") or "").strip() or "ea",
-                status="unidentified",
+                match="unmatched",
                 suppliers=[],
             )
             session.add(new_item)

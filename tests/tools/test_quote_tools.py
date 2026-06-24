@@ -145,7 +145,7 @@ class TestManageRfqCreate:
         items = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).order_by(RFQItem.line).all()
         assert len(items) == 2
         assert items[0].line == 1
-        assert items[0].status == "unidentified"
+        assert items[0].match == "unmatched"
         assert items[1].line == 2
 
 
@@ -162,15 +162,15 @@ class TestManageRfqUpdateItem:
             result = await manage.ainvoke({
                 "action": "update_item",
                 "rfq_id": rfq.rfq_number,
-                "data": {"line": 1, "part_number": "DHP486Z", "brand": "Makita", "status": "confirmed"},
+                "data": {"line": 1, "part_number": "DHP486Z", "brand": "Makita", "match": "specific"},
             })
-        assert "Confirmed" in result or "confirmed" in result.lower()
+        assert "Specific" in result or "specific" in result.lower()
 
         db_session.expire_all()
         item = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id, RFQItem.line == 1).first()
         assert item.part_number == "DHP486Z"
         assert item.brand == "Makita"
-        assert item.status == "confirmed"
+        assert item.match == "specific"
 
     async def test_update_item_missing_line(self, manage, db_session):
         await _create_sample_rfq(manage, db_session)
@@ -201,7 +201,7 @@ class TestManageRfqUpdateItem:
             result = await manage.ainvoke({
                 "action": "update_item",
                 "rfq_id": rfq.rfq_number,
-                "data": {"line_number": 1, "part_number": "DHP486Z", "status": "confirmed"},
+                "data": {"line_number": 1, "part_number": "DHP486Z", "match": "specific"},
             })
         assert "error" not in result.lower()
 
@@ -672,7 +672,7 @@ class TestPricingEnrichment:
                 "input_description": "Widget",
                 "part_number": "W-001",
                 "quantity": 5,
-                "status": "confirmed",
+                "match": "specific",
                 "suppliers": [
                     {"name": "Sup A", "cost_price": 50.0, "sale_price": 100.0, "status": "candidate"},
                     {"name": "Sup B", "cost_price": 80.0, "sale_price": 100.0, "status": "candidate"},

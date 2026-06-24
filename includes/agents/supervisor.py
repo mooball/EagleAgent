@@ -7,102 +7,137 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 class RouteDecision(BaseModel):
-    next_agent: Literal["GeneralAgent", "ProcurementAgent", "FINISH"] = Field(
-        description="The agent to route the task to, or FINISH if the user request has been fully answered."
+    next_agent: Literal["GeneralAgent", "ProcurementAgent", "ResearchAgent", "FINISH"] = Field(
+        description="The agent to route the task to, or FINISH if complete."
     )
 
-# Extended decision type that includes ResearchAgent (used by intent routing only)
-class ExtendedRouteDecision(BaseModel):
-    next_agent: Literal["GeneralAgent", "ProcurementAgent", "ResearchAgent", "FINISH"] = Field(
-        description="The agent to route the task to."
-    )
+MAX_STEPS = 4  # Hard cap — prevent infinite agent loops
+
 
 class Supervisor:
-    """
-    Supervisor node that routes requests to the appropriate sub-agent using hybrid routing.
+    """Supervisor node that routes requests between agents using LLM-based
+    delegation. Runs after EVERY message (user or agent) to enable
+    agent-to-agent handoff.
     """
     def __init__(self, model: ChatGoogleGenerativeAI):
         self.model = model
-    
+
     async def __call__(self, state: Dict[str, Any], config=None) -> Dict[str, Any]:
-        """
-        Route to the next agent based on the conversation state.
-        """
         messages = state["messages"]
         if not messages:
             return {"next_agent": "GeneralAgent"}
-            
-        last_message = messages[-1]
-        
-        # If the last message is from an AI but not the supervisor doing a hand-off, 
-        # it might mean the sub-agent just answered.
-        if last_message.type == "ai":
-            # Just route to FINISH. The user will reply next.
-            return {"next_agent": "FINISH"}
 
-        # Intent-based routing: if an action button set a specific intent, honour it
+        last_message = messages[-1]
+        step_count = state.get("step_count", 0)
+
+        # ---- Loop guard: too many agent invocations ----
+        if step_count >= MAX_STEPS:
+            logger.warning(f"Supervisor: step_count={step_count} >= {MAX_STEPS}, forcing FINISH")
+            return {"next_agent": "FINISH", "step_count": 0}
+
+        # ---- Determine message source (needed by intent routing below) ----
+        is_user_message = (
+            isinstance(last_message, HumanMessage)
+            or (hasattr(last_message, "type") and last_message.type == "human")
+        )
+
+        # ---- Intent-based routing (dashboard buttons & pipeline) ----
+        # Check the FIRST LINE of intent_context for routing keywords.
+        # Short keywords from buttons (e.g. "search_brands") and pipeline
+        # prefixes (e.g. "research_suppliers\n...") both match.
+        # Long descriptive contexts (e.g. the find_supplier default) don't
+        # match because their first line is a sentence, not a keyword.
         intent_context = state.get("intent_context")
         if intent_context:
-            # Research intent signals → ResearchAgent (web search)
-            research_intent_signals = [
-                "research_suppliers", "web_research",
-            ]
-            if any(signal in intent_context for signal in research_intent_signals):
-                logger.info("Supervisor intent-based routing: ResearchAgent (intent_context set)")
-                return {"next_agent": "ResearchAgent"}
+            first_line = intent_context.split("\n")[0].strip()
+            if len(first_line) < 50:
+                if any(s in first_line for s in ("research_suppliers", "web_research")):
+                    if not is_user_message:
+                        # ResearchAgent already responded — done
+                        logger.info("Supervisor: ResearchAgent completed, FINISH")
+                        return {"next_agent": "FINISH", "step_count": 0}
+                    logger.info("Supervisor intent: ResearchAgent")
+                    return {"next_agent": "ResearchAgent", "step_count": step_count + 1}
+                if any(s in first_line for s in ("search_products", "search_suppliers",
+                       "search_brands", "part_purchase_history", "search_purchase_history")):
+                    logger.info("Supervisor intent: ProcurementAgent")
+                    return {"next_agent": "ProcurementAgent", "intent_context": "", "step_count": step_count + 1}
 
-            # Procurement intent signals → ProcurementAgent (internal DB)
-            procurement_intent_signals = [
-                "search_products", "search_suppliers", "search_brands",
-                "part_purchase_history", "search_purchase_history",
-            ]
-            if any(signal in intent_context for signal in procurement_intent_signals):
-                logger.info("Supervisor intent-based routing: ProcurementAgent (intent_context set)")
-                return {"next_agent": "ProcurementAgent"}
+        # ---- Quick exit: if an agent asked the user a question, FINISH ----
+        # This prevents the supervisor from routing to another agent when
+        # the current agent is waiting for user input.
+        if not is_user_message:
+            content = last_message.content if hasattr(last_message, "content") else str(last_message)
+            content_str = content if isinstance(content, str) else str(content)
+            # Check if the response ends with a question to the user
+            stripped = content_str.rstrip()
+            if stripped.endswith("?"):
+                logger.info("Supervisor: agent asked user a question → FINISH")
+                return {"next_agent": "FINISH", "step_count": 0}
 
-        # It's a HumanMessage. Route via LLM.
+        # ---- LLM-based routing for ALL messages ----
         content = last_message.content if hasattr(last_message, "content") else str(last_message)
-            
-        # LLM-based routing
-        system_prompt = """You are a supervisor managing a team of expert agents.
-Your job is to route the user's request to the correct agent.
+
+        # Build system prompt with delegation context
+        source_context = ""
+        if is_user_message:
+            source_context = "The latest message is FROM THE USER. They expect a response."
+        else:
+            source_context = (
+                "The latest message is FROM AN AGENT. Decide if the agent's work "
+                "is complete (FINISH) or if another agent needs to take over "
+                "(e.g. ResearchAgent for web validation, ProcurementAgent to "
+                "continue a workflow)."
+            )
+
+        system_prompt = f"""You are a supervisor managing a team of expert agents.
+Route the conversation to the correct agent based on what needs to happen next.
 
 Available agents:
-- GeneralAgent: General conversation, memory retrieval, task planning, document summarization. Has Google Search grounding for answering questions using real-time web information. Use when the user explicitly wants external/public/web information, or for non-procurement topics.
-- ProcurementAgent: Use for ANY question about products, parts, brands, suppliers, purchase history, or RFQs that should be answered from our INTERNAL database. This includes: finding suppliers for a product or brand, looking up part numbers, checking purchase orders, searching the product catalog, and asking about what we have in stock or on record. Also handles ALL RFQ management: loading, creating, updating, listing RFQs. When the user asks "who can supply X?" or "find a supplier for X" without specifying "search the web", default to ProcurementAgent.
-- FINISH: Use ONLY after an agent has just responded and there is no new user question pending. NEVER choose FINISH when the latest message is from the user — the user is always expecting a response.
+- ProcurementAgent: Products, parts, brands, suppliers, purchase history, RFQs.
+  Searches INTERNAL database. Handles RFQ workflows: classify, group, find
+  suppliers, add suppliers. Use for ANY supplier/product/RFQ task including
+  processing research results that need to be added to the RFQ.
+- ResearchAgent: Web search via Google Search grounding. Use for:
+  (a) validating part numbers/product details online
+  (b) finding new suppliers via web (only when user has given permission)
+  Reports findings but does NOT modify RFQs directly.
+- GeneralAgent: General conversation, non-procurement topics, generic web info.
+- FINISH: The conversation is complete. Use when an agent has provided a final
+  answer and no further work is needed.
 
-Routing guidelines:
-- The latest message is from the user, so you MUST route to an agent. Do NOT choose FINISH.
-- Questions about suppliers, products, brands, parts, purchase history, records, quotes → ProcurementAgent (unless the user explicitly asks for web/external info)
-- "Search the web for..." or "find me information online about..." → GeneralAgent
-- RFQ requests (load, create, update, show, list) → ProcurementAgent
-- If the user wants MORE info beyond what our database returned, or explicitly asks for external/public knowledge → GeneralAgent
-- If unsure between ProcurementAgent and GeneralAgent, prefer ProcurementAgent for supplier/product questions
-- If unsure which agent to use, default to GeneralAgent. Never choose FINISH for a user question.
+Routing rules:
+- {source_context}
+- If an agent response mentions needing web validation or checking part numbers
+  online → route to ResearchAgent
+- If the user says "yes" to searching the web for suppliers → ResearchAgent
+- If ResearchAgent just returned results → route back to ProcurementAgent
+  to continue the workflow (it will process and add results to the RFQ)
+- If the user asks about suppliers, products, parts, RFQs → ProcurementAgent
+- If the task is complete and no delegation is needed → FINISH
+- Step count: {step_count}/{MAX_STEPS}. If near the limit, prefer FINISH.
 
 Given the conversation, which agent should act next?
 """
-        
+
         model_with_structured_output = self.model.with_structured_output(RouteDecision)
-        
-        # Include recent conversation context so the supervisor can see what's
-        # already been discussed (e.g., internal data already fetched)
-        recent_messages = messages[-5:]  # Last few messages for context
+        recent_messages = messages[-8:]
         eval_messages = [SystemMessage(content=system_prompt)] + list(recent_messages)
-        
-        logger.debug("Supervisor LLM-based routing")
+
+        logger.debug(f"Supervisor LLM routing (step={step_count})")
         try:
-            # Provide tags so event stream can filter it out if needed, or simply let the default behavior work
             merged_config = dict(config) if config else {}
             tags = merged_config.get("tags", [])
             if "supervisor_routing" not in tags:
                 tags.append("supervisor_routing")
             merged_config["tags"] = tags
-            
+
             decision = await model_with_structured_output.ainvoke(eval_messages, config=merged_config)
-            logger.info(f"Supervisor LLM chose: {decision.next_agent}")
-            return {"next_agent": decision.next_agent}
+            logger.info(f"Supervisor: {decision.next_agent} (step={step_count})")
+
+            # Reset step count on user messages, increment on agent messages
+            new_step = 0 if is_user_message else step_count + 1
+            return {"next_agent": decision.next_agent, "step_count": new_step}
         except Exception as e:
-            logger.error(f"Supervisor LLM fallback failed, defaulting to GeneralAgent: {e}")
-            return {"next_agent": "GeneralAgent"}
+            logger.error(f"Supervisor LLM routing failed: {e}, defaulting to FINISH")
+            return {"next_agent": "FINISH", "step_count": 0}
