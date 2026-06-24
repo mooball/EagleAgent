@@ -1,7 +1,7 @@
 """rename rfq_items.status to match
 
 Revision ID: i5j6k7l8m9n0
-Revises: h4i5j6k7l8m9
+Revises: 76bd79cd560f
 Create Date: 2026-06-24 14:00:00.000000
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'i5j6k7l8m9n0'
-down_revision: Union[str, Sequence[str], None] = 'h4i5j6k7l8m9'
+down_revision: Union[str, Sequence[str], None] = '76bd79cd560f'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
