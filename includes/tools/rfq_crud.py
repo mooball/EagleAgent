@@ -123,7 +123,7 @@ def _item_to_dict(item) -> dict:
         "product_id": str(item.product_id) if item.product_id else None,
         "quantity": item.quantity,
         "uom": item.uom or "ea",
-        "status": item.status or "unidentified",
+        "match": item.match or "unmatched",
         "notes": item.notes or "",
         "suppliers": item.suppliers or [],
         "brand_suppliers": item.brand_suppliers or [],
@@ -297,7 +297,7 @@ def _create_rfq_sync(data: dict, user_id: str) -> dict:
                 product_id=raw.get("product_id"),
                 quantity=raw.get("quantity"),
                 uom=raw.get("uom", "ea"),
-                status=raw.get("status", "unidentified"),
+                match=raw.get("match", "unmatched"),
                 notes=raw.get("notes", ""),
                 suppliers=[],
             )
@@ -395,7 +395,7 @@ def _add_items_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                 product_id=raw.get("product_id"),
                 quantity=raw.get("quantity"),
                 uom=raw.get("uom", "ea"),
-                status=raw.get("status", "unidentified"),
+                match=raw.get("match", "unmatched"),
                 notes=raw.get("notes", ""),
                 suppliers=[],
             )
@@ -495,9 +495,9 @@ def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
 
         updatable = [
             "input_description", "input_code", "part_number", "brand",
-            "product_id", "quantity", "uom", "status", "notes",
+            "product_id", "quantity", "uom", "match", "notes",
         ]
-        _no_clear = {"part_number", "brand", "product_id", "input_description", "input_code"}
+        _no_clear = {"product_id", "match"}
         changes = []
         for key in updatable:
             if key in data:
@@ -506,6 +506,14 @@ def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                     continue
                 setattr(line_item, key, new_val)
                 changes.append(key)
+
+        # If any identifying field changed and caller didn't explicitly set match,
+        # reset classification (match → unmatched, clear product_id link)
+        _identifying = {"input_description", "input_code", "part_number", "brand"}
+        if _identifying & set(data.keys()) and "match" not in data:
+            line_item.match = "unmatched"
+            line_item.product_id = None
+            changes.extend(["match", "product_id"])
 
         now = _now_iso()
         history = list(rfq.history or [])

@@ -174,133 +174,175 @@ async def on_rfq_update_supplier(action: cl.Action) -> None:
 
 @cl.action_callback("rfq_identify_items")
 async def on_rfq_identify_items(action: cl.Action) -> None:
-    """Handle Identify Items button from RFQ custom element.
+    """Classify & validate RFQ items.
 
-    Phase 1: Search internal product DB by part number, supplier code,
-             and description for each unidentified item.
-             Update the RFQ directly for any exact matches (with product_id).
-    Phase 2: Route unmatched items to ResearchAgent for web-based
-             identification (must be 100% positive match).
+    Step A: CLASSIFY — assign a match level to every unmatched item based on
+            available data (deterministic, no I/O).
+            specific: part_number + brand + description
+            branded:  brand + description (no part_number)
+            generic:  description only
+
+    Step B: VALIDATE (specific items only) — search internal product DB,
+            then web search for discrepancy detection.
     """
-    from includes.tools.product_tools import _find_product_exact, _find_product_by_supplier_code
+    from includes.tools.product_tools import _find_product_by_code
 
     payload = action.payload or {}
     rfq_id = payload.get("rfq_id", "???")
-    unidentified_items = payload.get("items", [])
+    items = payload.get("items", [])
 
-    if not unidentified_items:
+    if not items:
         return
 
     async with _pin_thread() as pinned_tid:
 
         await _send_pinned(
-            f"Identifying {len(unidentified_items)} item(s) in {rfq_id}...",
+            f"Classifying & validating {len(items)} item(s) in {rfq_id}...",
             pinned_tid, author="EagleAgent",
         )
-        await notify_dashboard("agent_working", {"label": "AI confirming items..."})
+        await notify_dashboard("agent_working", {"label": "AI classifying items..."})
+
+        user_id = cl.user_session.get("user_id", "unknown")
 
         try:
-            # ---- Phase 1: Internal DB search ----
-            matched = []      # list of dicts: line, part_number, brand, product_id
-            unmatched = []     # items that need web search
+            # ---- Step A: Classify ALL items ----
+            classified = []     # (line, match) for all classified items
+            to_validate = []    # items that are 'specific' and need validation
+            classification_summary = []
 
-            for ui_item in unidentified_items:
+            for ui_item in items:
                 line = ui_item.get("line")
                 description = ui_item.get("description", "")
                 part_number = ui_item.get("part_number", "")
                 brand = ui_item.get("brand", "")
 
-                product = None
-                # Try exact part number match first (most specific)
-                if part_number:
+                has_part = bool(part_number)
+                has_brand = bool(brand and brand.strip().lower() not in ("other", "n/a", "na", "none", "unknown"))
+                has_desc = bool(description)
+
+                match = None
+                # specific:  has a part_number + description (brand is discoverable)
+                # branded:   has brand + description, no part_number
+                # generic:   description only
+                if has_part and has_desc:
+                    match = "specific"
+                elif has_brand and has_desc:
+                    match = "branded"
+                elif has_desc:
+                    match = "generic"
+
+                if match:
+                    await asyncio.to_thread(
+                        _update_item_sync, rfq_id,
+                        {"line": line, "match": match},
+                        user_id,
+                    )
+                    classified.append(line)
+                    if match == "specific":
+                        to_validate.append(ui_item)
+                    classification_summary.append(f"  Line {line} → 🟢 {match}")
+
+            if classification_summary:
+                await _send_pinned(
+                    f"Classified {len(classified)} item(s):\n" + "\n".join(classification_summary),
+                    pinned_tid, author="EagleAgent",
+                )
+            await notify_dashboard("dashboard_refresh")
+
+            # ---- Step B: Validate specific items ----
+            if to_validate:
+                validated = []    # items matched in internal DB
+                need_web = []     # items needing web search for discrepancy check
+
+                for ui_item in to_validate:
+                    line = ui_item.get("line")
+                    part_number = ui_item.get("part_number", "")
+                    brand = ui_item.get("brand", "")
+
+                    product = None
                     try:
                         product = await asyncio.to_thread(
-                            _find_product_exact, part_number, brand or None,
+                            _find_product_by_code, part_number, brand or None,
                         )
                     except Exception as e:
                         logger.warning(f"Phase 1 product search failed for line {line}: {e}")
 
-                # Try supplier code search if part number didn't match
-                if not product and part_number:
-                    try:
-                        product = await asyncio.to_thread(
-                            _find_product_by_supplier_code, part_number, brand or None,
+                    if product:
+                        validated.append({
+                            "line": line,
+                            "part_number": product["part_number"],
+                            "brand": product["brand"],
+                            "product_id": product["id"],
+                        })
+                    else:
+                        need_web.append(ui_item)
+
+                # Update items matched in internal DB
+                if validated:
+                    for v in validated:
+                        await asyncio.to_thread(
+                            _update_item_sync, rfq_id,
+                            {"line": v["line"], "part_number": v["part_number"],
+                             "brand": v["brand"], "product_id": v["product_id"],
+                             "match": "specific"},
+                            user_id,
                         )
-                    except Exception as e:
-                        logger.warning(f"Phase 1 supplier code search failed for line {line}: {e}")
-
-                if product:
-                    matched.append({
-                        "line": line,
-                        "part_number": product["part_number"],
-                        "brand": product["brand"],
-                        "product_id": product["id"],
-                    })
-                else:
-                    unmatched.append(ui_item)
-
-            # Update RFQ with matched items via SQL
-            if matched:
-                user_id = cl.user_session.get("user_id", "unknown")
-                for m in matched:
-                    await asyncio.to_thread(
-                        _update_item_sync, rfq_id,
-                        {"line": m["line"], "part_number": m["part_number"],
-                         "brand": m["brand"], "product_id": m["product_id"],
-                         "status": "confirmed"},
-                        user_id,
+                    match_desc = ", ".join(
+                        f"line {v['line']} → {v['part_number']} ({v['brand']})" for v in validated
                     )
-                await notify_dashboard("dashboard_refresh")
+                    msg = f"Found {len(validated)} item(s) in our product database: {match_desc}."
+                    if need_web:
+                        msg += f" Checking {len(need_web)} remaining item(s) online for discrepancies..."
+                    await _send_pinned(msg, pinned_tid, author="EagleAgent")
+                    await notify_dashboard("dashboard_refresh")
 
-            # Notify user of Phase 1 results
-            if matched:
-                match_desc = ", ".join(f"line {m['line']} → {m['part_number']} ({m['brand']})" for m in matched)
-                msg = f"Identified {len(matched)} item(s) from our product database: {match_desc}."
-                if unmatched:
-                    msg += f" Searching the web for {len(unmatched)} remaining item(s)..."
-                await _send_pinned(msg, pinned_tid, author="EagleAgent")
-            elif unmatched:
+                # Route remaining specific items to ResearchAgent for discrepancy detection
+                if need_web:
+                    await _send_pinned(
+                        f"Validating {len(need_web)} item(s) against web sources to check for discrepancies...",
+                        pinned_tid, author="EagleAgent",
+                    )
+                    await _dispatch_discrepancy_check(need_web, rfq_id, pinned_tid)
+            else:
                 await _send_pinned(
-                    f"No exact matches found in our product database for {len(unmatched)} item(s). Searching the web...",
+                    "All items classified. Items without part numbers are ready for supplier search.",
                     pinned_tid, author="EagleAgent",
                 )
 
-            # ---- Phase 2: Route unmatched items to ResearchAgent for web search ----
-            if unmatched:
-                parts = ["web_research"]
-                parts.append(f"Identify the following unidentified product(s) from {rfq_id}.")
-                parts.append("For each item, search the web to verify the part number and find a positive product match.")
-                parts.append("")
-                for ui_item in unmatched:
-                    line = ui_item.get("line")
-                    desc = ui_item.get("description", "")
-                    pn = ui_item.get("part_number", "")
-                    br = ui_item.get("brand", "")
-                    item_parts = [f"Line {line}: {desc}"]
-                    if pn:
-                        item_parts.append(f"  Code/Part number: {pn}")
-                    if br:
-                        item_parts.append(f"  Brand: {br}")
-                    parts.append("\n".join(item_parts))
-                parts.append("")
-                from includes.prompts import load_prompt
-                parts.append(load_prompt("rfq_identify_items"))
-
-                rich_prompt = "\n".join(parts)
-
-                short_label = f"Identify {len(unmatched)} unmatched item(s) in {rfq_id} via web search"
-                synthetic = cl.Message(content=short_label)
-                synthetic.author = "User"
-                synthetic.intent_context = rich_prompt
-
-                await _main_pinned(synthetic, pinned_tid)
-            elif not matched:
-                await _send_pinned(
-                    "All items could not be identified. Try adding more details (part numbers, brands) to help.",
-                    pinned_tid, author="EagleAgent",
-                )
         finally:
             await notify_dashboard("agent_done")
+
+
+async def _dispatch_discrepancy_check(items: list[dict], rfq_id: str, pinned_tid: str) -> None:
+    """Build and dispatch a discrepancy-detection prompt to ResearchAgent."""
+    from includes.prompts import load_prompt
+
+    parts = ["web_research"]
+    parts.append(f"Validate the following items from {rfq_id} by checking if their part numbers actually match their brand and description.")
+    parts.append("Your primary job is to find DISCREPANCIES — where the part number does not match the brand or description.")
+    parts.append("")
+    for ui_item in items:
+        line = ui_item.get("line")
+        desc = ui_item.get("description", "")
+        pn = ui_item.get("part_number", "")
+        br = ui_item.get("brand", "")
+        item_parts = [f"Line {line}: {desc}"]
+        if pn:
+            item_parts.append(f"  Code/Part number: {pn}")
+        if br:
+            item_parts.append(f"  Brand: {br}")
+        parts.append("\n".join(item_parts))
+    parts.append("")
+    parts.append(load_prompt("rfq_identify_items"))
+
+    rich_prompt = "\n".join(parts)
+
+    short_label = f"Validate {len(items)} item(s) in {rfq_id} — check for part number discrepancies"
+    synthetic = cl.Message(content=short_label)
+    synthetic.author = "User"
+    synthetic.intent_context = rich_prompt
+
+    await _main_pinned(synthetic, pinned_tid)
 
 
 @cl.action_callback("rfq_find_suppliers")

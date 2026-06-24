@@ -1,5 +1,5 @@
 {% set items = rfq.get('items', []) %}
-{% set identified_count = items | selectattr('status', 'equalto', 'confirmed') | list | length %}
+{% set specific_count = items | selectattr('match', 'equalto', 'specific') | list | length %}
 {% set ctx = {
     "view": "rfq_detail",
     "entity": "rfq",
@@ -8,7 +8,7 @@
     "status": rfq.get('status', ''),
     "assigned_to": rfq.get('assigned_to', ''),
     "item_count": items | length,
-    "identified_count": identified_count,
+    "specific_count": specific_count,
     "header_auto_edit": header_auto_edit | default(false)
 } %}
 {% if rfq_thread_id %}{% set _ = ctx.update({"thread_id": rfq_thread_id}) %}{% endif %}
@@ -19,7 +19,7 @@
     "items": items,
     "supplierLines": items | selectattr('suppliers') | map(attribute='line') | list,
     "allLines": items | map(attribute='line') | list,
-    "unidentified": items | rejectattr('status', 'equalto', 'confirmed') | list
+    "unmatched": items | selectattr('match', 'equalto', 'unmatched') | list
 } | tojson }}</script>
 <div data-dashboard-context='{{ ctx | tojson }}' class="pt-6"
      x-data="rfqDetail()">
@@ -182,10 +182,11 @@
 
     {% set items = rfq.get('items', []) %}
     {% set total_items = items | length %}
-    {% set confirmed = items | selectattr('status', 'equalto', 'confirmed') | list | length %}
-    {% set identified = items | selectattr('status', 'equalto', 'identified') | list | length %}
-    {% set review = items | selectattr('status', 'equalto', 'review') | list | length %}
-    {% set unidentified = items | selectattr('status', 'equalto', 'unidentified') | list | length %}
+    {% set specific = items | selectattr('match', 'equalto', 'specific') | list | length %}
+    {% set branded = items | selectattr('match', 'equalto', 'branded') | list | length %}
+    {% set generic = items | selectattr('match', 'equalto', 'generic') | list | length %}
+    {% set discrepancy = items | selectattr('match', 'equalto', 'discrepancy') | list | length %}
+    {% set unmatched = items | selectattr('match', 'equalto', 'unmatched') | list | length %}
     {% set active_tab = active_tab | default('items') %}
 
     <!-- Subview tabs -->
@@ -222,17 +223,18 @@
         <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
             <span class="font-medium">{{ total_items }} items</span>
             <span>·</span>
-            {% if confirmed %}<span>{{ confirmed }} confirmed</span>{% endif %}
-            {% if identified %}<span>{{ identified }} identified</span>{% endif %}
-            {% if review %}<span class="text-amber-600">{{ review }} needs review</span>{% endif %}
-            {% if unidentified %}<span class="text-amber-600">{{ unidentified }} unidentified</span>{% endif %}
-            {% if unidentified or review %}
+            {% if specific %}<span class="text-green-600">{{ specific }} specific</span>{% endif %}
+            {% if branded %}<span class="text-blue-600">{{ branded }} branded</span>{% endif %}
+            {% if generic %}<span class="text-purple-600">{{ generic }} generic</span>{% endif %}
+            {% if discrepancy %}<span class="text-orange-600">{{ discrepancy }} discrepancy</span>{% endif %}
+            {% if unmatched %}<span class="text-gray-500">{{ unmatched }} unmatched</span>{% endif %}
+            {% if unmatched or discrepancy %}
             <span>·</span>
             <button @click="identifyItems()"
                     class="tip btn-sm btn-accent"
-                    data-tip="Agent will attempt to confirm the identity of the items. Once items are confirmed, you can proceed to finding suppliers.">
+                    data-tip="Classify items by available data and validate part numbers against our database and web sources.">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-                Identify Items
+                Classify &amp; Validate
             </button>
             {% endif %}
             {# {% if confirmed >= 2 %}
@@ -243,7 +245,7 @@
                 Group Items
             </button>
             {% endif %} #}
-            {% if confirmed >= 1 %}
+            {% if specific >= 1 %}
             <span>·</span>
             <button @click="findPreviousSuppliers()"
                     class="tip btn-sm btn-accent"

@@ -19,10 +19,10 @@ def _render_rfq_summary(rfq: dict) -> str:
 
     items = rfq.get("items", [])
     total = len(items)
-    confirmed = sum(1 for i in items if i.get("status") == "confirmed")
-    identified = sum(1 for i in items if i.get("status") == "identified")
-    review = sum(1 for i in items if i.get("status") == "review")
-    unidentified = sum(1 for i in items if i.get("status") == "unidentified")
+    specific = sum(1 for i in items if i.get("match") == "specific")
+    branded = sum(1 for i in items if i.get("match") == "branded")
+    discrepancy = sum(1 for i in items if i.get("match") == "discrepancy")
+    unmatched = sum(1 for i in items if i.get("match") == "unmatched")
     with_suppliers = sum(1 for i in items if i.get("suppliers"))
 
     lines = [f"## 📋 {rfq_id} — {customer}"]
@@ -60,12 +60,12 @@ def _render_rfq_summary(rfq: dict) -> str:
 
     if items:
         status_icons = {
-            "confirmed": "✅ Confirmed",
-            "identified": "🔵 Identified",
-            "review": "🟡 Needs Review",
-            "unidentified": "⚠️ Unidentified",
+            "specific": "🟢 Specific",
+            "branded": "🔵 Branded",
+            "discrepancy": "🟠 Discrepancy",
+            "unmatched": "⬜ Unmatched",
         }
-        lines.append("| # | Description | Part Number | Brand | Qty | Status | Suppliers |")
+        lines.append("| # | Description | Part Number | Brand | Qty | Match | Suppliers |")
         lines.append("|---|------------|-------------|-------|-----|--------|-----------|")
         for item in items:
             line_num = item.get("line", "")
@@ -75,7 +75,7 @@ def _render_rfq_summary(rfq: dict) -> str:
             qty = item.get("quantity", "")
             uom = item.get("uom", "")
             qty_str = f"{qty} {uom}".strip() if qty else "—"
-            status = status_icons.get(item.get("status", ""), item.get("status", ""))
+            status = status_icons.get(item.get("match", ""), item.get("match", ""))
             item_notes = item.get("notes", "")
             if item_notes:
                 status += f" ({item_notes})"
@@ -144,14 +144,14 @@ def _render_rfq_summary(rfq: dict) -> str:
 
         lines.append("")
         counts = []
-        if confirmed:
-            counts.append(f"{confirmed} confirmed")
-        if identified:
-            counts.append(f"{identified} identified")
-        if review:
-            counts.append(f"{review} needs review")
-        if unidentified:
-            counts.append(f"{unidentified} unidentified")
+        if specific:
+            counts.append(f"{specific} specific")
+        if branded:
+            counts.append(f"{branded} branded")
+        if discrepancy:
+            counts.append(f"{discrepancy} discrepancy")
+        if unmatched:
+            counts.append(f"{unmatched} unmatched")
         lines.append(
             f"**{total} items** | {', '.join(counts) if counts else 'none'} | "
             f"{with_suppliers} with suppliers"
@@ -190,7 +190,7 @@ def _render_rfq_list(rfqs: list[dict]) -> str:
         status = rfq.get("status", "draft").replace("_", " ").title()
         items = rfq.get("items", [])
         total = len(items)
-        confirmed = sum(1 for i in items if i.get("status") == "confirmed")
+        confirmed = sum(1 for i in items if i.get("match") == "specific")
         assigned = rfq.get("assigned_to", "—")
         created = rfq.get("created_date", "")
         lines.append(

@@ -301,7 +301,7 @@ class RFQItem(Base):
     product_id = Column(UUID(as_uuid=True), ForeignKey('products.id'), nullable=True)
     quantity = Column(Integer, nullable=True)
     uom = Column(String, nullable=True, default='ea')
-    status = Column(String, nullable=True, default='unidentified')  # unidentified/identified/confirmed/review
+    match = Column(String, nullable=True, default='unmatched')  # unmatched/specific/branded/generic/discrepancy
     notes = Column(Text, nullable=True)
     suppliers = Column(JSONB, nullable=True)                  # [{name, supplier_id, price, ...}, ...]
     brand_suppliers = Column(JSONB, nullable=True)            # [{name, supplier_id, tier, transaction_count, ...}] — non-Tier-A overflow

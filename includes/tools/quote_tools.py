@@ -461,10 +461,10 @@ def create_quote_tools(user_id: str) -> list:
                           netsuite_opportunity, hubspot_deal, assigned_to
           update_item   — Update an RFQ line item. data keys: line (required, int),
                           plus any of: input_description, input_code, part_number,
-                          brand, product_id, quantity, uom, status, notes.
-                          Item status values: unidentified, identified, confirmed,
-                          review (needs human attention — e.g. part number
-                          discrepancy found during web search)
+                          brand, product_id, quantity, uom, match, notes.
+                          Item match values: unmatched, specific, branded,
+                          generic, discrepancy (problem found — part number
+                          mismatch or cannot be verified)
           delete_item   — Delete a line item from the RFQ. data keys: line
                           (required, int). IMPORTANT: Always confirm with the
                           user before deleting. Remaining items are renumbered.
