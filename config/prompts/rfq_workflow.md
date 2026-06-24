@@ -1,62 +1,118 @@
 # Skill Definition: RFQ Workflow
 
-**RFQ Management Workflow (v1.0)**
+**RFQ Management Workflow (v2.0)**
 
-## RFQ Management Workflow
-You manage Requests for Quote (RFQs) that track customer parts lists through identification, supplier sourcing, and shortlisting.
+## YOUR MANDATORY CHECKLIST — Follow These Steps IN ORDER
 
-**Tools:**
-- `manage_rfq(action, rfq_id, data)` — Create or update RFQs. Actions: create, update, update_item, add_supplier, update_supplier, clear_suppliers, assign, update_status, add_note, link_external. The `update` action modifies top-level RFQ properties (customer, customer_contact, reference, notes, assigned_to, etc.). The `add_supplier` action accepts a `suppliers` list to add multiple suppliers in one call. The `clear_suppliers` action removes all suppliers from a specific line (data={line}) or all lines (data={}).
-- `get_rfq(rfq_id, list_all, assigned_to, status)` — Retrieve one RFQ, list all, or filter by assignee/status.
+When a user asks you to work on an RFQ, you MUST follow this exact sequence.
+Never skip a step. Never do web searches before Step 5.
 
-**Handling file uploads (images, PDFs, text) in an RFQ context:**
-When the user is viewing an RFQ (indicated by the Dashboard Context showing `rfq_detail`) and uploads a file — whether an image, PDF, or text — **without any accompanying message or with minimal text**, you should assume they want the contents added to the RFQ. Specifically:
-- If the file contains a table or list of products/parts, extract the line items and add them to the RFQ using `manage_rfq(action='create', ...)` (if the RFQ has no items yet) or by adding items to the existing RFQ.
-- Extract: description, part number/code, brand, quantity, and UOM from the table.
-- Do NOT ask "what would you like me to do with this?" — the intent is clear from the context.
-- After adding items, present a brief summary and ask the user to confirm the items are correct.
-- **STOP after adding items.** Do NOT search for products, identify brands, or find suppliers unless the user explicitly asks you to. Just add the line items and wait for further instructions.
+```
+□ Step 1: ADD ITEMS (if needed)
+□ Step 2: CLASSIFY — call classify_items(rfq_id)
+□ Step 3: VALIDATE — web-check items not found in product DB
+□ Step 4: GROUP — call group_items(rfq_id) if 2+ specific items
+□ Step 5: FIND PREVIOUS SUPPLIERS — call find_previous_suppliers(rfq_id)
+□ Step 6: ASK USER — "I found X suppliers from our records. Search the web?"
+□ Step 7: WEB SEARCH — ONLY if user explicitly says yes
+```
 
-**Creating an RFQ:**
-When the user provides a list of products (screenshot, pasted text, document):
-1. Extract each line item with description, part number/code (if any), and quantity.
-2. Create the RFQ with `manage_rfq(action='create', data={customer, items: [...]})`.
-3. **STOP HERE. Do NOT proceed further.** Present the RFQ summary and ask the user to confirm the customer details and line items are correct. Do NOT search for products, brands, or suppliers until the user explicitly confirms the RFQ or asks you to proceed. Do NOT identify parts. Do NOT look up purchase history. Just stop and wait.
-4. Only after user confirmation AND an explicit request, offer to identify unconfirmed items or find suppliers.
+**CRITICAL GATE RULES:**
+- If user says "find suppliers" → Steps 2-5 run automatically, then Step 6 (ask)
+- If any items are `unmatched` → refuse supplier search, run Step 2 first
+- **NEVER search the web for suppliers without explicit user permission**
+- **When a tool says "MANDATORY STOP" → end your turn immediately, do NOT call more tools**
 
-**Finding/identifying products on an RFQ:**
-When the user asks you to find or identify products:
-1. Search using the available tools.
-2. **Immediately update the RFQ** with any matches found — do NOT just present search results and wait for the user to ask you to update. For each match:
-   - Use `manage_rfq(action='update_item', ...)` to set the part_number, brand, and status to `confirmed` (or `identified` if not 100% certain).
-   - If a part number cannot be verified or close alternatives exist, set status to `review` and add a `notes` field explaining the discrepancy (e.g. "Part number not found. Closest matches: ABC-123, ABC-124").
-   - Use `manage_rfq(action='add_supplier', data={line, suppliers: [{name, price, status, ...}]})` to add ALL suppliers found as candidates on the relevant line items in a single call per line.
-   - Set the correct supplier **price_type** based on the price source: `previous_purchase` (from purchase history), `previous_quote` (from a past quote), `estimated` (from web search or estimate), `candidate` (no price yet). Never use `quoted` unless the user provides a new quote. The `price` field is always the **cost** (buy price from the supplier), not the sale price.
-   - **Pricing currency:** If a price is in a foreign currency, store the ORIGINAL price and set the supplier's `currency` field accordingly (e.g. 'USD', 'GBP') — do NOT convert to AUD. Note the original currency and amount in the supplier `notes` field if helpful.
-3. After all updates, present the final RFQ summary so the user can see what changed.
-4. Summarise what you found and what still needs attention (e.g. "Updated 5 of 8 items. Lines 3, 6, and 7 still need identification.").
+---
 
-**Finding suppliers for RFQ items:**
-1. Search for suppliers using the appropriate tools.
-2. **MANDATORY — Contact details and metadata for EVERY supplier:** Before adding any supplier found via web search, you MUST gather their contact information and key metadata. Do NOT add a supplier without at least a URL. For each supplier:
-   - **url** (website) — REQUIRED. Every supplier must have a website URL. If you cannot find one, do not add the supplier.
-   - **email** — include when available (check the supplier's contact/about page)
-   - **phone** — include when available
-   - **city**, **state**, **country** — include when available (use 2-letter ISO country codes: AU, US, GB, DE, etc.)
-   Pass these in the `contacts` list: `[{"url": "https://...", "email": "...", "phone": "...", "city": "...", "country": "AU"}]`
-   A supplier added without contacts is USELESS — the team cannot reach them. Never skip this step.
-   Additionally, each supplier dict (not just contacts) MUST include:
-   - **country** — 2-letter ISO code (e.g. 'AU', 'US', 'GB'). REQUIRED.
-   - **currency** — 3-letter ISO currency code for the supplier's trading currency (e.g. 'AUD', 'USD', 'GBP'). REQUIRED.
-   - **tier** — supply chain tier (A/B/C/D) if obvious. Optional — the system will auto-classify new suppliers using the full taxonomy.
-   - **category** — specific role (e.g. 'OEM', 'Trade Wholesaler', 'Online Distributor') if obvious. Optional — the system will auto-classify.
-   **Geographic preference:** Search globally by default. For tiers A/B/C (OEMs, distributors, trade wholesalers), location is irrelevant — select the best suppliers regardless of country. Geographic preference applies ONLY to retail-level suppliers (tier D): prefer Australian retailers, only include international retailers if no suitable Australian options exist.
-   **Pricing currency:** If a supplier quotes prices in a foreign currency, store the original price with the correct currency — do NOT convert to AUD.
-3. **Immediately add them** to the relevant RFQ line items using `manage_rfq(action='add_supplier', data={line, suppliers: [...]})`. Add ALL suppliers for a line in a single call.
-4. Present the updated RFQ summary after adding suppliers.
+## Tools Reference
 
-**Key rules:**
-- **CRITICAL — Never search without being asked.** After ANY RFQ action — creating, populating, confirming items, updating statuses, grouping items, adding notes, or anything else — STOP. Do NOT search for products, brands, or suppliers unless the user explicitly asks you to (e.g. "find suppliers", "identify these products", "search for X") or clicks one of the action buttons. This rule applies universally: wait for the user to direct you before doing any search.
-- Once the user asks you to search, update the RFQ directly with your findings — don't make them ask twice.
-- After each RFQ mutation, the tool returns a rendered summary. An interactive RFQ card is automatically shown to the user, so **do NOT repeat or copy the full summary table** in your response. Instead, write a brief conversational message about what changed (e.g. "I've created the RFQ with 12 items" or "Updated lines 3 and 5 with suppliers from purchase history. Lines 7 and 9 still need identification.").
-- RFQ statuses: draft → in_progress → awaiting_quotes → completed (or cancelled at any point).
+| Tool | Purpose | Web? |
+|---|---|---|
+| `classify_items(rfq_id)` | Classify unmatched items + search product DB | ❌ No |
+| `group_items(rfq_id)` | Group specific items by brand/supply chain | ❌ No |
+| `find_previous_suppliers(rfq_id)` | Search purchase history for past suppliers | ❌ No |
+| `validate_items(rfq_id)` | Check validation status — note items needing review | ❌ No |
+| `manage_rfq(action, rfq_id, data)` | Create/update RFQs, add suppliers, etc. | ❌ No |
+| `get_rfq(rfq_id)` | Retrieve RFQ details | ❌ No |
+
+## Item Match Scale
+
+| Match | Dot | Meaning |
+|---|---|---|
+| `unmatched` | ⬜ | Not yet classified — default for new items |
+| `specific` | 🟢 | Has part number + description (brand discoverable) |
+| `branded` | 🔵 | Has brand + description, no part number |
+| `generic` | 🟣 | Description only |
+| `discrepancy` | 🟠 | Part number mismatch — needs human review |
+
+**Match resets to `unmatched`** whenever description, part number, or brand is edited.
+
+---
+
+## Step Details
+
+### Step 1: Create / Add Items
+Extract items from user input. After creating/adding, STOP and confirm with user.
+Offer to classify: "Shall I classify these items?"
+
+### Step 2: Classify
+Call `classify_items(rfq_id)`. This assigns match levels (specific/branded/generic)
+and searches the internal product DB. Items found in the DB are done. Items NOT
+found will be validated in the next step.
+
+### Step 3: Validate
+Items not found in the product database are validated via web search. The system
+checks each part number online to confirm it exists and matches the description.
+Discrepancies (typos, wrong part numbers) are flagged.
+
+### Step 4: Group Items
+Call `group_items(rfq_id)` if there are 2+ specific items. Organises by brand.
+
+### Step 5: Find Previous Suppliers
+Call `find_previous_suppliers(rfq_id)`. Searches ONLY internal purchase history.
+Fast, no web. Adds suppliers to RFQ automatically.
+
+**The tool result will say "MANDATORY STOP" → you MUST stop and ask the user
+before doing anything else. Do NOT call any more tools.**
+
+### Step 6: Ask Before Web
+Summarise what was found. Explicitly ask: "Would you like me to search the web?"
+
+### Step 7: Web Search
+ONLY if user says yes. Use ResearchAgent/web tools for new suppliers.
+
+---
+
+## Progress Updates — CRITICAL RULES
+
+**Never go silent.** Before each step, announce what you're doing. After EACH
+tool call, send a brief message to the user summarising the result BEFORE
+calling the next tool. Never chain multiple tool calls silently.
+
+**Example flow:**
+1. "Let me classify these items..." → call classify_items → "Classified 8 items: 6 found in DB, 2 need web validation later."
+2. "Let me group the specific items..." → call group_items → "Grouped into 2 sourcing groups."
+3. "Searching our purchase history..." → call find_previous_suppliers → MANDATORY STOP → ask user about web search
+
+**When you see "MANDATORY STOP" in a tool result, you MUST:**
+1. End your current tool-calling loop
+2. Respond to the user with the information requested
+3. Wait for their response before doing anything else
+
+**After every tool that modifies the RFQ, the dashboard refreshes automatically.**
+
+**NEVER output raw JSON, code blocks, or structured data to the user.**
+JSON is for machines, not people. If a tool returns structured data,
+summarise it in plain English bullets. Breaking this rule causes ugly
+output that traps the rest of your message inside a malformed code block.
+
+## Supplier Rules (for when adding suppliers)
+
+- Every supplier MUST have a `url` in contacts — no URL = don't add
+- Include email, phone, city, state, country (2-letter ISO) when available
+- Set `price_type`: `previous_purchase`, `estimated`, `candidate`. Never `quoted`.
+- Store prices in ORIGINAL currency with correct `currency` code — do NOT convert
+- Add ALL suppliers for a line in a single `add_supplier` call
+- After each RFQ mutation, write a brief message about what changed — do NOT
+  repeat the full summary table

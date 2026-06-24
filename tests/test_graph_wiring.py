@@ -33,11 +33,19 @@ class StubChatModel(BaseChatModel):
         return self
 
     def with_structured_output(self, schema):
-        """Return a stub that produces a RouteDecision for supervisor routing."""
+        """Return a stub that produces a RouteDecision for supervisor routing.
+
+        Routes user messages to GeneralAgent, agent responses to FINISH.
+        """
 
         class _StructuredStub:
             async def ainvoke(self, messages, **kwargs):
-                return RouteDecision(next_agent="GeneralAgent")
+                # Check last non-system message to decide routing
+                from langchain_core.messages import HumanMessage as _HM
+                last_non_system = [m for m in messages if not hasattr(m, "type") or m.type != "system"]
+                if last_non_system and isinstance(last_non_system[-1], _HM):
+                    return RouteDecision(next_agent="GeneralAgent")
+                return RouteDecision(next_agent="FINISH")
 
         return _StructuredStub()
 

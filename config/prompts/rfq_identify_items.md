@@ -22,9 +22,11 @@ Set `match='discrepancy'` if ANY of these are true:
 In discrepancy cases, add a `notes` field explaining the issue (e.g. 'Part number not found. Closest matches: 201-60-71180, 201-01-71110' or 'Part number 600-211-2110 resolves to a fuel filter, not an oil filter as described').
 
 ## Match Assignment
-For each item:
-- **Part number is correct AND matches brand + description:** leave `match='specific'` (it was already set during classification)
+For each item, use `manage_rfq(action='update_item', rfq_id=..., data={line, match, notes})`:
+- **Part number is correct AND matches brand + description:** leave `match='specific'` (it was already set during classification). No update needed.
 - **Part number wrong, missing, or mismatched to brand/description:** set `match='discrepancy'` and `notes='...'` explaining the issue. Do NOT clear or remove the existing part_number or brand — keep them as-is so the user can see what was originally provided.
 - **Cannot verify at all:** leave as `match='specific'`
 
 Do NOT change items that are already `match='specific'` unless you find a genuine discrepancy. Your default is to leave items alone unless you find a problem.
+
+After validating all items, provide a brief summary of what you found and what you changed.

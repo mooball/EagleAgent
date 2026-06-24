@@ -696,72 +696,7 @@ async def main(message: cl.Message):
         await send_action_buttons(user_id)
         return
 
-    import re
     msg_lower = message.content.lower()
-
-    # Helper to normalise matched RFQ fragments to full RFQ-YYYY-NNNN format
-    def _resolve_rfq_id(match_str: str) -> str:
-        digits = re.sub(r'[-\s]', '', match_str)
-        if len(digits) >= 8:  # e.g. "20260001"
-            return f"RFQ-{digits[:4]}-{digits[4:]}"
-        else:  # short form e.g. "0001" — assume current year
-            from datetime import datetime
-            return f"RFQ-{datetime.now().year}-{digits.zfill(4)}"
-
-    # Direct supplier clearing — intercept "clear/strip/remove suppliers" requests
-    _clear_keywords = ["clear", "strip", "remove", "delete", "reset", "wipe"]
-    _clear_targets = ["supplier", "suppliers", "quote", "quotes"]
-    if any(kw in msg_lower for kw in _clear_keywords) and any(t in msg_lower for t in _clear_targets):
-        # Resolve RFQ ID from message or chat history
-        clear_rfq_match = re.search(r'\bRFQ[-\s]?(\d{4}[-\s]\d{4,}|\d{4,})\b', message.content, re.IGNORECASE)
-        if not clear_rfq_match:
-            history = cl.chat_context.to_openai()
-            for hist_msg in reversed(history[:-1]):
-                content = hist_msg.get("content", "") or ""
-                hist_match = re.search(r'\bRFQ[-\s]?(\d{4}[-\s]\d{4,}|\d{4,})\b', content, re.IGNORECASE)
-                if hist_match:
-                    clear_rfq_match = hist_match
-                    break
-        if clear_rfq_match:
-            from includes.agent_bridge import notify_dashboard
-            from datetime import datetime, timezone
-            clear_rfq_id = _resolve_rfq_id(clear_rfq_match.group(1))
-
-            # Get the current RFQ to check state
-            rfq = await asyncio.to_thread(_get_rfq_dict_sync, clear_rfq_id)
-            if rfq:
-                # Check if a specific line number was mentioned
-                line_match = re.search(r'\bline\s+(\d+)\b', msg_lower)
-                target_line = int(line_match.group(1)) if line_match else None
-
-                # Safety: require a specific line number or explicit "all" to clear everything
-                if target_line is None and "all" not in msg_lower:
-                    lines_with_suppliers = sum(
-                        1 for it in rfq.get("items", []) if it.get("suppliers")
-                    )
-                    await cl.Message(
-                        content=(
-                            f"**{clear_rfq_id}** has suppliers on {lines_with_suppliers} line(s). "
-                            "Please specify a line number (e.g. \"clear suppliers from line 3\") "
-                            "or say \"clear **all** suppliers\" to confirm."
-                        ),
-                        author="EagleAgent",
-                    ).send()
-                    return
-
-                # Use the SQL clear_suppliers helper
-                await asyncio.to_thread(
-                    _clear_suppliers_sync, clear_rfq_id,
-                    {"line": target_line} if target_line else {},
-                    user_id,
-                )
-                await notify_dashboard("dashboard_refresh")
-                scope = f"line {target_line}" if target_line else "all lines"
-                await cl.Message(
-                    content=f"Cleared suppliers from **{clear_rfq_id}** ({scope}).",
-                    author="EagleAgent",
-                ).send()
-            return
 
     graph_config = {
         "configurable": {"thread_id": thread_id},
@@ -860,6 +795,8 @@ async def main(message: cl.Message):
 
     msg = cl.Message(content="")
     await msg.send()
+    # Store active message so pipeline code can stream to it
+    cl.user_session.set("active_msg", msg)
     
     import time
     request_start = time.monotonic()
@@ -881,6 +818,11 @@ async def main(message: cl.Message):
     
     # Fallback: capture last AI response text for non-streaming model calls
     last_ai_text = ""
+    
+    # Buffer intermediate LLM text during ReAct tool loops.
+    # Only flush to user when no more tool calls follow (final response).
+    _stream_buffer = []
+    _in_tool_loop = False
     
     active_graph = cl.user_session.get("active_graph", _graph())
     
@@ -1000,6 +942,12 @@ async def main(message: cl.Message):
             logger.info(f"[TOOL] calling '{name}' with: {str(tool_input)[:200]}")
         
         if kind == "on_chain_start" and name in ["GeneralAgent", "ProcurementAgent", "SysAdminAgent", "ResearchAgent"]:
+            # Flush buffer from previous agent turn before starting new one
+            if _stream_buffer:
+                prev_text = "".join(_stream_buffer)
+                if prev_text.strip():
+                    await msg.stream_token(prev_text)
+                _stream_buffer.clear()
             active_agent = name
             if supervisor_done_at is None:
                 supervisor_done_at = time.monotonic()
@@ -1018,20 +966,26 @@ async def main(message: cl.Message):
                 last_tool_name = None
             content = event["data"]["chunk"].content
             if content:
-                # Handle list of content parts (e.g. from Gemini experimental models)
+                # Buffer text — only flush to user when we confirm this is
+                # the final response (no tool call follows). This prevents
+                # intermediate JSON, self-answered questions, and reasoning
+                # text from leaking into the chat.
                 if isinstance(content, list):
                     for part in content:
                         if isinstance(part, dict) and part.get("type") == "text":
                             chunk_text = part.get("text", "")
                             if chunk_text:
-                                await msg.stream_token(chunk_text)
+                                _stream_buffer.append(chunk_text)
                         elif isinstance(part, str):
-                            await msg.stream_token(part)
-                # Handle single string content
+                            _stream_buffer.append(part)
                 elif isinstance(content, str):
-                    await msg.stream_token(content)
+                    _stream_buffer.append(content)
 
         elif kind == "on_tool_start":
+            # A tool call is starting — discard any buffered intermediate text
+            # (it was reasoning/previewing, not the final answer)
+            _stream_buffer.clear()
+            _in_tool_loop = True
             # Show a compact, transient status message while tools run
             friendly = name.replace("_", " ").title()
             if friendly not in tool_names_used:
@@ -1128,6 +1082,14 @@ async def main(message: cl.Message):
         else:
             await msg.stream_token("\n\nSorry, an unexpected error occurred. Please try again.")
 
+    # Flush any remaining buffered text — this is the final agent response
+    # (no tool call followed, so it's safe to show the user)
+    if _stream_buffer:
+        final_text = "".join(_stream_buffer)
+        if final_text.strip():
+            await msg.stream_token(final_text)
+        _stream_buffer.clear()
+
     # Fallback: if no text was streamed but the model DID produce a response,
     # display it now.  This covers cases where on_chat_model_stream events
     # weren't emitted (e.g. non-streaming model call path).
@@ -1157,6 +1119,9 @@ async def main(message: cl.Message):
                         await msg.stream_token(_fallback2)
         except Exception as fb_err:
             logger.debug(f"State fallback failed: {fb_err}")
+
+    # Clear pipeline streaming reference
+    cl.user_session.set("active_msg", None)
 
     # Clean up any lingering tool status message
     if active_step:

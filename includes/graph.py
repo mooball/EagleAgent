@@ -72,6 +72,7 @@ class SupervisorState(TypedDict):
     file_attachments: NotRequired[list[Dict[str, Any]]]
     next_agent: NotRequired[str]
     intent_context: NotRequired[str]
+    step_count: NotRequired[int]  # Agent invocations since last user message
 
 
 # ---------------------------------------------------------------------------

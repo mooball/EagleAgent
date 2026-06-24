@@ -428,6 +428,23 @@ async def _notify_rfq_updated() -> None:
     await notify_dashboard("dashboard_refresh")
 
 
+async def _notify_agent_working(label: str) -> None:
+    """Show the blue 'agent working' badge in the dashboard header."""
+    from includes.agent_bridge import notify_dashboard
+    await notify_dashboard("agent_working", {"label": label})
+
+
+async def _stream_to_user(text: str) -> None:
+    """Stream text to the user's active Chainlit message (if available)."""
+    try:
+        import chainlit as cl
+        msg = cl.user_session.get("active_msg")
+        if msg:
+            await msg.stream_token(text)
+    except Exception:
+        pass  # Not in Chainlit context or no active message
+
+
 # ---------------------------------------------------------------------------
 # Tool factory
 # ---------------------------------------------------------------------------
@@ -631,4 +648,292 @@ def create_quote_tools(user_id: str) -> list:
 
         return _render_rfq_list(rfqs)
 
-    return [manage_rfq, get_rfq]
+    @tool
+    async def classify_items(
+        rfq_id: str,
+        search_db: bool = True,
+    ) -> str:
+        """Classify all unmatched items on an RFQ by data completeness.
+
+        Assigns a match level to every item that is still 'unmatched':
+        - specific: has part_number + description (brand discoverable)
+        - branded:  has brand + description (no part_number)
+        - generic:  description only
+
+        If search_db=True, also searches the internal product database for
+        matching products on specific items.
+
+        IMPORTANT: This MUST be called before finding suppliers. Items must
+        be classified first so you know what kind of items you're dealing
+        with. If the user asks to find suppliers and items are still
+        unmatched, refuse politely and call this tool first.
+
+        Returns a summary of what was classified and what still needs
+        attention.
+        """
+        await _notify_agent_working("Classifying items...")
+        from includes.tools.rfq_crud import _classify_rfq_items_sync
+
+        result = await asyncio.to_thread(
+            _classify_rfq_items_sync, rfq_id, user_id, search_db,
+        )
+        if isinstance(result, dict) and "error" in result:
+            return result["error"]
+
+        classified = result["classified"]
+        db_matches = result["db_matches"]
+        to_validate = result["to_validate"]
+        unclassifiable = result.get("unclassifiable", [])
+
+        total_items = sum(len(v) for v in classified.values()) + len(unclassifiable)
+        if total_items == 0:
+            rfq_dict = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+            item_count = len(rfq_dict.get("items", [])) if rfq_dict else 0
+            return (
+                f"All {item_count} items in {rfq_id} are already classified. "
+                f"No unmatched items to process."
+            )
+
+        # ---- Build summary ----
+        parts = [f"**Classification complete for {rfq_id}:**"]
+
+        if classified["specific"]:
+            parts.append(f"- 🟢 {len(classified['specific'])} specific (part number + description)")
+        if classified["branded"]:
+            parts.append(f"- 🔵 {len(classified['branded'])} branded (brand + description, no part number)")
+        if classified["generic"]:
+            parts.append(f"- 🟣 {len(classified['generic'])} generic (description only)")
+
+        if db_matches:
+            parts.append(f"\n**Found in product database:**")
+            for line, pn, brand, _ in db_matches:
+                parts.append(f"- line {line} → {pn} ({brand})")
+
+        await _notify_rfq_updated()
+
+        remaining_specific = len([i for i in to_validate
+                                  if not any(i["line"] == m[0] for m in db_matches)])
+
+        if unclassifiable:
+            parts.append(
+                f"\n⚠️ {len(unclassifiable)} item(s) have too little data to "
+                f"classify. Add a description, part number, or brand."
+            )
+
+        if remaining_specific > 0:
+            parts.append(
+                f"\n⚠️ {remaining_specific} item(s) were NOT found in our product "
+                f"database and will need web validation later:"
+            )
+            for item in to_validate:
+                if not any(item["line"] == m[0] for m in db_matches):
+                    parts.append(
+                        f"- Line {item['line']}: {item.get('input_description', '')} | "
+                        f"Part#: {item.get('part_number', '') or '—'} | "
+                        f"Brand: {item.get('brand', '') or '—'}"
+                    )
+            parts.append(
+                f"\nThese items will be validated when we search the web. "
+                f"For now, proceed to group_items next."
+            )
+        else:
+            parts.append(
+                f"\n✅ All specific items matched in our product database. "
+                f"No web validation needed. Proceed to group_items next."
+            )
+
+        return "\n".join(parts)
+
+    @tool
+    async def validate_items(rfq_id: str) -> str:
+        """Validate specific items via web search for discrepancy detection.
+
+        Call this after classify_items(). If any specific items were NOT
+        found in the internal product database, this tool lists them for
+        web validation.
+
+        When items need validation, tell the user "I need to validate
+        these items via web search — one moment." The system will
+        automatically route the validation to the ResearchAgent.
+        """
+        await _notify_agent_working("Checking validation status...")
+
+        rfq_dict = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+        if not rfq_dict:
+            return f"RFQ '{rfq_id}' not found."
+
+        items = rfq_dict.get("items", [])
+        to_validate = [
+            i for i in items
+            if i.get("match") == "specific" and not i.get("product_id")
+        ]
+
+        if not to_validate:
+            return "All specific items are matched in the product database. No web validation needed."
+
+        parts = [
+            f"{len(to_validate)} item(s) in {rfq_id} need web validation. "
+            f"Tell the user you're sending these to the ResearchAgent for "
+            f"verification, then the system will handle the delegation.\n",
+        ]
+        for item in to_validate:
+            parts.append(
+                f"Line {item['line']}: {item.get('input_description', '')[:80]}  |  "
+                f"Part#: {item.get('part_number', '') or '—'}  |  "
+                f"Brand: {item.get('brand', '') or '—'}"
+            )
+        return "\n".join(parts)
+
+    @tool
+    async def find_previous_suppliers(rfq_id: str) -> str:
+        """Search internal purchase history for suppliers of specific items.
+
+        For each specific item on the RFQ that has a part number, searches
+        past purchase transactions to find suppliers who have previously
+        supplied that part. Adds found suppliers directly to the RFQ.
+
+        This searches ONLY the internal database — no web search. It is
+        fast and should always be run before considering a web search.
+
+        Use this after group_items(). If you haven't grouped yet, call
+        group_items first.
+        """
+        await _notify_agent_working("Searching purchase history...")
+
+        # Check if grouping has been done — enforce workflow order
+        rfq_dict = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+        if rfq_dict:
+            specific_items = [i for i in rfq_dict.get("items", []) if i.get("match") == "specific"]
+            has_groups = bool(rfq_dict.get("item_groups"))
+            if len(specific_items) >= 2 and not has_groups:
+                return (
+                    f"You must call group_items('{rfq_id}') before finding suppliers. "
+                    f"The RFQ has {len(specific_items)} specific items that haven't "
+                    f"been grouped yet. Group them first, then call this tool."
+                )
+
+        from includes.tools.rfq_crud import _find_purchase_suppliers_sync
+
+        result = await asyncio.to_thread(
+            _find_purchase_suppliers_sync, rfq_id, user_id,
+        )
+        if isinstance(result, dict) and "error" in result:
+            return result["error"]
+
+        await _notify_rfq_updated()
+
+        total_added = result["added"]
+        by_line = result["by_line"]
+
+        # Check for items still needing web validation
+        rfq_check = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+        needs_validation = []
+        if rfq_check:
+            needs_validation = [
+                i for i in rfq_check.get("items", [])
+                if i.get("match") == "specific" and not i.get("product_id")
+            ]
+
+        validation_note = ""
+        if needs_validation:
+            validation_note = (
+                f" Also, {len(needs_validation)} item(s) still need web validation "
+                f"(not found in our product database)."
+            )
+
+        if total_added == 0:
+            return (
+                f"No previous suppliers found in our purchase history for {rfq_id}."
+                f"{validation_note}\n\n"
+                f"---\n"
+                f"⛔ MANDATORY STOP: You MUST end your turn NOW. "
+                f"Tell the user no previous suppliers were found. "
+                f"Ask: 'Would you like me to search the web for suppliers"
+                f"{' and validate the unmatched items' if needs_validation else ''}?' "
+                f"DO NOT search the web or call any more tools until the user responds."
+            )
+
+        parts = [f"Found {total_added} previous supplier(s) across {len(by_line)} line(s). These have been added to the RFQ."]
+        for line, names in sorted(by_line.items()):
+            parts.append(f"- Line {line}: {', '.join(names)}")
+        if validation_note:
+            parts.append(validation_note)
+        parts.append(
+            f"\n---\n"
+            f"⛔ MANDATORY STOP: You MUST end your turn NOW. "
+            f"Summarise the suppliers found and ask the user: "
+            f"'Would you like me to search the web for additional suppliers"
+            f"{' and validate the unmatched items' if needs_validation else ''}?' "
+            f"DO NOT search the web or call any more tools until the user responds."
+        )
+        return "\n".join(parts)
+
+    @tool
+    async def group_items(rfq_id: str) -> str:
+        """Group specific items on an RFQ by brand or supply chain.
+
+        Uses AI to identify natural groupings — items that share a brand
+        or supply chain and should be sourced together. Saves the groups
+        to the RFQ.
+
+        This helps organise the RFQ before finding suppliers and can
+        reduce duplicate supplier searches across related items.
+        """
+        await _notify_agent_working("Grouping items...")
+        from includes.tools.rfq_crud import _group_rfq_items_sync
+
+        rfq_dict = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+        if not rfq_dict:
+            return f"RFQ '{rfq_id}' not found."
+
+        specific_items = [
+            {
+                "line": i["line"],
+                "input_description": i.get("input_description", ""),
+                "part_number": i.get("part_number", ""),
+                "brand": i.get("brand", ""),
+            }
+            for i in rfq_dict.get("items", [])
+            if i.get("match") == "specific"
+        ]
+
+        if len(specific_items) < 2:
+            return (
+                f"Need at least 2 specific items to form groups. "
+                f"{rfq_id} has {len(specific_items)} specific item(s)."
+            )
+
+        result = await asyncio.to_thread(
+            _group_rfq_items_sync, rfq_id, specific_items, user_id,
+        )
+        await _notify_rfq_updated()
+        if isinstance(result, dict) and "error" in result:
+            return result["error"]
+
+        groups = result.get("groups", [])
+        ungrouped = result.get("ungrouped", [])
+
+        ungrouped_reason = result.get("ungrouped_reason", "")
+
+        if groups:
+            group_summary = ", ".join(
+                f"{g.get('label', '?')} (lines {', '.join(str(l) for l in g.get('lines', []))})"
+                for g in groups
+            )
+            parts = [f"Grouped into {len(groups)} sourcing group(s): {group_summary}."]
+        else:
+            parts = ["No natural groupings were found."]
+
+        if ungrouped:
+            parts.append(
+                f"{len(ungrouped)} item(s) remain ungrouped (lines "
+                f"{', '.join(str(l) for l in ungrouped)})."
+            )
+            if ungrouped_reason:
+                parts.append(f"Reason: {ungrouped_reason}")
+
+        parts.append("Proceed to find previous suppliers.")
+
+        return " ".join(parts)
+
+    return [manage_rfq, get_rfq, classify_items, validate_items, find_previous_suppliers, group_items]

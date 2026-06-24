@@ -979,3 +979,427 @@ def _link_external_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
         raise
     finally:
         session.close()
+
+
+# =============================================================================
+# Shared orchestration helpers — used by both tools (quote_tools.py) and
+# action callbacks (rfq_actions.py).  All are synchronous, run via
+# asyncio.to_thread.  No Chainlit dependencies.
+# =============================================================================
+
+def _classify_rfq_items_sync(
+    rfq_number: str, user_id: str, search_db: bool = True,
+) -> dict:
+    """Classify all unmatched items and optionally search product DB.
+
+    Returns a summary dict:
+        classified: {specific: [line,...], branded: [...], generic: [...]}
+        db_matches: [(line, part_number, brand, product_id), ...]
+        to_validate: [item_dict, ...]
+        unclassifiable: [item_dict, ...]
+    """
+    from includes.tools.product_tools import _find_product_by_code
+
+    rfq_dict = _get_rfq_dict_sync(rfq_number)
+    if not rfq_dict:
+        return {"error": f"RFQ '{rfq_number}' not found."}
+
+    items = rfq_dict.get("items", [])
+    unmatched_items = [i for i in items if i.get("match") == "unmatched"]
+
+    classified = {"specific": [], "branded": [], "generic": []}
+    to_validate = []
+    db_matches = []
+    unclassifiable = []
+
+    for item in unmatched_items:
+        line = item["line"]
+        part_number = (item.get("part_number") or "").strip()
+        brand = (item.get("brand") or "").strip()
+        desc = (item.get("input_description") or "").strip()
+
+        has_part = bool(part_number)
+        has_brand = bool(brand and brand.lower()
+                         not in ("other", "n/a", "na", "none", "unknown"))
+        has_desc = bool(desc)
+
+        match = None
+        if has_part and has_desc:
+            match = "specific"
+        elif has_brand and has_desc:
+            match = "branded"
+        elif has_desc:
+            match = "generic"
+
+        if match:
+            _update_item_sync(rfq_number, {"line": line, "match": match}, user_id)
+            classified[match].append(line)
+            if match == "specific":
+                to_validate.append(item)
+        else:
+            unclassifiable.append(item)
+
+    if search_db and to_validate:
+        for item in to_validate:
+            line = item["line"]
+            part_number = item.get("part_number", "")
+            brand = item.get("brand", "")
+            try:
+                product = _find_product_by_code(part_number, brand or None)
+            except Exception:
+                product = None
+            if product:
+                _update_item_sync(
+                    rfq_number,
+                    {"line": line, "part_number": product["part_number"],
+                     "brand": product["brand"],
+                     "product_id": product["id"], "match": "specific"},
+                    user_id,
+                )
+                db_matches.append((
+                    line, product["part_number"],
+                    product["brand"], product["id"],
+                ))
+
+    return {
+        "classified": classified,
+        "db_matches": db_matches,
+        "to_validate": to_validate,
+        "unclassifiable": unclassifiable,
+    }
+
+
+def _group_rfq_items_sync(
+    rfq_number: str, specific_items: list, user_id: str,
+) -> dict:
+    """Group specific items by brand/supply chain using LLM.
+
+    Returns parsed groups dict, or {'error': ...} on failure.
+    """
+    import json
+    from google import genai as _genai
+    from google.genai import types as _types
+    from config import config
+    from includes.prompts import load_prompt
+
+    if len(specific_items) < 2:
+        return {"error": f"Need at least 2 specific items, got {len(specific_items)}."}
+
+    grouping_prompt = load_prompt("rfq_item_grouping")
+    input_payload = json.dumps({
+        "items": specific_items,
+        "existing_groups": None,
+    }, indent=2)
+
+    full_prompt = (
+        f"{grouping_prompt}\n\n---\n\n"
+        f"## Your Task\n\n"
+        f"Group the following items from **{rfq_number}**.\n\n"
+        f"```json\n{input_payload}\n```\n\n"
+        f"Return ONLY the JSON output as specified in section 3."
+    )
+
+    try:
+        client = _genai.Client()
+        response = client.models.generate_content(
+            model=config.get_agent_model("procurement"),
+            contents=full_prompt,
+            config=_types.GenerateContentConfig(
+                temperature=0.2,
+                max_output_tokens=4096,
+            ),
+        )
+        raw_text = (response.text or "").strip()
+    except Exception as e:
+        return {"error": f"LLM call failed: {e}"}
+
+    cleaned = raw_text
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        cleaned = "\n".join(lines).strip()
+
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        return {"error": f"Failed to parse LLM response as JSON: {e}"}
+
+    _update_item_groups_sync(rfq_number, result, user_id)
+    return result
+
+
+def _validate_items_sync(
+    rfq_number: str, items_to_validate: list, user_id: str,
+) -> dict:
+    """Validate specific items via web search using Google Search grounding.
+
+    For each item, searches the web for the part number and checks whether
+    the product details (description, brand) match what's on the RFQ.
+
+    Args:
+        rfq_number: The RFQ identifier.
+        items_to_validate: List of dicts with keys: line, input_description,
+                          part_number, brand.
+        user_id: Current user ID.
+
+    Returns:
+        {
+            "validated": [{line, status, findings, correct_part_number}],
+            "error": str (only if failed)
+        }
+    """
+    import json
+    from google import genai as _genai
+    from google.genai import types as _types
+    from config.settings import Config
+
+    if not items_to_validate:
+        return {"validated": []}
+
+    # Build a single prompt to validate all items at once
+    items_text = "\n".join(
+        f"- Line {item['line']}: Part# {item.get('part_number', '?')} | "
+        f"Brand: {item.get('brand', '?')} | Description: {item.get('input_description', '?')}"
+        for item in items_to_validate
+    )
+
+    prompt = f"""You are validating part numbers for a purchase order. For each item below, search the web to verify:
+1. Is the part number real and active?
+2. Does the description match what the manufacturer says?
+3. Is the brand correct?
+
+Items to validate:
+{items_text}
+
+For each item, respond with a JSON array. Each entry must have:
+- "line": the line number
+- "status": "confirmed" if everything matches, "discrepancy" if something is wrong, "not_found" if the part number doesn't exist
+- "findings": a brief 1-2 sentence summary of what you found
+- "correct_part_number": the correct part number if you found a typo (otherwise same as original)
+
+Return ONLY a JSON array, no other text."""
+
+    try:
+        client = _genai.Client()
+        response = client.models.generate_content(
+            model=Config.DEFAULT_MODEL,
+            contents=prompt,
+            config=_types.GenerateContentConfig(
+                tools=[_types.Tool(google_search=_types.GoogleSearch())],
+                temperature=0.1,
+            ),
+        )
+        raw_text = (response.text or "").strip()
+        # Clean markdown fences
+        if raw_text.startswith("```"):
+            lines = raw_text.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            raw_text = "\n".join(lines).strip()
+
+        validated = json.loads(raw_text)
+
+        # Update RFQ items if discrepancies found
+        session = _get_session()
+        try:
+            from includes.dashboard.models import RFQItem
+            for v in validated:
+                if v.get("status") == "discrepancy":
+                    item = (
+                        session.query(RFQItem)
+                        .filter(RFQItem.rfq_number == rfq_number, RFQItem.line == v["line"])
+                        .first()
+                    )
+                    if item:
+                        item.match = "discrepancy"
+                        item.notes = v.get("findings", "")
+                        if v.get("correct_part_number") and v["correct_part_number"] != item.part_number:
+                            item.notes += f" (Correct PN: {v['correct_part_number']})"
+            session.commit()
+        except Exception as e:
+            logger.warning(f"Failed to update discrepancy status: {e}")
+            session.rollback()
+        finally:
+            session.close()
+
+        return {"validated": validated}
+    except Exception as e:
+        logger.error(f"Validation failed: {e}")
+        return {"validated": [], "error": str(e)}
+
+
+def _web_search_suppliers_sync(
+    description: str,
+    part_number: str = "",
+    brand: str = "",
+    existing_suppliers: list[str] | None = None,
+    quantity: str = "",
+) -> list[dict]:
+    """Search the web for suppliers of a product using Google Search grounding.
+
+    Returns a list of supplier dicts ready for _add_supplier_sync:
+        [{"name", "country", "currency", "contacts", "status", "price_type", "notes", ...}]
+    """
+    import json
+    from google import genai as _genai
+    from google.genai import types as _types
+    from config.settings import Config
+
+    existing_str = ""
+    if existing_suppliers:
+        existing_str = (
+            f"\n\nAlready have these suppliers (do NOT include them): "
+            f"{', '.join(existing_suppliers)}"
+        )
+
+    product_desc = description
+    if part_number:
+        product_desc = f"{part_number} - {description}"
+    if brand:
+        product_desc = f"{brand} {product_desc}"
+
+    prompt = f"""Search the web for companies that sell or distribute this product:
+
+Product: {product_desc}
+{f"Part Number: {part_number}" if part_number else ""}
+{f"Brand: {brand}" if brand else ""}
+{f"Quantity needed: {quantity}" if quantity else ""}
+{existing_str}
+
+Find 3-5 suppliers. Prioritise authorised distributors and industrial wholesalers.
+Search globally — do NOT restrict to Australia. For each supplier found, provide:
+- name: Company name
+- country: 2-letter ISO code (e.g. AU, US, GB, NZ)
+- currency: Their trading currency (e.g. AUD, USD, NZD, GBP)
+- website: Their website URL
+- email: Contact email if visible (or empty string)
+- phone: Contact phone if visible (or empty string)
+- price: Numeric price if visible (or null)
+- price_currency: Currency of the price (or null)
+- notes: Brief description of what they supply and any relevant details
+
+Return ONLY a JSON array of supplier objects. No other text.
+Example: [{{"name": "Example Co", "country": "AU", "currency": "AUD", "website": "https://example.com", "email": "sales@example.com", "phone": "", "price": 24.99, "price_currency": "AUD", "notes": "Industrial distributor, stocks full range"}}]"""
+
+    try:
+        client = _genai.Client()
+        response = client.models.generate_content(
+            model=Config.DEFAULT_MODEL,
+            contents=prompt,
+            config=_types.GenerateContentConfig(
+                tools=[_types.Tool(google_search=_types.GoogleSearch())],
+                temperature=0.2,
+            ),
+        )
+        raw_text = (response.text or "").strip()
+        # Clean markdown fences
+        if raw_text.startswith("```"):
+            lines = raw_text.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            raw_text = "\n".join(lines).strip()
+
+        suppliers_raw = json.loads(raw_text)
+        if not isinstance(suppliers_raw, list):
+            logger.warning(f"Web search returned non-list: {type(suppliers_raw)}")
+            return []
+
+        # Normalize to the format expected by _add_supplier_sync
+        results = []
+        existing_lower = {n.lower() for n in (existing_suppliers or [])}
+        for s in suppliers_raw:
+            name = (s.get("name") or "").strip()
+            if not name or name.lower() in existing_lower:
+                continue
+            contacts = []
+            contact = {}
+            if s.get("website"):
+                contact["url"] = s["website"]
+            if s.get("email"):
+                contact["email"] = s["email"]
+            if s.get("phone"):
+                contact["phone"] = s["phone"]
+            if contact:
+                contacts.append(contact)
+
+            entry = {
+                "name": name,
+                "country": s.get("country", ""),
+                "currency": s.get("currency", ""),
+                "contacts": contacts,
+                "status": "candidate",
+                "price_type": "web_search",
+                "notes": s.get("notes", ""),
+            }
+            if s.get("price") and s.get("price_currency"):
+                entry["cost_price"] = s["price"]
+                entry["cost_currency"] = s["price_currency"]
+            elif s.get("price"):
+                entry["cost_price"] = s["price"]
+
+            results.append(entry)
+            existing_lower.add(name.lower())
+
+        return results
+    except json.JSONDecodeError as e:
+        logger.error(f"Web search JSON parse failed: {e}\nRaw: {raw_text[:500]}")
+        return []
+    except Exception as e:
+        logger.error(f"Web search failed: {e}")
+        return []
+
+
+def _find_purchase_suppliers_sync(
+    rfq_number: str, user_id: str,
+) -> dict:
+    """Search purchase history for all specific items and add suppliers.
+
+    Returns {added: int, by_line: {line: [supplier_names]}}.
+    """
+    from includes.tools.product_tools import _find_purchase_history_for_part
+
+    rfq_dict = _get_rfq_dict_sync(rfq_number)
+    if not rfq_dict:
+        return {"error": f"RFQ '{rfq_number}' not found."}
+
+    items = rfq_dict.get("items", [])
+    specific_items = [i for i in items if i.get("match") == "specific"]
+
+    total_added = 0
+    by_line = {}
+
+    for item in specific_items:
+        line = item["line"]
+        part_number = item.get("part_number", "")
+        if not part_number:
+            continue
+
+        existing = item.get("suppliers", [])
+        existing_names = {s["name"].lower() for s in existing}
+        suppliers = []
+
+        try:
+            ph_rows = _find_purchase_history_for_part(part_number, 20)
+            for row in ph_rows:
+                if row["name"].lower() not in existing_names:
+                    suppliers.append({
+                        "supplier_id": row["supplier_id"],
+                        "name": row["name"],
+                        "contacts": row["contacts"],
+                        "status": "candidate",
+                        "price_type": "previous_purchase",
+                        "price": row["price"],
+                        "purchase_ref": {
+                            "doc_number": row["doc_number"],
+                            "date": row["date"],
+                            "order_count": row["order_count"],
+                        },
+                    })
+                    existing_names.add(row["name"].lower())
+        except Exception:
+            pass
+
+        if suppliers:
+            _add_supplier_sync(rfq_number, {"line": line, "suppliers": suppliers}, user_id)
+            total_added += len(suppliers)
+            by_line[line] = [s["name"] for s in suppliers]
+
+    return {"added": total_added, "by_line": by_line}

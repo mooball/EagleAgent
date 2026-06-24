@@ -22,7 +22,7 @@ DEFAULT_MAX_MESSAGES = 30
 
 # Retry settings for transient API errors (429, 503)
 MAX_RETRIES = 3
-RETRY_BASE_DELAY = 5  # seconds
+RETRY_BASE_DELAY = 10  # seconds — Vertex AI quota windows are typically 60s
 
 
 def _is_transient_error(exc: Exception) -> bool:
@@ -170,6 +170,10 @@ class BaseSubAgent(ABC):
         self.model = model
         self.store = store
         self.max_messages = max_messages
+        # Max graph steps for the ReAct sub-agent loop.
+        # 9 steps ≈ 4 tool calls max per turn. Prevents runaway behaviour
+        # (self-answering, web search without permission, etc.)
+        self.max_react_steps = 9
         logger.info(f"Initialized {name}")
     
     @abstractmethod
@@ -360,7 +364,7 @@ class BaseSubAgent(ABC):
                 )
             else:
                 sub_agent_graph = create_react_agent(self.model, tools)
-            invoke_config = {"recursion_limit": 12}
+            invoke_config = {"recursion_limit": self.max_react_steps}
             if config is not None:
                 invoke_config.update(config)
             

@@ -425,56 +425,40 @@ async def on_rfq_find_suppliers(action: cl.Action) -> None:
                     pinned_tid, author="EagleAgent",
                 )
 
-            # ---- Phase 2: Route to ResearchAgent for web search ----
+            # ---- Phase 2: Web search via genai.Client with Google Search grounding ----
             all_existing = list(existing or []) + [s["name"] for s in internal_suppliers]
 
-            parts = [f"research_suppliers"]
-            parts.append(f"Find external suppliers for line {line} of {rfq_id}.")
-            parts.append(f"Product description: {description}")
-            if part_number:
-                parts.append(f"Part number: {part_number}")
-            if brand:
-                parts.append(f"Brand: {brand}")
-            if quantity:
-                parts.append(f"Quantity needed: {quantity} {uom}")
-            if all_existing:
-                parts.append(f"Already have these suppliers (do NOT repeat them): {', '.join(all_existing)}")
-            if internal_summary_lines:
-                parts.append("Internal DB results:\n" + "\n".join(internal_summary_lines))
-            parts.append("")
-            from includes.prompts import load_prompt
-            parts.append(load_prompt("rfq_find_suppliers"))
-            parts.append("")
-            parts.append(f"CRITICAL: Use rfq_id='{rfq_id}' and data={{line: {line}, suppliers: [...]}} when calling manage_rfq(action='add_supplier').")
+            await notify_dashboard("agent_working", {"label": f"Web searching for line {line}..."})
 
-            rich_prompt = "\n".join(parts)
+            from includes.tools.rfq_crud import _web_search_suppliers_sync, _sort_rfq_suppliers_sync
+            suppliers = await asyncio.to_thread(
+                _web_search_suppliers_sync,
+                description=description,
+                part_number=part_number,
+                brand=brand,
+                existing_suppliers=all_existing,
+                quantity=f"{quantity} {uom}".strip(),
+            )
 
-            short_label = f"Search the web for suppliers for line {line}"
-            if description:
-                short_label += f" ({description[:60]})"
-
-            synthetic = cl.Message(content=short_label)
-            synthetic.author = "User"
-            synthetic.intent_context = rich_prompt
-
-            # Track supplier count before web search to detect if any were added
-            pre_web_count = 0
-            _pre_rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
-            if _pre_rfq:
-                _pre_line = next((i for i in _pre_rfq.get("items", []) if i["line"] == line), None)
-                if _pre_line:
-                    pre_web_count = len(_pre_line.get("suppliers", []))
-
-            await _main_pinned(synthetic, pinned_tid)
-
-            # Refresh dashboard if suppliers were added by the agent
-            _post_rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
-            if _post_rfq:
-                _post_line = next((i for i in _post_rfq.get("items", []) if i["line"] == line), None)
-                if _post_line:
-                    post_web_count = len(_post_line.get("suppliers", []))
-                    if post_web_count > pre_web_count:
-                        await notify_dashboard("dashboard_refresh")
+            if suppliers:
+                user_id = cl.user_session.get("user_id", "unknown")
+                await asyncio.to_thread(
+                    _add_supplier_sync, rfq_id,
+                    {"line": line, "suppliers": suppliers},
+                    user_id,
+                )
+                await asyncio.to_thread(_sort_rfq_suppliers_sync, rfq_id)
+                await notify_dashboard("dashboard_refresh")
+                names = ", ".join(s["name"] for s in suppliers[:5])
+                await _send_pinned(
+                    f"✅ Found **{len(suppliers)}** web supplier(s) for line {line}: {names}",
+                    pinned_tid, author="EagleAgent",
+                )
+            else:
+                await _send_pinned(
+                    f"No additional suppliers found on the web for line {line}.",
+                    pinned_tid, author="EagleAgent",
+                )
         finally:
             await notify_dashboard("agent_done")
 
@@ -483,10 +467,7 @@ async def on_rfq_find_suppliers(action: cl.Action) -> None:
 async def on_rfq_group_items(action: cl.Action) -> None:
     """Group confirmed RFQ items by brand/supply chain using LLM."""
     import json
-    from pathlib import Path
-    from langchain_google_genai import ChatGoogleGenerativeAI
-    from config import config
-    from includes.tools.rfq_crud import _update_item_groups_sync
+    from includes.tools.rfq_crud import _group_rfq_items_sync
 
     payload = action.payload or {}
     rfq_id = payload.get("rfq_id", "???")
@@ -502,62 +483,24 @@ async def on_rfq_group_items(action: cl.Action) -> None:
     await notify_dashboard("agent_working", {"label": "Grouping items..."})
 
     try:
-        # Load the grouping prompt
-        from includes.prompts import load_prompt
-        grouping_prompt = load_prompt("rfq_item_grouping")
-
-        # Build the input payload (no existing groups for now)
-        input_payload = json.dumps({
-            "items": items,
-            "existing_groups": None,
-        }, indent=2)
-
-        full_prompt = (
-            f"{grouping_prompt}\n\n"
-            f"---\n\n"
-            f"## Your Task\n\n"
-            f"Group the following items from **{rfq_id}**.\n\n"
-            f"```json\n{input_payload}\n```\n\n"
-            f"Return ONLY the JSON output as specified in section 3."
+        user_id = cl.user_session.get("user_id", "unknown")
+        result = await asyncio.to_thread(
+            _group_rfq_items_sync, rfq_id, items, user_id,
         )
+        if isinstance(result, dict) and "error" in result:
+            await cl.Message(content=result["error"], author="EagleAgent").send()
+            return
 
-        model = ChatGoogleGenerativeAI(
-            model=config.get_agent_model("procurement"),
-            temperature=0.2,
-            max_output_tokens=4096,
-        )
+        await notify_dashboard("dashboard_refresh")
 
-        response = await model.ainvoke(full_prompt)
-        raw_text = response.content
-        if isinstance(raw_text, list):
-            raw_text = "\n".join(
-                part.get("text", "") if isinstance(part, dict) else str(part)
-                for part in raw_text
-            )
+        groups = result.get("groups", [])
+        ungrouped = result.get("ungrouped", [])
 
-        # Try to parse the JSON to validate it
-        cleaned = raw_text.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            cleaned = "\n".join(lines).strip()
-
-        try:
-            result = json.loads(cleaned)
-            # Save to DB
-            user_id = cl.user_session.get("user_id", "unknown")
-            await asyncio.to_thread(_update_item_groups_sync, rfq_id, result, user_id)
-            await notify_dashboard("dashboard_refresh")
-
-            # Format a nice summary for chat
-            groups = result.get("groups", [])
-            ungrouped = result.get("ungrouped", [])
-
-            parts = [f"**Item Grouping for {rfq_id}** — {len(groups)} group(s), {len(ungrouped)} ungrouped\n"]
-            for g in groups:
-                parts.append(f"### {g['id']}: {g['label']}")
-                parts.append(f"Lines: {', '.join(str(l) for l in g['lines'])}")
-                parts.append(f"*{g['reason']}*\n")
+        parts = [f"**Item Grouping for {rfq_id}** — {len(groups)} group(s), {len(ungrouped)} ungrouped\n"]
+        for g in groups:
+            parts.append(f"### {g['id']}: {g['label']}")
+            parts.append(f"Lines: {', '.join(str(l) for l in g['lines'])}")
+            parts.append(f"*{g['reason']}*\n")
 
             if ungrouped:
                 parts.append(f"### Ungrouped")
@@ -565,16 +508,8 @@ async def on_rfq_group_items(action: cl.Action) -> None:
                 if result.get("ungrouped_reason"):
                     parts.append(f"*{result['ungrouped_reason']}*")
 
-            parts.append(f"\n<details><summary>Raw JSON</summary>\n\n```json\n{json.dumps(result, indent=2)}\n```\n</details>")
-
             await cl.Message(
                 content="\n".join(parts),
-                author="EagleAgent",
-            ).send()
-        except json.JSONDecodeError:
-            # If we can't parse, just show the raw response
-            await cl.Message(
-                content=f"**Item Grouping for {rfq_id}** (raw response):\n\n{raw_text}",
                 author="EagleAgent",
             ).send()
     except Exception as e:
@@ -986,10 +921,12 @@ async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
 
 
 async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
-    """Phase 3: Web search via ResearchAgent — one call per group/item."""
+    """Phase 3: Web search via genai.Client with Google Search grounding."""
     import json
-    from includes.prompts import load_prompt
-    from includes.tools.rfq_crud import _get_rfq_sync, _sort_rfq_suppliers_sync
+    from includes.tools.rfq_crud import (
+        _get_rfq_sync, _sort_rfq_suppliers_sync, _add_supplier_sync,
+        _web_search_suppliers_sync, _get_session,
+    )
 
     # If no pinned_tid passed, capture current (legacy path)
     if not pinned_tid:
@@ -997,6 +934,7 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
 
     rfq_id = payload.get("rfq_id", "???")
     confirmed_items = payload.get("items", [])
+    user_id = cl.user_session.get("user_id", "unknown")
 
     if not confirmed_items:
         await _send_pinned(
@@ -1009,8 +947,7 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
 
     try:
         # Load groups from DB (saved during Find Previous Suppliers)
-        from includes.dashboard.models import RFQ
-        from includes.tools.rfq_crud import _get_session
+        from includes.dashboard.models import RFQ, RFQItem
         session = _get_session()
         try:
             rfq_obj = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
@@ -1019,7 +956,6 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
             session.close()
 
         # Re-read current supplier state from DB so we know what's already there
-        from includes.dashboard.models import RFQItem
         session = _get_session()
         try:
             rfq_obj = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
@@ -1045,109 +981,43 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
             })
 
         # ================================================================
-        # Web search via ResearchAgent — one call per group/item
+        # Build search tasks: list of (label, lines, items_for_search)
         # ================================================================
         items_by_line = {i["line"]: i for i in items_with_context}
-        find_skill = load_prompt("rfq_find_suppliers")
-
-        # Collect search tasks: list of (label, short_desc, lines, prompt)
-        search_tasks: list[tuple[str, str, list[int], str]] = []
+        search_tasks: list[tuple[str, list[int], list[dict]]] = []
         grouped_lines: set[int] = set()
 
         if groups_result:
             for g in groups_result.get("groups", []):
                 group_lines = g.get("lines", [])
                 grouped_lines.update(group_lines)
-                group_items_full = [items_by_line[l] for l in group_lines if l in items_by_line]
-                if not group_items_full:
+                group_items = [items_by_line[l] for l in group_lines if l in items_by_line]
+                if not group_items:
                     continue
-
-                all_existing_for_group: set[str] = set()
-                for gi in group_items_full:
-                    all_existing_for_group.update(gi.get("existing_suppliers", []))
-
-                sample = group_items_full[:3]
-                sample_desc = "; ".join(
-                    f"{s.get('part_number', '')} {s.get('description', '')}".strip()
-                    for s in sample
-                )
-
-                parts = [f"research_suppliers"]
-                parts.append(f"Find web suppliers for a group of {len(group_lines)} related items on {rfq_id}.")
-                parts.append(f"Group: {g['label']} ({g['reason']})")
-                parts.append(f"Sample items: {sample_desc}")
-                if group_items_full[0].get("brand"):
-                    parts.append(f"Brand: {group_items_full[0]['brand']}")
-                if all_existing_for_group:
-                    parts.append(f"Already have these suppliers (do NOT repeat them): {', '.join(sorted(all_existing_for_group))}")
-                parts.append("")
-                parts.append(find_skill)
-                parts.append("")
-                # Tell the agent which lines to add suppliers to
-                lines_str = ", ".join(str(l) for l in group_lines)
-                parts.append(f"CRITICAL: Add the SAME suppliers to ALL of these lines: {lines_str}")
-                parts.append(f"Call manage_rfq(action='add_supplier', rfq_id='{rfq_id}', data={{line: N, suppliers: [...]}}) once per line.")
-
                 search_tasks.append((
                     g["label"],
-                    f"group {g['id']} ({g['label'][:40]})",
                     group_lines,
-                    "\n".join(parts),
+                    group_items,
                 ))
 
             for line_num in groups_result.get("ungrouped", []):
                 if line_num in items_by_line:
                     ui = items_by_line[line_num]
-                    _desc = ui.get("description", "")
-                    parts = [f"research_suppliers"]
-                    parts.append(f"Find web suppliers for line {line_num} of {rfq_id}.")
-                    parts.append(f"Product description: {_desc}")
-                    if ui.get("part_number"):
-                        parts.append(f"Part number: {ui['part_number']}")
-                    if ui.get("brand"):
-                        parts.append(f"Brand: {ui['brand']}")
-                    if ui.get("quantity"):
-                        parts.append(f"Quantity needed: {ui['quantity']} {ui.get('uom', 'ea')}")
-                    if ui.get("existing_suppliers"):
-                        parts.append(f"Already have these suppliers (do NOT repeat them): {', '.join(ui['existing_suppliers'])}")
-                    parts.append("")
-                    parts.append(find_skill)
-                    parts.append("")
-                    parts.append(f"CRITICAL: Use rfq_id='{rfq_id}' and data={{line: {line_num}, suppliers: [...]}} when calling manage_rfq(action='add_supplier').")
-
+                    desc = ui.get("description", "") or f"Line {line_num}"
                     search_tasks.append((
-                        _desc[:60] or f"Line {line_num}",
-                        f"line {line_num}",
+                        desc[:60],
                         [line_num],
-                        "\n".join(parts),
+                        [ui],
                     ))
 
         # Any items not covered by groups
         for item in items_with_context:
-            if item["line"] not in grouped_lines and not any(item["line"] in t[2] for t in search_tasks):
-                _desc = item.get("description", "")
-                line_num = item["line"]
-                parts = [f"research_suppliers"]
-                parts.append(f"Find web suppliers for line {line_num} of {rfq_id}.")
-                parts.append(f"Product description: {_desc}")
-                if item.get("part_number"):
-                    parts.append(f"Part number: {item['part_number']}")
-                if item.get("brand"):
-                    parts.append(f"Brand: {item['brand']}")
-                if item.get("quantity"):
-                    parts.append(f"Quantity needed: {item['quantity']} {item.get('uom', 'ea')}")
-                if item.get("existing_suppliers"):
-                    parts.append(f"Already have these suppliers (do NOT repeat them): {', '.join(item['existing_suppliers'])}")
-                parts.append("")
-                parts.append(find_skill)
-                parts.append("")
-                parts.append(f"CRITICAL: Use rfq_id='{rfq_id}' and data={{line: {line_num}, suppliers: [...]}} when calling manage_rfq(action='add_supplier').")
-
+            if item["line"] not in grouped_lines and not any(item["line"] in t[1] for t in search_tasks):
+                desc = item.get("description", "") or f"Line {item['line']}"
                 search_tasks.append((
-                    _desc[:60] or f"Line {line_num}",
-                    f"line {line_num}",
-                    [line_num],
-                    "\n".join(parts),
+                    desc[:60],
+                    [item["line"]],
+                    [item],
                 ))
 
         total_searches = len(search_tasks)
@@ -1156,21 +1026,79 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
             pinned_tid, author="EagleAgent",
         )
 
-        for idx, (label, short_desc, _lines, rich_prompt) in enumerate(search_tasks, 1):
-            await notify_dashboard("agent_working", {
-                "label": f"Web search {idx}/{total_searches}: {label[:50]}..."
-            })
+        total_added = 0
+        WEB_SEARCH_CONCURRENCY = 3
+
+        async def _run_search(idx, label, lines, items_for_search):
+            """Run a single web search + save results. Returns count added."""
+            primary = items_for_search[0]
+            all_existing = set()
+            for it in items_for_search:
+                all_existing.update(it.get("existing_suppliers", []))
+
+            suppliers = await asyncio.to_thread(
+                _web_search_suppliers_sync,
+                description=primary.get("description", ""),
+                part_number=primary.get("part_number", ""),
+                brand=primary.get("brand", ""),
+                existing_suppliers=list(all_existing),
+                quantity=f"{primary.get('quantity', '')} {primary.get('uom', '')}".strip(),
+            )
+
+            if suppliers:
+                for line_num in lines:
+                    await asyncio.to_thread(
+                        _add_supplier_sync, rfq_id,
+                        {"line": line_num, "suppliers": suppliers},
+                        user_id,
+                    )
+                names = [s["name"] for s in suppliers[:5]]
+                await _send_pinned(
+                    f"   ✓ **{label}**: {len(suppliers)} supplier(s) — {', '.join(names)}",
+                    pinned_tid, author="EagleAgent",
+                )
+                return len(suppliers)
+            else:
+                await _send_pinned(
+                    f"   ✗ **{label}**: No new suppliers found.",
+                    pinned_tid, author="EagleAgent",
+                )
+                return 0
+
+        # Process in batches of WEB_SEARCH_CONCURRENCY
+        sem = asyncio.Semaphore(WEB_SEARCH_CONCURRENCY)
+
+        async def _bounded_search(idx, label, lines, items_for_search):
+            async with sem:
+                return await _run_search(idx, label, lines, items_for_search)
+
+        # Show which searches are starting
+        for idx, (label, lines, _items) in enumerate(search_tasks, 1):
+            lines_str = ", ".join(str(l) for l in lines)
             await _send_pinned(
-                f"🔍 Search {idx}/{total_searches}: **{label}** (lines {', '.join(str(l) for l in _lines)})...",
+                f"🔍 Search {idx}/{total_searches}: **{label}** (lines {lines_str})",
                 pinned_tid, author="EagleAgent",
             )
 
-            synthetic = cl.Message(content=f"Find suppliers for {short_desc} on {rfq_id}")
-            synthetic.author = "User"
-            synthetic.intent_context = rich_prompt
-            await _main_pinned(synthetic, pinned_tid)
+        await notify_dashboard("agent_working", {
+            "label": f"Web searching {total_searches} items ({WEB_SEARCH_CONCURRENCY} concurrent)..."
+        })
 
-            await notify_dashboard("dashboard_refresh")
+        # Launch all searches with bounded concurrency
+        tasks = [
+            _bounded_search(idx, label, lines, items_for_search)
+            for idx, (label, lines, items_for_search) in enumerate(search_tasks, 1)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                label = search_tasks[i][0]
+                logger.error(f"Web search failed for '{label}': {result}")
+            elif isinstance(result, int):
+                total_added += result
+
+        await notify_dashboard("dashboard_refresh")
 
         # Sort suppliers on all line items
         await notify_dashboard("agent_working", {"label": "Sorting suppliers..."})
@@ -1178,7 +1106,7 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
         await notify_dashboard("dashboard_refresh")
 
         await _send_pinned(
-            f"✅ Web supplier search complete.",
+            f"✅ Web supplier search complete. Added **{total_added}** supplier(s) total.",
             pinned_tid, author="EagleAgent",
         )
 
