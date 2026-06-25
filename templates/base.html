@@ -664,6 +664,7 @@
                 editingHeader: false,
                 editingItem: null,
                 addingItem: false,
+                agentBusy: false,
                 copySupplierModal: { open: false, sourceLine: null, supplierName: '', items: [] },
                 brandSuppliersModal: { open: false, line: null, brand: '', suppliers: [] },
                 rfqId: '',
@@ -700,6 +701,20 @@
                     try { saved = JSON.parse(sessionStorage.getItem('rfq-expanded-' + this.rfqId) || '{}'); } catch(e) {}
                     supplierLines.forEach(l => this.expanded[l] = !!saved[l]);
                     this.checkAllExpanded();
+
+                    // Listen for agent-working/agent_done events from Chainlit
+                    // Batch buttons are disabled while agent is busy;
+                    // per-item buttons remain enabled (concurrent use is valid).
+                    var self = this;
+                    window.addEventListener('message', function(e) {
+                        if (e.data?.type === 'agent_working') {
+                            self.agentBusy = true;
+                        }
+                        if (e.data?.type === 'agent_done') {
+                            self.agentBusy = false;
+                        }
+                    });
+
                     console.log('[rfqDetail] init, rfqId:', this.rfqId, 'items:', Object.keys(this._items).length);
                 },
                 _saveExpanded() {
@@ -840,7 +855,7 @@
                     // Legacy: runs both phases sequentially
                     var payload = this._buildSupplierPayload();
                     if (!payload) return;
-                    this._sendAction({ name: 'rfq_find_all_suppliers', label: 'Finding suppliers for all specific items...', payload: payload });
+                    this._sendAction({ name: 'rfq_find_all_suppliers', label: 'Finding suppliers for all items...', payload: payload });
                 },
                 findPreviousSuppliers() {
                     var payload = this._buildSupplierPayload();
@@ -853,13 +868,13 @@
                     this._sendAction({ name: 'rfq_find_new_suppliers', label: 'Searching the web for new suppliers...', payload: payload });
                 },
                 _buildSupplierPayload() {
-                    var specificItems = [];
+                    var supplierItems = [];
                     var self = this;
                     this._allLines.forEach(function(line) {
                         var item = self._items[line];
-                        if (item && item.match === 'specific') {
+                        if (item && item.match !== 'unmatched' && item.match !== 'discrepancy') {
                             var suppliers = (item.suppliers || []).filter(function(s) { return s.status !== 'dropped'; }).map(function(s) { return s.name; });
-                            specificItems.push({
+                            supplierItems.push({
                                 line: item.line,
                                 description: item.input_description,
                                 part_number: item.part_number || item.input_code,
@@ -870,8 +885,8 @@
                             });
                         }
                     });
-                    if (specificItems.length < 1) return null;
-                    return { rfq_id: this.rfqId, items: specificItems };
+                    if (supplierItems.length < 1) return null;
+                    return { rfq_id: this.rfqId, items: supplierItems };
                 },
                 shortlistAll() {
                     var rfqId = this.rfqId;

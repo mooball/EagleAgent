@@ -22,6 +22,7 @@ from includes.tools.rfq_crud import (  # noqa: F401
     _add_supplier_sync, _update_supplier_sync, _clear_suppliers_sync,
     _assign_sync, _update_status_sync, _add_note_sync, _link_external_sync,
     _update_item_groups_sync,
+    _find_brand_suppliers_sync, _cross_apply_suppliers_sync,
 )
 from includes.tools.rfq_render import (  # noqa: F401
     _render_rfq_summary, _render_rfq_list,

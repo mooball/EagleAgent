@@ -248,14 +248,18 @@
             {% if specific >= 1 %}
             <span>·</span>
             <button @click="findPreviousSuppliers()"
+                    :disabled="agentBusy"
                     class="tip btn-sm btn-accent"
+                    :class="{'opacity-50 cursor-not-allowed': agentBusy}"
                     data-tip="Agent will scan the database for previous transactions relating to the items and find suppliers linked to the items brand.">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
                 Find Previous Suppliers
             </button>
             <span>·</span>
             <button @click="findNewSuppliers()"
+                    :disabled="agentBusy"
                     class="tip btn-sm btn-accent"
+                    :class="{'opacity-50 cursor-not-allowed': agentBusy}"
                     data-tip="Agent will search the Internet for new suppliers not in the database who may be good candidates for the items.">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                 Find New Suppliers

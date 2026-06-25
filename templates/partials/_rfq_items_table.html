@@ -61,12 +61,12 @@
                     <div class="flex items-center justify-end gap-1">
                         {% if suppliers %}
                         <span class="tabular-nums text-xs text-gray-500">{{ active_suppliers | length }} suppliers</span>
-                        {% elif item.match == 'specific' %}
+                        {% elif item.match == 'specific' or item.match == 'branded' or item.match == 'generic' %}
                         <button class="btn-sm"
                                 @click.stop="findSuppliers({{ item.line }})">
                             Find Suppliers
                         </button>
-                        {% else %}
+                        {% elif item.match == 'unmatched' %}
                         <button class="btn-sm btn-accent"
                                 @click.stop="identifyItem({{ item.line }})">
                             Classify &amp; Validate

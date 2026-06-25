@@ -1189,12 +1189,75 @@ Return ONLY a JSON array, no other text."""
                 temperature=0.1,
             ),
         )
-        raw_text = (response.text or "").strip()
+        # Robust text extraction — with grounding, text is split across
+        # multiple parts (interspersed with grounding metadata). We must
+        # join ALL text parts, not just use response.text (which returns
+        # only the first text part).
+        raw_text = ""
+        try:
+            if response.candidates:
+                parts = response.candidates[0].content.parts or []
+                raw_text = "".join(
+                    p.text for p in parts
+                    if hasattr(p, "text") and p.text
+                ).strip()
+        except (ValueError, AttributeError, IndexError):
+            pass
+        # Fallback to response.text if parts extraction failed
+        if not raw_text:
+            try:
+                raw_text = (response.text or "").strip()
+            except (ValueError, AttributeError):
+                pass
+
+        logger.info(f"Validation raw response ({len(raw_text)} chars): {raw_text[:200]!r}")
+
+        # Retry without grounding if the grounded response was empty
+        if not raw_text:
+            logger.warning("Validation: grounded response empty, retrying without grounding")
+            response = client.models.generate_content(
+                model=Config.DEFAULT_MODEL,
+                contents=prompt,
+                config=_types.GenerateContentConfig(temperature=0.1),
+            )
+            try:
+                raw_text = (response.text or "").strip()
+            except (ValueError, AttributeError):
+                pass
+            if not raw_text and response.candidates:
+                parts = response.candidates[0].content.parts or []
+                raw_text = "".join(p.text or "" for p in parts if hasattr(p, "text")).strip()
+
+        if not raw_text:
+            return {"validated": [], "error": "Empty response from validation model"}
+
         # Clean markdown fences
         if raw_text.startswith("```"):
             lines = raw_text.split("\n")
             lines = [l for l in lines if not l.strip().startswith("```")]
             raw_text = "\n".join(lines).strip()
+
+        # After fence cleaning, content may be empty — retry without grounding
+        if not raw_text:
+            logger.warning("Validation: response was empty after fence stripping, retrying without grounding")
+            response = client.models.generate_content(
+                model=Config.DEFAULT_MODEL,
+                contents=prompt,
+                config=_types.GenerateContentConfig(temperature=0.1),
+            )
+            try:
+                raw_text = (response.text or "").strip()
+            except (ValueError, AttributeError):
+                pass
+            if not raw_text and response.candidates:
+                parts = response.candidates[0].content.parts or []
+                raw_text = "".join(p.text or "" for p in parts if hasattr(p, "text")).strip()
+            if raw_text and raw_text.startswith("```"):
+                fence_lines = raw_text.split("\n")
+                fence_lines = [l for l in fence_lines if not l.strip().startswith("```")]
+                raw_text = "\n".join(fence_lines).strip()
+            if not raw_text:
+                return {"validated": [], "error": "Empty response from validation model (after retry)"}
 
         validated = json.loads(raw_text)
 
@@ -1290,7 +1353,22 @@ Example: [{{"name": "Example Co", "country": "AU", "currency": "AUD", "website":
                 temperature=0.2,
             ),
         )
-        raw_text = (response.text or "").strip()
+        # Join ALL text parts — grounding splits text across multiple parts
+        raw_text = ""
+        try:
+            if response.candidates:
+                parts = response.candidates[0].content.parts or []
+                raw_text = "".join(
+                    p.text for p in parts
+                    if hasattr(p, "text") and p.text
+                ).strip()
+        except (ValueError, AttributeError, IndexError):
+            pass
+        if not raw_text:
+            try:
+                raw_text = (response.text or "").strip()
+            except (ValueError, AttributeError):
+                pass
         # Clean markdown fences
         if raw_text.startswith("```"):
             lines = raw_text.split("\n")
@@ -1403,3 +1481,226 @@ def _find_purchase_suppliers_sync(
             by_line[line] = [s["name"] for s in suppliers]
 
     return {"added": total_added, "by_line": by_line}
+
+
+def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
+    """Find brand-linked suppliers for all items with a brand, add top Tier A to RFQ.
+
+    Looks up each item's brand in the supplier-brand link table via
+    _find_brand_suppliers_with_tier(). Auto-adds up to 5 Tier A suppliers
+    per line item. Stores the full brand-supplier list on the item's
+    brand_suppliers JSON column for reference in the UI modal.
+
+    Args:
+        rfq_number: The RFQ identifier (e.g. "RFQ-2026-0042").
+        user_id: Current user's identifier.
+
+    Returns:
+        {
+            "added": int,                              # total Tier A suppliers added
+            "by_line": {line_num: [supplier_names]},   # what was added where
+        }
+    """
+    from includes.tools.product_tools import _find_brand_suppliers_with_tier
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+
+    rfq_dict = _get_rfq_dict_sync(rfq_number)
+    if not rfq_dict:
+        return {"error": f"RFQ '{rfq_number}' not found."}
+
+    items = rfq_dict.get("items", [])
+    total_added = 0
+    by_line = {}
+
+    session = _get_session()
+    try:
+        for item in items:
+            line = item["line"]
+            brand = (item.get("brand") or "").strip()
+
+            # Skip items without a real brand
+            if not brand or brand.lower() in ("other", "n/a", "na", "none", "unknown"):
+                continue
+
+            # Look up brand-linked suppliers
+            try:
+                brand_sups = _find_brand_suppliers_with_tier(brand)
+            except Exception:
+                logger.warning(
+                    f"Brand supplier lookup failed for line {line} brand={brand}",
+                    exc_info=True,
+                )
+                continue
+
+            if not brand_sups:
+                continue
+
+            # Save full brand-supplier list to the item for modal reference
+            rfq_obj = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+            if not rfq_obj:
+                continue
+            item_obj = session.query(RFQItem).filter(
+                RFQItem.rfq_id == rfq_obj.id, RFQItem.line == line,
+            ).first()
+            if item_obj:
+                item_obj.brand_suppliers = brand_sups
+                flag_modified(item_obj, "brand_suppliers")
+            session.commit()
+
+            # Determine which suppliers are already on this line
+            existing_suppliers = item.get("suppliers", [])
+            existing_names_lower = {s["name"].lower() for s in existing_suppliers if isinstance(s, dict)}
+
+            # Filter to only new suppliers (not already on the line)
+            new_brand_sups = [
+                s for s in brand_sups
+                if s["name"].lower() not in existing_names_lower
+            ]
+
+            # Auto-add top 5 Tier A suppliers to the line item
+            tier_a = [s for s in new_brand_sups if s.get("tier") == "A"][:5]
+            if tier_a:
+                tier_a_entries = [
+                    {
+                        "supplier_id": s["supplier_id"],
+                        "name": s["name"],
+                        "contacts": s.get("contacts", []),
+                        "status": "candidate",
+                        "price_type": "brand_link",
+                        "notes": (
+                            f"Brand-linked supplier (Tier A, "
+                            f"{s['transaction_count']} transactions)"
+                        ),
+                    }
+                    for s in tier_a
+                ]
+                _add_supplier_sync(
+                    rfq_number,
+                    {"line": line, "suppliers": tier_a_entries},
+                    user_id,
+                )
+                total_added += len(tier_a)
+                by_line[line] = [s["name"] for s in tier_a]
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    return {"added": total_added, "by_line": by_line}
+
+
+def _cross_apply_suppliers_sync(rfq_number: str, user_id: str) -> dict:
+    """Cross-apply suppliers within item groups so grouped items share suppliers.
+
+    For each group (stored in rfq.item_groups), collects all suppliers found
+    on any line in the group, then adds missing ones to peer lines. This
+    ensures that if Line 1 has Supplier A and Line 2 has Supplier B, and
+    both lines are in the same group, both lines end up with both suppliers.
+
+    Uses direct JSON append on the RFQItem.suppliers column (bypasses
+    enrichment) since these are cross-applied candidates, not new discoveries.
+
+    Args:
+        rfq_number: The RFQ identifier.
+        user_id: Current user's identifier (unused; accepted for interface consistency).
+
+    Returns:
+        {
+            "added": int,    # total cross-applied supplier-line additions
+            "details": [     # per-group breakdown
+                {"group_label": str, "lines": [int], "suppliers_added": int}
+            ]
+        }
+    """
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return {"error": f"RFQ '{rfq_number}' not found."}
+
+        groups_data = rfq.item_groups
+        if not groups_data:
+            return {"added": 0, "details": []}
+
+        groups = groups_data.get("groups", [])
+        if not groups:
+            return {"added": 0, "details": []}
+
+        # Fetch all line items
+        items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()
+        items_by_line = {it.line: it for it in items}
+
+        total_added = 0
+        details = []
+
+        for g in groups:
+            group_lines = g.get("lines", [])
+            if len(group_lines) < 2:
+                continue
+
+            # Collect all unique suppliers across the group (keyed by name_lower)
+            group_suppliers: dict[str, dict] = {}
+            for gl in group_lines:
+                item_obj = items_by_line.get(gl)
+                if not item_obj:
+                    continue
+                for sup in (item_obj.suppliers or []):
+                    if not isinstance(sup, dict):
+                        continue
+                    key = sup["name"].lower()
+                    if key not in group_suppliers:
+                        group_suppliers[key] = {
+                            "supplier_id": sup.get("supplier_id"),
+                            "name": sup["name"],
+                            "contacts": sup.get("contacts", []),
+                            "status": "candidate",
+                            "price_type": "candidate",
+                            "notes": (
+                                "Cross-applied from group (supplier has history "
+                                "with other items in this group)"
+                            ),
+                        }
+
+            if not group_suppliers:
+                continue
+
+            # For each line in the group, add missing suppliers
+            group_added = 0
+            for gl in group_lines:
+                item_obj = items_by_line.get(gl)
+                if not item_obj:
+                    continue
+                current = list(item_obj.suppliers or [])
+                existing_names = {s["name"].lower() for s in current if isinstance(s, dict)}
+
+                to_add = [
+                    sup for name_key, sup in group_suppliers.items()
+                    if name_key not in existing_names
+                ]
+                if to_add:
+                    current.extend(to_add)
+                    item_obj.suppliers = current
+                    flag_modified(item_obj, "suppliers")
+                    group_added += len(to_add)
+
+            session.commit()
+
+            if group_added > 0:
+                total_added += group_added
+                details.append({
+                    "group_label": g.get("label", "Unnamed"),
+                    "lines": group_lines,
+                    "suppliers_added": group_added,
+                })
+
+        return {"added": total_added, "details": details}
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

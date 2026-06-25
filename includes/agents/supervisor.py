@@ -1,4 +1,5 @@
 from typing import Dict, Any, Literal, List, Annotated
+import re
 import logging
 from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -12,6 +13,14 @@ class RouteDecision(BaseModel):
     )
 
 MAX_STEPS = 4  # Hard cap — prevent infinite agent loops
+
+# Keywords that indicate a "find suppliers" request — must route to
+# ProcurementAgent (which has the programmatic pipeline), NOT ResearchAgent.
+_FIND_SUPPLIERS_KEYWORDS = (
+    "find supplier", "find suppliers", "search supplier", "search suppliers",
+    "get supplier", "get suppliers", "source supplier", "source suppliers",
+    "supplier search", "look for supplier",
+)
 
 
 class Supervisor:
@@ -74,6 +83,46 @@ class Supervisor:
             if stripped.endswith("?"):
                 logger.info("Supervisor: agent asked user a question → FINISH")
                 return {"next_agent": "FINISH", "step_count": 0}
+            # Check if a pipeline step completed (web search, classification, etc.)
+            if "Web search complete" in content_str or "Step 5" in content_str:
+                logger.info("Supervisor: pipeline web search completed → FINISH")
+                return {"next_agent": "FINISH", "step_count": 0}
+            # Pipeline Steps 1-4c completed — agent is waiting for user decision
+            if "Step 4" in content_str and "Step 1" in content_str:
+                logger.info("Supervisor: pipeline steps 1-4 completed → FINISH")
+                return {"next_agent": "FINISH", "step_count": 0}
+
+        # ---- Deterministic routing: "find suppliers" on an RFQ ----
+        # The user asking to find/search suppliers while viewing an RFQ must
+        # ALWAYS go to ProcurementAgent (which has the programmatic pipeline).
+        # Without this, the LLM may route to ResearchAgent for web search.
+        if is_user_message:
+            # Get content of the latest HumanMessage
+            human_content = last_message.content if hasattr(last_message, "content") else ""
+            if isinstance(human_content, list):
+                human_content = " ".join(
+                    p.get("text", "") if isinstance(p, dict) else str(p)
+                    for p in human_content
+                )
+            human_lower = human_content.lower()
+            has_find_kw = any(kw in human_lower for kw in _FIND_SUPPLIERS_KEYWORDS)
+            has_rfq_ctx = "rfq_detail" in human_lower or bool(re.search(r"rfq-\d{4}-\d{4,}", human_lower))
+            if has_find_kw and has_rfq_ctx:
+                logger.info("Supervisor: deterministic route → ProcurementAgent (find suppliers + RFQ context)")
+                return {"next_agent": "ProcurementAgent", "step_count": 0}
+
+            # ---- Deterministic: user said "yes" to pipeline web search question ----
+            _YES_KEYWORDS = ("yes", "yeah", "yep", "sure", "ok", "okay", "go ahead",
+                             "please", "do it", "absolutely", "search the web", "search web")
+            if any(kw in human_lower for kw in _YES_KEYWORDS):
+                # Check if previous AI message was the pipeline's web search question
+                for prev_msg in reversed(messages[:-1]):
+                    if hasattr(prev_msg, "type") and prev_msg.type == "ai":
+                        prev_text = prev_msg.content if isinstance(prev_msg.content, str) else str(prev_msg.content)
+                        if "search the web for additional suppliers" in prev_text:
+                            logger.info("Supervisor: deterministic route → ProcurementAgent (yes to web search)")
+                            return {"next_agent": "ProcurementAgent", "step_count": 0}
+                        break  # Only check the most recent AI message
 
         # ---- LLM-based routing for ALL messages ----
         content = last_message.content if hasattr(last_message, "content") else str(last_message)
@@ -122,7 +171,19 @@ Given the conversation, which agent should act next?
 
         model_with_structured_output = self.model.with_structured_output(RouteDecision)
         recent_messages = messages[-8:]
-        eval_messages = [SystemMessage(content=system_prompt)] + list(recent_messages)
+        # Filter out messages with empty content — Gemini rejects requests
+        # that contain messages without at least one non-empty parts field.
+        filtered_messages = []
+        for m in recent_messages:
+            c = m.content if hasattr(m, "content") else None
+            if c is None:
+                continue
+            if isinstance(c, str) and not c.strip():
+                continue
+            if isinstance(c, list) and not c:
+                continue
+            filtered_messages.append(m)
+        eval_messages = [SystemMessage(content=system_prompt)] + filtered_messages
 
         logger.debug(f"Supervisor LLM routing (step={step_count})")
         try:
