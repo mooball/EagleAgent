@@ -777,6 +777,7 @@ async def on_rfq_pipeline_web_search(action: cl.Action) -> None:
                             {"line": line_num, "suppliers": suppliers},
                             user_id,
                         )
+                        await notify_dashboard("dashboard_refresh")
                     names = [s["name"] for s in suppliers[:5]]
                     await cl.Message(
                         content=f"   ✓ **{label}** (line {', '.join(str(l) for l in lines)}): {len(suppliers)} supplier(s) — {', '.join(names)}",
@@ -1424,6 +1425,7 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
                         {"line": line_num, "suppliers": suppliers},
                         user_id,
                     )
+                    await notify_dashboard("dashboard_refresh")
                 names = [s["name"] for s in suppliers[:5]]
                 await _send_pinned(
                     f"   ✓ **{label}**: {len(suppliers)} supplier(s) — {', '.join(names)}",

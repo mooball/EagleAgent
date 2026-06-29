@@ -138,4 +138,9 @@ output that traps the rest of your message inside a malformed code block.
 - Store prices in ORIGINAL currency with correct `currency` code — do NOT convert
 - Add ALL suppliers for a line in a single `add_supplier` call
 - After each RFQ mutation, write a brief message about what changed — do NOT
-  repeat the full summary table
+  repeat the full summary table. The dashboard auto-refreshes, so the user
+  can already see the RFQ there.
+- After making changes (e.g. updating items), do NOT call `get_rfq` to
+  "show" the result — the tool already returns the updated state. If you
+  must verify, use `get_rfq(rfq_id="...", brief=True)` — never call it
+  without `brief=True` unless the user explicitly asks for full details.

@@ -1085,8 +1085,8 @@ async def main(message: cl.Message):
     # Flush any remaining buffered text — this is the final agent response
     # (no tool call followed, so it's safe to show the user)
     if _stream_buffer:
-        final_text = "".join(_stream_buffer)
-        if final_text.strip():
+        final_text = "".join(_stream_buffer).rstrip()
+        if final_text:
             await msg.stream_token(final_text)
         _stream_buffer.clear()
 
@@ -1123,13 +1123,19 @@ async def main(message: cl.Message):
     # Clear pipeline streaming reference
     cl.user_session.set("active_msg", None)
 
+    # Strip trailing whitespace so the footer sits cleanly against content
+    if hasattr(msg, "content") and msg.content:
+        msg.content = msg.content.rstrip()
+
     # Clean up any lingering tool status message
     if active_step:
         await active_step.remove()
         active_step = None
 
-    # Emit a single token-usage footer after the full response
-    if total_all_tokens > 0:
+    # Emit a single token-usage footer after the full response.
+    # Show footer whenever an agent responded, even if no token data was
+    # captured (e.g. pipeline ran without direct LLM calls).
+    if total_all_tokens > 0 or msg.content.strip() or last_ai_text.strip():
         total_elapsed = time.monotonic() - request_start
         routing_part = ""
         if supervisor_done_at is not None:
@@ -1138,7 +1144,10 @@ async def main(message: cl.Message):
         tools_part = ""
         if tool_names_used:
             tools_part = " | Used " + ", ".join(tool_names_used)
-        token_info = f"\n\n<div style='margin-top:20px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Agent: {active_agent} | Tokens: {total_all_tokens:,} (Context: {total_prompt_tokens:,}, Generated: {total_completion_tokens:,}){routing_part} | Total: {total_elapsed:.1f}s{tools_part}</div>\n\n"
+        if total_all_tokens > 0:
+            token_info = f"\n\n<div style='margin-top:20px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Agent: {active_agent} | Tokens: {total_all_tokens:,} (Context: {total_prompt_tokens:,}, Generated: {total_completion_tokens:,}){routing_part} | Total: {total_elapsed:.1f}s{tools_part}</div>\n\n"
+        else:
+            token_info = f"\n\n<div style='margin-top:20px; font-size:0.8em; color:#a1a1aa; font-style:italic;'>Agent: {active_agent}{routing_part} | Total: {total_elapsed:.1f}s{tools_part}</div>\n\n"
         await msg.stream_token(token_info)
 
     # ---------------------------------------------------------------------------

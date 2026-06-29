@@ -124,21 +124,24 @@ class Supervisor:
                         prev_ai_text = c.strip()[-300:]
                         break
 
+            # Base directions available in all contexts
+            base_directions = [
+                {"id": "DB_QUERY", "description": "User wants information from the internal database — suppliers, products, brands, purchase history, transactions, or any existing records. They want to research or explore data, not search the web. Examples: 'find suppliers for the Wurth brand', 'who supplies Fluke products', 'show me purchase history for part 611343', 'list all brands we stock'"},
+                {"id": "WEB_RESEARCH", "description": "User wants to search the web for information about a product, supplier, part number, or supply chain. They want external research. Examples: 'check if this part number is real', 'find australian suppliers for Fluke', 'research this company', 'is 611343X a valid part'"},
+                {"id": "GENERAL", "description": "General conversation, greetings, or non-procurement topics. Examples: 'hello', 'what's the weather', 'tell me a joke', 'good morning'"},
+            ]
+
             if has_rfq_ctx:
-                directions = [
+                # RFQ-specific directions — extended with base directions
+                rfq_directions = [
                     {"id": "RUN_WORKFLOW", "description": "User wants to execute the supplier-finding pipeline on the RFQ's items. This means classify → validate → group → find suppliers. Examples: 'find suppliers for these items', 'source all of these', 'run the pipeline', 'match and validate', 'classify these parts', 'find me suppliers for this RFQ'"},
-                    {"id": "RFQ_QUERY", "description": "User wants information from the internal database about suppliers, products, brands, or purchase history. They are NOT asking to run the pipeline or modify the RFQ. Examples: 'can you find me suppliers from our db for the Wurth brand', 'who supplies Fluke products', 'show me previous purchases of this part', 'what brands are on this RFQ'"},
+                    {"id": "RFQ_QUERY", "description": "User wants information about the current RFQ itself — its items, quantities, linked client, contacted suppliers, or status. They are asking about the RFQ's own data, not querying the general database. Examples: 'how many items in this RFQ?', 'which client is this RFQ linked to?', 'let me know which suppliers have been contacted', 'what's the total value', 'show me line 3 details'"},
                     {"id": "RFQ_UPDATE", "description": "User explicitly asks to modify RFQ data — add/remove suppliers, change quantities, update item details, or perform any CRUD operation. IMPORTANT: If the user's intent is ambiguous between a query and an update, do NOT assume update — classify as UNCERTAIN instead. Examples: 'add this supplier to line 2', 'remove all suppliers', 'change qty to 10', 'update line 4 part number'"},
-                    {"id": "WEB_RESEARCH", "description": "User wants to search the web for information about a product, supplier, or part number. They want external research, not internal data. Examples: 'check if this part number is real', 'find australian suppliers for Fluke', 'research this company', 'is 611343X a valid part'"},
-                    {"id": "GENERAL", "description": "General conversation, greetings, or non-procurement topics. Examples: 'hello', 'what's the weather', 'tell me a joke', 'good morning'"},
                 ]
+                directions = rfq_directions + base_directions
                 classifier_context = "User is viewing an RFQ in the procurement system."
             else:
-                directions = [
-                    {"id": "DB_QUERY", "description": "User wants information from the internal database — suppliers, products, brands, purchase history, transactions, or any existing records. They want to research or explore data, not search the web. Examples: 'find suppliers for the Wurth brand', 'who supplies Fluke products', 'show me purchase history for part 611343', 'list all brands we stock'"},
-                    {"id": "WEB_RESEARCH", "description": "User wants to search the web for information about a product, supplier, part number, or supply chain. They want external research. Examples: 'check if this part number is real', 'find australian suppliers for Fluke', 'research this company', 'is 611343X a valid part'"},
-                    {"id": "GENERAL", "description": "General conversation, greetings, or non-procurement topics. Examples: 'hello', 'what's the weather', 'tell me a joke', 'good morning'"},
-                ]
+                directions = base_directions
                 classifier_context = "User is in the procurement system (not on a specific RFQ)."
 
             if prev_ai_text:

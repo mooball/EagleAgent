@@ -1281,19 +1281,21 @@ Return ONLY a valid JSON array, no other text."""
         # Update RFQ items if discrepancies found
         session = _get_session()
         try:
-            from includes.dashboard.models import RFQItem
-            for v in validated:
-                if v.get("status") == "discrepancy":
-                    item = (
-                        session.query(RFQItem)
-                        .filter(RFQItem.rfq_number == rfq_number, RFQItem.line == v["line"])
-                        .first()
-                    )
-                    if item:
-                        item.match = "discrepancy"
-                        item.notes = v.get("findings", "")
-                        if v.get("correct_part_number") and v["correct_part_number"] != item.part_number:
-                            item.notes += f" (Correct PN: {v['correct_part_number']})"
+            from includes.dashboard.models import RFQ, RFQItem
+            rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+            if rfq:
+                for v in validated:
+                    if v.get("status") == "discrepancy":
+                        item = (
+                            session.query(RFQItem)
+                            .filter(RFQItem.rfq_id == rfq.id, RFQItem.line == v["line"])
+                            .first()
+                        )
+                        if item:
+                            item.match = "discrepancy"
+                            item.notes = v.get("findings", "")
+                            if v.get("correct_part_number") and v["correct_part_number"] != item.part_number:
+                                item.notes += f" (Correct PN: {v['correct_part_number']})"
             session.commit()
         except Exception as e:
             logger.warning(f"Failed to update discrepancy status: {e}")
@@ -1391,6 +1393,12 @@ Example: [{{"name": "Example Co", "country": "AU", "currency": "AUD", "website":
             lines = raw_text.split("\n")
             lines = [l for l in lines if not l.strip().startswith("```")]
             raw_text = "\n".join(lines).strip()
+
+        # Extract JSON array from any surrounding text
+        json_start = raw_text.find("[")
+        json_end = raw_text.rfind("]")
+        if json_start != -1 and json_end != -1 and json_end > json_start:
+            raw_text = raw_text[json_start:json_end + 1]
 
         suppliers_raw = json.loads(raw_text)
         if not isinstance(suppliers_raw, list):

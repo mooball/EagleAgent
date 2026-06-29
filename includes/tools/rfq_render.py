@@ -198,4 +198,44 @@ def _render_rfq_list(rfqs: list[dict]) -> str:
         )
     lines.append("")
     lines.append(f"**{len(rfqs)} RFQs total**")
+
+
+def _render_rfq_brief_summary(rfq: dict) -> str:
+    """Render a concise one-line stats summary — no full item or supplier tables.
+
+    Intended for tool responses after mutations (manage_rfq), where the full
+    rendering would clutter the chat. The LLM gets enough context to write
+    a brief natural-language update without being tempted to echo a big table.
+    """
+    rfq_id = rfq.get("id", "???")
+    customer = rfq.get("customer", "Unknown")
+    status = rfq.get("status", "draft").replace("_", " ").title()
+
+    items = rfq.get("items", [])
+    total = len(items)
+    specific = sum(1 for i in items if i.get("match") == "specific")
+    branded = sum(1 for i in items if i.get("match") == "branded")
+    generic = sum(1 for i in items if i.get("match") == "generic")
+    discrepancy = sum(1 for i in items if i.get("match") == "discrepancy")
+    unmatched = sum(1 for i in items if i.get("match") == "unmatched")
+    with_suppliers = sum(1 for i in items if i.get("suppliers"))
+
+    counts = []
+    if specific:
+        counts.append(f"{specific} specific")
+    if branded:
+        counts.append(f"{branded} branded")
+    if generic:
+        counts.append(f"{generic} generic")
+    if discrepancy:
+        counts.append(f"{discrepancy} discrepancy")
+    if unmatched:
+        counts.append(f"{unmatched} unmatched")
+    items_summary = f"{total} items: {', '.join(counts)}" if counts else f"{total} items"
+    supplier_summary = f"{with_suppliers} line(s) have suppliers" if with_suppliers else "no suppliers yet"
+
+    return (
+        f"RFQ {rfq_id} — {customer} ({status}) | "
+        f"{items_summary} | {supplier_summary}"
+    )
     return "\n".join(lines)
