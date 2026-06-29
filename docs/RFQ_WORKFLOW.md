@@ -10,12 +10,16 @@ Chat / Dashboard
       ▼
 includes/tools/
   ├── quote_tools.py   — LangGraph @tool wrappers (agent-facing API)
-  ├── rfq_crud.py      — Sync DB operations (create, read, update, delete)
+  ├── rfq_crud.py      — Sync DB operations + shared pipeline functions
   └── rfq_render.py    — Markdown/HTML rendering for Chat UI display
       │
       ▼
 includes/chat/
-  └── rfq_actions.py   — Chainlit action callbacks (UI buttons)
+  └── rfq_actions.py   — Chainlit action callbacks (UI button handlers)
+      │
+      ▼
+includes/agents/
+  └── procurement_agent.py  — ProcurementAgent + _try_find_suppliers_pipeline
       │
       ▼
 includes/dashboard/routes/
@@ -25,131 +29,113 @@ includes/dashboard/routes/
 PostgreSQL: rfqs + rfq_items + rfq_suppliers + rfq_threads tables
 ```
 
-## RFQ Lifecycle
+## Unified Code Path
+
+The batch "Find All Suppliers" button and the chat message "find suppliers" now invoke **identical code**. The button creates a synthetic user message and routes it through the graph — the same `_try_find_suppliers_pipeline` runs regardless of how the workflow is triggered.
 
 ```
-1. CREATE         2. IDENTIFY ITEMS       3. FIND SUPPLIERS
-   │                   │                       │
-   ▼                   ▼                       ▼
-New RFQ-2026-0042   Parse/Search items     Match suppliers
-Status: DRAFT       from description       by brand/category
-                    or product DB               │
-                                          ▼
-                                    4. SEND QUOTES
-                                        │
-                                        ▼
-                                    5. COLLECT RESPONSES
-                                        │
-                                   ┌────┴────┐
-                                   ▼         ▼
-                            6. COMPARE    7. AWARD / CLOSE
-                            QUOTES
+Button click                        Chat message
+    │                                    │
+    ▼                                    ▼
+synthetic cl.Message               user types message
+("Find suppliers for all               │
+ items on RFQ-2026-XXXX")              ▼
+    │                            @cl.on_message (main)
+    ▼                                    │
+_main_pinned(synthetic, tid)             ▼
+    │                            Supervisor routes to
+    ▼                            ProcurementAgent
+@cl.on_message (main)                    │
+    │                                    ▼
+    ▼                            _try_find_suppliers_pipeline()
+Supervisor routes to                     │
+ProcurementAgent                   7-step pipeline runs
+    │                                    │
+    ▼                                    ▼
+_try_find_suppliers_pipeline()    IDENTICAL OUTCOME
 ```
 
-### 1. Create RFQ
+## The 7-Step Find-Suppliers Pipeline
 
-- **From Chat**: Agent creates RFQ via `create_rfq` tool — generates sequential RFQ number (e.g., `RFQ-2026-0042`)
-- **From Dashboard**: Admin creates RFQ via the `/rfqs` page
-- RFQ starts in `DRAFT` status
+When the user asks to find suppliers (via button or chat), the pipeline runs these steps in order. **Each step streams progress to the user — the agent never goes silent.**
 
-### 2. Identify Items
+| Step | Name | What It Does | User Sees |
+|------|------|-------------|-----------|
+| 1 | **Classify** | Assigns match level to all unmatched items: `specific` (part# + description), `branded` (brand + description), `generic` (description only). Also searches product DB. | "Classified 8 items: 4 specific, 2 branded, 2 generic. 3 found in product DB." |
+| 2 | **Validate** | Web-checks specific items not found in the product DB for part-number discrepancies (typos, wrong brands). | "Validated 2 items via web search. Line 3: ✅ confirmed. Line 7: 🟠 discrepancy." |
+| 3 | **Group** | Groups specific items by brand/supply chain using LLM. Skipped if fewer than 2 specific items. | "Grouped into 3 sourcing groups: Fasteners, Hydraulics, Bearings." |
+| 4 | **Find Previous** | Searches purchase history for suppliers who previously supplied each part number. Adds to RFQ. | "Found 5 suppliers from our records. Line 1: Acme Corp, BoltCo..." |
+| 4b | **Brand-Linked** | Looks up each item's brand in the supplier-brand link table. Auto-adds top 5 Tier A suppliers per line. | "Added 3 Tier A brand-linked suppliers." |
+| 4c | **Cross-Apply** | Within each sourcing group, shares suppliers across peer lines. If Line 1 has Supplier A and Line 2 has Supplier B, both lines get both suppliers. | "Shared 4 suppliers across grouped items." |
+| — | **Sort** | Sorts all suppliers on every line by tier, history, location, name. Dashboard refreshes. | (silent) |
+| — | **ASK** | Stops and asks the user before any web search. | "Would you like me to search the web for additional suppliers?" |
 
-- Agent parses the RFQ description to identify line items
-- Items can be matched against the `products` table by part number, description, or brand
-- Each item gets a line number, part number, description, and quantity
+### Permission Gate
 
-### 3. Find Suppliers
+**The agent NEVER searches the web without explicit user permission.** After internal sources are exhausted (steps 1-4c), the pipeline always stops and asks. This applies equally to:
 
-The agent uses multiple strategies to find suitable suppliers:
+- Batch "Find All Suppliers" button → pipeline → asks
+- Chat "find suppliers" message → pipeline → asks
+- Per-item "Find Suppliers" button → internal results → "Search Web?" action button
+- Per-item "Search Web?" button → web search only (user already confirmed)
 
-1. **Brand match** — If items have a known brand, find suppliers carrying that brand
-2. **Category match** — Match supplier categories to item categories
-3. **Product history** — Find suppliers from past purchase transactions
-4. **Previous RFQ suppliers** — Reuse suppliers from similar past RFQs
-5. **Web search** — Fall back to ResearchAgent for new supplier discovery
+## Dashboard Buttons
 
-### 4. Send Quotes
+### Batch Buttons (top of RFQ detail page)
 
-- **From Dashboard**: Admin can send quote request emails to suppliers via the email modal
-- **Dual-path workflow**: In-app editor (direct Gmail API send) or Gmail draft handoff
-- Each sent email is tracked in `email_tracking` with RFQ and supplier references
+| Button | Triggers | What It Does |
+|--------|----------|-------------|
+| **Classify & Validate** | `rfq_identify_items` callback | Classifies all unmatched items, validates specific items via internal DB + web discrepancy check |
+| **Find Previous Suppliers** | `rfq_find_previous_suppliers` callback | Runs grouping + internal DB search + brand lookup + cross-apply. No web search. |
+| **Find New Suppliers** | `rfq_find_new_suppliers` callback | Web search only — requires previous suppliers step to have run first |
+| *(Find All Suppliers)* | `rfq_find_all_suppliers` → synthetic message → pipeline | Full 7-step pipeline via graph. Used programmatically; currently no visible button. |
 
-### 5. Collect & Compare Responses
+### Per-Item Buttons (on each line)
 
-- Supplier responses are linked to the RFQ via email tracking
-- Admin can record supplier prices against each line item
-- The dashboard shows a comparison view of all supplier quotes
+| Button | Triggers | What It Does |
+|--------|----------|-------------|
+| **Classify & Validate** | `rfq_identify_items` callback (single item) | Classifies + validates a single line item |
+| **Find Suppliers** | `rfq_find_suppliers` callback → Phase 1 only | Searches internal DB for suppliers matching this line. Then asks "Search Web?" |
+| **Search Web** (appears after Find Suppliers) | `rfq_find_web_suppliers_for_line` callback | Web search for this specific line — only shown after user clicks |
 
-### 6. Award / Close
+### Button States
 
-- RFQ status can be updated: `DRAFT` → `SENT` → `RECEIVED` → `AWARDED` → `CLOSED`
-- Awarded RFQ details are stored for future reference
+- **Batch buttons** are disabled (greyed out) while the agent is processing any action — prevents race conditions from rapid clicking.
+- **Per-item buttons** remain always enabled — clicking "Find Suppliers" on multiple lines concurrently is a valid workflow.
 
-## Tool Reference
+## Thread-Pinning Architecture
 
-All tools are available to the `ProcurementAgent` and `ResearchAgent` (when `include_rfq_tools=True`):
+When a button action runs (which may take 30+ seconds), the user might navigate to a different RFQ in the dashboard. Without protection, Chainlit's `on_chat_resume` overwrites the session `thread_id` — sending in-progress messages to the wrong conversation.
 
-### RFQ Management
+**Solution:** All RFQ action callbacks use the `_pin_thread()` context manager:
 
-| Tool | Description |
-|---|---|
-| `create_rfq` | Create a new RFQ with title and description |
-| `get_rfq` | Retrieve an existing RFQ by number |
-| `update_rfq` | Update RFQ metadata (title, description, status, assignee) |
-| `list_rfqs` | List RFQs with optional status/user filters |
+```python
+async with _pin_thread() as pinned_tid:
+    # Captures thread_id at callback start
+    await _send_pinned("Processing...", pinned_tid)  # Always goes to correct thread
+    # ... do work ...
+    await _send_pinned("Done!", pinned_tid)
+```
 
-### Item Management
+**`_send_pinned()`** checks if the current thread still matches the pinned one. If the user switched threads, it temporarily swaps back to send the message, then restores.
 
-| Tool | Description |
-|---|---|
-| `add_items` | Add line items to an RFQ (part number, description, quantity) |
-| `update_item` | Update an existing line item |
-| `delete_item` | Remove a line item |
-| `identify_items` | Parse RFQ description to auto-identify items from product DB |
-| `group_items` | Group items into sections for the quote request |
+**`_main_pinned()`** does the same for graph invocations — ensuring agent responses land in the correct thread even if the user has navigated away.
 
-### Supplier Management
+## Code Map
 
-| Tool | Description |
-|---|---|
-| `add_supplier` | Add a supplier to an RFQ |
-| `update_supplier` | Update supplier quote details (price, currency, notes) |
-| `clear_suppliers` | Remove all suppliers from an RFQ |
-| `find_suppliers` | Search for matching suppliers by item brand/category |
-| `find_new_suppliers` | Discover new suppliers via web research |
-
-### Workflow
-
-| Tool | Description |
-|---|---|
-| `update_status` | Advance RFQ status (DRAFT → SENT → RECEIVED → AWARDED → CLOSED) |
-| `assign` | Assign RFQ to a team member |
-| `add_note` | Add internal notes to an RFQ |
-| `link_external` | Link an external reference (email, document URL) |
-
-## Rendering
-
-RFQ data is rendered in two contexts:
-
-- **Chat UI**: `rfq_render.py` produces Markdown summaries with supplier comparison tables and item lists. Rendered via Chainlit `Msg` elements.
-- **Dashboard**: `templates/rfq_detail.html` provides a full HTMX page with supplier cards, item table, email history, and action buttons.
-
-## Dashboard Views
-
-| Route | View | Description |
-|---|---|---|
-| `/rfqs` | List | All RFQs with search, status filter, pagination |
-| `/rfqs/{id}` | Detail | Full RFQ with items, suppliers, emails, notes |
-| `/partial/rfqs` | Fragment | HTMX partial for list updates |
-| `/partial/rfqs/{id}` | Fragment | HTMX partial for detail updates |
-
-## Thread Binding
-
-Each RFQ can be bound to a Chainlit conversation thread via `rfq_threads` table. This enables:
-
-- **Dashboard → Chat**: Clicking an RFQ in the dashboard opens the bound chat thread
-- **Chat → Dashboard**: Agent operations on an RFQ notify the dashboard to refresh
-- **Thread pinning**: Long-running RFQ workflows stay on the same thread across sessions
+| File | Role |
+|------|------|
+| `includes/chat/rfq_actions.py` | Chainlit `@cl.action_callback` handlers for all dashboard buttons. Per-item + batch. Thread-pinning. |
+| `includes/agents/procurement_agent.py` | `_try_find_suppliers_pipeline` — the 7-step programmatic pipeline. Triggered by "find suppliers" keyword in chat or synthetic button message. |
+| `includes/tools/rfq_crud.py` | Sync database functions: `_classify_rfq_items_sync`, `_validate_items_sync`, `_group_rfq_items_sync`, `_find_purchase_suppliers_sync`, `_find_brand_suppliers_sync`, `_cross_apply_suppliers_sync`, `_web_search_suppliers_sync`, `_sort_rfq_suppliers_sync`, plus all CRUD helpers. |
+| `includes/tools/quote_tools.py` | LangGraph `@tool` wrappers (`manage_rfq`, `get_rfq`), communication helpers (`_notify_rfq_updated`, `_notify_agent_working`, `_stream_to_user`), re-exports from rfq_crud. |
+| `includes/tools/product_tools.py` | `_find_purchase_history_for_part`, `_find_brand_suppliers_with_tier`, `_find_product_by_code` — internal DB search functions. |
+| `includes/agent_bridge.py` | Bridge between dashboard and Chainlit sessions. `dispatch_action()`, `notify_dashboard()`, per-session locking. |
+| `app.py` | `@cl.on_message` main handler. Validates, extracts intent, invokes graph, streams events. |
+| `includes/graph.py` | LangGraph state machine — Supervisor routes to ProcurementAgent / ResearchAgent / GeneralAgent. |
+| `templates/rfq_detail.html` | Dashboard RFQ detail page with batch buttons. |
+| `templates/partials/_rfq_items_table.html` | Per-item line table with per-item action buttons. |
+| `templates/base.html` | Alpine.js `rfqDetail()` component — button handlers, `_sendAction()`, `agentBusy` flag, thread-pinning coordination. |
 
 ## Data Model
 
@@ -159,39 +145,49 @@ rfqs
   ├── rfq_number (String, unique)     — e.g., "RFQ-2026-0042"
   ├── title (String)
   ├── description (Text)
+  ├── customer (String)
   ├── status (String)                 — DRAFT | SENT | RECEIVED | AWARDED | CLOSED
   ├── assigned_to (String)            — User email
-  ├── customer_name (String)
+  ├── item_groups (JSONB)             — {groups: [{label, lines, reason}], ungrouped: [lines]}
+  ├── history (JSONB)                 — [{date, user, action}, ...]
+  ├── created_by (String)
   ├── created_at, updated_at (DateTime)
 
 rfq_items
   ├── id (UUID, PK)
   ├── rfq_id (FK → rfqs.id)
-  ├── line_number (Integer)
-  ├── part_number (String)
-  ├── description (Text)
+  ├── line (Integer)
+  ├── input_description (Text)        — Original user-provided description
+  ├── input_code (String)             — Original user-provided code/part number
+  ├── part_number (String)            — Normalized part number
+  ├── brand (String)                  — Normalized brand
+  ├── product_id (FK → products.id)   — Linked product (if matched)
   ├── quantity (Integer)
-  ├── unit (String)
-  └── item_group (String)             — Section/group name for grouping
-
-rfq_suppliers
-  ├── id (UUID, PK)
-  ├── rfq_id (FK → rfqs.id)
-  ├── supplier_id (FK → suppliers.id)
-  ├── price (Float)
-  ├── currency (String)
+  ├── uom (String)                    — Unit of measure (e.g., "ea")
+  ├── match (String)                  — unmatched | specific | branded | generic | discrepancy
   ├── notes (Text)
-  └── status (String)                 — PENDING | QUOTED | DECLINED
+  ├── suppliers (JSONB)               — [{name, supplier_id, contacts, status, price_type, ...}]
+  ├── brand_suppliers (JSONB)         — Full brand-linked supplier list (for modal reference)
 
 rfq_threads
   ├── rfq_number (String, PK)
   ├── user_email (String, PK)
   ├── thread_id (String)
   └── created_at (DateTime)
-
-email_tracking
-  ├── rfq_id (String)
-  ├── supplier_id (FK → suppliers.id)
-  ├── direction (String)              — OUTBOUND | INBOUND
-  └── ... (message tracking fields)
 ```
+
+## Prompt Files
+
+See `config/prompts/README.md` for the prompt file index — which agent loads each prompt and when.
+
+## Testing
+
+```bash
+uv run pytest tests/ -x --timeout=60
+```
+
+Key test files:
+- `tests/agents/test_procurement_agent.py` — ProcurementAgent initialization and call tests
+- `tests/test_actions.py` — Action callback tests (28 tests)
+- `tests/tools/test_quote_tools.py` — RFQ management tool tests
+- `tests/tools/test_supplier_sourcing.py` — Supplier matching and enrichment tests

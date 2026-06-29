@@ -260,6 +260,7 @@ class RFQ(Base):
     supplier_emails = Column(JSONB, nullable=True)            # [{email, name}, ...] contact list for multi-supplier RFQs
     
     updated_at = Column(DateTime(timezone=True), nullable=True)
+    pipeline_stage = Column(String, nullable=False, server_default='unprocessed')  # unprocessed/classified/validation_gate/validated/grouped/suppliers_internal/awaiting_web_search/complete
 
     items = relationship('RFQItem', back_populates='rfq', order_by='RFQItem.line',
                          cascade='all, delete-orphan', lazy='selectin')

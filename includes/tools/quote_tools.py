@@ -22,9 +22,10 @@ from includes.tools.rfq_crud import (  # noqa: F401
     _add_supplier_sync, _update_supplier_sync, _clear_suppliers_sync,
     _assign_sync, _update_status_sync, _add_note_sync, _link_external_sync,
     _update_item_groups_sync,
+    _find_brand_suppliers_sync, _cross_apply_suppliers_sync,
 )
 from includes.tools.rfq_render import (  # noqa: F401
-    _render_rfq_summary, _render_rfq_list,
+    _render_rfq_summary, _render_rfq_list, _render_rfq_brief_summary,
 )
 from config.settings import Config
 
@@ -439,7 +440,7 @@ async def _stream_to_user(text: str) -> None:
     try:
         import chainlit as cl
         msg = cl.user_session.get("active_msg")
-        if msg:
+        if msg and text:
             await msg.stream_token(text)
     except Exception:
         pass  # Not in Chainlit context or no active message
@@ -607,7 +608,7 @@ def create_quote_tools(user_id: str) -> list:
                 logger.warning(f"Failed to name thread: {e}")
 
         await _notify_rfq_updated()
-        return _render_rfq_summary(result)
+        return _render_rfq_brief_summary(result)
 
     @tool
     async def get_rfq(
@@ -615,26 +616,32 @@ def create_quote_tools(user_id: str) -> list:
         list_all: bool = False,
         assigned_to: Optional[str] = None,
         status: Optional[str] = None,
+        brief: bool = True,
     ) -> str:
         """Retrieve RFQ details or list RFQs.
 
         Usage:
-          get_rfq(rfq_id="RFQ-2026-0042")       — full detail of one RFQ
-          get_rfq(list_all=True)                  — summary list of all RFQs
-          get_rfq(assigned_to="tom@eagle.com.au") — RFQs assigned to a user
-          get_rfq(status="in_progress")           — filter by status
+          get_rfq(rfq_id="RFQ-2026-0042")               — brief summary of one RFQ
+          get_rfq(rfq_id="RFQ-2026-0042", brief=False)  — full detail (includes item/supplier tables)
+          get_rfq(list_all=True)                          — summary list of all RFQs
+          get_rfq(assigned_to="tom@eagle.com.au")         — RFQs assigned to a user
+          get_rfq(status="in_progress")                   — filter by status
 
         Args:
             rfq_id: Specific RFQ identifier to retrieve.
             list_all: If True, return a summary of all RFQs.
             assigned_to: Filter RFQs by assignee email.
             status: Filter RFQs by status.
+            brief: If True (default), return a concise one-line stats summary.
+                   Set to False when the user explicitly asks for full item/supplier details.
         """
         if rfq_id:
             rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
             if not rfq:
                 return f"RFQ '{rfq_id}' not found."
             await _notify_rfq_updated()
+            if brief:
+                return _render_rfq_brief_summary(rfq)
             return _render_rfq_summary(rfq)
 
         rfqs = await asyncio.to_thread(_list_rfqs_sync,
