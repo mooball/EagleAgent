@@ -108,6 +108,7 @@ def _rfq_to_dict(rfq) -> dict:
         "notes": rfq.notes or "",
         "history": rfq.history or [],
         "item_groups": rfq.item_groups,
+        "pipeline_stage": getattr(rfq, "pipeline_stage", "unprocessed") or "unprocessed",
         "items": [_item_to_dict(item) for item in (rfq.items or [])],
     }
 
@@ -514,6 +515,9 @@ def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             line_item.match = "unmatched"
             line_item.product_id = None
             changes.extend(["match", "product_id"])
+            # Reset pipeline stage — item needs re-processing
+            if rfq.pipeline_stage not in ("unprocessed",):
+                rfq.pipeline_stage = "unprocessed"
 
         now = _now_iso()
         history = list(rfq.history or [])
@@ -856,6 +860,9 @@ def _clear_suppliers_sync(rfq_number: str, data: dict, user_id: str) -> dict | s
         })
         rfq.history = history
         rfq.updated_at = _now_dt()
+        # Reset pipeline stage when clearing all suppliers
+        if line_num is None:
+            rfq.pipeline_stage = "unprocessed"
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
@@ -1131,10 +1138,13 @@ def _group_rfq_items_sync(
 def _validate_items_sync(
     rfq_number: str, items_to_validate: list, user_id: str,
 ) -> dict:
-    """Validate specific items via web search using Google Search grounding.
+    """Validate specific items via web search using a two-step approach.
 
-    For each item, searches the web for the part number and checks whether
-    the product details (description, brand) match what's on the RFQ.
+    Step 1: Search the web with grounding to gather findings about each part.
+    Step 2: Format findings into structured JSON with a separate (ungrounded) call.
+
+    This separation ensures grounding does its job (web research) without
+    corrupting the structured output (which grounding can truncate).
 
     Args:
         rfq_number: The RFQ identifier.
@@ -1156,108 +1166,115 @@ def _validate_items_sync(
     if not items_to_validate:
         return {"validated": []}
 
-    # Build a single prompt to validate all items at once
+    # Build the items description
     items_text = "\n".join(
         f"- Line {item['line']}: Part# {item.get('part_number', '?')} | "
         f"Brand: {item.get('brand', '?')} | Description: {item.get('input_description', '?')}"
         for item in items_to_validate
     )
 
-    prompt = f"""You are validating part numbers for a purchase order. For each item below, search the web to verify:
+    # ------------------------------------------------------------------
+    # Step 1: Web research with grounding (free-form text output)
+    # ------------------------------------------------------------------
+    research_prompt = f"""You are validating part numbers for a purchase order. For each item below, search the web to verify:
 1. Is the part number real and active?
 2. Does the description match what the manufacturer says?
 3. Is the brand correct?
+4. If the part number is wrong, what is the correct one?
 
 Items to validate:
 {items_text}
 
-For each item, respond with a JSON array. Each entry must have:
-- "line": the line number
-- "status": "confirmed" if everything matches, "discrepancy" if something is wrong, "not_found" if the part number doesn't exist
-- "findings": a brief 1-2 sentence summary of what you found
-- "correct_part_number": the correct part number if you found a typo (otherwise same as original)
-
-Return ONLY a JSON array, no other text."""
+For each item, describe what you found. Include the line number, whether the part checks out or has issues, and any corrections needed."""
 
     try:
         client = _genai.Client()
+
+        # Call 1: Grounded web search — get research findings as plain text
         response = client.models.generate_content(
             model=Config.DEFAULT_MODEL,
-            contents=prompt,
+            contents=research_prompt,
             config=_types.GenerateContentConfig(
                 tools=[_types.Tool(google_search=_types.GoogleSearch())],
                 temperature=0.1,
             ),
         )
-        # Robust text extraction — with grounding, text is split across
-        # multiple parts (interspersed with grounding metadata). We must
-        # join ALL text parts, not just use response.text (which returns
-        # only the first text part).
-        raw_text = ""
+
+        # Extract text from all parts (grounding splits response)
+        findings_text = ""
         try:
             if response.candidates:
                 parts = response.candidates[0].content.parts or []
-                raw_text = "".join(
+                findings_text = "".join(
                     p.text for p in parts
                     if hasattr(p, "text") and p.text
                 ).strip()
         except (ValueError, AttributeError, IndexError):
             pass
-        # Fallback to response.text if parts extraction failed
-        if not raw_text:
+        if not findings_text:
             try:
-                raw_text = (response.text or "").strip()
+                findings_text = (response.text or "").strip()
             except (ValueError, AttributeError):
                 pass
 
-        logger.info(f"Validation raw response ({len(raw_text)} chars): {raw_text[:200]!r}")
+        logger.info(f"Validation step 1 (research): {len(findings_text)} chars")
 
-        # Retry without grounding if the grounded response was empty
+        if not findings_text:
+            return {"validated": [], "error": "Empty response from web research step"}
+
+        # ------------------------------------------------------------------
+        # Step 2: Format findings into structured JSON (no grounding)
+        # ------------------------------------------------------------------
+        format_prompt = f"""Based on the research findings below, produce a JSON array summarizing the validation results.
+
+Original items:
+{items_text}
+
+Research findings:
+{findings_text}
+
+For each item, produce a JSON object with:
+- "line": the line number (integer)
+- "status": "confirmed" if everything matches, "discrepancy" if something is wrong, "not_found" if the part number doesn't exist online
+- "findings": a brief 1-2 sentence summary of what was found
+- "correct_part_number": the correct part number if a typo was found (otherwise same as original)
+
+Return ONLY a valid JSON array, no other text."""
+
+        response2 = client.models.generate_content(
+            model=Config.DEFAULT_MODEL,
+            contents=format_prompt,
+            config=_types.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type="application/json",
+            ),
+        )
+
+        raw_text = ""
+        try:
+            raw_text = (response2.text or "").strip()
+        except (ValueError, AttributeError):
+            pass
+        if not raw_text and response2.candidates:
+            parts = response2.candidates[0].content.parts or []
+            raw_text = "".join(p.text or "" for p in parts if hasattr(p, "text")).strip()
+
+        logger.info(f"Validation step 2 (format): {len(raw_text)} chars: {raw_text[:200]!r}")
+
         if not raw_text:
-            logger.warning("Validation: grounded response empty, retrying without grounding")
-            response = client.models.generate_content(
-                model=Config.DEFAULT_MODEL,
-                contents=prompt,
-                config=_types.GenerateContentConfig(temperature=0.1),
-            )
-            try:
-                raw_text = (response.text or "").strip()
-            except (ValueError, AttributeError):
-                pass
-            if not raw_text and response.candidates:
-                parts = response.candidates[0].content.parts or []
-                raw_text = "".join(p.text or "" for p in parts if hasattr(p, "text")).strip()
+            return {"validated": [], "error": "Empty response from formatting step"}
 
-        if not raw_text:
-            return {"validated": [], "error": "Empty response from validation model"}
-
-        # Clean markdown fences
+        # Clean markdown fences if present
         if raw_text.startswith("```"):
             lines = raw_text.split("\n")
             lines = [l for l in lines if not l.strip().startswith("```")]
             raw_text = "\n".join(lines).strip()
 
-        # After fence cleaning, content may be empty — retry without grounding
-        if not raw_text:
-            logger.warning("Validation: response was empty after fence stripping, retrying without grounding")
-            response = client.models.generate_content(
-                model=Config.DEFAULT_MODEL,
-                contents=prompt,
-                config=_types.GenerateContentConfig(temperature=0.1),
-            )
-            try:
-                raw_text = (response.text or "").strip()
-            except (ValueError, AttributeError):
-                pass
-            if not raw_text and response.candidates:
-                parts = response.candidates[0].content.parts or []
-                raw_text = "".join(p.text or "" for p in parts if hasattr(p, "text")).strip()
-            if raw_text and raw_text.startswith("```"):
-                fence_lines = raw_text.split("\n")
-                fence_lines = [l for l in fence_lines if not l.strip().startswith("```")]
-                raw_text = "\n".join(fence_lines).strip()
-            if not raw_text:
-                return {"validated": [], "error": "Empty response from validation model (after retry)"}
+        # Extract JSON array from any surrounding text
+        json_start = raw_text.find("[")
+        json_end = raw_text.rfind("]")
+        if json_start != -1 and json_end != -1 and json_end > json_start:
+            raw_text = raw_text[json_start:json_end + 1]
 
         validated = json.loads(raw_text)
 

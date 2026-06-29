@@ -14,14 +14,6 @@ class RouteDecision(BaseModel):
 
 MAX_STEPS = 4  # Hard cap — prevent infinite agent loops
 
-# Keywords that indicate a "find suppliers" request — must route to
-# ProcurementAgent (which has the programmatic pipeline), NOT ResearchAgent.
-_FIND_SUPPLIERS_KEYWORDS = (
-    "find supplier", "find suppliers", "search supplier", "search suppliers",
-    "get supplier", "get suppliers", "source supplier", "source suppliers",
-    "supplier search", "look for supplier",
-)
-
 
 class Supervisor:
     """Supervisor node that routes requests between agents using LLM-based
@@ -91,78 +83,114 @@ class Supervisor:
             if "Step 4" in content_str and "Step 1" in content_str:
                 logger.info("Supervisor: pipeline steps 1-4 completed → FINISH")
                 return {"next_agent": "FINISH", "step_count": 0}
+            # Partial pipeline run (gate hit, error, or pause) — don't re-route
+            if "Step 1" in content_str and "Step 4" not in content_str:
+                logger.info("Supervisor: partial pipeline run (gate/error) → FINISH")
+                return {"next_agent": "FINISH", "step_count": 0}
 
-        # ---- Deterministic routing: "find suppliers" on an RFQ ----
-        # The user asking to find/search suppliers while viewing an RFQ must
-        # ALWAYS go to ProcurementAgent (which has the programmatic pipeline).
-        # Without this, the LLM may route to ResearchAgent for web search.
+            # ---- Default for AI messages: FINISH ----
+            # After an agent responds, always stop unless there's an explicit
+            # handoff signal. This prevents the LLM from re-routing based on
+            # the agent's own output (e.g., "this mentions suppliers → 
+            # route to ProcurementAgent again").
+            # The only legitimate AI-to-AI handoff (ResearchAgent → 
+            # ProcurementAgent) is handled via intent_context above.
+            logger.info("Supervisor: AI message with no handoff signal → FINISH")
+            return {"next_agent": "FINISH", "step_count": 0}
+
+        # ---- User message: classify intent and route ----
+        # Uses the intent classifier to determine what the user wants.
+        # The direction list varies based on whether an RFQ is active.
         if is_user_message:
-            # Get content of the latest HumanMessage
+            from includes.intent_classifier import classify_intent
+            from langchain_core.messages import AIMessage
+
             human_content = last_message.content if hasattr(last_message, "content") else ""
             if isinstance(human_content, list):
                 human_content = " ".join(
                     p.get("text", "") if isinstance(p, dict) else str(p)
                     for p in human_content
                 )
-            human_lower = human_content.lower()
-            has_find_kw = any(kw in human_lower for kw in _FIND_SUPPLIERS_KEYWORDS)
-            has_rfq_ctx = "rfq_detail" in human_lower or bool(re.search(r"rfq-\d{4}-\d{4,}", human_lower))
-            if has_find_kw and has_rfq_ctx:
-                logger.info("Supervisor: deterministic route → ProcurementAgent (find suppliers + RFQ context)")
-                return {"next_agent": "ProcurementAgent", "step_count": 0}
 
-            # ---- Deterministic: user said "yes" to pipeline web search question ----
-            _YES_KEYWORDS = ("yes", "yeah", "yep", "sure", "ok", "okay", "go ahead",
-                             "please", "do it", "absolutely", "search the web", "search web")
-            if any(kw in human_lower for kw in _YES_KEYWORDS):
-                # Check if previous AI message was the pipeline's web search question
-                for prev_msg in reversed(messages[:-1]):
-                    if hasattr(prev_msg, "type") and prev_msg.type == "ai":
-                        prev_text = prev_msg.content if isinstance(prev_msg.content, str) else str(prev_msg.content)
-                        if "search the web for additional suppliers" in prev_text:
-                            logger.info("Supervisor: deterministic route → ProcurementAgent (yes to web search)")
-                            return {"next_agent": "ProcurementAgent", "step_count": 0}
-                        break  # Only check the most recent AI message
+            # Detect RFQ context — this determines which directions are available
+            has_rfq_ctx = "rfq_detail" in human_content.lower() or bool(re.search(r"rfq-\d{4}-\d{4,}", human_content.lower()))
 
-        # ---- LLM-based routing for ALL messages ----
+            # Get previous AI message for conversational context
+            prev_ai_text = ""
+            for msg in reversed(messages[:-1]):
+                if hasattr(msg, "type") and msg.type == "ai" and hasattr(msg, "content"):
+                    c = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    if c.strip():
+                        prev_ai_text = c.strip()[-300:]
+                        break
+
+            if has_rfq_ctx:
+                directions = [
+                    {"id": "RUN_WORKFLOW", "description": "User wants to execute the supplier-finding pipeline on the RFQ's items. This means classify → validate → group → find suppliers. Examples: 'find suppliers for these items', 'source all of these', 'run the pipeline', 'match and validate', 'classify these parts', 'find me suppliers for this RFQ'"},
+                    {"id": "RFQ_QUERY", "description": "User wants information from the internal database about suppliers, products, brands, or purchase history. They are NOT asking to run the pipeline or modify the RFQ. Examples: 'can you find me suppliers from our db for the Wurth brand', 'who supplies Fluke products', 'show me previous purchases of this part', 'what brands are on this RFQ'"},
+                    {"id": "RFQ_UPDATE", "description": "User explicitly asks to modify RFQ data — add/remove suppliers, change quantities, update item details, or perform any CRUD operation. IMPORTANT: If the user's intent is ambiguous between a query and an update, do NOT assume update — classify as UNCERTAIN instead. Examples: 'add this supplier to line 2', 'remove all suppliers', 'change qty to 10', 'update line 4 part number'"},
+                    {"id": "WEB_RESEARCH", "description": "User wants to search the web for information about a product, supplier, or part number. They want external research, not internal data. Examples: 'check if this part number is real', 'find australian suppliers for Fluke', 'research this company', 'is 611343X a valid part'"},
+                    {"id": "GENERAL", "description": "General conversation, greetings, or non-procurement topics. Examples: 'hello', 'what's the weather', 'tell me a joke', 'good morning'"},
+                ]
+                classifier_context = "User is viewing an RFQ in the procurement system."
+            else:
+                directions = [
+                    {"id": "DB_QUERY", "description": "User wants information from the internal database — suppliers, products, brands, purchase history, transactions, or any existing records. They want to research or explore data, not search the web. Examples: 'find suppliers for the Wurth brand', 'who supplies Fluke products', 'show me purchase history for part 611343', 'list all brands we stock'"},
+                    {"id": "WEB_RESEARCH", "description": "User wants to search the web for information about a product, supplier, part number, or supply chain. They want external research. Examples: 'check if this part number is real', 'find australian suppliers for Fluke', 'research this company', 'is 611343X a valid part'"},
+                    {"id": "GENERAL", "description": "General conversation, greetings, or non-procurement topics. Examples: 'hello', 'what's the weather', 'tell me a joke', 'good morning'"},
+                ]
+                classifier_context = "User is in the procurement system (not on a specific RFQ)."
+
+            if prev_ai_text:
+                classifier_context += f"\n\nThe assistant's previous message ended with: \"{prev_ai_text}\""
+
+            intent = await classify_intent(
+                message=human_content,
+                directions=directions,
+                context=classifier_context,
+            )
+
+            logger.info(f"Supervisor: intent={intent}, has_rfq_ctx={has_rfq_ctx}")
+
+            # Route based on intent
+            if intent == "RUN_WORKFLOW":
+                return {"next_agent": "ProcurementAgent", "intent": "RUN_WORKFLOW", "step_count": 0}
+            elif intent in ("RFQ_QUERY", "RFQ_UPDATE"):
+                return {"next_agent": "ProcurementAgent", "intent": intent, "step_count": 0}
+            elif intent == "DB_QUERY":
+                return {"next_agent": "ProcurementAgent", "intent": "DB_QUERY", "step_count": 0}
+            elif intent == "WEB_RESEARCH":
+                return {"next_agent": "ResearchAgent", "step_count": 0}
+            elif intent == "GENERAL":
+                return {"next_agent": "GeneralAgent", "step_count": 0}
+            else:
+                # UNCERTAIN — ask the user to clarify
+                clarification = "I'm not sure what you'd like me to do. Are you looking for information, looking to update something, or something else?"
+                return {
+                    "next_agent": "FINISH",
+                    "messages": [AIMessage(content=clarification)],
+                    "step_count": 0,
+                }
+
+        # ---- LLM-based routing for AI messages (fallback) ----
+        # This path is only reached for AI messages that didn't match any
+        # quick-exit condition above.
         content = last_message.content if hasattr(last_message, "content") else str(last_message)
 
         # Build system prompt with delegation context
-        source_context = ""
-        if is_user_message:
-            source_context = "The latest message is FROM THE USER. They expect a response."
-        else:
-            source_context = (
-                "The latest message is FROM AN AGENT. Decide if the agent's work "
-                "is complete (FINISH) or if another agent needs to take over "
-                "(e.g. ResearchAgent for web validation, ProcurementAgent to "
-                "continue a workflow)."
-            )
+        source_context = "The latest message is FROM AN AGENT. Decide if the agent's work is complete (FINISH) or if another agent needs to take over."
 
         system_prompt = f"""You are a supervisor managing a team of expert agents.
 Route the conversation to the correct agent based on what needs to happen next.
 
 Available agents:
 - ProcurementAgent: Products, parts, brands, suppliers, purchase history, RFQs.
-  Searches INTERNAL database. Handles RFQ workflows: classify, group, find
-  suppliers, add suppliers. Use for ANY supplier/product/RFQ task including
-  processing research results that need to be added to the RFQ.
-- ResearchAgent: Web search via Google Search grounding. Use for:
-  (a) validating part numbers/product details online
-  (b) finding new suppliers via web (only when user has given permission)
-  Reports findings but does NOT modify RFQs directly.
-- GeneralAgent: General conversation, non-procurement topics, generic web info.
-- FINISH: The conversation is complete. Use when an agent has provided a final
-  answer and no further work is needed.
+- ResearchAgent: Web search via Google Search grounding.
+- GeneralAgent: General conversation, non-procurement topics.
+- FINISH: The conversation is complete.
 
 Routing rules:
 - {source_context}
-- If an agent response mentions needing web validation or checking part numbers
-  online → route to ResearchAgent
-- If the user says "yes" to searching the web for suppliers → ResearchAgent
-- If ResearchAgent just returned results → route back to ProcurementAgent
-  to continue the workflow (it will process and add results to the RFQ)
-- If the user asks about suppliers, products, parts, RFQs → ProcurementAgent
 - If the task is complete and no delegation is needed → FINISH
 - Step count: {step_count}/{MAX_STEPS}. If near the limit, prefer FINISH.
 

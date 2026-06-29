@@ -277,6 +277,20 @@
             {% endif %}
         </div>
         <div class="flex items-center gap-1">
+            {% set pstage = rfq.get('pipeline_stage', 'unprocessed') %}
+            {% if pstage != 'unprocessed' %}
+            <span class="text-xs px-2 py-0.5 rounded-full
+                {% if pstage == 'complete' %}bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300
+                {% elif pstage == 'validation_gate' or pstage == 'awaiting_web_search' %}bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300
+                {% else %}bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300{% endif %}"
+                title="Pipeline stage: {{ pstage }}">
+                {% if pstage == 'complete' %}✓ Complete
+                {% elif pstage == 'validation_gate' %}⚠ Validation
+                {% elif pstage == 'awaiting_web_search' %}⏳ Web Search
+                {% elif pstage == 'suppliers_internal' %}Suppliers Found
+                {% else %}{{ pstage | replace('_', ' ') | title }}{% endif %}
+            </span>
+            {% endif %}
             <button @click="allExpanded ? collapseAll() : expandAll()"
                     class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700">
                 <span x-text="allExpanded ? 'Collapse all' : 'Expand all'"></span>

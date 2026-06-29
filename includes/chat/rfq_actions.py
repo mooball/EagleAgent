@@ -296,13 +296,44 @@ async def on_rfq_identify_items(action: cl.Action) -> None:
                     await _send_pinned(msg, pinned_tid, author="EagleAgent")
                     await notify_dashboard("dashboard_refresh")
 
-                # Route remaining specific items to ResearchAgent for discrepancy detection
+                # Validate remaining specific items via web search (two-step grounded approach)
                 if need_web:
+                    from includes.tools.rfq_crud import _validate_items_sync
+
                     await _send_pinned(
                         f"Validating {len(need_web)} item(s) against web sources to check for discrepancies...",
                         pinned_tid, author="EagleAgent",
                     )
-                    await _dispatch_discrepancy_check(need_web, rfq_id, pinned_tid)
+                    web_items = [
+                        {
+                            "line": item.get("line"),
+                            "input_description": item.get("description", ""),
+                            "part_number": item.get("part_number", ""),
+                            "brand": item.get("brand", ""),
+                        }
+                        for item in need_web
+                    ]
+                    validation_result = await asyncio.to_thread(
+                        _validate_items_sync, rfq_id, web_items, user_id
+                    )
+                    validated_web = validation_result.get("validated", [])
+                    if validated_web:
+                        lines_out = []
+                        for v in validated_web:
+                            status_icon = "✅" if v.get("status") == "confirmed" else "🟠"
+                            lines_out.append(f"  {status_icon} Line {v['line']}: {v.get('findings', '')}")
+                            if v.get("correct_part_number") and v.get("status") == "discrepancy":
+                                lines_out.append(f"    Correct part number: {v['correct_part_number']}")
+                        await _send_pinned(
+                            "\n".join(lines_out),
+                            pinned_tid, author="EagleAgent",
+                        )
+                    elif validation_result.get("error"):
+                        await _send_pinned(
+                            f"⚠️ Web validation failed: {validation_result['error'][:80]}",
+                            pinned_tid, author="EagleAgent",
+                        )
+                    await notify_dashboard("dashboard_refresh")
             else:
                 await _send_pinned(
                     "All items classified. Items without part numbers are ready for supplier search.",
@@ -312,37 +343,6 @@ async def on_rfq_identify_items(action: cl.Action) -> None:
         finally:
             await notify_dashboard("agent_done")
 
-
-async def _dispatch_discrepancy_check(items: list[dict], rfq_id: str, pinned_tid: str) -> None:
-    """Build and dispatch a discrepancy-detection prompt to ResearchAgent."""
-    from includes.prompts import load_prompt
-
-    parts = ["web_research"]
-    parts.append(f"Validate the following items from {rfq_id} by checking if their part numbers actually match their brand and description.")
-    parts.append("Your primary job is to find DISCREPANCIES — where the part number does not match the brand or description.")
-    parts.append("")
-    for ui_item in items:
-        line = ui_item.get("line")
-        desc = ui_item.get("description", "")
-        pn = ui_item.get("part_number", "")
-        br = ui_item.get("brand", "")
-        item_parts = [f"Line {line}: {desc}"]
-        if pn:
-            item_parts.append(f"  Code/Part number: {pn}")
-        if br:
-            item_parts.append(f"  Brand: {br}")
-        parts.append("\n".join(item_parts))
-    parts.append("")
-    parts.append(load_prompt("rfq_identify_items"))
-
-    rich_prompt = "\n".join(parts)
-
-    short_label = f"Validate {len(items)} item(s) in {rfq_id} — check for part number discrepancies"
-    synthetic = cl.Message(content=short_label)
-    synthetic.author = "User"
-    synthetic.intent_context = rich_prompt
-
-    await _main_pinned(synthetic, pinned_tid)
 
 
 @cl.action_callback("rfq_find_suppliers")
@@ -516,8 +516,153 @@ async def on_rfq_find_web_suppliers_for_line(action: cl.Action) -> None:
 
 @cl.action_callback("rfq_dismiss")
 async def on_rfq_dismiss(action: cl.Action) -> None:
-    """Dismiss/acknowledge an action prompt — no-op."""
-    pass
+    """Dismiss/acknowledge an action prompt — no-op.
+    Also sets pipeline stage to 'complete' if the RFQ was awaiting web search.
+    """
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "")
+    if rfq_id:
+        await _set_pipeline_stage(rfq_id, "complete")
+
+
+@cl.action_callback("rfq_pipeline_fix_part")
+async def on_rfq_pipeline_fix_part(action: cl.Action) -> None:
+    """Fix a discrepant part number. Only resumes pipeline after all fixes are applied."""
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "")
+    user_id = payload.get("user_id") or cl.user_session.get("user_id", "unknown")
+    line = payload.get("line")
+    correct_pn = payload.get("correct_part_number", "")
+    total_discrepancies = payload.get("total_discrepancies", 1)
+
+    if not rfq_id or not line or not correct_pn:
+        await cl.Message(content="Error: missing payload data.", author="EagleAgent").send()
+        return
+
+    # Update the part number on the RFQ item
+    _update_item_sync(rfq_id, {"line": line, "part_number": correct_pn, "match": "specific"}, user_id)
+    await notify_dashboard("dashboard_refresh")
+
+    # Track how many fixes have been applied in this gate session
+    fixes_key = f"pipeline_fixes_{rfq_id}"
+    fixes_applied = cl.user_session.get(fixes_key, 0) + 1
+    cl.user_session.set(fixes_key, fixes_applied)
+
+    if fixes_applied >= total_discrepancies:
+        # All discrepancies fixed — resume pipeline
+        cl.user_session.set(fixes_key, 0)
+        await cl.Message(
+            content=f"✏️ Updated Line {line} part number to **{correct_pn}**. All fixes applied, continuing pipeline...",
+            author="EagleAgent",
+        ).send()
+        await _resume_pipeline_from(rfq_id, user_id, "group")
+    else:
+        # More fixes pending — just confirm this one
+        remaining = total_discrepancies - fixes_applied
+        await cl.Message(
+            content=f"✏️ Updated Line {line} part number to **{correct_pn}**. ({remaining} more fix(es) available above, or click Skip & Continue)",
+            author="EagleAgent",
+        ).send()
+
+
+@cl.action_callback("rfq_pipeline_skip_validation")
+async def on_rfq_pipeline_skip_validation(action: cl.Action) -> None:
+    """Skip validation discrepancies and continue the pipeline."""
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "")
+    user_id = payload.get("user_id") or cl.user_session.get("user_id", "unknown")
+
+    if not rfq_id:
+        await cl.Message(content="Error: no RFQ ID provided.", author="EagleAgent").send()
+        return
+
+    # Reset fixes counter
+    cl.user_session.set(f"pipeline_fixes_{rfq_id}", 0)
+
+    await cl.Message(
+        content="⏭️ Skipping validation issues. Continuing pipeline...",
+        author="EagleAgent",
+    ).send()
+
+    # Resume pipeline from grouping stage
+    await _resume_pipeline_from(rfq_id, user_id, "group")
+
+
+@cl.action_callback("rfq_pipeline_retry_validation")
+async def on_rfq_pipeline_retry_validation(action: cl.Action) -> None:
+    """Retry the validation stage of the pipeline."""
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "")
+    user_id = payload.get("user_id") or cl.user_session.get("user_id", "unknown")
+
+    if not rfq_id:
+        await cl.Message(content="Error: no RFQ ID provided.", author="EagleAgent").send()
+        return
+
+    await cl.Message(
+        content="🔄 Retrying validation...",
+        author="EagleAgent",
+    ).send()
+
+    # Resume pipeline from validation stage
+    await _resume_pipeline_from(rfq_id, user_id, "validate")
+
+
+async def _resume_pipeline_from(rfq_id: str, user_id: str, start_stage: str) -> None:
+    """Resume the RFQ pipeline from a given stage (used by gate callbacks)."""
+    from includes.agents.procurement_agent import ProcurementAgent
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from config.settings import Config
+
+    await notify_dashboard("agent_working", {"label": "Continuing pipeline..."})
+
+    try:
+        # Set up an active streaming message so _stream_to_user works
+        # and pipeline output appears before gate buttons
+        active_msg = cl.Message(content="", author="EagleAgent")
+        await active_msg.send()
+        cl.user_session.set("active_msg", active_msg)
+
+        # Create a minimal ProcurementAgent instance to call the stage dispatcher
+        model = ChatGoogleGenerativeAI(model=Config.DEFAULT_MODEL, temperature=0)
+        agent = ProcurementAgent(model=model)
+        state = {"user_id": user_id, "messages": []}
+
+        result = await agent._run_pipeline_from_stage(
+            start_stage, rfq_id, user_id, state, items_filter=None
+        )
+
+        # Finalise the streaming message
+        await active_msg.update()
+        cl.user_session.set("active_msg", None)
+
+    except Exception as e:
+        logger.exception(f"Error resuming pipeline for {rfq_id} from '{start_stage}'")
+        await cl.Message(content=f"Error: {e}", author="EagleAgent").send()
+    finally:
+        await notify_dashboard("agent_done")
+
+
+async def _set_pipeline_stage(rfq_id: str, stage: str) -> None:
+    """Helper to update pipeline_stage on an RFQ."""
+    from includes.tools.rfq_crud import _get_session
+    from includes.dashboard.models import RFQ
+
+    def _update():
+        session = _get_session()
+        try:
+            rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+            if rfq:
+                rfq.pipeline_stage = stage
+                session.commit()
+                logger.info(f"Pipeline[{rfq_id}]: stage → '{stage}'")
+        except Exception as e:
+            logger.error(f"Failed to update pipeline_stage for {rfq_id}: {e}")
+            session.rollback()
+        finally:
+            session.close()
+
+    await asyncio.to_thread(_update)
 
 
 @cl.action_callback("rfq_pipeline_web_search")
@@ -663,6 +808,7 @@ async def on_rfq_pipeline_web_search(action: cl.Action) -> None:
 
         # Sort suppliers and refresh dashboard
         await asyncio.to_thread(_sort_rfq_suppliers_sync, rfq_id)
+        await _set_pipeline_stage(rfq_id, "complete")
         await notify_dashboard("dashboard_refresh")
 
         await cl.Message(

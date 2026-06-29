@@ -22,13 +22,6 @@ logger = logging.getLogger(__name__)
 # Intent keywords that indicate the user explicitly requested RFQ work
 _RFQ_INTENT_KEYWORDS = ("new_rfq", "RFQ", "Request for Quote", "manage_rfq")
 
-# Keywords that trigger the programmatic "find suppliers" pipeline
-_FIND_SUPPLIERS_KEYWORDS = (
-    "find supplier", "find suppliers", "search supplier", "search suppliers",
-    "get supplier", "get suppliers", "source supplier", "source suppliers",
-    "supplier search", "look for supplier",
-)
-
 
 class ProcurementAgent(BaseSubAgent):
     """
@@ -39,6 +32,8 @@ class ProcurementAgent(BaseSubAgent):
         super().__init__("ProcurementAgent", model, store)
         self._rfq_active = False
         self._internal_only = internal_only
+        self._pending_gate: Optional[str] = None  # Set when RFQ has a pending pipeline gate
+        self._pending_rfq_id: Optional[str] = None
     
     async def __call__(self, state: Dict[str, Any], config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
         # Determine if RFQ workflow should be active based on the thread's intent
@@ -62,9 +57,12 @@ class ProcurementAgent(BaseSubAgent):
 
         logger.info(f"ProcurementAgent: _rfq_active={self._rfq_active}, internal_only={self._internal_only}")
 
-        # ---- Programmatic "find suppliers" pipeline ----
-        # Guard: skip for internal-only mode.
-        if self._rfq_active and not self._internal_only:
+        # ---- Check supervisor-classified intent ----
+        intent = state.get("intent", "")
+        self._current_intent = intent  # For get_system_prompt() to reference
+
+        # ---- Run pipeline only when supervisor classified as RUN_WORKFLOW ----
+        if intent == "RUN_WORKFLOW" and not self._internal_only:
             messages = state.get("messages", [])
 
             # Check if this is a typed "yes" to the web search question (fallback for buttons)
@@ -98,6 +96,25 @@ class ProcurementAgent(BaseSubAgent):
                 except Exception as e:
                     logger.error(f"ProcurementAgent: pipeline CRASHED: {type(e).__name__}: {e}", exc_info=True)
                     # Fall through to ReAct agent as fallback
+
+        # ---- Pending gate awareness ----
+        # For question/query contexts, inject reminder if a pipeline gate is waiting.
+        self._pending_gate = None
+        self._pending_rfq_id = None
+        if intent in ("RFQ_QUERY", "DB_QUERY", "") and self._rfq_active:
+            try:
+                messages = state.get("messages", [])
+                rfq_id = self._extract_rfq_id_from_messages(messages)
+                if rfq_id:
+                    from includes.tools.rfq_crud import _get_rfq_dict_sync
+                    rfq_dict = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+                    if rfq_dict:
+                        stage = rfq_dict.get("pipeline_stage", "unprocessed")
+                        if stage in ("awaiting_web_search", "validation_gate"):
+                            self._pending_gate = stage
+                            self._pending_rfq_id = rfq_id
+            except Exception:
+                pass  # Non-critical
 
         return await super().__call__(state, config)
 
@@ -137,14 +154,14 @@ class ProcurementAgent(BaseSubAgent):
             f"content_lower preview={content_lower[:150]!r}"
         )
 
-        if not any(kw in content_lower for kw in _FIND_SUPPLIERS_KEYWORDS):
-            logger.info(f"Pipeline: keyword check failed. content={content_lower[:120]}")
-            return None
+        # Intent is already classified by supervisor — only RUN_WORKFLOW reaches here.
+        # Proceed directly to RFQ ID extraction and pipeline execution.
+        intent = state.get("intent", "")
+        logger.info(f"Pipeline: proceeding with supervisor intent={intent}")
 
         # Extract RFQ ID — try current message first, then scan earlier messages
         rfq_id = self._extract_rfq_id(content)
         if not rfq_id:
-            # Scan previous messages for RFQ ID (dashboard context may be in earlier turn)
             for msg in reversed(messages):
                 if msg is last_human:
                     continue
@@ -169,35 +186,157 @@ class ProcurementAgent(BaseSubAgent):
                     logger.info(f"Pipeline: got RFQ ID from dashboard context store: {rfq_id}")
 
         if not rfq_id:
-            logger.warning(f"Pipeline: could not extract RFQ ID from any message or dashboard context. Last msg content type={type(last_msg.content).__name__}, preview={str(last_msg.content)[:200]}")
+            logger.warning("Pipeline: could not extract RFQ ID from any message or dashboard context.")
             return None
 
         user_id = state.get("user_id", "")
-        logger.info(f"ProcurementAgent: running programmatic find-suppliers pipeline for {rfq_id}")
 
-        from includes.tools.rfq_crud import (
-            _classify_rfq_items_sync, _group_rfq_items_sync,
-            _find_purchase_suppliers_sync, _get_rfq_dict_sync,
-            _find_brand_suppliers_sync, _cross_apply_suppliers_sync,
-            _sort_rfq_suppliers_sync,
-        )
+        # Load the RFQ to check its current pipeline stage
+        from includes.tools.rfq_crud import _get_rfq_dict_sync
+        rfq_dict = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+        if not rfq_dict:
+            return self._make_response(state, f"Could not load {rfq_id}.")
+
+        current_stage = rfq_dict.get("pipeline_stage", "unprocessed")
+
+        items = rfq_dict.get("items", [])
+        unmatched_items = [i for i in items if i.get("match") == "unmatched"]
+        all_unmatched = len(unmatched_items) == len(items) and len(items) > 0
+
+        # If all items are unmatched, reset to unprocessed (user cleared/reset the RFQ)
+        if all_unmatched and current_stage != "unprocessed":
+            logger.info(f"Pipeline[{rfq_id}]: all items unmatched, resetting stage to 'unprocessed'")
+            await self._set_pipeline_stage(rfq_id, "unprocessed")
+            current_stage = "unprocessed"
+
+        # If pipeline already complete and no new unmatched items, inform user
+        if current_stage == "complete" and not unmatched_items:
+            return None  # Fall through to ReAct — agent can answer questions about the RFQ
+
+        if current_stage == "validation_gate" and not all_unmatched:
+            return self._make_response(
+                state,
+                "I'm waiting for your decision on the validation issues found earlier. "
+                "Please use the buttons above or tell me how you'd like to proceed."
+            )
+
+        if current_stage == "awaiting_web_search" and not all_unmatched:
+            # Re-show the web search buttons
+            return await self._show_web_search_gate(rfq_id, user_id, state)
+
+        # Map pipeline_stage to the next stage to run
+        _STAGE_RESUME_MAP = {
+            "classified": "validate",
+            "validated": "group",
+            "grouped": "suppliers_internal",
+            "suppliers_internal": "web_search_gate",
+        }
+
+        # Determine start stage for incremental vs full run
+        if unmatched_items and current_stage in ("suppliers_internal", "awaiting_web_search", "complete"):
+            # Incremental: process only new items from the start
+            start_stage = "classify"
+            items_filter = [i["line"] for i in unmatched_items]
+            logger.info(f"Pipeline[{rfq_id}]: incremental run for lines {items_filter}")
+        elif current_stage in _STAGE_RESUME_MAP:
+            # Resume from where we left off (e.g., after failed validation)
+            start_stage = _STAGE_RESUME_MAP[current_stage]
+            items_filter = None
+            logger.info(f"Pipeline[{rfq_id}]: resuming from stage '{start_stage}' (was '{current_stage}')")
+        else:
+            # Full run from beginning (or re-run)
+            start_stage = "classify"
+            items_filter = None
+
+        logger.info(f"ProcurementAgent: running pipeline for {rfq_id} from stage '{start_stage}'")
+        return await self._run_pipeline_from_stage(start_stage, rfq_id, user_id, state, items_filter)
+
+    # ------------------------------------------------------------------
+    # Stage-aware pipeline dispatcher
+    # ------------------------------------------------------------------
+
+    # Ordered list of pipeline stages
+    _PIPELINE_STAGES = ("classify", "validate", "group", "suppliers_internal", "web_search_gate")
+
+    async def _run_pipeline_from_stage(
+        self,
+        start_stage: str,
+        rfq_id: str,
+        user_id: str,
+        state: Dict[str, Any],
+        items_filter: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        """Run pipeline stages sequentially from start_stage.
+
+        Stops and returns when a gate is hit or all stages complete.
+        items_filter: if set, only process these line numbers (incremental).
+        """
         from includes.tools.quote_tools import _notify_rfq_updated, _notify_agent_working, _stream_to_user
 
-        results = []
+        results: List[str] = []
 
         async def _emit(text: str) -> None:
-            """Append to results and stream to user immediately."""
             results.append(text)
             await _stream_to_user(text + "\n")
 
-        # Step 1: Classify items
+        # Context object passed through stages
+        ctx = {
+            "rfq_id": rfq_id,
+            "user_id": user_id,
+            "state": state,
+            "items_filter": items_filter,
+            "emit": _emit,
+            "results": results,
+            # Populated by stages:
+            "needs_validation": [],
+            "validated": [],
+            "has_discrepancies": False,
+        }
+
+        start_idx = self._PIPELINE_STAGES.index(start_stage)
+        for stage in self._PIPELINE_STAGES[start_idx:]:
+            logger.info(f"Pipeline[{rfq_id}]: running stage '{stage}'")
+            gate_hit = await self._run_stage(stage, ctx)
+            if gate_hit:
+                # Stage hit a gate — pipeline pauses
+                return self._make_response(state, "\n".join(results))
+
+        # All stages complete
+        return self._make_response(state, "\n".join(results))
+
+    async def _run_stage(self, stage: str, ctx: dict) -> bool:
+        """Run a single pipeline stage. Returns True if a gate was hit (pipeline should pause)."""
+        if stage == "classify":
+            return await self._stage_classify(ctx)
+        elif stage == "validate":
+            return await self._stage_validate(ctx)
+        elif stage == "group":
+            return await self._stage_group(ctx)
+        elif stage == "suppliers_internal":
+            return await self._stage_suppliers_internal(ctx)
+        elif stage == "web_search_gate":
+            return await self._stage_web_search_gate(ctx)
+        return False
+
+    # ------------------------------------------------------------------
+    # Individual pipeline stages
+    # ------------------------------------------------------------------
+
+    async def _stage_classify(self, ctx: dict) -> bool:
+        """Step 1: Classify items."""
+        from includes.tools.rfq_crud import _classify_rfq_items_sync
+        from includes.tools.quote_tools import _notify_rfq_updated, _notify_agent_working
+
+        rfq_id, user_id, _emit = ctx["rfq_id"], ctx["user_id"], ctx["emit"]
+
         logger.info(f"Pipeline[{rfq_id}]: Step 1 - Classify")
         await _notify_agent_working("Classifying items...")
         classify_result = await asyncio.to_thread(
             _classify_rfq_items_sync, rfq_id, user_id, True
         )
         if isinstance(classify_result, dict) and "error" in classify_result:
-            return self._make_response(state, f"Error classifying items: {classify_result['error']}")
+            await _emit(f"Error classifying items: {classify_result['error']}")
+            return True  # Stop on error
 
         classified = classify_result["classified"]
         db_matches = classify_result["db_matches"]
@@ -214,7 +353,7 @@ class ProcurementAgent(BaseSubAgent):
         if db_matches:
             await _emit(f"- {len(db_matches)} found in product database")
 
-        # Note items needing validation
+        # Determine items needing validation
         needs_validation = [
             i for i in to_validate
             if not any(i["line"] == m[0] for m in db_matches)
@@ -224,10 +363,35 @@ class ProcurementAgent(BaseSubAgent):
                 f"- ⚠️ {len(needs_validation)} item(s) not in our database "
                 f"(will need web validation)"
             )
+        ctx["needs_validation"] = needs_validation
 
         await _notify_rfq_updated()
+        await self._set_pipeline_stage(rfq_id, "classified")
+        return False
 
-        # Step 2: Validate items not found in product DB
+    async def _stage_validate(self, ctx: dict) -> bool:
+        """Step 2: Validate items not found in product DB. Gate if discrepancies found."""
+        from includes.tools.quote_tools import _notify_rfq_updated, _notify_agent_working
+
+        rfq_id, user_id, _emit = ctx["rfq_id"], ctx["user_id"], ctx["emit"]
+        needs_validation = ctx["needs_validation"]
+
+        # If resuming (classify didn't run this session), reconstruct from DB
+        if not needs_validation:
+            from includes.tools.rfq_crud import _get_rfq_dict_sync
+            rfq_dict = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+            needs_validation = [
+                {
+                    "line": i["line"],
+                    "input_description": i.get("input_description", ""),
+                    "part_number": i.get("part_number", ""),
+                    "brand": i.get("brand", ""),
+                }
+                for i in rfq_dict.get("items", [])
+                if i.get("match") in ("specific", "branded") and not i.get("product_id")
+            ]
+            ctx["needs_validation"] = needs_validation
+
         logger.info(f"Pipeline[{rfq_id}]: Step 2 - Validate ({len(needs_validation)} items)")
         if needs_validation:
             await _notify_agent_working("Validating items via web search...")
@@ -236,20 +400,62 @@ class ProcurementAgent(BaseSubAgent):
                 _validate_items_sync, rfq_id, needs_validation, user_id
             )
             validated = validation_result.get("validated", [])
+            ctx["validated"] = validated
+
             if validated:
                 await _emit(f"\n**Step 2 — Validation:** Checked {len(validated)} item(s) via web search.")
+                discrepancies = []
                 for v in validated:
                     status_icon = "✅" if v.get("status") == "confirmed" else "🟠"
                     await _emit(f"- {status_icon} Line {v['line']}: {v.get('findings', '')}")
                     if v.get("correct_part_number") and v.get("status") == "discrepancy":
                         await _emit(f"  Correct part number: {v['correct_part_number']}")
+                        discrepancies.append(v)
                 await _notify_rfq_updated()
+
+                # GATE: if discrepancies found, pause for user decision
+                if discrepancies:
+                    ctx["has_discrepancies"] = True
+                    await self._set_pipeline_stage(rfq_id, "validation_gate")
+                    await self._show_validation_gate(rfq_id, user_id, discrepancies, ctx)
+                    return True  # Pipeline pauses
+
             elif validation_result.get("error"):
                 await _emit(f"\n**Step 2 — Validation:** ⚠️ Web validation failed ({validation_result['error'][:80]})")
+                # Show retry button
+                import chainlit as cl
+                actions = [
+                    cl.Action(
+                        name="rfq_pipeline_retry_validation",
+                        payload={"rfq_id": rfq_id, "user_id": user_id},
+                        label="🔄 Retry Validation",
+                    ),
+                    cl.Action(
+                        name="rfq_pipeline_skip_validation",
+                        payload={"rfq_id": rfq_id, "user_id": user_id},
+                        label="⏭️ Skip Validation",
+                    ),
+                ]
+                await cl.Message(
+                    content="Would you like to retry validation or skip it?",
+                    actions=actions,
+                    author="EagleAgent",
+                ).send()
+                # Don't advance stage — keep at 'classified' so validation can be retried
+                return True  # Pipeline pauses
         else:
             await _emit(f"\n**Step 2 — Validation:** All items found in product database. No web check needed.")
 
-        # Step 3: Group items
+        await self._set_pipeline_stage(rfq_id, "validated")
+        return False
+
+    async def _stage_group(self, ctx: dict) -> bool:
+        """Step 3: Group items."""
+        from includes.tools.rfq_crud import _group_rfq_items_sync, _get_rfq_dict_sync
+        from includes.tools.quote_tools import _notify_rfq_updated, _notify_agent_working
+
+        rfq_id, user_id, _emit = ctx["rfq_id"], ctx["user_id"], ctx["emit"]
+
         logger.info(f"Pipeline[{rfq_id}]: Step 3 - Group")
         rfq_dict = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
         groupable_items = [
@@ -288,7 +494,20 @@ class ProcurementAgent(BaseSubAgent):
         else:
             await _emit(f"\n**Step 3 — Grouping:** Skipped (fewer than 2 specific or branded items).")
 
-        # Step 4: Find previous suppliers
+        await self._set_pipeline_stage(rfq_id, "grouped")
+        return False
+
+    async def _stage_suppliers_internal(self, ctx: dict) -> bool:
+        """Steps 4/4b/4c: Find internal suppliers."""
+        from includes.tools.rfq_crud import (
+            _find_purchase_suppliers_sync, _find_brand_suppliers_sync,
+            _cross_apply_suppliers_sync, _sort_rfq_suppliers_sync,
+        )
+        from includes.tools.quote_tools import _notify_rfq_updated, _notify_agent_working
+
+        rfq_id, user_id, _emit = ctx["rfq_id"], ctx["user_id"], ctx["emit"]
+
+        # Step 4: Previous suppliers
         logger.info(f"Pipeline[{rfq_id}]: Step 4 - Find previous suppliers")
         await _notify_agent_working("Searching purchase history...")
         supplier_result = await asyncio.to_thread(
@@ -351,12 +570,74 @@ class ProcurementAgent(BaseSubAgent):
                 )
             await _notify_rfq_updated()
 
-        # Sort all suppliers on every line item
+        # Sort all suppliers
         await asyncio.to_thread(_sort_rfq_suppliers_sync, rfq_id)
         await _notify_rfq_updated()
 
-        # Send action buttons for web search decision
+        await self._set_pipeline_stage(rfq_id, "suppliers_internal")
+        return False
+
+    async def _stage_web_search_gate(self, ctx: dict) -> bool:
+        """Gate: Ask user whether to search the web for additional suppliers."""
+        rfq_id, user_id = ctx["rfq_id"], ctx["user_id"]
+        _emit = ctx["emit"]
+
+        await self._set_pipeline_stage(rfq_id, "awaiting_web_search")
+        await self._show_web_search_gate_inline(rfq_id, user_id, ctx)
+        return True  # Always a gate — pipeline pauses
+
+    # ------------------------------------------------------------------
+    # Gate presentation helpers
+    # ------------------------------------------------------------------
+
+    async def _show_validation_gate(
+        self, rfq_id: str, user_id: str, discrepancies: list, ctx: dict
+    ) -> None:
+        """Present validation discrepancy buttons to the user."""
         import chainlit as cl
+        _emit = ctx["emit"]
+
+        await _emit("\n---")
+        await _emit("**⚠️ Validation issues found.** How would you like to proceed?")
+
+        actions = []
+        for d in discrepancies:
+            correct_pn = d.get("correct_part_number", "")
+            line = d["line"]
+            if correct_pn:
+                actions.append(cl.Action(
+                    name="rfq_pipeline_fix_part",
+                    payload={
+                        "rfq_id": rfq_id,
+                        "user_id": user_id,
+                        "line": line,
+                        "correct_part_number": correct_pn,
+                        "total_discrepancies": len(discrepancies),
+                    },
+                    label=f"✏️ Fix Line {line} → {correct_pn}",
+                ))
+
+        actions.append(cl.Action(
+            name="rfq_pipeline_skip_validation",
+            payload={"rfq_id": rfq_id, "user_id": user_id},
+            label="⏭️ Skip & Continue",
+            description="Keep current part numbers and continue the pipeline",
+        ))
+
+        question = "Would you like me to fix the part numbers, or skip and continue?"
+        await cl.Message(
+            content=question,
+            author="EagleAgent",
+            actions=actions,
+        ).send()
+        ctx["results"].append(f"\n{question}")
+
+    async def _show_web_search_gate_inline(self, rfq_id: str, user_id: str, ctx: dict) -> None:
+        """Present web search buttons (inline — called from pipeline stage)."""
+        import chainlit as cl
+        _emit = ctx["emit"]
+        needs_validation = ctx.get("needs_validation", [])
+
         validation_note = ""
         if needs_validation:
             validation_note = " and validate the unmatched items"
@@ -379,12 +660,56 @@ class ProcurementAgent(BaseSubAgent):
             author="EagleAgent",
             actions=[web_search_action, no_thanks_action],
         ).send()
+        ctx["results"].append(f"\n{question}")
 
-        # Include the question in results so the AIMessage ends with "?"
-        # — the supervisor uses this to detect "agent asked a question → FINISH"
-        results.append(f"\n{question}")
+    async def _show_web_search_gate(
+        self, rfq_id: str, user_id: str, state: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Re-show web search gate (called when pipeline_stage is already awaiting_web_search)."""
+        import chainlit as cl
 
-        return self._make_response(state, "\n".join(results))
+        question = "Would you like me to search the web for additional suppliers?"
+        web_search_action = cl.Action(
+            name="rfq_pipeline_web_search",
+            payload={"rfq_id": rfq_id, "user_id": user_id},
+            label="🔍 Search Web",
+        )
+        no_thanks_action = cl.Action(
+            name="rfq_dismiss",
+            payload={},
+            label="No thanks",
+        )
+        await cl.Message(
+            content=question,
+            author="EagleAgent",
+            actions=[web_search_action, no_thanks_action],
+        ).send()
+        return self._make_response(state, question)
+
+    # ------------------------------------------------------------------
+    # Pipeline stage persistence helper
+    # ------------------------------------------------------------------
+
+    async def _set_pipeline_stage(self, rfq_id: str, stage: str) -> None:
+        """Update the pipeline_stage field on the RFQ."""
+        from includes.tools.rfq_crud import _get_session
+        from includes.dashboard.models import RFQ as RFQModel
+
+        def _update():
+            session = _get_session()
+            try:
+                rfq = session.query(RFQModel).filter(RFQModel.rfq_number == rfq_id).first()
+                if rfq:
+                    rfq.pipeline_stage = stage
+                    session.commit()
+                    logger.info(f"Pipeline[{rfq_id}]: stage → '{stage}'")
+            except Exception as e:
+                logger.error(f"Failed to update pipeline_stage: {e}")
+                session.rollback()
+            finally:
+                session.close()
+
+        await asyncio.to_thread(_update)
 
     # ------------------------------------------------------------------
     # Typed "yes" fallback for web search (buttons are preferred)
@@ -476,6 +801,20 @@ class ProcurementAgent(BaseSubAgent):
         match = re.search(r"(RFQ-\d{4}-\d{4,})", content)
         return match.group(1) if match else None
 
+    def _extract_rfq_id_from_messages(self, messages: list) -> Optional[str]:
+        """Scan messages for an RFQ ID, falling back to dashboard context."""
+        for msg in reversed(messages):
+            content = msg.content if hasattr(msg, "content") else ""
+            if isinstance(content, list):
+                content = " ".join(
+                    p.get("text", "") if isinstance(p, dict) else str(p)
+                    for p in content
+                )
+            rfq_id = self._extract_rfq_id(content)
+            if rfq_id:
+                return rfq_id
+        return None
+
     def _make_response(self, state: Dict[str, Any], text: str) -> Dict[str, Any]:
         """Build a state update with an AIMessage response."""
         return {"messages": [AIMessage(content=text)]}
@@ -508,7 +847,31 @@ You are running as the Internal Agent — a database-only assistant. You do NOT 
 
 Your ONLY capabilities are searching the internal database for products, brands, suppliers, and purchase history. If the user asks about RFQs, tell them to switch to the **Eagle Agent** profile. If they ask for web research, suggest the **Research Agent** profile."""
         elif self._rfq_active:
-            return base_prompt + "\n\n" + load_prompt("rfq_workflow")
+            # Only inject the full pipeline workflow when the user explicitly
+            # asked to run it (RUN_WORKFLOW intent). For queries, just give
+            # a lighter context about available tools.
+            if getattr(self, "_current_intent", "") == "RUN_WORKFLOW":
+                prompt = base_prompt + "\n\n" + load_prompt("rfq_workflow")
+            else:
+                prompt = base_prompt
+            if self._pending_gate and self._pending_rfq_id:
+                if self._pending_gate == "awaiting_web_search":
+                    prompt += (
+                        f"\n\n**PENDING DECISION:** The supplier pipeline for {self._pending_rfq_id} "
+                        f"has completed internal supplier matching and is waiting for the user to decide "
+                        f"whether to search the web for additional suppliers. After answering the user's "
+                        f"current question, remind them: 'By the way, would you still like me to search "
+                        f"the web for additional suppliers on {self._pending_rfq_id}? Just say **yes** "
+                        f"or **find suppliers** to continue.'"
+                    )
+                elif self._pending_gate == "validation_gate":
+                    prompt += (
+                        f"\n\n**PENDING DECISION:** The supplier pipeline for {self._pending_rfq_id} "
+                        f"found validation discrepancies and is waiting for the user's decision. "
+                        f"After answering the user's current question, remind them about the "
+                        f"pending validation issues and ask how they'd like to proceed."
+                    )
+            return prompt
         else:
             return base_prompt + """\n**RFQ Policy:**
 You have access to RFQ tools (`get_rfq`, `manage_rfq`) and should use them when the user asks to view, update, or manage an existing RFQ.
