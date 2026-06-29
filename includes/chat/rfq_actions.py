@@ -296,13 +296,44 @@ async def on_rfq_identify_items(action: cl.Action) -> None:
                     await _send_pinned(msg, pinned_tid, author="EagleAgent")
                     await notify_dashboard("dashboard_refresh")
 
-                # Route remaining specific items to ResearchAgent for discrepancy detection
+                # Validate remaining specific items via web search (two-step grounded approach)
                 if need_web:
+                    from includes.tools.rfq_crud import _validate_items_sync
+
                     await _send_pinned(
                         f"Validating {len(need_web)} item(s) against web sources to check for discrepancies...",
                         pinned_tid, author="EagleAgent",
                     )
-                    await _dispatch_discrepancy_check(need_web, rfq_id, pinned_tid)
+                    web_items = [
+                        {
+                            "line": item.get("line"),
+                            "input_description": item.get("description", ""),
+                            "part_number": item.get("part_number", ""),
+                            "brand": item.get("brand", ""),
+                        }
+                        for item in need_web
+                    ]
+                    validation_result = await asyncio.to_thread(
+                        _validate_items_sync, rfq_id, web_items, user_id
+                    )
+                    validated_web = validation_result.get("validated", [])
+                    if validated_web:
+                        lines_out = []
+                        for v in validated_web:
+                            status_icon = "✅" if v.get("status") == "confirmed" else "🟠"
+                            lines_out.append(f"  {status_icon} Line {v['line']}: {v.get('findings', '')}")
+                            if v.get("correct_part_number") and v.get("status") == "discrepancy":
+                                lines_out.append(f"    Correct part number: {v['correct_part_number']}")
+                        await _send_pinned(
+                            "\n".join(lines_out),
+                            pinned_tid, author="EagleAgent",
+                        )
+                    elif validation_result.get("error"):
+                        await _send_pinned(
+                            f"⚠️ Web validation failed: {validation_result['error'][:80]}",
+                            pinned_tid, author="EagleAgent",
+                        )
+                    await notify_dashboard("dashboard_refresh")
             else:
                 await _send_pinned(
                     "All items classified. Items without part numbers are ready for supplier search.",
@@ -312,37 +343,6 @@ async def on_rfq_identify_items(action: cl.Action) -> None:
         finally:
             await notify_dashboard("agent_done")
 
-
-async def _dispatch_discrepancy_check(items: list[dict], rfq_id: str, pinned_tid: str) -> None:
-    """Build and dispatch a discrepancy-detection prompt to ResearchAgent."""
-    from includes.prompts import load_prompt
-
-    parts = ["web_research"]
-    parts.append(f"Validate the following items from {rfq_id} by checking if their part numbers actually match their brand and description.")
-    parts.append("Your primary job is to find DISCREPANCIES — where the part number does not match the brand or description.")
-    parts.append("")
-    for ui_item in items:
-        line = ui_item.get("line")
-        desc = ui_item.get("description", "")
-        pn = ui_item.get("part_number", "")
-        br = ui_item.get("brand", "")
-        item_parts = [f"Line {line}: {desc}"]
-        if pn:
-            item_parts.append(f"  Code/Part number: {pn}")
-        if br:
-            item_parts.append(f"  Brand: {br}")
-        parts.append("\n".join(item_parts))
-    parts.append("")
-    parts.append(load_prompt("rfq_identify_items"))
-
-    rich_prompt = "\n".join(parts)
-
-    short_label = f"Validate {len(items)} item(s) in {rfq_id} — check for part number discrepancies"
-    synthetic = cl.Message(content=short_label)
-    synthetic.author = "User"
-    synthetic.intent_context = rich_prompt
-
-    await _main_pinned(synthetic, pinned_tid)
 
 
 @cl.action_callback("rfq_find_suppliers")
@@ -412,31 +412,82 @@ async def on_rfq_find_suppliers(action: cl.Action) -> None:
                 )
                 await notify_dashboard("dashboard_refresh")
 
-            # Notify user of Phase 1 results
+            # Notify user of Phase 1 results and ask before web search
+            all_existing = list(existing or []) + [s["name"] for s in internal_suppliers]
+
             if internal_suppliers:
                 names = ", ".join(s["name"] for s in internal_suppliers)
                 await _send_pinned(
-                    f"Added {len(internal_suppliers)} supplier(s) from our records to line {line}: {names}. Now searching the web for more options...",
+                    f"Found {len(internal_suppliers)} supplier(s) from our records for line {line}: {names}.",
                     pinned_tid, author="EagleAgent",
                 )
             else:
                 await _send_pinned(
-                    f"No matching suppliers found in our records for line {line}. Searching the web...",
+                    f"No matching suppliers found in our records for line {line}.",
                     pinned_tid, author="EagleAgent",
                 )
 
-            # ---- Phase 2: Web search via genai.Client with Google Search grounding ----
-            all_existing = list(existing or []) + [s["name"] for s in internal_suppliers]
+            # Present action buttons — let user decide whether to search the web
+            search_web_action = cl.Action(
+                name="rfq_find_web_suppliers_for_line",
+                payload={
+                    "rfq_id": rfq_id,
+                    "line": line,
+                    "description": description,
+                    "part_number": part_number,
+                    "brand": brand,
+                    "quantity": quantity,
+                    "uom": uom,
+                    "existing_suppliers": all_existing,
+                },
+                label="🔍 Search Web",
+                description=f"Search the web for suppliers for line {line}",
+            )
+            no_thanks_action = cl.Action(
+                name="rfq_dismiss",
+                payload={},
+                label="No thanks",
+            )
+            await _send_pinned(
+                f"Would you like me to search the web for additional suppliers for line {line}?",
+                pinned_tid,
+                author="EagleAgent",
+                actions=[search_web_action, no_thanks_action],
+            )
+        finally:
+            await notify_dashboard("agent_done")
 
-            await notify_dashboard("agent_working", {"label": f"Web searching for line {line}..."})
 
-            from includes.tools.rfq_crud import _web_search_suppliers_sync, _sort_rfq_suppliers_sync
+@cl.action_callback("rfq_find_web_suppliers_for_line")
+async def on_rfq_find_web_suppliers_for_line(action: cl.Action) -> None:
+    """Web search for a single line item — triggered by user clicking 'Search Web'.
+
+    This is Phase 2 of the per-item supplier search, only invoked when the user
+    explicitly confirms they want web results.
+    """
+    from includes.tools.rfq_crud import _web_search_suppliers_sync, _sort_rfq_suppliers_sync
+    from includes.tools.product_tools import _find_purchase_history_for_part
+
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "???")
+    line = payload.get("line")
+    description = payload.get("description", "")
+    part_number = payload.get("part_number", "")
+    brand = payload.get("brand", "")
+    quantity = payload.get("quantity", "")
+    uom = payload.get("uom", "ea")
+    existing = payload.get("existing_suppliers", [])
+
+    async with _pin_thread() as pinned_tid:
+        await notify_dashboard("agent_working", {"label": f"Web searching for line {line}..."})
+
+        try:
             suppliers = await asyncio.to_thread(
                 _web_search_suppliers_sync,
                 description=description,
                 part_number=part_number,
                 brand=brand,
-                existing_suppliers=all_existing,
+                existing_suppliers=existing,
                 quantity=f"{quantity} {uom}".strip(),
             )
 
@@ -461,6 +512,316 @@ async def on_rfq_find_suppliers(action: cl.Action) -> None:
                 )
         finally:
             await notify_dashboard("agent_done")
+
+
+@cl.action_callback("rfq_dismiss")
+async def on_rfq_dismiss(action: cl.Action) -> None:
+    """Dismiss/acknowledge an action prompt — no-op.
+    Also sets pipeline stage to 'complete' if the RFQ was awaiting web search.
+    """
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "")
+    if rfq_id:
+        await _set_pipeline_stage(rfq_id, "complete")
+
+
+@cl.action_callback("rfq_pipeline_fix_part")
+async def on_rfq_pipeline_fix_part(action: cl.Action) -> None:
+    """Fix a discrepant part number. Only resumes pipeline after all fixes are applied."""
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "")
+    user_id = payload.get("user_id") or cl.user_session.get("user_id", "unknown")
+    line = payload.get("line")
+    correct_pn = payload.get("correct_part_number", "")
+    total_discrepancies = payload.get("total_discrepancies", 1)
+
+    if not rfq_id or not line or not correct_pn:
+        await cl.Message(content="Error: missing payload data.", author="EagleAgent").send()
+        return
+
+    # Update the part number on the RFQ item
+    _update_item_sync(rfq_id, {"line": line, "part_number": correct_pn, "match": "specific"}, user_id)
+    await notify_dashboard("dashboard_refresh")
+
+    # Track how many fixes have been applied in this gate session
+    fixes_key = f"pipeline_fixes_{rfq_id}"
+    fixes_applied = cl.user_session.get(fixes_key, 0) + 1
+    cl.user_session.set(fixes_key, fixes_applied)
+
+    if fixes_applied >= total_discrepancies:
+        # All discrepancies fixed — resume pipeline
+        cl.user_session.set(fixes_key, 0)
+        await cl.Message(
+            content=f"✏️ Updated Line {line} part number to **{correct_pn}**. All fixes applied, continuing pipeline...",
+            author="EagleAgent",
+        ).send()
+        await _resume_pipeline_from(rfq_id, user_id, "group")
+    else:
+        # More fixes pending — just confirm this one
+        remaining = total_discrepancies - fixes_applied
+        await cl.Message(
+            content=f"✏️ Updated Line {line} part number to **{correct_pn}**. ({remaining} more fix(es) available above, or click Skip & Continue)",
+            author="EagleAgent",
+        ).send()
+
+
+@cl.action_callback("rfq_pipeline_skip_validation")
+async def on_rfq_pipeline_skip_validation(action: cl.Action) -> None:
+    """Skip validation discrepancies and continue the pipeline."""
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "")
+    user_id = payload.get("user_id") or cl.user_session.get("user_id", "unknown")
+
+    if not rfq_id:
+        await cl.Message(content="Error: no RFQ ID provided.", author="EagleAgent").send()
+        return
+
+    # Reset fixes counter
+    cl.user_session.set(f"pipeline_fixes_{rfq_id}", 0)
+
+    await cl.Message(
+        content="⏭️ Skipping validation issues. Continuing pipeline...",
+        author="EagleAgent",
+    ).send()
+
+    # Resume pipeline from grouping stage
+    await _resume_pipeline_from(rfq_id, user_id, "group")
+
+
+@cl.action_callback("rfq_pipeline_retry_validation")
+async def on_rfq_pipeline_retry_validation(action: cl.Action) -> None:
+    """Retry the validation stage of the pipeline."""
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "")
+    user_id = payload.get("user_id") or cl.user_session.get("user_id", "unknown")
+
+    if not rfq_id:
+        await cl.Message(content="Error: no RFQ ID provided.", author="EagleAgent").send()
+        return
+
+    await cl.Message(
+        content="🔄 Retrying validation...",
+        author="EagleAgent",
+    ).send()
+
+    # Resume pipeline from validation stage
+    await _resume_pipeline_from(rfq_id, user_id, "validate")
+
+
+async def _resume_pipeline_from(rfq_id: str, user_id: str, start_stage: str) -> None:
+    """Resume the RFQ pipeline from a given stage (used by gate callbacks)."""
+    from includes.agents.procurement_agent import ProcurementAgent
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from config.settings import Config
+
+    await notify_dashboard("agent_working", {"label": "Continuing pipeline..."})
+
+    try:
+        # Set up an active streaming message so _stream_to_user works
+        # and pipeline output appears before gate buttons
+        active_msg = cl.Message(content="", author="EagleAgent")
+        await active_msg.send()
+        cl.user_session.set("active_msg", active_msg)
+
+        # Create a minimal ProcurementAgent instance to call the stage dispatcher
+        model = ChatGoogleGenerativeAI(model=Config.DEFAULT_MODEL, temperature=0)
+        agent = ProcurementAgent(model=model)
+        state = {"user_id": user_id, "messages": []}
+
+        result = await agent._run_pipeline_from_stage(
+            start_stage, rfq_id, user_id, state, items_filter=None
+        )
+
+        # Finalise the streaming message
+        await active_msg.update()
+        cl.user_session.set("active_msg", None)
+
+    except Exception as e:
+        logger.exception(f"Error resuming pipeline for {rfq_id} from '{start_stage}'")
+        await cl.Message(content=f"Error: {e}", author="EagleAgent").send()
+    finally:
+        await notify_dashboard("agent_done")
+
+
+async def _set_pipeline_stage(rfq_id: str, stage: str) -> None:
+    """Helper to update pipeline_stage on an RFQ."""
+    from includes.tools.rfq_crud import _get_session
+    from includes.dashboard.models import RFQ
+
+    def _update():
+        session = _get_session()
+        try:
+            rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+            if rfq:
+                rfq.pipeline_stage = stage
+                session.commit()
+                logger.info(f"Pipeline[{rfq_id}]: stage → '{stage}'")
+        except Exception as e:
+            logger.error(f"Failed to update pipeline_stage for {rfq_id}: {e}")
+            session.rollback()
+        finally:
+            session.close()
+
+    await asyncio.to_thread(_update)
+
+
+@cl.action_callback("rfq_pipeline_web_search")
+async def on_rfq_pipeline_web_search(action: cl.Action) -> None:
+    """Run batch web search for all items on an RFQ (triggered by pipeline button)."""
+    from includes.tools.rfq_crud import (
+        _get_rfq_dict_sync, _web_search_suppliers_sync,
+        _add_supplier_sync, _sort_rfq_suppliers_sync, _get_session,
+    )
+    from includes.dashboard.models import RFQ, RFQItem
+
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "")
+    user_id = payload.get("user_id") or cl.user_session.get("user_id", "unknown")
+    pinned_tid = cl.user_session.get("thread_id")
+
+    if not rfq_id:
+        await cl.Message(content="Error: no RFQ ID provided.", author="EagleAgent").send()
+        return
+
+    await notify_dashboard("agent_working", {"label": "Preparing web search..."})
+
+    try:
+        rfq_dict = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+        if not rfq_dict:
+            await cl.Message(content=f"Error: {rfq_id} not found.", author="EagleAgent").send()
+            return
+
+        items = rfq_dict.get("items", [])
+
+        # Load groups and current suppliers from DB
+        session = _get_session()
+        try:
+            rfq_obj = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+            groups_result = rfq_obj.item_groups if rfq_obj else None
+            db_items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq_obj.id).all() if rfq_obj else []
+            current_suppliers_by_line = {}
+            for dbi in db_items:
+                names = [s["name"] for s in (dbi.suppliers or []) if isinstance(s, dict)]
+                current_suppliers_by_line[dbi.line] = names
+        finally:
+            session.close()
+
+        # Build items eligible for web search
+        items_by_line = {}
+        for item in items:
+            line = item.get("line")
+            if item.get("match") in ("specific", "branded", "generic"):
+                items_by_line[line] = {
+                    **item,
+                    "existing_suppliers": current_suppliers_by_line.get(line, []),
+                }
+
+        if not items_by_line:
+            await cl.Message(content="No items eligible for web search.", author="EagleAgent").send()
+            return
+
+        # Build search tasks (group-aware)
+        search_tasks: list[tuple[str, list[int], list[dict]]] = []
+        grouped_lines: set[int] = set()
+
+        if groups_result:
+            for g in groups_result.get("groups", []):
+                group_lines = g.get("lines", [])
+                grouped_lines.update(group_lines)
+                group_items = [items_by_line[l] for l in group_lines if l in items_by_line]
+                if group_items:
+                    search_tasks.append((g["label"], group_lines, group_items))
+
+            for line_num in groups_result.get("ungrouped", []):
+                if line_num in items_by_line:
+                    ui = items_by_line[line_num]
+                    desc = ui.get("input_description", "") or f"Line {line_num}"
+                    search_tasks.append((desc[:60], [line_num], [ui]))
+
+        # Any items not covered by groups
+        for line_num, item_ctx in items_by_line.items():
+            if not any(line_num in t[1] for t in search_tasks):
+                desc = item_ctx.get("input_description", "") or f"Line {line_num}"
+                search_tasks.append((desc[:60], [line_num], [item_ctx]))
+
+        total_searches = len(search_tasks)
+        await cl.Message(
+            content=f"**Web Search** — Searching for new suppliers: **{total_searches}** search(es)...",
+            author="EagleAgent",
+        ).send()
+
+        WEB_SEARCH_CONCURRENCY = 3
+        sem = asyncio.Semaphore(WEB_SEARCH_CONCURRENCY)
+        total_added = 0
+
+        async def _run_search(label, lines, items_for_search):
+            async with sem:
+                primary = items_for_search[0]
+                all_existing = set()
+                for it in items_for_search:
+                    all_existing.update(it.get("existing_suppliers", []))
+
+                suppliers = await asyncio.to_thread(
+                    _web_search_suppliers_sync,
+                    description=primary.get("input_description", ""),
+                    part_number=primary.get("part_number", ""),
+                    brand=primary.get("brand", ""),
+                    existing_suppliers=list(all_existing),
+                    quantity=f"{primary.get('quantity', '')} {primary.get('uom', '')}".strip(),
+                )
+
+                if suppliers:
+                    for line_num in lines:
+                        await asyncio.to_thread(
+                            _add_supplier_sync, rfq_id,
+                            {"line": line_num, "suppliers": suppliers},
+                            user_id,
+                        )
+                        await notify_dashboard("dashboard_refresh")
+                    names = [s["name"] for s in suppliers[:5]]
+                    await cl.Message(
+                        content=f"   ✓ **{label}** (line {', '.join(str(l) for l in lines)}): {len(suppliers)} supplier(s) — {', '.join(names)}",
+                        author="EagleAgent",
+                    ).send()
+                    return len(suppliers)
+                else:
+                    await cl.Message(
+                        content=f"   ✗ **{label}** (line {', '.join(str(l) for l in lines)}): No new suppliers found",
+                        author="EagleAgent",
+                    ).send()
+                    return 0
+
+        await notify_dashboard("agent_working", {
+            "label": f"Web searching {total_searches} items ({WEB_SEARCH_CONCURRENCY} concurrent)..."
+        })
+
+        tasks = [
+            _run_search(label, lines, items_for_search)
+            for label, lines, items_for_search in search_tasks
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Web search failed for '{search_tasks[i][0]}': {result}")
+            elif isinstance(result, int):
+                total_added += result
+
+        # Sort suppliers and refresh dashboard
+        await asyncio.to_thread(_sort_rfq_suppliers_sync, rfq_id)
+        await _set_pipeline_stage(rfq_id, "complete")
+        await notify_dashboard("dashboard_refresh")
+
+        await cl.Message(
+            content=f"✅ Web search complete. Added **{total_added}** new supplier(s) total.",
+            author="EagleAgent",
+        ).send()
+
+    except Exception as e:
+        logger.exception(f"Error in pipeline web search for {rfq_id}")
+        await cl.Message(content=f"Error during web search: {e}", author="EagleAgent").send()
+    finally:
+        await notify_dashboard("agent_done")
 
 
 @cl.action_callback("rfq_group_items")
@@ -524,13 +885,25 @@ async def on_rfq_group_items(action: cl.Action) -> None:
 
 @cl.action_callback("rfq_find_all_suppliers")
 async def on_rfq_find_all_suppliers(action: cl.Action) -> None:
-    """Handle batch Find Suppliers for all confirmed items on an RFQ.
+    """Route the batch Find All Suppliers button through the agent pipeline.
 
-    Runs both phases sequentially for backward-compatibility.
+    Creates a synthetic user message and invokes the main graph handler.
+    ProcurementAgent's _try_find_suppliers_pipeline picks it up and runs
+    all steps (classify → validate → group → find previous → brand lookup
+    → cross-apply), then asks the user before web search.
+
+    This ensures the button produces identical results to typing
+    "find suppliers" in chat.
     """
+    payload = action.payload or {}
+    rfq_id = payload.get("rfq_id", "???")
+
     async with _pin_thread() as pinned_tid:
-        await _phase_previous_suppliers(action.payload or {}, pinned_tid)
-        await _phase_new_suppliers(action.payload or {}, pinned_tid)
+        synthetic = cl.Message(
+            content=f"Find suppliers for all items on {rfq_id}"
+        )
+        synthetic.author = "User"
+        await _main_pinned(synthetic, pinned_tid)
 
 
 @cl.action_callback("rfq_find_previous_suppliers")
@@ -1052,6 +1425,7 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
                         {"line": line_num, "suppliers": suppliers},
                         user_id,
                     )
+                    await notify_dashboard("dashboard_refresh")
                 names = [s["name"] for s in suppliers[:5]]
                 await _send_pinned(
                     f"   ✓ **{label}**: {len(suppliers)} supplier(s) — {', '.join(names)}",
