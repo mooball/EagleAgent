@@ -137,12 +137,25 @@ class Supervisor:
                     {"id": "RUN_WORKFLOW", "description": "User wants to execute the supplier-finding pipeline on the RFQ's items. This means classify → validate → group → find suppliers. Examples: 'find suppliers for these items', 'source all of these', 'run the pipeline', 'match and validate', 'classify these parts', 'find me suppliers for this RFQ'"},
                     {"id": "RFQ_QUERY", "description": "User wants information about the current RFQ itself — its items, quantities, linked client, contacted suppliers, or status. They are asking about the RFQ's own data, not querying the general database. Examples: 'how many items in this RFQ?', 'which client is this RFQ linked to?', 'let me know which suppliers have been contacted', 'what's the total value', 'show me line 3 details'"},
                     {"id": "RFQ_UPDATE", "description": "User explicitly asks to modify RFQ data — add/remove suppliers, change quantities, update item details, or perform any CRUD operation. IMPORTANT: If the user's intent is ambiguous between a query and an update, do NOT assume update — classify as UNCERTAIN instead. Examples: 'add this supplier to line 2', 'remove all suppliers', 'change qty to 10', 'update line 4 part number'"},
+                    {"id": "RFQ_ADD_ITEMS", "description": "User is providing a list of items (via pasted text or an uploaded image/file) to add to the current RFQ. They want the items extracted and added to the RFQ, then asked what to do next. They do NOT want research, web search, or the supplier-finding pipeline — just add the items to the RFQ. Examples: pasting a multi-line parts list, uploading a photo of a parts catalog page, or typing several item descriptions."},
                 ]
                 directions = rfq_directions + base_directions
                 classifier_context = "User is viewing an RFQ in the procurement system."
             else:
                 directions = base_directions
                 classifier_context = "User is in the procurement system (not on a specific RFQ)."
+
+            # Let the classifier know about file attachments — it can't see images
+            # directly, and this context helps distinguish "image of parts to add"
+            # from "image of a product to identify".
+            file_attachments = state.get("file_attachments")
+            if file_attachments:
+                mime = file_attachments[0].get("mime_type", "") if file_attachments else ""
+                file_type = "image" if mime.startswith("image/") else "document"
+                classifier_context += (
+                    f" The user also uploaded {len(file_attachments)} {file_type}(s)"
+                    f" — this likely contains item data."
+                )
 
             if prev_ai_text:
                 classifier_context += f"\n\nThe assistant's previous message ended with: \"{prev_ai_text}\""
@@ -158,7 +171,7 @@ class Supervisor:
             # Route based on intent
             if intent == "RUN_WORKFLOW":
                 return {"next_agent": "ProcurementAgent", "intent": "RUN_WORKFLOW", "step_count": 0}
-            elif intent in ("RFQ_QUERY", "RFQ_UPDATE"):
+            elif intent in ("RFQ_QUERY", "RFQ_UPDATE", "RFQ_ADD_ITEMS"):
                 return {"next_agent": "ProcurementAgent", "intent": intent, "step_count": 0}
             elif intent == "DB_QUERY":
                 return {"next_agent": "ProcurementAgent", "intent": "DB_QUERY", "step_count": 0}
