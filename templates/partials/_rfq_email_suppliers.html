@@ -12,8 +12,11 @@
 {% endfor -%}
 }</script>
 <script>
-document.addEventListener('alpine:init', () => {
-    Alpine.store('bulkEmail', {
+(function() {
+    if (window.__bulkEmailStoreRegistered) return;
+    window.__bulkEmailStoreRegistered = true;
+    const register = () => {
+        Alpine.store('bulkEmail', {
         selected: [],
         emailMap: {},
         totalCount: 0,
@@ -69,9 +72,11 @@ document.addEventListener('alpine:init', () => {
             }
         }
     });
-    // Initialize the store
     Alpine.store('bulkEmail').init();
-});
+    };
+    if (window.Alpine) { register(); }
+    else { document.addEventListener('alpine:init', register); }
+})();
 </script>
 {# Supplier data for bulk compose #}
 <script type="application/json" id="bulk-supplier-data">[
