@@ -1071,7 +1071,7 @@
                         this.userEmail = userEmail || this.userEmail || "";
                         this.recipientEmail = recipientEmail;
                         this.recipientName = recipientName;
-                        this.subject = this._withTrackingSubject(subject || 'Quote Request');
+                        this.subject = subject || 'Quote Request';
                         this.bodyHtml = this._normalizeBodyHtml(this._withTrackingFooter(bodyHtml || ''));
                         this.mode = 'editor';
                         this.composeUrl = null;
@@ -1412,7 +1412,7 @@
                                 body: JSON.stringify({
                                     recipient_email: this.recipientEmail,
                                     recipient_name: this.recipientName,
-                                    subject: this._withTrackingSubject(this.subject),
+                                    subject: (this.trackingId ? '[' + this.trackingId + '] ' : '') + this.subject,
                                     body_html: bodyHtml,
                                 }),
                             });
@@ -1447,13 +1447,18 @@
                                 body: JSON.stringify({
                                     recipient_email: this.recipientEmail,
                                     recipient_name: this.recipientName,
-                                    subject: this._withTrackingSubject(this.subject),
+                                    subject: (this.trackingId ? '[' + this.trackingId + '] ' : '') + this.subject,
                                     body_html: bodyHtml,
                                 }),
                             });
                             const data = await response.json();
                             if (data.status !== 'ok') throw new Error(data.message || 'Failed to create draft');
                             this.composeUrl = data.compose_url;
+                            // Refresh email-suppliers panel so green dot shows immediately
+                            htmx.ajax('GET', `/partial/rfqs/${this.rfqId}/email-suppliers`, {
+                                target: '#email-suppliers-panel',
+                                swap: 'innerHTML',
+                            });
                             this.success = openAfter
                                 ? (data.message || 'Draft created and opened in Gmail')
                                 : 'Draft saved to Gmail successfully';
@@ -1468,6 +1473,252 @@
                 }
             };
         }
+    </script>
+    <script>
+    // Bulk compose modal — registered before Alpine scans the DOM.
+    // Uses alpine:init (not DOMContentLoaded) so the component exists when
+    // Alpine encounters x-data="bulkComposeModal".
+    document.addEventListener('alpine:init', () => {
+        Alpine.data('bulkComposeModal', () => ({
+            isOpen: false,
+            isLoading: false,
+            isSending: false,
+            mode: 'editor',
+            _editor: null,
+            rfqId: null,
+            opportunityId: null,
+            trackingId: "",
+            userEmail: "",
+            userName: "",
+            userSignature: "",
+            subject: "",
+            recipients: [],
+            sendResults: [],
+            okCount: 0,
+            failCount: 0,
+            error: null,
+
+            init() {
+                window.__bulkComposeOpen = (selectedSuppliers, rfqId, opportunityId) => {
+                    this.open(selectedSuppliers, rfqId, opportunityId);
+                };
+            },
+
+            open(selectedSuppliers, rfqId, opportunityId) {
+                if (window.__bulkUser) {
+                    this.userEmail = window.__bulkUser.email || '';
+                    this.userName = window.__bulkUser.name || '';
+                }
+                this.recipients = selectedSuppliers;
+                this.rfqId = rfqId;
+                this.opportunityId = opportunityId || null;
+                this.trackingId = opportunityId || rfqId || "";
+                this.subject = 'Quotation Request: Eagle Exports';
+                this.sendResults = [];
+                this.okCount = 0;
+                this.failCount = 0;
+                this.error = null;
+                this.mode = 'editor';
+                this.isOpen = true;
+                this.$nextTick(() => this._initEditor());
+            },
+
+            close() {
+                this._destroyEditor();
+                this.isOpen = false;
+                this.mode = 'editor';
+                this.recipients = [];
+                this.sendResults = [];
+                this.okCount = 0;
+                this.failCount = 0;
+                this.error = null;
+            },
+
+            _destroyEditor() {
+                if (this._editor && typeof this._editor.destruct === 'function') {
+                    this._editor.destruct();
+                }
+                this._editor = null;
+            },
+
+            _initEditor() {
+                if (!window.Jodit) {
+                    this.error = 'Rich editor failed to load.';
+                    return;
+                }
+                const self = this;
+                const defaultBody = this._defaultTemplate();
+                if (this._editor) {
+                    this._editor.value = defaultBody;
+                    return;
+                }
+                this._editor = Jodit.make('#bulk-email-editor', {
+                    height: 340,
+                    toolbarAdaptive: false,
+                    toolbarSticky: false,
+                    saveSelectionOnBlur: true,
+                    askBeforePasteHTML: false,
+                    askBeforePasteFromWord: false,
+                    defaultActionOnPaste: 'insert_as_html',
+                    disablePlugins: 'ai-assistant',
+                    buttons: [
+                        'bold', 'italic', 'underline', '|',
+                        'ul', 'ol', '|',
+                        'outdent', 'indent', '|',
+                        'brush', '|',
+                        'link', '|',
+                        'align', '|',
+                        'undo', 'redo'
+                    ]
+                });
+                this._editor.value = defaultBody;
+            },
+
+            _defaultTemplate() {
+                // Use double-bracket placeholders that won't conflict with Jodit's template syntax
+                // Matches Gmail formatting: Arial 14px, 12px paragraph margins, blank line = new paragraph
+                const ph = (text) =>
+                    `<strong style="background:#fef3c7;border-radius:3px;padding:2px 8px;font-family:monospace;font-size:13px;color:#92400e;">${text}</strong>`;
+                const p = (html) => `<p style="margin:0 0 12px 0;">${html}</p>`;
+                const sig = this.userSignature ||
+                    `<strong>${this.userName || ''}</strong><br>` +
+                    `Eagle Exports<br>` +
+                    `<span style="font-size:14px;color:#6b7280;">Spare Parts | Industrial | Workshop | Procurement<br>Supporting heavy industry since 1993</span><br>` +
+                    `<span style="font-size:14px;">P: +61 7 3217 0050 &nbsp;|&nbsp; <a href="https://www.eaglexp.com.au">www.eaglexp.com.au</a></span><br>` +
+                    `<span style="font-size:14px;">Unit 1, 18 Gravel Pit Road, Darra, Queensland, 4076</span><br>` +
+                    `<span style="font-size:14px;">E: ${this.userEmail || ''}</span>`;
+                return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.45;color:#111827;">` +
+                    p(ph('[[SALUTATION]]')) +
+                    p('Could you please confirm price and availability on the following items for resale:') +
+                    p(ph('[[ITEMS_TABLE]]')) +
+                    p('Please also advise of any freight costs for delivery to Darra, Brisbane 4076, Australia.') +
+                    p('Thank you.') +
+                    p('Regards,') +
+                    p(sig) +
+                    `</div>`;
+            },
+
+            _getEditorHtml() {
+                return this._editor ? this._editor.value || '' : '';
+            },
+
+            _buildItemTable(lineItems) {
+                if (!lineItems || !lineItems.length) return '<p><em>No items</em></p>';
+                let html = '<table style="border-collapse:collapse;margin:12px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;" cellpadding="0" cellspacing="0">';
+                html += '<thead><tr style="background-color:#f3f4f6;">';
+                html += '<th style="border:1px solid #d1d5db;padding:8px 12px;text-align:left;">Item Description</th>';
+                html += '<th style="border:1px solid #d1d5db;padding:8px 12px;text-align:left;">SKU / Part Number</th>';
+                html += '<th style="border:1px solid #d1d5db;padding:8px 12px;text-align:center;">Quantity</th>';
+                html += '</tr></thead><tbody>';
+                for (const it of lineItems) {
+                    const desc = `${it.description || '—'}${it.brand ? ' (' + it.brand + ')' : ''}`;
+                    const qty = `${it.quantity || '—'}${it.uom ? ' ' + it.uom : ''}`;
+                    html += '<tr>';
+                    html += `<td style="border:1px solid #d1d5db;padding:8px 12px;">${desc}</td>`;
+                    html += `<td style="border:1px solid #d1d5db;padding:8px 12px;">${it.part_number || '—'}</td>`;
+                    html += `<td style="border:1px solid #d1d5db;padding:8px 12px;text-align:center;">${qty}</td>`;
+                    html += '</tr>';
+                }
+                html += '</tbody></table>';
+                return html;
+            },
+
+            _renderEmailFor(recipient) {
+                const salutation = `Hi ${recipient.salutation_name || 'Sales Team'},`;
+                const tableHtml = this._buildItemTable(recipient.line_items);
+                let html = this._getEditorHtml();
+                html = html.replace(/<strong[^>]*>\[\[SALUTATION\]\]<\/strong>/g, salutation);
+                html = html.replace(/<strong[^>]*>\[\[ITEMS_TABLE\]\]<\/strong>/g, tableHtml);
+                // Fallback: Jodit may strip wrapping tags, leaving raw placeholder text
+                html = html.replace(/\[\[SALUTATION\]\]/g, salutation);
+                html = html.replace(/\[\[ITEMS_TABLE\]\]/g, tableHtml);
+                if (this.trackingId && !html.includes(this.trackingId)) {
+                    html += `<p style="margin-top:16px;font-size:10px;line-height:1.2;color:#6b7280;">Tracking ID: ${this.trackingId}</p>`;
+                }
+                return html;
+            },
+
+            async sendAll() {
+                this.isSending = true;
+                this.mode = 'sending';
+                this.sendResults = [];
+                for (let i = 0; i < this.recipients.length; i++) {
+                    const r = this.recipients[i];
+                    try {
+                        const bodyHtml = this._renderEmailFor(r);
+                        const resp = await fetch(`/api/rfqs/${this.rfqId}/send-email-direct`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                recipient_email: r.email,
+                                recipient_name: r.contact_name || r.name,
+                                subject: (this.trackingId ? '[' + this.trackingId + '] ' : '') + this.subject,
+                                body_html: bodyHtml,
+                            }),
+                        });
+                        const data = await resp.json();
+                        if (data.status !== 'ok') throw new Error(data.message || 'Send failed');
+                        this.sendResults.push({ name: r.name, status: 'ok' });
+                    } catch (err) {
+                        this.sendResults.push({ name: r.name, status: 'error', error: err.message });
+                    }
+                    if (i < this.recipients.length - 1) {
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+                }
+                this.mode = 'result';
+                this.isSending = false;
+                this.okCount = this.sendResults.filter(r => r.status === 'ok').length;
+                this.failCount = this.sendResults.filter(r => r.status === 'error').length;
+                if (typeof htmx !== 'undefined') {
+                    htmx.ajax('GET', `/partial/rfqs/${this.rfqId}/email-suppliers`, {
+                        target: '#email-suppliers-panel',
+                        swap: 'innerHTML',
+                    });
+                }
+            },
+
+            async saveAllDrafts() {
+                this.isSending = true;
+                this.mode = 'sending';
+                this.sendResults = [];
+                for (let i = 0; i < this.recipients.length; i++) {
+                    const r = this.recipients[i];
+                    try {
+                        const bodyHtml = this._renderEmailFor(r);
+                        const resp = await fetch(`/api/rfqs/${this.rfqId}/send-email-draft`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                recipient_email: r.email,
+                                recipient_name: r.contact_name || r.name,
+                                subject: (this.trackingId ? '[' + this.trackingId + '] ' : '') + this.subject,
+                                body_html: bodyHtml,
+                            }),
+                        });
+                        const data = await resp.json();
+                        if (data.status !== 'ok') throw new Error(data.message || 'Draft failed');
+                        this.sendResults.push({ name: r.name, status: 'ok', compose_url: data.compose_url });
+                    } catch (err) {
+                        this.sendResults.push({ name: r.name, status: 'error', error: err.message });
+                    }
+                    if (i < this.recipients.length - 1) {
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+                }
+                this.mode = 'result';
+                this.isSending = false;
+                this.okCount = this.sendResults.filter(r => r.status === 'ok').length;
+                this.failCount = this.sendResults.filter(r => r.status === 'error').length;
+                if (typeof htmx !== 'undefined') {
+                    htmx.ajax('GET', `/partial/rfqs/${this.rfqId}/email-suppliers`, {
+                        target: '#email-suppliers-panel',
+                        swap: 'innerHTML',
+                    });
+                }
+            },
+        }));
+    });
     </script>
 </body>
 </html>

@@ -5,12 +5,107 @@
     No shortlisted suppliers found. Use the ⭐ Shortlist option on suppliers to include them in email templates.
 </div>
 {% else %}
-<div class="space-y-1">
+{# Email map for bulk selector — supplier name → has email #}
+<script type="application/json" id="bulk-email-map">{
+{% for sup in suppliers -%}
+{{ sup.name | tojson }}: {{ (sup.email and true) | tojson }}{% if not loop.last %},{% endif %}
+{% endfor -%}
+}</script>
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.store('bulkEmail', {
+        selected: [],
+        emailMap: {},
+        totalCount: 0,
+        selectedCount: 0,
+        emailSelectedCount: 0,
+        allSelected: false,
+
+        init() {
+            const el = document.getElementById('bulk-email-map');
+            if (el) {
+                try { this.emailMap = JSON.parse(el.textContent.trim()); } catch(e) {}
+                this.totalCount = Object.keys(this.emailMap).length;
+            }
+        },
+
+        _recalc() {
+            this.selectedCount = this.selected.length;
+            this.emailSelectedCount = this.selected.filter(k => this.emailMap[k]).length;
+            const emailabled = Object.keys(this.emailMap).filter(k => this.emailMap[k]).length;
+            this.allSelected = this.emailSelectedCount > 0 && this.emailSelectedCount === emailabled;
+        },
+
+        toggle(key) {
+            if (!this.emailMap[key]) return;
+            const idx = this.selected.indexOf(key);
+            if (idx >= 0) this.selected.splice(idx, 1);
+            else this.selected.push(key);
+            this._recalc();
+        },
+
+        selectAll() {
+            this.selected = Object.keys(this.emailMap).filter(k => this.emailMap[k]);
+            this._recalc();
+        },
+
+        deselectAll() {
+            this.selected = [];
+            this._recalc();
+        },
+
+        composeSelected() {
+            const withEmail = this.selected.filter(k => this.emailMap[k]);
+            if (!withEmail.length) return;
+            // Collect supplier data from the JSON data island
+            const dataEl = document.getElementById('bulk-supplier-data');
+            if (!dataEl) return;
+            const allSuppliers = JSON.parse(dataEl.textContent.trim());
+            const selected = allSuppliers.filter(s => withEmail.includes(s.name));
+            if (!selected.length) return;
+            // Open the bulk compose modal (defined in _email_bulk_compose_modal.html)
+            if (window.__bulkComposeOpen) {
+                window.__bulkComposeOpen(selected, {{ rfq.id | tojson }}, {{ rfq.netsuite_opportunity | tojson or 'null' }});
+            }
+        }
+    });
+    // Initialize the store
+    Alpine.store('bulkEmail').init();
+});
+</script>
+{# Supplier data for bulk compose #}
+<script type="application/json" id="bulk-supplier-data">[
+{% for sup in suppliers -%}
+{
+    "name": {{ sup.name | tojson }},
+    "email": {{ (sup.email or "") | tojson }},
+    "contact_name": {{ (sup.contact_name or "") | tojson }},
+    "salutation_name": {{ (sup.salutation_name or "") | tojson }},
+    "supplier_id": {{ (sup.supplier_id or "") | tojson }},
+    "line_items": {{ sup.line_items | tojson }}
+}{% if not loop.last %},{% endif %}
+{% endfor -%}
+]</script>
+<div x-data class="space-y-1">
+    {# Bulk selection header #}
+    <div class="flex items-center gap-3 px-4 py-2 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+        <button @click="$store.bulkEmail.allSelected ? $store.bulkEmail.deselectAll() : $store.bulkEmail.selectAll()"
+                class="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                x-text="$store.bulkEmail.allSelected ? 'Deselect All' : 'Select All'"></button>
+        <span class="text-xs text-gray-500 dark:text-gray-400">
+            <span x-text="$store.bulkEmail.emailSelectedCount"></span> of <span x-text="$store.bulkEmail.totalCount"></span> selected
+        </span>
+        <button @click="$store.bulkEmail.composeSelected()"
+                :disabled="$store.bulkEmail.emailSelectedCount === 0"
+                class="ml-auto px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+            Compose Email
+        </button>
+    </div>
     {% for sup in suppliers %}
     {% set sup_id = loop.index %}
     {%- set body_html -%}
 <div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.45; color: #111827;">
-<p style="margin: 0 0 12px 0;">Hi {{ sup.name }} Sales Team,</p>
+<p style="margin: 0 0 12px 0;">Hi {{ sup.salutation_name or 'Sales Team' }},</p>
 <p style="margin: 0 0 12px 0;">Could you please confirm price and availability on the following items for resale:</p>
 <table style="border-collapse: collapse; margin: 0 0 12px 0; font-family: Arial, Helvetica, sans-serif; font-size: 14px;" cellpadding="0" cellspacing="0">
     <thead>
@@ -30,7 +125,7 @@
         {% endfor %}
     </tbody>
 </table>
-<p style="margin: 0 0 12px 0;">Please also advise of any inbound or outbound freight costs for delivery to Darra, Brisbane 4076, Australia.</p>
+<p style="margin: 0 0 12px 0;">Please also advise of any freight costs for delivery to Darra, Brisbane 4076, Australia.</p>
 <p style="margin: 0 0 12px 0;">Thank you.</p>
 <p style="margin: 0 0 6px 0;">Regards,</p>
 <p style="margin: 0; line-height: 1.35;">
@@ -44,48 +139,104 @@ Eagle Exports<br>
 </div>
     {%- endset -%}
     <script type="application/json" id="sup-body-{{ sup_id }}">{{ body_html | tojson }}</script>
-    <div x-data="{ open: false }" class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+    <div x-data='{ open: false, editing: false, editEmail: {{ (sup.email or "") | tojson }}, editName: {{ (sup.contact_name or "") | tojson }}, supplierName: {{ sup.name | tojson }}, supplierId: {{ (sup.supplier_id or "") | tojson }}, rfqId: {{ rfq.id | tojson }}, saving: false, saveError: null }' class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
         <!-- Supplier row -->
-        <div @click="open = !open"
+        <div @click="if (!editing) open = !open"
              class="flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors"
              :class="open ? 'bg-blue-50 dark:bg-blue-950' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'">
+            <input type="checkbox"
+                   :checked="$store.bulkEmail.selected.includes(supplierName)"
+                   :disabled="!$store.bulkEmail.emailMap[supplierName]"
+                   @click.stop
+                   @change="$store.bulkEmail.toggle(supplierName)"
+                   class="shrink-0 w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed">
             <svg x-show="open" class="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
             <svg x-show="!open" class="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
             <span class="font-medium text-sm">{{ sup.name }}</span>
+            {% if sup.country %}
+            <span class="text-xs text-gray-400">({{ sup.country }})</span>
+            {% endif %}
             {% if sup.has_been_emailed %}
             <span class="inline-block w-2 h-2 rounded-full bg-green-500" title="Contacted on this RFQ"></span>
             {% endif %}
             <span class="text-xs text-gray-400">{{ sup.line_items | length }} item{{ 's' if sup.line_items | length != 1 else '' }}</span>
-            {% if sup.email %}
-            <span class="ml-auto flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400 font-mono">
-                {{ sup.email }}
-                <button @click.stop="navigator.clipboard.writeText('{{ sup.email }}'); $el.querySelector('svg').classList.add('text-green-500'); setTimeout(() => $el.querySelector('svg').classList.remove('text-green-500'), 1000)"
-                        class="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600" title="Copy email">
-                    <svg class="w-3.5 h-3.5 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-                </button>
+            <span class="ml-auto flex items-center gap-2">
+                {# Read-only email display #}
+                <span x-show="!editing" class="flex items-center gap-2">
+                    {% if sup.email %}
+                    <span class="text-xs text-blue-600 dark:text-blue-400" x-text="editName ? editName + ' (' + editEmail + ')' : editEmail" :class="editName ? '' : 'font-mono'"></span>
+                    <button @click.stop="navigator.clipboard.writeText(editEmail); let s=$el.querySelector('svg'); s.classList.add('text-green-500'); setTimeout(() => s.classList.remove('text-green-500'), 1000)"
+                            class="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600" title="Copy email">
+                        <svg class="w-3.5 h-3.5 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                    </button>
+                    <button @click.stop="editing = true; saveError = null"
+                            class="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Edit contact info">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                    </button>
+                    {% else %}
+                    <span class="text-xs text-red-400 italic">No contact info</span>
+                    <button @click.stop="editing = true; saveError = null"
+                            class="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 text-amber-500 hover:text-amber-600" title="Add email address">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
+                    </button>
+                    {% endif %}
+                </span>
+                {# Inline edit form #}
+                <span x-show="editing" @click.stop="" class="flex items-center gap-1.5">
+                    <input type="email" x-model="editEmail" placeholder="email@example.com"
+                           class="w-56 text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                           :class="saveError ? 'border-red-400' : ''">
+                    <input type="text" x-model="editName" placeholder="Contact name"
+                           class="w-40 text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                    <button @click.stop="
+                        saving = true; saveError = null;
+                        const email = editEmail.trim();
+                        if (!email || !email.includes('@')) { saveError = 'Valid email required'; saving = false; return; }
+                        fetch(`/api/rfqs/${rfqId}/supplier-contact`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                name: supplierName,
+                                supplier_id: supplierId || null,
+                                email: email,
+                                contact_name: editName.trim(),
+                            }),
+                        }).then(r => r.json()).then(data => {
+                            if (data.status !== 'ok') throw new Error(data.message || 'Save failed');
+                            editing = false;
+                            htmx.ajax('GET', `/partial/rfqs/${rfqId}/email-suppliers`, { target: '#email-suppliers-panel', swap: 'innerHTML' });
+                        }).catch(err => {
+                            saveError = err.message;
+                        }).finally(() => { saving = false; });
+                    " :disabled="saving"
+                            class="text-xs px-2 py-1 rounded font-medium bg-green-600 hover:bg-green-700 text-white transition-colors disabled:opacity-50"
+                            x-text="saving ? 'Saving...' : 'Save'"></button>
+                    <button @click.stop="editing = false; saveError = null"
+                            class="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">Cancel</button>
+                    <span x-show="saveError" x-text="saveError" class="text-[10px] text-red-500"></span>
+                </span>
+                {# Existing compose buttons (only when not editing and email exists) #}
+                {% if sup.email %}
+                <template x-if="!editing">
+                <span class="flex items-center gap-2">
                 <button @click.stop="let d=JSON.parse($el.dataset.compose); emailModal.open(d.rfqId, d.email, d.name, d.subject, JSON.parse(document.getElementById('sup-body-{{ sup_id }}').textContent), d.trackingId)"
                         data-compose='{{ {'rfqId': rfq.id, 'email': sup.email, 'name': sup.name, 'subject': 'Quote Request for ' ~ sup.name, 'trackingId': rfq.netsuite_opportunity or rfq.id} | tojson | replace("'", "&#39;") }}'
                         type="button"
-                        title="Edit email"
-                        class="px-2 py-1 rounded text-xs font-medium bg-slate-600 hover:bg-slate-700 text-white transition-colors">
-                    Edit
+                        title="Compose"
+                        class="px-2 py-1 rounded text-xs font-medium bg-slate-500 hover:bg-slate-600 text-white transition-colors">
+                    Compose
                 </button>
                 <button @click.stop="let d=JSON.parse($el.dataset.compose); emailModal.quickEditInGmail(d.rfqId, d.email, d.name, d.subject, JSON.parse(document.getElementById('sup-body-{{ sup_id }}').textContent), d.trackingId)"
                         data-compose='{{ {'rfqId': rfq.id, 'email': sup.email, 'name': sup.name, 'subject': 'Quote Request for ' ~ sup.name, 'trackingId': rfq.netsuite_opportunity or rfq.id} | tojson | replace("'", "&#39;") }}'
                         type="button"
-                        title="Edit in Gmail"
-                        class="px-2 py-1 rounded text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white transition-colors">
-                    Edit in Gmail
+                        title="Compose in Gmail"
+                        class="px-2 py-1 rounded text-xs font-medium bg-slate-500 hover:bg-slate-600 text-white transition-colors">
+                    in Gmail
                 </button>
+                </span>
+                </template>
+                {% endif %}
             </span>
-            {% elif sup.url %}
-            <span class="ml-auto text-xs text-gray-400 italic">No email — check website</span>
-            {% else %}
-            <span class="ml-auto text-xs text-red-400 italic">No contact info</span>
-            {% endif %}
-            {% if sup.country %}
-            <span class="text-xs text-gray-400">({{ sup.country }})</span>
-            {% endif %}
         </div>
         <!-- Expanded: email template -->
         <div x-show="open" x-cloak class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-4">

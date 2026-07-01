@@ -417,6 +417,13 @@
             </button>
         </div>
         <div id="email-suppliers-panel" class="min-h-[96px]">{% include "partials/_rfq_email_suppliers.html" %}</div>
+        {% include "partials/_email_bulk_compose_modal.html" %}
+        <script>
+        window.__bulkUser = {
+            email: {{ (user.email or "") | tojson }},
+            name: {{ (user.name or "") | tojson }}
+        };
+        </script>
     </div>
 
     {% elif active_tab == 'communications' %}
