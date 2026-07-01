@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from fastapi import Request, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
-from includes.dashboard.models import Supplier, Transaction, EmailTracking
+from includes.dashboard.models import Supplier, Transaction, EmailTracking, Contact
 from . import _helpers
 from ._helpers import router, templates, require_user, _render
 from .api import _lookup_rfq_thread_id
@@ -68,11 +68,6 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
 
     _normalize_rfq_suppliers(rfq)
 
-    def _contacts_need_enrichment(contacts: list) -> bool:
-        if not contacts:
-            return True
-        return not any(c.get("email") for c in contacts if isinstance(c, dict))
-
     by_id: dict[str, list[dict]] = {}
     by_name: dict[str, list[dict]] = {}
     for item in rfq.get("items", []):
@@ -92,18 +87,34 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
     try:
         if by_id:
             rows = session.query(
-                Supplier.id, Supplier.contacts, Supplier.supply_chain_position, Supplier.terms,
+                Supplier.id, Supplier.supply_chain_position, Supplier.terms,
                 Supplier.country, Supplier.currency, Supplier.source,
             ).filter(
                 Supplier.id.in_(list(by_id.keys()))
             ).all()
+            # Fetch contacts from the authoritative Contact table only
+            contact_rows = session.query(Contact).filter(
+                Contact.supplier_id.in_(list(by_id.keys())),
+                Contact.isinactive == False,
+            ).all()
+            contacts_by_supplier: dict[str, list[dict]] = {}
+            for c in contact_rows:
+                sid = str(c.supplier_id)
+                contacts_by_supplier.setdefault(sid, []).append({
+                    "name": c.fullname,
+                    "email": c.email,
+                    "phone": c.phone,
+                    "label": c.label,
+                })
+
             for row in rows:
                 sid = str(row.id)
                 if sid in by_id:
                     scp = row.supply_chain_position or {}
                     for sup in by_id[sid]:
-                        if row.contacts and _contacts_need_enrichment(sup.get("contacts", [])):
-                            merge_supplier_contacts(sup, row.contacts)
+                        ct_contacts = contacts_by_supplier.get(sid)
+                        if ct_contacts:
+                            merge_supplier_contacts(sup, ct_contacts)
                         if scp.get("tier") and not sup.get("tier"):
                             sup["tier"] = scp["tier"]
                         if scp.get("category") and not sup.get("category"):
@@ -136,9 +147,18 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                 matched = match_supplier_by_name(name_lower, session=session)
                 if matched:
                     scp = matched.supply_chain_position or {}
+                    # Fetch authoritative contacts from Contact table
+                    matched_ct = session.query(Contact).filter(
+                        Contact.supplier_id == matched.id,
+                        Contact.isinactive == False,
+                    ).all()
+                    matched_contacts = [
+                        {"name": c.fullname, "email": c.email, "phone": c.phone, "label": c.label}
+                        for c in matched_ct
+                    ]
                     for sup in sup_list:
-                        if matched.contacts and _contacts_need_enrichment(sup.get("contacts", [])):
-                            merge_supplier_contacts(sup, matched.contacts)
+                        if matched_contacts:
+                            merge_supplier_contacts(sup, matched_contacts)
                         if not sup.get("supplier_id"):
                             sup["supplier_id"] = str(matched.id)
                         if scp.get("tier") and not sup.get("tier"):
@@ -186,6 +206,53 @@ def _infer_rfq_tab_from_request(request: Request, default: str = "items") -> str
     return _normalize_rfq_tab(default)
 
 
+def _resolve_salutation_name(contacts: list[dict], entity_type: str = "supplier") -> str | None:
+    """Return a contact's first name for email salutations.
+
+    Contacts are already loaded into the entity dict by the enrichment step.
+    This just picks the best name from the list — no DB query needed.
+
+    Args:
+        contacts: List of contact dicts from the Contact table.
+                  Keys: name, email, phone, label.
+        entity_type: 'supplier' or 'customer'.
+
+    Priority:
+    1. Preferred label for entity type:
+       - supplier  → 'Source'
+       - customer  → 'Main'
+    2. Any contact with a real name.
+    3. None — caller/template uses fallback text.
+    """
+    if not contacts:
+        return None
+
+    def _is_real(name: str) -> bool:
+        name = name.strip()
+        if not name or len(name) < 2:
+            return False
+        if "@" in name:       # email stored in the name field (data quality)
+            return False
+        low = name.lower()
+        if low in ("unknown", "n/a", "na", "none", "-", "null", "test", "undefined"):
+            return False
+        return True
+
+    preferred = "Source" if entity_type == "supplier" else "Main"
+
+    for label_priority in (preferred, None):
+        for c in contacts:
+            if isinstance(c, dict) and c.get("label") == label_priority:
+                full = (c.get("name") or "").strip()
+                if not full:
+                    continue
+                first = full.split()[0]
+                if _is_real(first):
+                    return first
+
+    return None
+
+
 def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
     """Group shortlisted suppliers with their line items for email template rendering."""
     supplier_map: dict[str, dict] = {}
@@ -199,6 +266,7 @@ def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
             key = name.lower()
             if key not in supplier_map:
                 email = None
+                contact_name = None
                 url = None
                 supplier_id = sup.get("supplier_id")
                 contacts = sup.get("contacts") or []
@@ -206,15 +274,19 @@ def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
                     if isinstance(c, dict):
                         if c.get("email") and not email:
                             email = c["email"]
+                        if c.get("name") and not contact_name:
+                            contact_name = c["name"]
                         if c.get("url") and not url:
                             url = c["url"]
                 supplier_map[key] = {
                     "name": name,
                     "email": email,
+                    "contact_name": contact_name,
                     "url": url,
                     "supplier_id": supplier_id,
                     "country": sup.get("country"),
                     "currency": sup.get("currency"),
+                    "salutation_name": _resolve_salutation_name(contacts, entity_type="supplier"),
                     "line_items": [],
                 }
             supplier_map[key]["line_items"].append({
@@ -278,7 +350,7 @@ def _enrich_supplier_contact_status(rfq_id: str, supplier_map: dict[str, dict]) 
                     et.sender_email
                 FROM email_tracking et
                 WHERE (et.rfq_id = :rfq_id OR et.rfq_token = :rfq_id)
-                  AND et.direction IN ('sent', 'received')
+                  AND et.direction IN ('sent', 'received', 'draft')
                   AND (
                     {' OR '.join(conditions) if conditions else 'FALSE'}
                   )
@@ -801,13 +873,16 @@ async def partial_rfq_update(request: Request, rfq_id: str,
     """Update RFQ header properties (customer, netsuite, hubspot, notes)."""
     form = await request.form()
     data = {}
-    updatable = ["customer", "assigned_to", "notes", "netsuite_opportunity", "hubspot_deal"]
+    updatable = ["customer", "customer_id", "opportunity_id", "assigned_to", "notes", "netsuite_opportunity", "hubspot_deal"]
     for key in updatable:
         val = form.get(key)
         if val is not None:
             stripped = val.strip()
             if key == "customer" and not stripped:
-                continue  # customer is NOT NULL — don't clear it
+                continue
+            if key in ("customer_id", "opportunity_id") and not stripped:
+                data[key] = ""
+                continue
             data[key] = stripped if stripped else None
 
     if data:
@@ -1656,3 +1731,172 @@ async def api_send_email_direct(
         logger = logging.getLogger(__name__)
         logger.error(f"Error sending direct email for RFQ {rfq_id}: {e}", exc_info=True)
         return JSONResponse({"status": "error", "message": f"Internal error: {str(e)}"}, status_code=500)
+
+
+@router.patch("/api/rfqs/{rfq_id}/supplier-contact")
+async def api_update_supplier_contact(
+    request: Request,
+    rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Update email and contact name for a supplier on an RFQ.
+
+    Request body (JSON):
+    {
+        "supplier_id": "uuid-string",    # optional if name is provided
+        "name": "Acme Corp",             # supplier name (to locate the supplier in RFQ items)
+        "email": "new@example.com",
+        "contact_name": "John Smith"
+    }
+
+    Updates the RFQ item's suppliers JSONB and upserts the Contact table.
+    """
+    try:
+        body = await request.json()
+        supplier_name = (body.get("name") or "").strip()
+        new_email = (body.get("email") or "").strip()
+        contact_name = (body.get("contact_name") or "").strip()
+        supplier_id = body.get("supplier_id")
+
+        if not supplier_name:
+            return JSONResponse(
+                {"status": "error", "message": "Supplier name is required"},
+                status_code=400,
+            )
+        if not new_email or "@" not in new_email:
+            return JSONResponse(
+                {"status": "error", "message": "A valid email address is required"},
+                status_code=400,
+            )
+
+        from includes.tools.quote_tools import _get_rfq_dict_sync
+        from includes.dashboard.models import RFQ, Contact
+        import uuid as _uuid
+
+        rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+        if not rfq:
+            return JSONResponse(
+                {"status": "error", "message": "RFQ not found"},
+                status_code=404,
+            )
+
+        name_lower = supplier_name.lower()
+
+        # Update in DB: find all RFQItems with this supplier name and patch contacts
+        session = _helpers.get_session()
+        try:
+            db_rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+            if not db_rfq:
+                return JSONResponse(
+                    {"status": "error", "message": "RFQ not found in database"},
+                    status_code=404,
+                )
+
+            items_updated = 0
+            for item in db_rfq.items:
+                suppliers = list(item.suppliers or [])
+                changed = False
+                for sup in suppliers:
+                    if not isinstance(sup, dict):
+                        continue
+                    sup_name = (sup.get("name") or "").strip().lower()
+                    sup_sid = sup.get("supplier_id")
+                    # Match by supplier_id if available, otherwise by name
+                    if supplier_id and sup_sid and str(sup_sid) == str(supplier_id):
+                        pass
+                    elif sup_name != name_lower:
+                        continue
+
+                    contacts = sup.get("contacts") or []
+                    if not isinstance(contacts, list):
+                        contacts = []
+                    updated = False
+                    for c in contacts:
+                        if isinstance(c, dict):
+                            c["email"] = new_email
+                            if contact_name:
+                                c["name"] = contact_name
+                            updated = True
+                    if not updated:
+                        # No contacts list existed — create one
+                        contacts = [{"name": contact_name or supplier_name, "email": new_email}]
+                    sup["contacts"] = contacts
+                    changed = True
+
+                if changed:
+                    # Must reassign + flag_modified to trigger SQLAlchemy JSONB change detection
+                    from sqlalchemy.orm.attributes import flag_modified
+                    item.suppliers = suppliers
+                    flag_modified(item, 'suppliers')
+                    items_updated += 1
+
+            if items_updated == 0:
+                return JSONResponse(
+                    {"status": "error", "message": f"Supplier '{supplier_name}' not found in RFQ items"},
+                    status_code=404,
+                )
+
+            # Also upsert the Contact table if we have a supplier_id
+            if supplier_id:
+                try:
+                    from sqlalchemy.orm.attributes import flag_modified
+                    sid_uuid = _uuid.UUID(str(supplier_id))
+                    # Find active contacts for this supplier (NOT by email —
+                    # email may have changed, and matching by new_email would
+                    # miss the old row and create a duplicate).
+                    existing = session.query(Contact).filter(
+                        Contact.supplier_id == sid_uuid,
+                        Contact.isinactive == False,
+                    ).all()
+                    if existing:
+                        # Update the first active contact; deactivate extras to
+                        # prevent stale rows from being re-merged on refresh.
+                        primary = existing[0]
+                        primary.email = new_email
+                        if contact_name:
+                            primary.fullname = contact_name
+                            primary.firstname = contact_name.split()[0] if contact_name else None
+                        for stale in existing[1:]:
+                            stale.isinactive = True
+                    else:
+                        new_contact = Contact(
+                            supplier_id=sid_uuid,
+                            label="Source",
+                            fullname=contact_name or None,
+                            firstname=contact_name.split()[0] if contact_name else None,
+                            email=new_email,
+                            isinactive=False,
+                        )
+                        session.add(new_contact)
+                except (ValueError, TypeError):
+                    pass  # supplier_id not a valid UUID, skip Contact table
+
+            # Add history entry
+            now_iso = datetime.now(timezone.utc).isoformat()
+            history = list(db_rfq.history or [])
+            history.append({
+                "date": now_iso,
+                "user": user.get("email", user.get("identifier", "")),
+                "action": f"Updated contact for {supplier_name}: {new_email}"
+            })
+            db_rfq.history = history
+            db_rfq.updated_at = datetime.now(timezone.utc)
+
+            session.commit()
+
+            return JSONResponse({
+                "status": "ok",
+                "message": f"Updated contact info for {supplier_name} ({items_updated} item{'s' if items_updated != 1 else ''})",
+            })
+
+        finally:
+            session.close()
+
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error updating supplier contact for RFQ {rfq_id}: {e}", exc_info=True)
+        return JSONResponse(
+            {"status": "error", "message": f"Internal error: {str(e)}"},
+            status_code=500,
+        )

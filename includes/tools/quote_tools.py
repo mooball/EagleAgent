@@ -268,6 +268,21 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                 f"[supplier-create] Created new web supplier '{new_supplier.name}' (id={new_supplier.id})"
             )
 
+            # Write contacts to the authoritative Contact table (not just JSONB)
+            imported_contacts = ref_sup.get("contacts") or []
+            if imported_contacts and isinstance(imported_contacts, list):
+                from includes.dashboard.models import Contact as ContactModel
+                for c in imported_contacts:
+                    if isinstance(c, dict) and (c.get("email") or c.get("name") or c.get("phone")):
+                        session.add(ContactModel(
+                            supplier_id=new_supplier.id,
+                            label=c.get("label", "Main"),
+                            fullname=c.get("name"),
+                            email=c.get("email"),
+                            phone=c.get("phone"),
+                            isinactive=False,
+                        ))
+
             # Run proper categorization using the full taxonomy
             try:
                 from includes.supplier_categorization import (

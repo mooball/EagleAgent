@@ -241,9 +241,11 @@ class RFQ(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     rfq_number = Column(String, unique=True, nullable=False, index=True)
     customer = Column(String, nullable=False)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey('customers.id'), nullable=True, index=True)
     customer_contact = Column(JSONB, nullable=True)           # {name, email, phone}
     reference = Column(String, nullable=True)
     netsuite_opportunity = Column(String, nullable=True)
+    opportunity_id = Column(UUID(as_uuid=True), ForeignKey('opportunities.id'), nullable=True, index=True)
     hubspot_deal = Column(String, nullable=True)
     created_by = Column(String, nullable=False)
     created_date = Column(Date, nullable=False)

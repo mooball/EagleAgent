@@ -39,7 +39,12 @@
                 <div class="flex items-center gap-3 flex-wrap">
                     <h1 class="text-xl font-bold">{{ rfq.id }}</h1>
                     <span class="text-gray-400">—</span>
-                    <span class="text-xl font-medium">{{ rfq.customer or 'Unknown' }}</span>
+                    <span class="text-xl font-medium">
+                        {{ rfq.customer or 'Unknown' }}
+                        {% if rfq.customer_id %}
+                        <svg class="inline w-4 h-4 text-green-500 ml-1 -mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" title="Linked to customer record"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                        {% endif %}
+                    </span>
                     {% set status = rfq.status or 'draft' %}
                     <div class="relative" x-data="{ statusOpen: false }">
                         <button @click.stop="statusOpen = !statusOpen" type="button"
@@ -87,7 +92,7 @@
                 {% endif %}
                 {% if rfq.netsuite_opportunity or rfq.hubspot_deal %}
                 <div class="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-                    {% if rfq.netsuite_opportunity %}<span>NetSuite: {{ rfq.netsuite_opportunity }}</span>{% endif %}
+                    {% if rfq.netsuite_opportunity %}<span>NetSuite: {{ rfq.netsuite_opportunity }}{% if rfq.opportunity_id %} <svg class="inline w-3.5 h-3.5 text-green-500 -mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" title="Linked to opportunity record"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>{% endif %}</span>{% endif %}
                     {% if rfq.hubspot_deal %}<span>HubSpot: {{ rfq.hubspot_deal }}</span>{% endif %}
                 </div>
                 {% endif %}
@@ -112,10 +117,95 @@
                     </span>
                 </div>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
+                    <div x-data='{
+                        search: {{ rfq.customer | tojson }},
+                        selectedId: {{ (rfq.customer_id or "") | tojson }},
+                        results: [],
+                        searching: false,
+                        activeIdx: -1,
+                        debounce: null,
+
+                        doSearch() {
+                            clearTimeout(this.debounce);
+                            const q = this.search.trim();
+                            if (q.length < 2) { this.results = []; this.activeIdx = -1; return; }
+                            this.debounce = setTimeout(() => {
+                                this.searching = true;
+                                fetch("/api/customers/search?q=" + encodeURIComponent(q))
+                                    .then(r => r.json())
+                                    .then(d => {
+                                        this.results = d.results || [];
+                                        this.activeIdx = -1;
+                                        this.searching = false;
+                                        if (!this.results.some(r => r.name === this.search)) this.selectedId = "";
+                                    })
+                                    .catch(() => { this.results = []; this.activeIdx = -1; this.searching = false; });
+                            }, 200);
+                        },
+
+                        select(r) {
+                            this.search = r.name;
+                            this.selectedId = r.id;
+                            this.results = [];
+                            this.activeIdx = -1;
+                        },
+
+                        clearAll() {
+                            this.search = "";
+                            this.selectedId = "";
+                            this.results = [];
+                        },
+
+                        onKeydown(e) {
+                            if (!this.results.length) return;
+                            if (e.key === "ArrowDown") {
+                                e.preventDefault();
+                                this.activeIdx = (this.activeIdx + 1) % this.results.length;
+                            } else if (e.key === "ArrowUp") {
+                                e.preventDefault();
+                                this.activeIdx = (this.activeIdx - 1 + this.results.length) % this.results.length;
+                            } else if (e.key === "Enter" && this.activeIdx >= 0) {
+                                e.preventDefault();
+                                this.select(this.results[this.activeIdx]);
+                            } else if (e.key === "Escape") {
+                                this.results = [];
+                                this.activeIdx = -1;
+                            }
+                        }
+                    }'>
                         <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Customer</label>
-                        <input type="text" name="customer" value="{{ rfq.customer or '' }}"
-                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                        <div class="relative">
+                            <input type="text" name="customer" x-model="search"
+                                   @input="$nextTick(() => doSearch())"
+                                   @keydown="onKeydown($event)"
+                                   placeholder="Type to search or enter new name..."
+                                   autocomplete="off"
+                                   class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 pr-16">
+                            <button type="button" x-show="search" @click="clearAll()"
+                                    class="absolute right-8 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-400 hover:text-gray-600"
+                                    title="Clear">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                            </button>
+                            <input type="hidden" name="customer_id" :value="selectedId">
+                            {# Dropdown #}
+                            <div x-show="results.length > 0" @click.outside="results = []"
+                                 class="absolute left-0 right-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 max-h-48 overflow-y-auto">
+                                <template x-for="(r, idx) in results" :key="r.id">
+                                    <button type="button" @click="select(r)" @mouseenter="activeIdx = idx"
+                                            :class="activeIdx === idx ? 'bg-blue-50 dark:bg-blue-900/30' : ''"
+                                            class="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-blue-900/30"
+                                            x-text="r.name"></button>
+                                </template>
+                            </div>
+                            {# Searching indicator #}
+                            <div x-show="searching" class="absolute right-2 top-1/2 -translate-y-1/2">
+                                <svg class="w-4 h-4 text-gray-400 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                            </div>
+                            {# Selected indicator #}
+                            <div x-show="selectedId" class="absolute right-2 top-1/2 -translate-y-1/2">
+                                <svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                            </div>
+                        </div>
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Owner</label>
@@ -127,10 +217,114 @@
                             {% endfor %}
                         </select>
                     </div>
-                    <div>
+                    <div x-data='{
+                        oppSearch: {{ (rfq.netsuite_opportunity or "") | tojson }},
+                        oppSelectedId: {{ (rfq.opportunity_id or "") | tojson }},
+                        oppResults: [],
+                        oppSearching: false,
+                        oppDebounce: null,
+                        oppActiveIdx: -1,
+
+                        init() {
+                            this.$watch("oppSearch", () => this.oppDoSearch());
+                        },
+
+                        oppDoSearch() {
+                            clearTimeout(this.oppDebounce);
+                            const q = this.oppSearch.trim();
+                            if (q.length < 2) { this.oppResults = []; this.oppActiveIdx = -1; return; }
+                            this.oppDebounce = setTimeout(() => {
+                                this.oppSearching = true;
+                                const cid = document.querySelector(`input[name="customer_id"]`)?.value || "";
+                                fetch("/api/opportunities/search?q=" + encodeURIComponent(q) + "&customer_id=" + encodeURIComponent(cid))
+                                    .then(r => r.json())
+                                    .then(d => {
+                                        this.oppResults = d.results || [];
+                                        this.oppActiveIdx = -1;
+                                        this.oppSearching = false;
+                                        if (!this.oppResults.some(r => (r.number || r.name) === this.oppSearch)) this.oppSelectedId = "";
+                                    })
+                                    .catch(() => { this.oppResults = []; this.oppActiveIdx = -1; this.oppSearching = false; });
+                            }, 200);
+                        },
+
+                        oppSelect(r) {
+                            this.oppSearch = r.number || r.name;
+                            this.oppSelectedId = r.id;
+                            this.oppResults = [];
+                            this.oppActiveIdx = -1;
+                            if (r.customer_id && r.customer_name) {
+                                const ci = document.querySelector(`input[name="customer"]`);
+                                const custDiv = ci?.closest(`[x-data]`);
+                                if (custDiv?._x_dataStack?.[0]) {
+                                    const cd = custDiv._x_dataStack[0];
+                                    cd.search = r.customer_name;
+                                    cd.selectedId = r.customer_id;
+                                    cd.results = [];
+                                }
+                            }
+                            if (r.title) {
+                                const ti = document.querySelector(`input[name="notes"]`);
+                                if (ti) ti.value = r.title;
+                            }
+                            if (r.salesrep_email) {
+                                const os = document.querySelector(`select[name="assigned_to"]`);
+                                if (os) os.value = r.salesrep_email;
+                            }
+                        },
+
+                        oppClearAll() {
+                            this.oppSearch = "";
+                            this.oppSelectedId = "";
+                            this.oppResults = [];
+                        },
+
+                        oppOnKeydown(e) {
+                            if (!this.oppResults.length) return;
+                            if (e.key === "ArrowDown") {
+                                e.preventDefault();
+                                this.oppActiveIdx = (this.oppActiveIdx + 1) % this.oppResults.length;
+                            } else if (e.key === "ArrowUp") {
+                                e.preventDefault();
+                                this.oppActiveIdx = (this.oppActiveIdx - 1 + this.oppResults.length) % this.oppResults.length;
+                            } else if (e.key === "Enter" && this.oppActiveIdx >= 0) {
+                                e.preventDefault();
+                                this.oppSelect(this.oppResults[this.oppActiveIdx]);
+                            } else if (e.key === "Escape") {
+                                this.oppResults = [];
+                                this.oppActiveIdx = -1;
+                            }
+                        }
+                    }'>
                         <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">NetSuite Opportunity</label>
-                        <input type="text" name="netsuite_opportunity" value="{{ rfq.netsuite_opportunity or '' }}"
-                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                        <div class="relative">
+                            <input type="text" name="netsuite_opportunity" x-model="oppSearch"
+                                   @keydown="oppOnKeydown($event)"
+                                   placeholder="Type to search or enter new..."
+                                   autocomplete="off"
+                                   class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 pr-16">
+                            <button type="button" x-show="oppSearch" @click="oppClearAll()"
+                                    class="absolute right-8 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-400 hover:text-gray-600"
+                                    title="Clear">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                            </button>
+                            <input type="hidden" name="opportunity_id" :value="oppSelectedId">
+                            <div x-show="oppResults.length > 0" @click.outside="oppResults = []"
+                                 class="absolute left-0 right-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 max-h-48 overflow-y-auto">
+                                <template x-for="(r, idx) in oppResults" :key="r.id">
+                                    <button type="button" @click="oppSelect(r)" @mouseenter="oppActiveIdx = idx"
+                                            :class="oppActiveIdx === idx ? 'bg-blue-50 dark:bg-blue-900/30' : ''"
+                                            class="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-blue-900/30"
+                                            x-text="r.name"></button>
+                                </template>
+                            </div>
+                            <div x-show="oppSearching" class="absolute right-2 top-1/2 -translate-y-1/2">
+                                <svg class="w-4 h-4 text-gray-400 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                            </div>
+                            <div x-show="oppSelectedId" class="absolute right-2 top-1/2 -translate-y-1/2">
+                                <svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                            </div>
+                        </div>
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">HubSpot Deal</label>
@@ -417,6 +611,13 @@
             </button>
         </div>
         <div id="email-suppliers-panel" class="min-h-[96px]">{% include "partials/_rfq_email_suppliers.html" %}</div>
+        {% include "partials/_email_bulk_compose_modal.html" %}
+        <script>
+        window.__bulkUser = {
+            email: {{ (user.email or "") | tojson }},
+            name: {{ (user.name or "") | tojson }}
+        };
+        </script>
     </div>
 
     {% elif active_tab == 'communications' %}
@@ -442,7 +643,7 @@
             <!-- Supplier/source group card -->
             <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm">
                 <!-- Source group header -->
-                <div class="flex items-center gap-2 px-4 py-3 bg-gray-50 dark:bg-gray-750 rounded-t-lg border-b border-gray-200 dark:border-gray-700">
+                <div class="flex items-center gap-2 px-4 py-3 bg-gray-50 dark:bg-gray-800 rounded-t-lg border-b border-gray-200 dark:border-gray-700">
                     {% if group.source_type == 'supplier' %}
                     <svg class="w-4 h-4 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
