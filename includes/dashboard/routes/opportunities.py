@@ -3,7 +3,8 @@
 import math
 
 from fastapi import Request, Depends
-from sqlalchemy import or_
+from fastapi.responses import JSONResponse
+from sqlalchemy import or_, text
 
 from includes.dashboard.models import Customer, Opportunity, Product, Supplier, Transaction
 from . import _helpers
@@ -168,3 +169,49 @@ def opportunity_detail(request: Request, opp_id: str, user: dict = Depends(requi
         "active_nav": "opportunities",
     }
     return _render(request, "opportunity_detail.html", "partials/opportunity_detail.html", ctx, user)
+
+
+@router.get("/api/opportunities/search")
+async def api_opportunity_search(request: Request, q: str = "", customer_id: str = "", user: dict = Depends(require_user)):
+    """Search opportunities by number or title for autocomplete.
+    
+    Optional customer_id filters results to that customer's opportunities.
+    Returns {results: [{id, number, name, title, customer_id, customer_name, salesrep_email}]}.
+    """
+    if not q or len(q.strip()) < 2:
+        return JSONResponse({"results": []})
+
+    session = _helpers.get_session()
+    try:
+        query = """
+            SELECT o.id, o.opportunity_number, o.title,
+                   o.customer_id, c.companyname AS customer_name,
+                   ne.email AS salesrep_email
+            FROM opportunities o
+            LEFT JOIN customers c ON o.customer_id = c.id
+            LEFT JOIN netsuite_employee_mappings ne ON o.salesrep_id = ne.id
+            WHERE (LOWER(o.opportunity_number) LIKE :q OR LOWER(o.title) LIKE :q)
+        """
+        params = {"q": f"%{q.strip().lower()}%"}
+
+        if customer_id and customer_id.strip():
+            query += " AND o.customer_id = :cid"
+            params["cid"] = customer_id.strip()
+
+        query += " ORDER BY o.opportunity_number LIMIT 10"
+
+        rows = session.execute(text(query), params).mappings().all()
+        return JSONResponse({"results": [
+            {
+                "id": str(r["id"]),
+                "number": r["opportunity_number"] or "",
+                "name": f"{r['opportunity_number'] or ''} — {r['title'] or ''}".strip(" —"),
+                "title": r["title"] or "",
+                "customer_id": str(r["customer_id"]) if r["customer_id"] else "",
+                "customer_name": r["customer_name"] or "",
+                "salesrep_email": r["salesrep_email"] or "",
+            }
+            for r in rows
+        ]})
+    finally:
+        session.close()

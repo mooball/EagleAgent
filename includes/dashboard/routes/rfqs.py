@@ -873,13 +873,16 @@ async def partial_rfq_update(request: Request, rfq_id: str,
     """Update RFQ header properties (customer, netsuite, hubspot, notes)."""
     form = await request.form()
     data = {}
-    updatable = ["customer", "assigned_to", "notes", "netsuite_opportunity", "hubspot_deal"]
+    updatable = ["customer", "customer_id", "opportunity_id", "assigned_to", "notes", "netsuite_opportunity", "hubspot_deal"]
     for key in updatable:
         val = form.get(key)
         if val is not None:
             stripped = val.strip()
             if key == "customer" and not stripped:
-                continue  # customer is NOT NULL — don't clear it
+                continue
+            if key in ("customer_id", "opportunity_id") and not stripped:
+                data[key] = ""
+                continue
             data[key] = stripped if stripped else None
 
     if data:

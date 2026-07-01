@@ -96,9 +96,11 @@ def _rfq_to_dict(rfq) -> dict:
     return {
         "id": rfq.rfq_number,
         "customer": rfq.customer,
+        "customer_id": str(rfq.customer_id) if rfq.customer_id else None,
         "customer_contact": rfq.customer_contact,
         "reference": rfq.reference,
         "netsuite_opportunity": rfq.netsuite_opportunity,
+        "opportunity_id": str(rfq.opportunity_id) if rfq.opportunity_id else None,
         "hubspot_deal": rfq.hubspot_deal,
         "created_by": rfq.created_by,
         "created_date": str(rfq.created_date) if rfq.created_date else "",
@@ -449,14 +451,25 @@ def _update_rfq_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             return f"Error: RFQ '{rfq_number}' not found."
 
         updatable = [
-            "customer", "customer_contact", "reference", "notes",
-            "netsuite_opportunity", "hubspot_deal", "assigned_to",
+            "customer", "customer_id", "customer_contact", "reference", "notes",
+            "netsuite_opportunity", "opportunity_id", "hubspot_deal", "assigned_to",
         ]
         changes = []
         for key in updatable:
             if key in data:
-                setattr(rfq, key, data[key])
-                changes.append(key)
+                val = data[key]
+                # customer_id / opportunity_id: accept UUID string, empty clears it
+                if key in ("customer_id", "opportunity_id"):
+                    if val and isinstance(val, str) and val.strip():
+                        from uuid import UUID
+                        setattr(rfq, key, UUID(val.strip()))
+                        changes.append(key)
+                    elif val == "" or val is None:
+                        setattr(rfq, key, None)
+                        changes.append(key)
+                else:
+                    setattr(rfq, key, val)
+                    changes.append(key)
         if not changes:
             return f"Error: provide at least one of {', '.join(updatable)} to update."
 
