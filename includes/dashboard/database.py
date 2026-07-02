@@ -32,7 +32,7 @@ def get_session() -> Session:
     """Return a new sync SQLAlchemy session (caller must close)."""
     global _engine, _SessionLocal
     if _engine is None:
-        _engine = create_engine(_sync_url(), pool_pre_ping=True)
+        _engine = create_engine(_sync_url(), pool_pre_ping=True, pool_size=10, max_overflow=20)
         _SessionLocal = sessionmaker(bind=_engine)
     return _SessionLocal()
 
