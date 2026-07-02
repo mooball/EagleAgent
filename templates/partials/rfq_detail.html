@@ -416,12 +416,6 @@
     <div class="flex items-center justify-between mb-3">
         <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
             <span class="font-medium">{{ total_items }} items</span>
-            <span>·</span>
-            {% if specific %}<span class="text-green-600">{{ specific }} specific</span>{% endif %}
-            {% if branded %}<span class="text-blue-600">{{ branded }} branded</span>{% endif %}
-            {% if generic %}<span class="text-purple-600">{{ generic }} generic</span>{% endif %}
-            {% if discrepancy %}<span class="text-orange-600">{{ discrepancy }} discrepancy</span>{% endif %}
-            {% if unmatched %}<span class="text-gray-500">{{ unmatched }} unmatched</span>{% endif %}
             {% if unmatched or discrepancy %}
             <span>·</span>
             <button @click="identifyItems()"
@@ -439,7 +433,7 @@
                 Group Items
             </button>
             {% endif %} #}
-            {% if specific >= 1 %}
+            {% if specific >= 1 or branded >= 1 or generic >= 1 %}
             <span>·</span>
             <button @click="findPreviousSuppliers()"
                     :disabled="agentBusy"
@@ -447,7 +441,16 @@
                     :class="{'opacity-50 cursor-not-allowed': agentBusy}"
                     data-tip="Agent will scan the database for previous transactions relating to the items and find suppliers linked to the items brand.">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
-                Find Previous Suppliers
+                Find Previous Sales
+            </button>
+            <span>·</span>
+            <button @click="findBrandSuppliers()"
+                    :disabled="agentBusy"
+                    class="tip btn-sm btn-accent"
+                    :class="{'opacity-50 cursor-not-allowed': agentBusy}"
+                    data-tip="Agent will find suppliers linked to the same brand as the items.">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"/></svg>
+                Find Brand Suppliers
             </button>
             <span>·</span>
             <button @click="findNewSuppliers()"
@@ -494,6 +497,8 @@
 
     {% set item_groups = rfq.get('item_groups') %}
     {% set has_groups = item_groups and item_groups.get('groups') %}
+
+    <div id="rfq-items-container">
     {# View mode: set grouped_view = true to enable per-group tables when groups exist #}
     {% set grouped_view = false %}
 
@@ -544,6 +549,8 @@
     {% set show_add_row = true %}
     {% include "partials/_rfq_items_table.html" %}
     {% endif %}
+
+    </div>
 
     <!-- Action buttons -->
     <div class="flex gap-2 mt-4">
@@ -791,11 +798,17 @@
          @click.self="closeBrandSuppliersModal()"
          @keydown.escape.window="closeBrandSuppliersModal()">
         <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-lg mx-4 overflow-hidden">
-            <div class="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
-                <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                    Brand-linked suppliers for <span class="text-purple-600 dark:text-purple-400" x-text="brandSuppliersModal.brand"></span>
-                </h3>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Sorted by tier and transaction history. Toggle to add or remove from this item.</p>
+            <div class="px-5 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                <div>
+                    <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                        Brand-linked suppliers for <span class="text-purple-600 dark:text-purple-400" x-text="brandSuppliersModal.brand"></span>
+                    </h3>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Sorted by tier and transaction history. Toggle to add or remove from this item.</p>
+                </div>
+                <button @click="closeBrandSuppliersModal()"
+                        class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 shrink-0">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
             </div>
             <div class="px-5 py-3 max-h-96 overflow-y-auto">
                 <table class="w-full text-xs">
@@ -811,10 +824,15 @@
                     <tbody>
                         <template x-for="(sup, idx) in brandSuppliersModal.suppliers" :key="sup.supplier_id">
                             <tr class="border-b last:border-b-0 border-gray-100 dark:border-gray-700 transition-colors"
-                                :class="sup.added ? 'bg-green-50 dark:bg-green-950/30' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'">
+                                :class="{
+                                    'bg-green-50 dark:bg-green-950/30': sup._onItem && sup._status !== 'dropped',
+                                    'bg-amber-50 dark:bg-amber-950/30': sup._onItem && sup._status === 'dropped',
+                                    'hover:bg-gray-50 dark:hover:bg-gray-700/50': !sup._onItem
+                                }">
                                 <td class="py-1.5 pr-2">
                                     <span x-text="sup.name" class="text-gray-900 dark:text-gray-100"></span>
-                                    <span x-show="sup.added" class="ml-1 text-[9px] px-1 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">added</span>
+                                    <span x-show="sup._onItem && sup._status !== 'dropped'" class="ml-1 text-[9px] px-1 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">on item</span>
+                                    <span x-show="sup._onItem && sup._status === 'dropped'" class="ml-1 text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300">dropped</span>
                                 </td>
                                 <td class="py-1.5 text-center">
                                     <span x-show="sup.tier"
@@ -833,10 +851,10 @@
                                 <td class="py-1.5 text-center">
                                     <button @click="toggleBrandSupplier(sup)"
                                             class="p-1 rounded transition-colors"
-                                            :class="sup.added ? 'hover:bg-red-100 dark:hover:bg-red-900 text-red-500 dark:text-red-400' : 'hover:bg-green-100 dark:hover:bg-green-900 text-green-600 dark:text-green-400'"
-                                            :title="sup.added ? 'Remove from this item' : 'Add to this item'">
-                                        <svg x-show="!sup.added" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                                        <svg x-show="sup.added" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"/></svg>
+                                            :class="sup._onItem ? 'hover:bg-red-100 dark:hover:bg-red-900 text-red-500 dark:text-red-400' : 'hover:bg-green-100 dark:hover:bg-green-900 text-green-600 dark:text-green-400'"
+                                            :title="sup._onItem ? 'Remove from this item' : 'Add to this item'">
+                                        <svg x-show="!sup._onItem" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                                        <svg x-show="sup._onItem" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"/></svg>
                                     </button>
                                 </td>
                             </tr>

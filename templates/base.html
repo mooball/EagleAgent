@@ -787,16 +787,23 @@
                     }).catch(function(err) { console.error('[supplier-status]', err); });
                 },
                 identifyItems() {
+                    // Rebuild unmatched list from current items (not stale initial load)
+                    var unmatched = [];
+                    for (var line in this._items) {
+                        var item = this._items[line];
+                        if (item && item.match === 'unmatched') {
+                            unmatched.push({
+                                line: item.line,
+                                description: item.input_description,
+                                part_number: item.part_number || item.input_code,
+                                brand: item.brand
+                            });
+                        }
+                    }
+                    if (!unmatched.length) return;
                     var payload = {
                         rfq_id: this.rfqId,
-                        items: this._unmatchedItems.map(function(i) {
-                            return {
-                                line: i.line,
-                                description: i.input_description,
-                                part_number: i.part_number || i.input_code,
-                                brand: i.brand
-                            };
-                        })
+                        items: unmatched
                     };
                     this._sendAction({ name: 'rfq_identify_items', label: 'Classifying & validating items...', payload: payload });
                 },
@@ -862,6 +869,11 @@
                     if (!payload) return;
                     this._sendAction({ name: 'rfq_find_previous_suppliers', label: 'Searching our records...', payload: payload });
                 },
+                findBrandSuppliers() {
+                    var payload = this._buildSupplierPayload();
+                    if (!payload) return;
+                    this._sendAction({ name: 'rfq_find_brand_suppliers', label: 'Finding brand-linked suppliers...', payload: payload });
+                },
                 findNewSuppliers() {
                     var payload = this._buildSupplierPayload();
                     if (!payload) return;
@@ -872,7 +884,7 @@
                     var self = this;
                     this._allLines.forEach(function(line) {
                         var item = self._items[line];
-                        if (item && item.match !== 'unmatched' && item.match !== 'discrepancy') {
+                        if (item && item.match !== 'unmatched') {
                             var suppliers = (item.suppliers || []).filter(function(s) { return s.status !== 'dropped'; }).map(function(s) { return s.name; });
                             supplierItems.push({
                                 line: item.line,
@@ -992,59 +1004,55 @@
                 openBrandSuppliersModal(line) {
                     var item = this._items[line];
                     if (!item) { console.error('[rfqDetail] item not found for line', line); return; }
-                    // Determine which brand suppliers are already on the item
-                    var currentSuppliers = (item.suppliers || []).filter(function(s) { return s.status !== 'dropped'; });
-                    var addedNames = {};
-                    currentSuppliers.forEach(function(s) { addedNames[(s.name || '').toLowerCase()] = true; });
+                    // Build map of ALL suppliers on the item (including dropped) — for display only
+                    var supplierMap = {};
+                    (item.suppliers || []).forEach(function(s) {
+                        supplierMap[(s.name || '').toLowerCase()] = s.status || 'candidate';
+                    });
                     var brandSups = (item.brand_suppliers || []).map(function(s) {
-                        return Object.assign({}, s, { added: !!addedNames[(s.name || '').toLowerCase()] });
+                        var key = (s.name || '').toLowerCase();
+                        var status = supplierMap[key];
+                        return Object.assign({}, s, {
+                            _onItem: !!status,
+                            _status: status || 'none'
+                        });
                     });
                     this.brandSuppliersModal = {
                         open: true,
                         line: line,
                         brand: item.brand || '',
-                        suppliers: brandSups,
-                        dirty: false
+                        suppliers: brandSups
                     };
                 },
                 closeBrandSuppliersModal() {
-                    var dirty = this.brandSuppliersModal.dirty;
                     this.brandSuppliersModal.open = false;
-                    if (dirty) {
-                        htmx.ajax('GET', '/partial/rfqs/' + this.rfqId, { target: '#main-content' });
-                    }
                 },
                 toggleBrandSupplier(supplier) {
                     var rfqId = this.rfqId;
                     var line = this.brandSuppliersModal.line;
-                    this.brandSuppliersModal.dirty = true;
-                    if (supplier.added) {
-                        // Drop supplier from the line (set status to 'dropped')
-                        fetch('/partial/rfqs/' + rfqId + '/update-supplier-status', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                            credentials: 'same-origin',
-                            body: 'line=' + line + '&supplier_name=' + encodeURIComponent(supplier.name) + '&status=dropped'
-                        }).catch(function(err) { console.error('[remove-brand-supplier]', err); });
-                        supplier.added = false;
-                    } else {
-                        // Add supplier to the line
-                        fetch('/api/agent-bridge', {
+                    function refresh() {
+                        htmx.ajax('GET', '/partial/rfqs/' + rfqId, { target: '#rfq-items-container', select: '#rfq-items-container' });
+                    }
+                    if (supplier._onItem) {
+                        // Remove supplier from the line entirely
+                        fetch('/partial/rfqs/' + rfqId + '/remove-supplier', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             credentials: 'same-origin',
-                            body: JSON.stringify({
-                                action: {
-                                    name: 'rfq_add_brand_supplier',
-                                    payload: {
-                                        rfq_id: rfqId,
-                                        line: line,
-                                        supplier: supplier
-                                    }
-                                }
-                            })
-                        }).catch(function(err) { console.error('[add-brand-supplier]', err); });
-                        supplier.added = true;
+                            body: JSON.stringify({ line: line, supplier_name: supplier.name })
+                        }).then(function() { refresh(); }).catch(function(err) { console.error('[remove-brand-supplier]', err); });
+                        supplier._onItem = false;
+                        supplier._status = 'none';
+                    } else {
+                        // Add supplier to the line
+                        fetch('/partial/rfqs/' + rfqId + '/add-brand-supplier', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'same-origin',
+                            body: JSON.stringify({ line: line, supplier: supplier })
+                        }).then(function() { refresh(); }).catch(function(err) { console.error('[add-brand-supplier]', err); });
+                        supplier._onItem = true;
+                        supplier._status = 'active';
                     }
                 },
                 emailModal: {

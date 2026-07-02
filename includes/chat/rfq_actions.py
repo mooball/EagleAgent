@@ -946,16 +946,95 @@ async def on_rfq_find_new_suppliers(action: cl.Action) -> None:
         await _phase_new_suppliers(action.payload or {}, pinned_tid)
 
 
-async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
-    """Phase 1 (grouping) + Phase 2 (DB search) + Phase 2.5 (cross-apply)."""
+@cl.action_callback("rfq_find_brand_suppliers")
+async def on_rfq_find_brand_suppliers(action: cl.Action) -> None:
+    """Brand-linked supplier lookup + cross-apply. Grouping if needed."""
+    async with _pin_thread() as pinned_tid:
+        await _phase_brand_suppliers(action.payload or {}, pinned_tid)
+
+
+async def _ensure_grouping(rfq_id: str, confirmed_items: list[dict], pinned_tid: str) -> dict | None:
+    """Run Phase 1 grouping if not already done. Returns groups_result or None."""
     import json
     from langchain_google_genai import ChatGoogleGenerativeAI
     from config import config
+    from includes.tools.rfq_crud import _update_item_groups_sync
+    from includes.prompts import load_prompt
+    from includes.tools.quote_tools import _get_rfq_dict_sync
+
+    # Check if groups already exist on the RFQ
+    rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+    if rfq:
+        existing = rfq.get("item_groups")
+        if existing and isinstance(existing, dict) and "groups" in existing:
+            n = len(existing.get("groups", []))
+            await _send_pinned(
+                f"Groups already exist ({n} group(s)) — skipping grouping.",
+                pinned_tid, author="EagleAgent",
+            )
+            return existing
+
+    if len(confirmed_items) < 2:
+        await _send_pinned(
+            f"Only 1 confirmed item, skipping grouping.",
+            pinned_tid, author="EagleAgent",
+        )
+        return None
+
+    await notify_dashboard("agent_working", {"label": "Grouping items..."})
+    await _send_pinned(
+        f"**Grouping** — {len(confirmed_items)} confirmed item(s) by brand/supply chain...",
+        pinned_tid, author="EagleAgent",
+    )
+
+    grouping_prompt = load_prompt("rfq_item_grouping")
+    grouping_items = [
+        {"line": i["line"], "input_description": i.get("description", ""),
+         "part_number": i.get("part_number", ""), "brand": i.get("brand", "")}
+        for i in confirmed_items
+    ]
+    input_payload = json.dumps({"items": grouping_items, "existing_groups": None}, indent=2)
+    full_prompt = (
+        f"{grouping_prompt}\n\n---\n\n## Your Task\n\n"
+        f"Group the following items from **{rfq_id}**.\n\n"
+        f"```json\n{input_payload}\n```\n\n"
+        f"Return ONLY the JSON output as specified in section 3."
+    )
+
+    model = ChatGoogleGenerativeAI(model=config.get_agent_model("procurement"), temperature=0.2, max_output_tokens=4096)
+    try:
+        response = await model.ainvoke(full_prompt)
+        raw_text = response.content
+        if isinstance(raw_text, list):
+            raw_text = "\n".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in raw_text)
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            cleaned = "\n".join(lines).strip()
+        groups_result = json.loads(cleaned)
+        user_id = cl.user_session.get("user_id", "unknown")
+        await asyncio.to_thread(_update_item_groups_sync, rfq_id, groups_result, user_id)
+        await notify_dashboard("dashboard_refresh")
+        n_groups = len(groups_result.get("groups", []))
+        n_ungrouped = len(groups_result.get("ungrouped", []))
+        await _send_pinned(
+            f"Grouped into **{n_groups}** group(s), **{n_ungrouped}** ungrouped.",
+            pinned_tid, author="EagleAgent",
+        )
+        return groups_result
+    except Exception as e:
+        logger.warning(f"Grouping failed: {e}")
+        return None
+
+
+async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
+    """Phase 1 (grouping if needed) + Phase 2 (DB purchase history) + Phase 2.5 (cross-apply)."""
+    import json
     from includes.tools.product_tools import _find_purchase_history_for_part
     from includes.tools.rfq_crud import _update_item_groups_sync
     from includes.prompts import load_prompt
 
-    # If no pinned_tid passed, capture current (legacy path)
     if not pinned_tid:
         pinned_tid = cl.user_session.get("thread_id")
 
@@ -963,91 +1042,13 @@ async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
     confirmed_items = payload.get("items", [])
 
     if not confirmed_items:
-        await _send_pinned(
-            "No confirmed items to find suppliers for.",
-            pinned_tid, author="EagleAgent",
-        )
+        await _send_pinned("No confirmed items to find suppliers for.", pinned_tid, author="EagleAgent")
         return
 
-    await notify_dashboard("agent_working", {"label": "Phase 1/2: Grouping items..."})
+    # --- Grouping (if needed) ---
+    groups_result = await _ensure_grouping(rfq_id, confirmed_items, pinned_tid)
 
     try:
-        # ================================================================
-        # Phase 1: Item grouping (LLM) — identify brand/supply-chain groups
-        # ================================================================
-        await _send_pinned(
-            f"**Phase 1/2** — Grouping {len(confirmed_items)} confirmed item(s) by brand/supply chain...",
-            pinned_tid, author="EagleAgent",
-        )
-
-        groups_result = None
-        if len(confirmed_items) >= 2:
-            grouping_prompt = load_prompt("rfq_item_grouping")
-            grouping_items = [
-                {
-                    "line": i["line"],
-                    "input_description": i.get("description", ""),
-                    "part_number": i.get("part_number", ""),
-                    "brand": i.get("brand", ""),
-                }
-                for i in confirmed_items
-            ]
-            input_payload = json.dumps({
-                "items": grouping_items,
-                "existing_groups": None,
-            }, indent=2)
-
-            full_prompt = (
-                f"{grouping_prompt}\n\n"
-                f"---\n\n"
-                f"## Your Task\n\n"
-                f"Group the following items from **{rfq_id}**.\n\n"
-                f"```json\n{input_payload}\n```\n\n"
-                f"Return ONLY the JSON output as specified in section 3."
-            )
-
-            model = ChatGoogleGenerativeAI(
-                model=config.get_agent_model("procurement"),
-                temperature=0.2,
-                max_output_tokens=4096,
-            )
-
-            try:
-                response = await model.ainvoke(full_prompt)
-                raw_text = response.content
-                if isinstance(raw_text, list):
-                    raw_text = "\n".join(
-                        part.get("text", "") if isinstance(part, dict) else str(part)
-                        for part in raw_text
-                    )
-                cleaned = raw_text.strip()
-                if cleaned.startswith("```"):
-                    lines = cleaned.split("\n")
-                    lines = [l for l in lines if not l.strip().startswith("```")]
-                    cleaned = "\n".join(lines).strip()
-
-                groups_result = json.loads(cleaned)
-
-                # Save groups to DB
-                user_id = cl.user_session.get("user_id", "unknown")
-                await asyncio.to_thread(_update_item_groups_sync, rfq_id, groups_result, user_id)
-                await notify_dashboard("dashboard_refresh")
-
-                n_groups = len(groups_result.get("groups", []))
-                n_ungrouped = len(groups_result.get("ungrouped", []))
-                await _send_pinned(
-                    f"Grouped into **{n_groups}** group(s), **{n_ungrouped}** ungrouped. Now checking our records...",
-                    pinned_tid, author="EagleAgent",
-                )
-            except Exception as e:
-                logger.warning(f"Grouping failed, treating all items as ungrouped: {e}")
-                groups_result = None
-        else:
-            await _send_pinned(
-                f"Only 1 confirmed item, skipping grouping. Now checking our records...",
-                pinned_tid, author="EagleAgent",
-            )
-
         # ================================================================
         # Phase 2: Internal DB search — batch across ALL confirmed items
         # ================================================================
@@ -1106,110 +1107,7 @@ async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
         if total_internal > 0:
             await notify_dashboard("dashboard_refresh")
             await _send_pinned(
-                f"Found **{total_internal}** supplier(s) from our records. Now checking brand links...",
-                pinned_tid, author="EagleAgent",
-            )
-        else:
-            await _send_pinned(
-                f"No matching suppliers in our records. Checking brand links...",
-                pinned_tid, author="EagleAgent",
-            )
-
-        # ================================================================
-        # Phase 2b: Brand-linked supplier lookup
-        # ================================================================
-        from includes.tools.product_tools import _find_brand_suppliers_with_tier
-        from includes.dashboard.models import RFQ, RFQItem
-        from includes.tools.rfq_crud import _get_session
-        from sqlalchemy.orm.attributes import flag_modified
-
-        def _save_brand_suppliers(rfq_number, line_num, sups):
-            sess = _get_session()
-            try:
-                rfq_obj = sess.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
-                if not rfq_obj:
-                    return
-                item_obj = sess.query(RFQItem).filter(
-                    RFQItem.rfq_id == rfq_obj.id, RFQItem.line == line_num
-                ).first()
-                if not item_obj:
-                    return
-                item_obj.brand_suppliers = sups
-                flag_modified(item_obj, "brand_suppliers")
-                sess.commit()
-            except Exception:
-                sess.rollback()
-                raise
-            finally:
-                sess.close()
-
-        total_brand = 0
-        await notify_dashboard("agent_working", {"label": "Checking brand-linked suppliers..."})
-
-        for item in confirmed_items:
-            line = item.get("line")
-            brand = (item.get("brand") or "").strip()
-
-            # Skip items without a real brand
-            if not brand or brand.lower() == "other":
-                continue
-
-            try:
-                brand_sups = await asyncio.to_thread(_find_brand_suppliers_with_tier, brand)
-            except Exception as e:
-                logger.warning(f"Phase 2b brand lookup failed for line {line} brand={brand}: {e}")
-                continue
-
-            if not brand_sups:
-                continue
-
-            # Determine which suppliers are already on this line
-            existing_on_line = {s["name"].lower() for s in suppliers_by_line.get(line, [])}
-            item_ctx_existing = item.get("existing_suppliers", [])
-            existing_on_line.update(n.lower() for n in item_ctx_existing)
-
-            # Filter to only new suppliers (not already on the line)
-            new_brand_sups = [s for s in brand_sups if s["name"].lower() not in existing_on_line]
-
-            # Auto-add top 5 Tier A suppliers to the RFQ item
-            tier_a = [s for s in new_brand_sups if s.get("tier") == "A"][:5]
-            if tier_a:
-                tier_a_entries = [
-                    {
-                        "supplier_id": s["supplier_id"],
-                        "name": s["name"],
-                        "contacts": s.get("contacts", []),
-                        "status": "candidate",
-                        "price_type": "brand_link",
-                        "notes": f"Brand-linked supplier (Tier A, {s['transaction_count']} transactions)",
-                    }
-                    for s in tier_a
-                ]
-                user_id = cl.user_session.get("user_id", "unknown")
-                await asyncio.to_thread(
-                    _add_supplier_sync, rfq_id,
-                    {"line": line, "suppliers": tier_a_entries},
-                    user_id,
-                )
-                total_brand += len(tier_a)
-                # Track them so cross-apply/dedup won't re-add
-                for s in tier_a:
-                    existing_on_line.add(s["name"].lower())
-                    suppliers_by_line.setdefault(line, []).append({
-                        "supplier_id": s["supplier_id"],
-                        "name": s["name"],
-                        "contacts": s.get("contacts", []),
-                        "status": "candidate",
-                        "price_type": "brand_link",
-                    })
-
-            # Store ALL brand suppliers (full list) for the modal reference
-            await asyncio.to_thread(_save_brand_suppliers, rfq_id, line, brand_sups)
-
-        if total_brand > 0:
-            await notify_dashboard("dashboard_refresh")
-            await _send_pinned(
-                f"Added **{total_brand}** Tier A brand-linked supplier(s).",
+                f"Found **{total_internal}** supplier(s) from our records.",
                 pinned_tid, author="EagleAgent",
             )
 
@@ -1279,7 +1177,7 @@ async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
         await notify_dashboard("dashboard_refresh")
 
         await _send_pinned(
-            f"✅ Previous supplier search complete. Found **{total_internal + total_brand + total_cross}** supplier(s) from our records.",
+            f"✅ Previous supplier search complete. Found **{total_internal + total_cross}** supplier(s) from our records.",
             pinned_tid, author="EagleAgent",
         )
 
@@ -1289,6 +1187,151 @@ async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
             f"Error finding previous suppliers: {e}",
             pinned_tid, author="EagleAgent",
         )
+    finally:
+        await notify_dashboard("agent_done")
+
+
+async def _phase_brand_suppliers(payload: dict, pinned_tid: str = None):
+    """Phase 1 (grouping if needed) + Phase 2b (brand-linked lookup) + Phase 2.5 (cross-apply)."""
+    from includes.tools.product_tools import _find_brand_suppliers_with_tier
+    from includes.dashboard.models import RFQ, RFQItem
+    from includes.tools.rfq_crud import _get_session
+    from sqlalchemy.orm.attributes import flag_modified
+
+    def _save_brand_suppliers(rfq_number, line_num, sups):
+        sess = _get_session()
+        try:
+            rfq_obj = sess.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+            if not rfq_obj: return
+            item_obj = sess.query(RFQItem).filter(RFQItem.rfq_id == rfq_obj.id, RFQItem.line == line_num).first()
+            if not item_obj: return
+            item_obj.brand_suppliers = sups
+            flag_modified(item_obj, "brand_suppliers")
+            sess.commit()
+        except Exception:
+            sess.rollback()
+            raise
+        finally:
+            sess.close()
+
+    if not pinned_tid:
+        pinned_tid = cl.user_session.get("thread_id")
+
+    rfq_id = payload.get("rfq_id", "???")
+    confirmed_items = payload.get("items", [])
+
+    if not confirmed_items:
+        await _send_pinned("No confirmed items to find suppliers for.", pinned_tid, author="EagleAgent")
+        return
+
+    groups_result = await _ensure_grouping(rfq_id, confirmed_items, pinned_tid)
+
+    try:
+        total_brand = 0
+        suppliers_by_line = {}
+
+        await notify_dashboard("agent_working", {"label": "Checking brand-linked suppliers..."})
+        await _send_pinned(
+            f"**Brand Search** — Looking up brand-linked suppliers for {len(confirmed_items)} item(s)...",
+            pinned_tid, author="EagleAgent",
+        )
+
+        for item in confirmed_items:
+            line = item.get("line")
+            brand = (item.get("brand") or "").strip()
+            if not brand or brand.lower() == "other":
+                continue
+
+            try:
+                brand_sups = await asyncio.to_thread(_find_brand_suppliers_with_tier, brand)
+            except Exception as e:
+                logger.warning(f"Brand lookup failed for line {line} brand={brand}: {e}")
+                continue
+
+            if not brand_sups:
+                continue
+
+            existing_on_line = {s["name"].lower() for s in suppliers_by_line.get(line, [])}
+            item_ctx_existing = item.get("suppliers", [])
+            existing_on_line.update(n.lower() for n in item_ctx_existing)
+
+            new_brand_sups = [s for s in brand_sups if s["name"].lower() not in existing_on_line]
+            top_suppliers = new_brand_sups[:5]
+
+            if top_suppliers:
+                top_entries = [{
+                    "supplier_id": s["supplier_id"],
+                    "name": s["name"],
+                    "contacts": s.get("contacts", []),
+                    "status": "candidate",
+                    "price_type": "brand_link",
+                    "notes": f"Brand-linked supplier (Tier {s.get('tier', '?')}, {s['transaction_count']} transactions)",
+                } for s in top_suppliers]
+                user_id = cl.user_session.get("user_id", "unknown")
+                await asyncio.to_thread(_add_supplier_sync, rfq_id, {"line": line, "suppliers": top_entries}, user_id)
+                total_brand += len(top_suppliers)
+                for s in top_suppliers:
+                    existing_on_line.add(s["name"].lower())
+                    suppliers_by_line.setdefault(line, []).append({
+                        "supplier_id": s["supplier_id"], "name": s["name"],
+                        "contacts": s.get("contacts", []), "status": "candidate", "price_type": "brand_link",
+                    })
+
+            await asyncio.to_thread(_save_brand_suppliers, rfq_id, line, brand_sups)
+
+        if total_brand > 0:
+            await notify_dashboard("dashboard_refresh")
+            await _send_pinned(
+                f"Added **{total_brand}** brand-linked supplier(s).",
+                pinned_tid, author="EagleAgent",
+            )
+
+        # Phase 2.5: Cross-apply within groups
+        total_cross = 0
+        if groups_result and total_brand > 0:
+            await notify_dashboard("agent_working", {"label": "Cross-applying within groups..."})
+            items_by_line_ctx = {i["line"]: i for i in confirmed_items}
+            for g in groups_result.get("groups", []):
+                group_lines = g.get("lines", [])
+                if len(group_lines) < 2:
+                    continue
+                group_suppliers = {}
+                for gl in group_lines:
+                    for sup in suppliers_by_line.get(gl, []):
+                        key = sup["name"].lower()
+                        if key not in group_suppliers:
+                            group_suppliers[key] = {
+                                "supplier_id": sup.get("supplier_id"), "name": sup["name"],
+                                "contacts": sup.get("contacts", []), "status": "candidate", "price_type": "candidate",
+                                "notes": "Cross-applied from group (supplier linked to brand for other items in this group)",
+                            }
+                if not group_suppliers:
+                    continue
+                for gl in group_lines:
+                    existing_on_line = {s["name"].lower() for s in suppliers_by_line.get(gl, [])}
+                    item_ctx = items_by_line_ctx.get(gl)
+                    if item_ctx:
+                        existing_on_line.update(n.lower() for n in item_ctx.get("existing_suppliers", []))
+                    to_add = [s for name_lower, s in group_suppliers.items() if name_lower not in existing_on_line]
+                    if to_add:
+                        await asyncio.to_thread(_cross_apply_suppliers_sync, rfq_id, gl, to_add)
+                        total_cross += len(to_add)
+            if total_cross > 0:
+                await notify_dashboard("dashboard_refresh")
+                await _send_pinned(f"Cross-applied **{total_cross}** supplier(s) within groups.", pinned_tid, author="EagleAgent")
+
+        from includes.tools.rfq_crud import _sort_rfq_suppliers_sync
+        await asyncio.to_thread(_sort_rfq_suppliers_sync, rfq_id)
+        await notify_dashboard("dashboard_refresh")
+
+        await _send_pinned(
+            f"✅ Brand supplier search complete. Added **{total_brand + total_cross}** supplier(s).",
+            pinned_tid, author="EagleAgent",
+        )
+
+    except Exception as e:
+        logger.exception(f"Error in find brand suppliers for {rfq_id}")
+        await _send_pinned(f"Error finding brand suppliers: {e}", pinned_tid, author="EagleAgent")
     finally:
         await notify_dashboard("agent_done")
 
