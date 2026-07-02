@@ -176,20 +176,20 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
         logger.warning("Cannot import DB models for supplier matching")
         return
 
+    # --- Phase 1: Fast DB-only matching (no I/O) ---
+    # Close session quickly to avoid holding connections during web searches below.
     session = get_session()
+    matched: set[str] = set()  # track names already matched
+    needs_web_search: dict[str, list[dict]] = {}  # names that need URL lookup
     try:
         for name_lower, sup_list in names_to_match.items():
             sup_country = sup_list[0].get("country")
-
-            # --- Step 1: Try name-only DB match first (no URL, fast) ---
             row = match_supplier(name_lower, url=None, country=sup_country, session=session)
             if row:
-                logger.info(
-                    f"[supplier-match] '{name_lower}' → '{row.name}' (id={row.id})"
-                )
+                logger.info(f"[supplier-match] '{name_lower}' → '{row.name}' (id={row.id})")
+                matched.add(name_lower)
                 for sup in sup_list:
                     sup["supplier_id"] = str(row.id)
-                    # Pull cached data from DB — avoid re-researching known suppliers
                     if row.currency and not sup.get("currency"):
                         sup["currency"] = row.currency
                     if row.country and not sup.get("country"):
@@ -202,40 +202,48 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                             sup["category"] = scp["category"]
                     if row.contacts:
                         merge_supplier_contacts(sup, row.contacts)
-                continue  # ← Done — skip URL verification for matched suppliers
+            else:
+                needs_web_search[name_lower] = sup_list
+    finally:
+        session.close()  # ← release connection before any I/O
 
-            # --- Step 2: Not in DB — extract any URL the agent provided ---
-            sup_url = None
-            for c in sup_list[0].get("contacts", []):
-                if isinstance(c, dict) and c.get("url"):
-                    sup_url = c["url"]
-                    break
+    if not needs_web_search:
+        return
 
-            # --- Step 3: Verify/find URL (web search) only for NEW suppliers ---
-            verified_url = _verify_supplier_url(
-                sup_list[0].get("name", "").strip(),
-                sup_url,
-                sup_country,
-                product_hint=product_hint,
-            )
-            if verified_url and verified_url != sup_url:
-                logger.info(
-                    f"[url-verify] Found URL for new supplier '{sup_list[0].get('name')}': "
-                    f"{verified_url}"
-                )
-                for sup in sup_list:
-                    for c in sup.get("contacts", []):
-                        if isinstance(c, dict) and c.get("url") == sup_url:
-                            c["url"] = verified_url
-                sup_url = verified_url
+    # --- Phase 2: Web searches (NO session held) ---
+    web_results: dict[str, str | None] = {}  # name_lower → verified_url or None
+    for name_lower, sup_list in needs_web_search.items():
+        sup_url = None
+        for c in sup_list[0].get("contacts", []):
+            if isinstance(c, dict) and c.get("url"):
+                sup_url = c["url"]
+                break
+        verified_url = _verify_supplier_url(
+            sup_list[0].get("name", "").strip(),
+            sup_url,
+            sup_list[0].get("country"),
+            product_hint=product_hint,
+        )
+        web_results[name_lower] = verified_url
+        if verified_url and verified_url != sup_url:
+            logger.info(f"[url-verify] Found URL for '{sup_list[0].get('name')}': {verified_url}")
+            for sup in sup_list:
+                for c in sup.get("contacts", []):
+                    if isinstance(c, dict) and c.get("url") == sup_url:
+                        c["url"] = verified_url
 
-            # --- Step 4: Retry match with URL (may help disambiguate) ---
+    # --- Phase 3: Retry match with URL + create new suppliers (fresh session) ---
+    session = get_session()
+    try:
+        for name_lower, sup_list in needs_web_search.items():
+            sup_url = web_results.get(name_lower)
+            sup_country = sup_list[0].get("country")
+
+            # Step 4: Retry match with URL
             if sup_url:
                 row = match_supplier(name_lower, url=sup_url, country=sup_country, session=session)
                 if row:
-                    logger.info(
-                        f"[supplier-match] '{name_lower}' matched via URL → '{row.name}' (id={row.id})"
-                    )
+                    logger.info(f"[supplier-match] '{name_lower}' matched via URL → '{row.name}'")
                     for sup in sup_list:
                         sup["supplier_id"] = str(row.id)
                         if row.currency and not sup.get("currency"):
@@ -252,7 +260,7 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                             merge_supplier_contacts(sup, row.contacts)
                     continue
 
-            # --- Step 5: Still no match — create a new web-sourced Supplier ---
+            # Step 5: Create new supplier
             ref_sup = sup_list[0]
             new_supplier = Supplier(
                 name=ref_sup.get("name", "").strip(),
@@ -263,12 +271,10 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                 source="web",
             )
             session.add(new_supplier)
-            session.flush()  # get the generated id
-            logger.info(
-                f"[supplier-create] Created new web supplier '{new_supplier.name}' (id={new_supplier.id})"
-            )
+            session.flush()
+            logger.info(f"[supplier-create] Created new web supplier '{new_supplier.name}' (id={new_supplier.id})")
 
-            # Write contacts to the authoritative Contact table (not just JSONB)
+            # Write contacts to Contact table
             imported_contacts = ref_sup.get("contacts") or []
             if imported_contacts and isinstance(imported_contacts, list):
                 from includes.dashboard.models import Contact as ContactModel
@@ -283,7 +289,10 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                             isinactive=False,
                         ))
 
-            # Run proper categorization using the full taxonomy
+            # AI categorization — close session first, then reopen
+            # (categorize_supplier makes its own Gemini API call)
+            session.flush()
+            cat_data = None
             try:
                 from includes.supplier_categorization import (
                     categorize_supplier,
@@ -310,23 +319,14 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                     "reasoning": cat_result.get("reasoning"),
                 }
                 new_supplier.modified_by = "ai:categorizer"
-                session.flush()
+                cat_data = cat_result
                 logger.info(
                     f"[supplier-categorize] '{new_supplier.name}' → "
                     f"{cat_result.get('tier')}/{cat_result.get('category')} "
                     f"(confidence={cat_result.get('confidence')})"
                 )
-                # Update supplier dicts with proper categorization
-                for sup in sup_list:
-                    if cat_result.get("tier"):
-                        sup["tier"] = cat_result["tier"]
-                    if cat_result.get("category"):
-                        sup["category"] = cat_result["category"]
             except Exception as cat_err:
-                logger.warning(
-                    f"[supplier-categorize] Failed for '{new_supplier.name}': {cat_err}"
-                )
-                # Fall back to whatever the agent provided
+                logger.warning(f"[supplier-categorize] Failed for '{new_supplier.name}': {cat_err}")
                 if ref_sup.get("tier") and ref_sup.get("category"):
                     new_supplier.supply_chain_position = {
                         "tier": ref_sup["tier"],
@@ -334,7 +334,12 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                     }
 
             for sup in sup_list:
-                    sup["supplier_id"] = str(new_supplier.id)
+                sup["supplier_id"] = str(new_supplier.id)
+                if cat_data:
+                    if cat_data.get("tier"):
+                        sup["tier"] = cat_data["tier"]
+                    if cat_data.get("category"):
+                        sup["category"] = cat_data["category"]
         session.commit()
     except Exception as e:
         logger.warning(f"Supplier DB matching failed: {e}")

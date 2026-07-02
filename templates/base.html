@@ -1719,6 +1719,69 @@
             },
         }));
     });
+
+    // Bulk email selection store — registered via alpine:init so it's always
+    // available before any HTMX partial references $store.bulkEmail.
+    document.addEventListener('alpine:init', () => {
+        Alpine.store('bulkEmail', {
+        selected: [],
+        emailMap: {},
+        totalCount: 0,
+        selectedCount: 0,
+        emailSelectedCount: 0,
+        allSelected: false,
+
+        init() {
+            const el = document.getElementById('bulk-email-map');
+            if (el) {
+                try { this.emailMap = JSON.parse(el.textContent.trim()); } catch(e) {}
+                this.totalCount = Object.keys(this.emailMap).length;
+            }
+            this.selected = [];
+            this._recalc();
+        },
+
+        _recalc() {
+            this.selectedCount = this.selected.length;
+            this.emailSelectedCount = this.selected.filter(k => this.emailMap[k]).length;
+            const emailabled = Object.keys(this.emailMap).filter(k => this.emailMap[k]).length;
+            this.allSelected = this.emailSelectedCount > 0 && this.emailSelectedCount === emailabled;
+        },
+
+        toggle(key) {
+            if (!this.emailMap[key]) return;
+            const idx = this.selected.indexOf(key);
+            if (idx >= 0) this.selected.splice(idx, 1);
+            else this.selected.push(key);
+            this._recalc();
+        },
+
+        selectAll() {
+            this.selected = Object.keys(this.emailMap).filter(k => this.emailMap[k]);
+            this._recalc();
+        },
+
+        deselectAll() {
+            this.selected = [];
+            this._recalc();
+        },
+
+        composeSelected() {
+            const withEmail = this.selected.filter(k => this.emailMap[k]);
+            if (!withEmail.length) return;
+            const dataEl = document.getElementById('bulk-supplier-data');
+            if (!dataEl) return;
+            try {
+                const allSuppliers = JSON.parse(dataEl.textContent.trim());
+                const selected = allSuppliers.filter(s => withEmail.includes(s.name));
+                if (!selected.length) return;
+                if (window.__bulkComposeOpen) {
+                    window.__bulkComposeOpen(selected, this._rfqId || '', this._oppId || null);
+                }
+            } catch(e) {}
+        },
+    });
+    });
     </script>
 </body>
 </html>

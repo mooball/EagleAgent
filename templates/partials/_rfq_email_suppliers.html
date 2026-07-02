@@ -13,69 +13,19 @@
 }</script>
 <script>
 (function() {
-    if (window.__bulkEmailStoreRegistered) return;
-    window.__bulkEmailStoreRegistered = true;
-    const register = () => {
-        Alpine.store('bulkEmail', {
-        selected: [],
-        emailMap: {},
-        totalCount: 0,
-        selectedCount: 0,
-        emailSelectedCount: 0,
-        allSelected: false,
-
-        init() {
-            const el = document.getElementById('bulk-email-map');
-            if (el) {
-                try { this.emailMap = JSON.parse(el.textContent.trim()); } catch(e) {}
-                this.totalCount = Object.keys(this.emailMap).length;
-            }
-        },
-
-        _recalc() {
-            this.selectedCount = this.selected.length;
-            this.emailSelectedCount = this.selected.filter(k => this.emailMap[k]).length;
-            const emailabled = Object.keys(this.emailMap).filter(k => this.emailMap[k]).length;
-            this.allSelected = this.emailSelectedCount > 0 && this.emailSelectedCount === emailabled;
-        },
-
-        toggle(key) {
-            if (!this.emailMap[key]) return;
-            const idx = this.selected.indexOf(key);
-            if (idx >= 0) this.selected.splice(idx, 1);
-            else this.selected.push(key);
-            this._recalc();
-        },
-
-        selectAll() {
-            this.selected = Object.keys(this.emailMap).filter(k => this.emailMap[k]);
-            this._recalc();
-        },
-
-        deselectAll() {
-            this.selected = [];
-            this._recalc();
-        },
-
-        composeSelected() {
-            const withEmail = this.selected.filter(k => this.emailMap[k]);
-            if (!withEmail.length) return;
-            // Collect supplier data from the JSON data island
-            const dataEl = document.getElementById('bulk-supplier-data');
-            if (!dataEl) return;
-            const allSuppliers = JSON.parse(dataEl.textContent.trim());
-            const selected = allSuppliers.filter(s => withEmail.includes(s.name));
-            if (!selected.length) return;
-            // Open the bulk compose modal (defined in _email_bulk_compose_modal.html)
-            if (window.__bulkComposeOpen) {
-                window.__bulkComposeOpen(selected, {{ rfq.id | tojson }}, {{ rfq.netsuite_opportunity | tojson or 'null' }});
-            }
-        }
-    });
-    Alpine.store('bulkEmail').init();
-    };
-    if (window.Alpine) { register(); }
-    else { document.addEventListener('alpine:init', register); }
+    var rfqId = {{ rfq.id | tojson }};
+    var oppId = {{ rfq.netsuite_opportunity | tojson or 'null' }};
+    function reinit() {
+        try {
+            var s = Alpine.store('bulkEmail');
+            s._rfqId = rfqId;
+            s._oppId = oppId;
+            s.init();
+        } catch(e) {}
+    }
+    // On initial page load Alpine may not be ready yet; on HTMX nav it is.
+    if (window.Alpine) { reinit(); }
+    else { document.addEventListener('alpine:init', reinit); }
 })();
 </script>
 {# Supplier data for bulk compose #}
