@@ -963,21 +963,25 @@ def _find_suppliers_by_brand(brand: str, limit: int = 200) -> list[dict]:
 
 
 def _find_brand_suppliers_with_tier(brand: str, limit: int = 200) -> list[dict]:
-    """Find suppliers linked to a brand, enriched with tier and transaction count.
+    """Find suppliers linked to a brand, enriched with tier and brand-specific transaction count.
 
     Returns list sorted by tier (A first) then transaction count (desc).
+    Transaction count is filtered to only transactions for products of this brand.
     Each dict: supplier_id, name, contacts, tier, transaction_count, country.
     """
     from sqlalchemy import func, desc
 
     session = get_session()
     try:
-        # Sub-query: count all transactions per supplier (any product)
+        # Sub-query: count transactions per supplier for THIS specific brand
         tx_count_sub = (
             session.query(
                 Transaction.supplier_id,
                 func.count(Transaction.id).label("tx_count"),
             )
+            .join(Product, Transaction.product_id == Product.id)
+            .join(Brand, Product.brand_id == Brand.id)
+            .filter(Brand.name.ilike(brand), Brand.duplicate_of.is_(None))
             .group_by(Transaction.supplier_id)
             .subquery()
         )
@@ -995,7 +999,6 @@ def _find_brand_suppliers_with_tier(brand: str, limit: int = 200) -> list[dict]:
             .join(Brand, SupplierBrand.brand_id == Brand.id)
             .outerjoin(tx_count_sub, tx_count_sub.c.supplier_id == Supplier.id)
             .filter(Brand.name.ilike(brand), Brand.duplicate_of.is_(None))
-            .limit(limit)
             .all()
         )
 
@@ -1014,8 +1017,13 @@ def _find_brand_suppliers_with_tier(brand: str, limit: int = 200) -> list[dict]:
                 "country": row.country,
             })
 
-        # Sort: tier A first, then by transaction count desc
-        out.sort(key=lambda s: (_tier_order.get(s["tier"], 9), -s["transaction_count"]))
-        return out
+        # Sort: suppliers with brand transactions first (tier, then txn count desc),
+        # then zero-transaction suppliers (tier only).
+        out.sort(key=lambda s: (
+            0 if s["transaction_count"] > 0 else 1,
+            _tier_order.get(s["tier"], 9),
+            -s["transaction_count"]
+        ))
+        return out[:limit]
     finally:
         session.close()

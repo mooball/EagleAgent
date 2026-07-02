@@ -42,7 +42,17 @@
                         {% endif %}
                     </span>
                 </td>
-                <td class="px-3 py-2.5">{{ item.brand or '—' }}</td>
+                <td class="px-3 py-2.5 text-left">
+                    {% set brand_sups = item.brand_suppliers or [] %}
+                    {% if brand_sups %}
+                    <button @click.stop="openBrandSuppliersModal({{ item.line }})"
+                            class="text-left text-purple-600 hover:text-purple-800 dark:text-purple-400 dark:hover:text-purple-200 underline cursor-pointer">
+                        {{ item.brand }}
+                    </button>
+                    {% else %}
+                    {{ item.brand or '—' }}
+                    {% endif %}
+                </td>
                 <td class="px-3 py-2.5 text-center">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
                 <td class="px-3 py-2.5 text-center">
                     {% if item.match == 'specific' %}

@@ -566,6 +566,7 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
                 r.get("customer", ""),
                 r.get("reference", ""),
                 r.get("netsuite_opportunity", ""),
+                r.get("notes", ""),
                 r.get("assigned_to", ""),
                 r.get("status", ""),
             ])).lower()
@@ -1069,7 +1070,7 @@ async def partial_rfq_update_supplier_status(
 
     supplier_name = (form.get("supplier_name") or "").strip()
     new_status = (form.get("status") or "").strip()
-    if not supplier_name or new_status not in ("shortlisted", "dropped"):
+    if not supplier_name or new_status not in ("shortlisted", "dropped", "candidate"):
         return HTMLResponse("<p>Invalid parameters.</p>", status_code=400)
 
     from includes.tools.quote_tools import _update_supplier_sync
@@ -1295,6 +1296,91 @@ async def partial_rfq_copy_supplier_to_all(
 
     from starlette.responses import Response
     return Response(status_code=204)
+
+
+@router.post("/partial/rfqs/{rfq_id}/add-brand-supplier")
+async def partial_rfq_add_brand_supplier(
+    request: Request, rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Add a single brand-linked supplier to a line item. No dashboard refresh."""
+    body = await request.json()
+    line = body.get("line")
+    supplier = body.get("supplier", {})
+    if not line or not supplier.get("name"):
+        return JSONResponse({"status": "error", "message": "Missing line or supplier name"}, status_code=400)
+
+    from includes.tools.rfq_crud import _add_supplier_sync
+    user_id = user.get("identifier", user.get("email", "unknown"))
+    sup_entry = {
+        "supplier_id": supplier.get("supplier_id"),
+        "name": supplier["name"],
+        "contacts": supplier.get("contacts", []),
+        "status": "candidate",
+        "price_type": "brand_link",
+        "notes": f"Brand-linked supplier (Tier {supplier.get('tier', '?')}, {supplier.get('transaction_count', 0)} transactions)",
+    }
+    await asyncio.to_thread(
+        _add_supplier_sync, rfq_id,
+        {"line": line, "suppliers": [sup_entry]},
+        user_id,
+    )
+    return JSONResponse({"status": "ok"})
+
+
+@router.post("/partial/rfqs/{rfq_id}/remove-supplier")
+async def partial_rfq_remove_supplier(
+    request: Request, rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Remove a supplier entirely from a line item's suppliers list."""
+    body = await request.json()
+    line = body.get("line")
+    supplier_name = (body.get("supplier_name") or "").strip()
+    if not line or not supplier_name:
+        return JSONResponse({"status": "error", "message": "Missing line or supplier_name"}, status_code=400)
+
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+
+    user_id = user.get("identifier", user.get("email", "unknown"))
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if not rfq:
+            return JSONResponse({"status": "error", "message": f"RFQ '{rfq_id}' not found"}, status_code=404)
+        line_item = session.query(RFQItem).filter(
+            RFQItem.rfq_id == rfq.id, RFQItem.line == line
+        ).first()
+        if not line_item:
+            return JSONResponse({"status": "error", "message": f"Line {line} not found"}, status_code=404)
+
+        suppliers = list(line_item.suppliers or [])
+        name_lower = supplier_name.lower()
+        filtered = [s for s in suppliers if (s.get("name") or "").lower() != name_lower]
+        if len(filtered) == len(suppliers):
+            # Supplier not found — no change needed
+            return JSONResponse({"status": "ok"})
+
+        line_item.suppliers = filtered
+        flag_modified(line_item, "suppliers")
+
+        # Record in history
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        history = list(rfq.history or [])
+        history.append({
+            "date": now, "user": user_id,
+            "action": f"Removed supplier '{supplier_name}' from line {line}",
+        })
+        rfq.history = history
+        rfq.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        return JSONResponse({"status": "ok"})
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 @router.post("/partial/rfqs/{rfq_id}/copy-supplier-to-items")

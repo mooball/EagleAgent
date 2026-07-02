@@ -413,6 +413,7 @@ def _add_items_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         })
         rfq.history = history
         rfq.updated_at = _now_dt()
+        rfq.item_groups = None  # invalidate grouping — items have changed
         session.commit()
         session.refresh(rfq)
         result = _rfq_to_dict(rfq)
@@ -531,6 +532,10 @@ def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             # Reset pipeline stage — item needs re-processing
             if rfq.pipeline_stage not in ("unprocessed",):
                 rfq.pipeline_stage = "unprocessed"
+
+        # Clear item groups — item descriptions/brands may have changed
+        if changes:
+            rfq.item_groups = None
 
         now = _now_iso()
         history = list(rfq.history or [])
@@ -715,7 +720,7 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                     if val is not None and val != "" and val != []:
                         existing[key] = val
                 new_status = sup.get("status", "candidate")
-                if new_status != "candidate" or existing.get("status") == "candidate":
+                if new_status != "candidate" or existing.get("status") in ("candidate", "dropped"):
                     existing["status"] = new_status
                 updated_names.append(name)
             else:
@@ -1120,7 +1125,7 @@ def _group_rfq_items_sync(
     )
 
     try:
-        client = _genai.Client()
+        client = _genai.Client(http_options={"timeout": 120000})
         response = client.models.generate_content(
             model=config.get_agent_model("procurement"),
             contents=full_prompt,
@@ -1201,7 +1206,7 @@ Items to validate:
 For each item, describe what you found. Include the line number, whether the part checks out or has issues, and any corrections needed."""
 
     try:
-        client = _genai.Client()
+        client = _genai.Client(http_options={"timeout": 120000})  # 2 min timeout
 
         # Call 1: Grounded web search — get research findings as plain text
         response = client.models.generate_content(
@@ -1376,7 +1381,7 @@ Return ONLY a JSON array of supplier objects. No other text.
 Example: [{{"name": "Example Co", "country": "AU", "currency": "AUD", "website": "https://example.com", "email": "sales@example.com", "phone": "", "price": 24.99, "price_currency": "AUD", "notes": "Industrial distributor, stocks full range"}}]"""
 
     try:
-        client = _genai.Client()
+        client = _genai.Client(http_options={"timeout": 120000})
         response = client.models.generate_content(
             model=Config.DEFAULT_MODEL,
             contents=prompt,
@@ -1596,10 +1601,10 @@ def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
                 if s["name"].lower() not in existing_names_lower
             ]
 
-            # Auto-add top 5 Tier A suppliers to the line item
-            tier_a = [s for s in new_brand_sups if s.get("tier") == "A"][:5]
-            if tier_a:
-                tier_a_entries = [
+            # Auto-add top 5 suppliers to the line item (same sort order as modal)
+            top_suppliers = new_brand_sups[:5]
+            if top_suppliers:
+                top_entries = [
                     {
                         "supplier_id": s["supplier_id"],
                         "name": s["name"],
@@ -1607,19 +1612,19 @@ def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
                         "status": "candidate",
                         "price_type": "brand_link",
                         "notes": (
-                            f"Brand-linked supplier (Tier A, "
+                            f"Brand-linked supplier (Tier {s.get('tier', '?')}, "
                             f"{s['transaction_count']} transactions)"
                         ),
                     }
-                    for s in tier_a
+                    for s in top_suppliers
                 ]
                 _add_supplier_sync(
                     rfq_number,
-                    {"line": line, "suppliers": tier_a_entries},
+                    {"line": line, "suppliers": top_entries},
                     user_id,
                 )
-                total_added += len(tier_a)
-                by_line[line] = [s["name"] for s in tier_a]
+                total_added += len(top_suppliers)
+                by_line[line] = [s["name"] for s in top_suppliers]
     except Exception:
         session.rollback()
         raise

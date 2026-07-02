@@ -45,13 +45,23 @@
 
 
 {# ── Search Form ─────────────────────────────────────────────── #}
-{% macro search_form(action, placeholder="Search…", q="") %}
+{% macro search_form(action, placeholder="Search…", q="", extra_params={}) %}
 {% set push_url = action | replace("/partial", "", 1) %}
+{% if extra_params %}
+  {% set sep = "?" if "?" not in push_url else "&" %}
+  {% for k, v in extra_params.items() %}
+    {% set push_url = push_url + sep + k + "=" + (v | string) %}
+    {% set sep = "&" %}
+  {% endfor %}
+{% endif %}
 <form hx-get="{{ action }}" hx-target="#main-content" hx-push-url="{{ push_url }}"
       class="flex items-center gap-2">
     <input type="text" name="q" value="{{ q }}"
            placeholder="{{ placeholder }}"
            class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-64">
+    {% for k, v in extra_params.items() %}
+    <input type="hidden" name="{{ k }}" value="{{ v }}">
+    {% endfor %}
     <button type="submit"
             class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">
         Search
