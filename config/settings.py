@@ -137,6 +137,15 @@ class Config:
     GMAIL_ALLOW_DOMAINS = os.getenv("GMAIL_ALLOW_DOMAINS", "")
     
     
+    # ==================== NetSuite Integration ====================
+    
+    # Enable background NetSuite entity sync (every 5 min). Disable for dev/staging.
+    NETSUITE_SYNC_ENABLED = os.getenv("NETSUITE_SYNC_ENABLED", "false").lower() == "true"
+    
+    # Sync interval in seconds (default 5 minutes = 300s)
+    NETSUITE_SYNC_INTERVAL = int(os.getenv("NETSUITE_SYNC_INTERVAL", "300"))
+    
+    
     # ==================== Development Settings ====================
     
     # Enable debug mode
