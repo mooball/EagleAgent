@@ -5,12 +5,13 @@ Syncs brand records from NetSuite (custom record type 165) into the local
 brands table. Uses the NetSuite REST API rather than CSV imports.
 
 For each brand:
-  - If it exists locally by netsuite_id: update name if changed
-  - If new: insert with netsuite_id and name
+  - If it exists locally by netsuite_id: update name and last_modified if changed
+  - If new: insert with netsuite_id, name, and last_modified
   - If a local brand matches by name but has no netsuite_id: backfill the ID
 
 Usage:
   uv run python -m scripts.sync_netsuite_brands
+  uv run python -m scripts.sync_netsuite_brands --resume
   uv run python -m scripts.sync_netsuite_brands --since 2026-04-01
   uv run python -m scripts.sync_netsuite_brands --since "7 days"
   uv run python -m scripts.sync_netsuite_brands --dry-run
@@ -71,13 +72,49 @@ def parse_since(value: str) -> str:
     return value
 
 
+def parse_netsuite_date(date_str: str | None) -> datetime | None:
+    """Parse NetSuite date format (d/m/yyyy) to a datetime."""
+    if not date_str:
+        return None
+    try:
+        return datetime.strptime(date_str.strip(), "%d/%m/%Y")
+    except ValueError:
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sync brands from NetSuite API into the database.")
-    parser.add_argument("--since", type=str, default=None, help="Only sync brands modified since this date (YYYY-MM-DD or 'N days'). Default: full sync.")
+    parser.add_argument(
+        "--since", type=str, default=None,
+        help="Only sync brands modified since this date (YYYY-MM-DD or 'N days'). Default: full sync.",
+    )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume from last synced position (uses MAX netsuite_last_modified from DB).",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Fetch and display brands without writing to DB.")
     args = parser.parse_args()
 
-    since_date = parse_since(args.since) if args.since else None
+    # Determine the since_date
+    engine = get_engine()
+    Session = sessionmaker(bind=engine)
+
+    if args.resume:
+        with Session() as session:
+            from sqlalchemy import func
+            max_date = session.query(func.max(Brand.netsuite_last_modified)).filter(
+                Brand.netsuite_id.isnot(None)
+            ).scalar()
+        if max_date:
+            since_date = max_date.strftime("%Y-%m-%d")
+            print(f"Resuming from last synced date: {since_date}")
+        else:
+            since_date = "2014-01-01"
+            print("No existing synced brands found. Starting full sync from 2014-01-01.")
+    elif args.since:
+        since_date = parse_since(args.since)
+    else:
+        since_date = None  # full sync
     batch_size = Config.NETSUITE_SYNC_BATCH_SIZE
 
     # Connect to NetSuite
@@ -115,6 +152,7 @@ def main():
             for row in page:
                 netsuite_id = str(row.get("id", "")).strip()
                 name = str(row.get("name", "")).strip()
+                last_modified = parse_netsuite_date(row.get("lastmodified"))
 
                 if not netsuite_id:
                     continue
@@ -123,7 +161,11 @@ def main():
                 if not cleaned_name:
                     continue
 
-                all_records.append({"netsuite_id": netsuite_id, "name": cleaned_name})
+                all_records.append({
+                    "netsuite_id": netsuite_id,
+                    "name": cleaned_name,
+                    "netsuite_last_modified": last_modified,
+                })
 
         skipped = fetched - len(all_records)
         print(f"Fetched {fetched} brands from NetSuite, prepared {len(all_records)} valid records ({skipped} skipped).\n")
@@ -170,7 +212,10 @@ def main():
             stmt = insert(Brand).values(batch)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["netsuite_id"],
-                set_={"name": stmt.excluded.name},
+                set_={
+                    "name": stmt.excluded.name,
+                    "netsuite_last_modified": stmt.excluded.netsuite_last_modified,
+                },
             )
             session.execute(stmt)
             session.commit()

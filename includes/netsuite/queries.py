@@ -51,7 +51,7 @@ def all_brands(since_date: str | None = None) -> str:
         SuiteQL SELECT statement returning id and name for active brands.
     """
     query = (
-        "SELECT id, name "
+        "SELECT id, name, lastmodified "
         "FROM customrecord_brands "
         "WHERE isinactive = 'F'"
     )

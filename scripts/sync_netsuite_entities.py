@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Entity syncs in dependency order (brands first, then everything else)
 STEPS: list[dict] = [
-    {"name": "brands",        "module": "scripts.sync_netsuite_brands",        "args": [],            "description": "Sync all brands"},
+    {"name": "brands",        "module": "scripts.sync_netsuite_brands",        "args": ["--resume"],  "description": "Sync brands"},
     {"name": "products",      "module": "scripts.sync_netsuite_products",      "args": ["--resume"],  "description": "Sync products"},
     {"name": "suppliers",     "module": "scripts.sync_netsuite_suppliers",     "args": ["--resume"],  "description": "Sync suppliers"},
     {"name": "quotes",        "module": "scripts.sync_netsuite_quotes",        "args": ["--resume"],  "description": "Sync quotes"},

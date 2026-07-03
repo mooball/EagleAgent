@@ -65,6 +65,7 @@ class Brand(Base):
     netsuite_id = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
     duplicate_of = Column(UUID(as_uuid=True), ForeignKey('brands.id'), nullable=True, index=True)
+    netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self):
         return f"<Brand(name='{self.name}', netsuite_id='{self.netsuite_id}')>"
