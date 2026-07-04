@@ -87,3 +87,41 @@ Verify `DATABASE_URL` is correct in `.env`. Ensure your PostgreSQL database is r
 ```bash
 ./start_postgres.sh
 ```
+
+## Production Database Tools
+
+Scripts in `scripts/` can target production by setting `PROD_DATABASE_URL` in `.env`.
+
+### Inspect email records (`scripts/inspect_email.py`)
+
+Query email metadata (subject, sender, attachments, etc.) from the production `email_tracking` table. Useful for debugging attachment visibility, email linking, and sync issues.
+
+```bash
+# Show attachment details for a specific email
+uv run python scripts/inspect_email.py --attachments 16640
+
+# Full details for one or more email IDs
+uv run python scripts/inspect_email.py 16640 16641 16642
+
+# Show recent received emails
+uv run python scripts/inspect_email.py --recent 20
+
+# Find all emails for an RFQ
+uv run python scripts/inspect_email.py --rfq OP71449
+
+# Look up by Gmail message ID
+uv run python scripts/inspect_email.py --gmail 19f20eb067e18759
+
+# Compact one-line summaries
+uv run python scripts/inspect_email.py --summary
+```
+
+### Rebuild email content cache (`scripts/rebuild_email_content.py`)
+
+Clears cached `body_markdown` and `attachments_json` so the next dashboard view re-fetches from Gmail with the latest parsing logic.
+
+```bash
+uv run python -m scripts.rebuild_email_content --msg-id 19f20eb067e18759  # single email
+uv run python -m scripts.rebuild_email_content --rfq OP71449               # entire RFQ
+uv run python -m scripts.rebuild_email_content --recent 20 --dry-run       # preview
+```

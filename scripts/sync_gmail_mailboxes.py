@@ -352,12 +352,13 @@ def fetch_message_content(service, message_id: str) -> dict | None:
 
         def _is_decorative(filename: str, size: int, has_content_id: bool, mime_type: str = "") -> bool:
             """True if this part is likely a decorative footer/signature image."""
-            # Any part with a Content-ID is an inline embedded image — not a real attachment
-            if has_content_id:
-                return True
-            # Only apply image heuristics to image/* mime types
+            # Non-image types (PDF, DOC, etc.) are never decorative, even with Content-ID.
+            # Outlook sets Content-ID on all attachments — not just inline images.
             if not (mime_type or "").startswith("image/"):
                 return False
+            # Image with a Content-ID is an inline embedded image
+            if has_content_id:
+                return True
             fname = (filename or "").lower()
             # Filename-based heuristics for footer images
             if _DECORATIVE_RE.search(fname):
@@ -393,7 +394,7 @@ def fetch_message_content(service, message_id: str) -> dict | None:
                         body_plain = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
                 elif filename and att_id:
                     # Has a filename and attachmentId
-                    if content_id or _is_decorative(filename, size, bool(content_id), mime):
+                    if _is_decorative(filename, size, bool(content_id), mime):
                         # Inline or decorative image — store for proxy serving but flag as inline
                         cid_map[content_id] = att_id if content_id else None
                         attachments.append({
