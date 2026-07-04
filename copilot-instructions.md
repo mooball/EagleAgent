@@ -318,10 +318,26 @@ When asked to create a prompt, plan, or task list, always:
 
 ## AI Assistant Rules
 
+### ⛔ FILE EDIT AUTHORIZATION — HARD CONSTRAINT
+**You MUST NOT create, edit, or delete any file unless the user has given explicit authorization using one of these exact phrases:**
+- "go ahead" / "please implement" / "yes do it" / "please proceed" / "go for it"
+- "please commit" / "commit this"
+- A direct imperative: "change X to Y", "add Z", "create X", "delete Y"
+
+**These are NOT authorization to edit files:**
+- "Can you look at X?" — means INVESTIGATE only
+- "Is it possible to...?" — means ANSWER the question, do not implement
+- "Can we...?" / "Should we...?" — means DISCUSS, do not implement
+- "Propose a solution" — means PROPOSE only, do not implement
+- "I need X" — describes a need; ask if they want you to implement it
+- "Look at this" — means READ/INVESTIGATE only
+
+**If unsure: ASK. Never assume. Interpret every request literally.**
+
 ### Production Safety
 - **Never modify production data** without explicit approval. Do not run UPDATE/INSERT/DELETE on the production database or production server unless the user explicitly says to proceed. Always stop at diagnosis and ask for permission.
 - Production database connection details are in `.env` as `PROD_DATABASE_URL` (Railway proxy: `shortline.proxy.rlwy.net`). See "Connecting to Databases" above for the connection pattern.
 
 ### Change Workflow
-- **Diagnose first, propose second, implement only after approval.** When the user reports an issue: (1) investigate and explain the root cause, (2) propose a fix with specific files and changes, (3) wait for explicit approval before making any code changes.
+- **Diagnose first, propose second, implement only after approval.** When the user reports an issue: (1) investigate and explain the root cause, (2) propose a fix with specific files and changes, (3) wait for explicit authorization before making any code changes.
 - **Ask before committing.** Present the diff and ask before `git commit` + `git push`. The user wants the opportunity to test changes first.

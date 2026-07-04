@@ -1055,6 +1055,57 @@
                         supplier._status = 'active';
                     }
                 },
+
+                // ── Quotation tab methods ──
+
+                updateItemPricing(line, field, value) {
+                    fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/pricing', {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify({[field]: parseFloat(value) || null})
+                    });
+                },
+
+                updateSupplierQuote(line, supplierName, field, value) {
+                    var body = {supplier_name: supplierName};
+                    body[field] = field === 'quote_cost' ? (parseFloat(value) || null) : value;
+                    fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/supplier-quote', {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify(body)
+                    });
+                },
+
+                cycleQuoteStatus(line, supplierName, current) {
+                    var next = {unquoted: 'quoted', quoted: 'declined', declined: 'unquoted'};
+                    var self = this;
+                    var body = {supplier_name: supplierName, quote_status: next[current] || 'quoted'};
+                    fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/supplier-quote', {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify(body)
+                    }).then(function() {
+                        htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                            {target: '#main-content'});
+                    });
+                },
+
+                selectSupplier(line, supplierName) {
+                    var self = this;
+                    fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/select-supplier', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify({supplier_name: supplierName})
+                    }).then(function() {
+                        htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                            {target: '#main-content'});
+                    });
+                },
+
                 emailModal: {
                     isOpen: false,
                     isLoading: false,

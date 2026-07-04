@@ -1,24 +1,19 @@
 """
 nightly_sync.py
 
-Orchestrates a full nightly sync from NetSuite in dependency order:
-  1. Brands       (full sync — fast, no --resume)
-  2. Products     (--resume — picks up from last sync)
-  3. Suppliers    (--resume — picks up from last sync)
-  4. Quotes       (--resume)
-  5. Sales Orders (--resume)
-  6. Contacts     (--resume)
-  7. Customers    (--resume)
-  8. Opportunities (--resume)
-  9. Link Supplier Brands (--since 2d — post-sync linking)
-  10. Categorize Suppliers (--limit 100 — batch of uncategorized)
-  11. Generate Supplier Notes (--limit 100 — research missing notes)
-  12. Update Supplier Embeddings (re-embed any with NULL embedding)
+Orchestrates nightly post-processing tasks after NetSuite entity syncs have
+already run (via the background NETSUITE_SYNC_ENABLED loop in main.py).
+
+Steps:
+  1. Link Supplier Brands (--since 2d — post-sync linking)
+  2. Categorize Suppliers (--limit 100 — batch of uncategorized)
+  3. Generate Supplier Notes (--limit 100 — research missing notes)
+  4. Update Supplier Embeddings (re-embed any with NULL embedding)
 
 Usage:
   uv run python -m scripts.nightly_sync
   uv run python -m scripts.nightly_sync --dry-run
-  uv run python -m scripts.nightly_sync --step suppliers
+  uv run python -m scripts.nightly_sync --step link_supplier_brands
 """
 
 import argparse
@@ -53,54 +48,6 @@ def ensure_google_credentials():
     print(f"✅ Decoded service account credentials to {creds_file}")
 
 STEPS = [
-    {
-        "name": "brands",
-        "module": "scripts.sync_netsuite_brands",
-        "args": [],
-        "description": "Sync all brands",
-    },
-    {
-        "name": "products",
-        "module": "scripts.sync_netsuite_products",
-        "args": ["--resume"],
-        "description": "Sync products (resume from last sync)",
-    },
-    {
-        "name": "suppliers",
-        "module": "scripts.sync_netsuite_suppliers",
-        "args": ["--resume"],
-        "description": "Sync suppliers (resume from last sync)",
-    },
-    {
-        "name": "quotes",
-        "module": "scripts.sync_netsuite_quotes",
-        "args": ["--resume"],
-        "description": "Sync quotes (resume from last sync)",
-    },
-    {
-        "name": "sales_orders",
-        "module": "scripts.sync_netsuite_sales_orders",
-        "args": ["--resume"],
-        "description": "Sync sales orders (resume from last sync)",
-    },
-    {
-        "name": "contacts",
-        "module": "scripts.sync_netsuite_contacts",
-        "args": ["--resume"],
-        "description": "Sync contacts (resume from last sync)",
-    },
-    {
-        "name": "customers",
-        "module": "scripts.sync_netsuite_customers",
-        "args": ["--resume"],
-        "description": "Sync customers (resume from last sync)",
-    },
-    {
-        "name": "opportunities",
-        "module": "scripts.sync_netsuite_opportunities",
-        "args": ["--resume"],
-        "description": "Sync opportunities (resume from last sync)",
-    },
     {
         "name": "link_supplier_brands",
         "module": "scripts.link_supplier_brands",
@@ -180,7 +127,7 @@ def main():
     if args.step:
         steps = [s for s in STEPS if s["name"] == args.step]
 
-    print(f"Nightly NetSuite Sync — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Nightly Post-Processing Sync — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     if args.dry_run:
         print("DRY RUN — no changes will be written")
     print(f"Steps: {', '.join(s['name'] for s in steps)}")

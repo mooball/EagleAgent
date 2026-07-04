@@ -128,6 +128,8 @@ def _item_to_dict(item) -> dict:
         "uom": item.uom or "ea",
         "match": item.match or "unmatched",
         "notes": item.notes or "",
+        "cost_price": float(item.cost_price) if item.cost_price else None,
+        "sale_price": float(item.sale_price) if item.sale_price else None,
         "suppliers": item.suppliers or [],
         "brand_suppliers": item.brand_suppliers or [],
     }
@@ -715,7 +717,8 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                             "cost_price", "cost_price_aud", "sale_price",
                             "cost_currency",
                             "price_date", "price_doc", "price_doc_type",
-                            "transaction_count"]:
+                            "transaction_count",
+                            "quote_status", "quote_cost", "quote_currency", "quote_leadtime"]:
                     val = sup.get(key)
                     if val is not None and val != "" and val != []:
                         existing[key] = val
@@ -742,6 +745,10 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                     "price_doc": sup.get("price_doc"),
                     "price_doc_type": sup.get("price_doc_type"),
                     "transaction_count": sup.get("transaction_count"),
+                    "quote_status": sup.get("quote_status"),
+                    "quote_cost": sup.get("quote_cost"),
+                    "quote_currency": sup.get("quote_currency"),
+                    "quote_leadtime": sup.get("quote_leadtime"),
                 }
                 current_suppliers.append(supplier_entry)
                 existing_by_name[name.lower()] = supplier_entry
@@ -815,7 +822,7 @@ def _update_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | s
         if "currency" in data and "cost_currency" not in data:
             data["cost_currency"] = data["currency"]
 
-        updatable = ["status", "price", "price_type", "cost_currency", "lead_time", "notes", "contacts", "purchase_ref"]
+        updatable = ["status", "price", "price_type", "cost_currency", "lead_time", "notes", "contacts", "purchase_ref", "quote_status", "quote_cost", "quote_currency", "quote_leadtime"]
         changes = []
         for key in updatable:
             if key in data:

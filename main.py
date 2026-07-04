@@ -44,7 +44,7 @@ google_sso = GoogleSSO(
 
 
 # ---------------------------------------------------------------------------
-# Background Gmail sync loop
+# Background sync loops
 # ---------------------------------------------------------------------------
 async def _gmail_sync_loop():
     """Periodically sync Gmail mailboxes in a background thread."""
@@ -81,6 +81,31 @@ def _run_gmail_sync():
         session.close()
 
 
+async def _netsuite_sync_loop():
+    """Periodically sync NetSuite entity data in a background thread."""
+    await asyncio.sleep(45)  # let app fully start (after gmail sync)
+    while True:
+        try:
+            await asyncio.to_thread(_run_netsuite_sync)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"NetSuite sync error: {e}")
+        await asyncio.sleep(config.NETSUITE_SYNC_INTERVAL)
+
+
+def _run_netsuite_sync():
+    """Run one NetSuite entity sync cycle (called in thread pool)."""
+    from scripts.sync_netsuite_entities import run_netsuite_entity_syncs
+    results = run_netsuite_entity_syncs()
+    passed = sum(1 for v in results.values() if v)
+    failed = len(results) - passed
+    if failed:
+        logger.warning(f"NetSuite entity sync: {passed}/{len(results)} passed, {failed} failed")
+    else:
+        logger.info(f"NetSuite entity sync: all {passed} steps passed")
+
+
 # ---------------------------------------------------------------------------
 # Lifespan — initialise shared async resources (pg pool, store, agents, etc.)
 # so that dashboard routes can access the store before any chat session starts.
@@ -91,17 +116,25 @@ async def lifespan(app: FastAPI):
     from includes.graph import setup_globals
     await setup_globals()
 
-    # Start background Gmail sync if enabled
+    # Start background sync tasks if enabled
     gmail_task = None
+    netsuite_task = None
+
     if config.GMAIL_SYNC_ENABLED:
         gmail_task = asyncio.create_task(_gmail_sync_loop())
         logger.info(f"Gmail sync enabled (every {config.GMAIL_SYNC_INTERVAL}s)")
 
+    if config.NETSUITE_SYNC_ENABLED:
+        netsuite_task = asyncio.create_task(_netsuite_sync_loop())
+        logger.info(f"NetSuite entity sync enabled (every {config.NETSUITE_SYNC_INTERVAL}s)")
+
     yield
 
-    # Cancel background task on shutdown
+    # Cancel background tasks on shutdown
     if gmail_task:
         gmail_task.cancel()
+    if netsuite_task:
+        netsuite_task.cancel()
     logger.info("FastAPI shutting down")
 
 
