@@ -1,0 +1,186 @@
+{# Quotation tab — item-level pricing with expandable supplier quotes #}
+{% set items = rfq.get('items', []) %}
+{% if items %}
+<div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-visible">
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700">
+            <tr>
+                <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-10">#</th>
+                <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Description</th>
+                <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Part Number</th>
+                <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Brand</th>
+                <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Qty</th>
+                <th class="text-right px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Cost</th>
+                <th class="text-right px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Sale</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+            {% for item in items %}
+            {% set quote_suppliers = [] %}
+            {% for s in (item.suppliers or []) %}
+                {% if s.status in ('shortlisted', 'selected') %}
+                    {% set _ = quote_suppliers.append(s) %}
+                {% endif %}
+            {% endfor %}
+            <tr @click="toggle({{ item.line }})"
+                class="cursor-pointer transition-colors group"
+                :class="expanded[{{ item.line }}] ? 'bg-blue-50 dark:bg-blue-950' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'">
+                <td class="px-3 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
+                <td class="px-3 py-2.5">
+                    <div class="flex items-center gap-1.5">
+                        {% if quote_suppliers %}
+                        <svg x-show="expanded[{{ item.line }}]" class="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                        <svg x-show="!expanded[{{ item.line }}]" class="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        {% else %}
+                        <span class="w-3.5 shrink-0"></span>
+                        {% endif %}
+                        <span>{{ item.input_description or '—' }}</span>
+                    </div>
+                </td>
+                <td class="px-3 py-2.5 font-mono">{{ item.part_number or '—' }}</td>
+                <td class="px-3 py-2.5">{{ item.brand or '—' }}</td>
+                <td class="px-3 py-2.5 text-center">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
+                <td class="px-3 py-2.5 text-right font-mono" @click.stop>
+                    <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right"
+                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(item.cost_price) if item.cost_price is not none else '—' }}</span>
+                    <input type="text" inputmode="decimal"
+                           class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                           value="{{ item.cost_price if item.cost_price is not none else '' }}"
+                           placeholder="0.00"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'cost_price', $el.value)"
+                           @keydown.enter="$el.blur()"
+                           @keydown.escape="$el.value='{{ item.cost_price if item.cost_price is not none else '' }}'; $el.blur()">
+                </td>
+                <td class="px-3 py-2.5 text-right font-mono" @click.stop>
+                    <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right"
+                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(item.sale_price) if item.sale_price is not none else '—' }}</span>
+                    <input type="text" inputmode="decimal"
+                           class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                           value="{{ item.sale_price if item.sale_price is not none else '' }}"
+                           placeholder="0.00"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'sale_price', $el.value)"
+                           @keydown.enter="$el.blur()"
+                           @keydown.escape="$el.value='{{ item.sale_price if item.sale_price is not none else '' }}'; $el.blur()">
+                </td>
+            </tr>
+            <!-- Expanded supplier rows -->
+            <tr x-show="expanded[{{ item.line }}]" x-cloak>
+                <td colspan="7" class="p-0">
+                    <div class="bg-gray-50 dark:bg-gray-900/40 border-t border-gray-200 dark:border-gray-700 px-4 py-2">
+                        {% if quote_suppliers %}
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="text-xs text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
+                                    <th class="text-left py-1.5 pr-3 font-medium">Supplier</th>
+                                    <th class="text-left py-1.5 px-2 font-medium">Currency</th>
+                                    <th class="text-left py-1.5 px-2 font-medium">Terms</th>
+                                    <th class="text-right py-1.5 px-2 font-medium">Quoted Cost</th>
+                                    <th class="text-left py-1.5 px-2 font-medium">Lead Time</th>
+                                    <th class="text-center py-1.5 px-2 font-medium">Status</th>
+                                    <th class="text-center py-1.5 pl-2 font-medium w-20">Select</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+                                {% for sup in quote_suppliers %}
+                                {% set qs = sup.quote_status or 'unquoted' %}
+                                <tr>
+                                    <td class="py-1.5 pr-3 text-gray-900 dark:text-gray-100">{{ sup.name }}</td>
+                                    <td class="py-1.5 px-2" @click.stop>
+                                        <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1 py-0.5 -my-0.5 -mx-1 inline-block min-w-[40px]"
+                                              @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ sup.quote_currency or sup.currency or '—' }}</span>
+                                        <input type="text" maxlength="3"
+                                               class="hidden w-16 rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0 text-sm focus:ring-1 focus:ring-blue-500"
+                                               value="{{ sup.quote_currency or '' }}"
+                                               placeholder="AUD"
+                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value.trim() || '—'; updateSupplierQuote({{ item.line }}, '{{ sup.name|e }}', 'quote_currency', $el.value.trim())"
+                                               @keydown.enter="$el.blur()"
+                                               @keydown.escape="$el.blur()">
+                                    </td>
+                                    <td class="py-1.5 px-2 text-gray-500 dark:text-gray-400">{{ sup.terms or '—' }}</td>
+                                    <td class="py-1.5 px-2 text-right font-mono" @click.stop>
+                                        <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1 py-0.5 -my-0.5 -mx-1 inline-block min-w-[60px] text-right"
+                                              @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(sup.quote_cost) if sup.quote_cost is not none else '—' }}</span>
+                                        <input type="text" inputmode="decimal"
+                                               class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500"
+                                               value="{{ sup.quote_cost if sup.quote_cost is not none else '' }}"
+                                               placeholder="0.00"
+                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierQuote({{ item.line }}, '{{ sup.name|e }}', 'quote_cost', $el.value)"
+                                               @keydown.enter="$el.blur()"
+                                               @keydown.escape="$el.blur()">
+                                    </td>
+                                    <td class="py-1.5 px-2" @click.stop>
+                                        <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1 py-0.5 -my-0.5 -mx-1 inline-block min-w-[70px]"
+                                              @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ sup.quote_leadtime or '—' }}</span>
+                                        <input type="text"
+                                               class="hidden w-28 rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0 text-sm focus:ring-1 focus:ring-blue-500"
+                                               value="{{ sup.quote_leadtime or '' }}"
+                                               placeholder="e.g. 2 weeks"
+                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value.trim() || '—'; updateSupplierQuote({{ item.line }}, '{{ sup.name|e }}', 'quote_leadtime', $el.value.trim())"
+                                               @keydown.enter="$el.blur()"
+                                               @keydown.escape="$el.blur()">
+                                    </td>
+                                    <td class="py-1.5 px-2 text-center">
+                                        {% set display_qs = 'quoted' if qs == 'selected' else qs %}
+                                        <button type="button" @click.stop="cycleQuoteStatus({{ item.line }}, '{{ sup.name|e }}', '{{ display_qs }}')"
+                                                class="text-xs px-2 py-0.5 rounded-full cursor-pointer transition-colors
+                                                       {% if display_qs == 'unquoted' %}bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300
+                                                       {% elif display_qs == 'quoted' %}bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-300
+                                                       {% elif display_qs == 'declined' %}bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/40 dark:text-red-300{% endif %}">
+                                            {% if display_qs == 'unquoted' %}Unquoted{% elif display_qs == 'quoted' %}Quoted{% elif display_qs == 'declined' %}Declined{% endif %}
+                                        </button>
+                                    </td>
+                                    <td class="py-1.5 pl-2 text-center">
+                                        {% if qs != 'declined' %}
+                                        {% if qs == 'selected' %}
+                                        <button type="button"
+                                                @click.stop="selectSupplier({{ item.line }}, '{{ sup.name|e }}')"
+                                                class="text-xs px-2 py-0 rounded border border-green-400 bg-green-50 text-green-700 hover:bg-green-100 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700"
+                                                title="Click to deselect">
+                                            Selected
+                                        </button>
+                                        {% else %}
+                                        <button type="button"
+                                                @click.stop="selectSupplier({{ item.line }}, '{{ sup.name|e }}')"
+                                                class="text-xs px-2 py-0 rounded border border-gray-300 dark:border-gray-600 text-gray-600 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-400 dark:text-gray-400 dark:hover:text-blue-400 dark:hover:border-blue-500"
+                                                title="Select as winning quote">
+                                            Select
+                                        </button>
+                                        {% endif %}
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                        {% else %}
+                        <p class="text-xs text-gray-400 dark:text-gray-500 italic py-2">No shortlisted suppliers. Shortlist suppliers on the RFQ Items tab first.</p>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+        <tfoot class="border-t-2 border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700/50">
+            {% set ns = namespace(total_cost=0, total_sale=0) %}
+            {% for item in items %}
+                {% set qty = item.quantity or 0 %}
+                {% if item.cost_price %}
+                    {% set ns.total_cost = ns.total_cost + (qty * (item.cost_price | float)) %}
+                {% endif %}
+                {% if item.sale_price %}
+                    {% set ns.total_sale = ns.total_sale + (qty * (item.sale_price | float)) %}
+                {% endif %}
+            {% endfor %}
+            <tr>
+                <td colspan="5" class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200">Totals</td>
+                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200">{{ '%.2f' | format(ns.total_cost) if ns.total_cost else '—' }}</td>
+                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200">{{ '%.2f' | format(ns.total_sale) if ns.total_sale else '—' }}</td>
+            </tr>
+        </tfoot>
+    </table>
+</div>
+{% else %}
+<div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+    <p class="text-sm text-gray-500 dark:text-gray-400 italic">No items on this RFQ yet.</p>
+</div>
+{% endif %}

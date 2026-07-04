@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, Integer, BigInteger, String, Text, Float, Date, DateTime, Boolean, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, BigInteger, Numeric, String, Text, Float, Date, DateTime, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 from pgvector.sqlalchemy import Vector
@@ -307,6 +307,8 @@ class RFQItem(Base):
     uom = Column(String, nullable=True, default='ea')
     match = Column(String, nullable=True, default='unmatched')  # unmatched/specific/branded/generic/discrepancy
     notes = Column(Text, nullable=True)
+    cost_price = Column(Numeric, nullable=True)              # best supplier cost in AUD
+    sale_price = Column(Numeric, nullable=True)              # price quoted to customer
     suppliers = Column(JSONB, nullable=True)                  # [{name, supplier_id, price, ...}, ...]
     brand_suppliers = Column(JSONB, nullable=True)            # [{name, supplier_id, tier, transaction_count, ...}] — non-Tier-A overflow
 

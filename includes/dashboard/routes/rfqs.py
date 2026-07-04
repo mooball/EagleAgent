@@ -43,6 +43,10 @@ def _normalize_rfq_suppliers(rfq: dict) -> None:
         "category": None,
         "source": None,
         "is_new": False,
+        "quote_status": None,
+        "quote_cost": None,
+        "quote_currency": None,
+        "quote_leadtime": None,
     }
     for item in rfq.get("items", []):
         suppliers = item.get("suppliers", [])
@@ -1108,6 +1112,8 @@ async def partial_rfq_shortlist_all(
             for sup in suppliers:
                 if isinstance(sup, dict) and sup.get("status") not in ("dropped", "shortlisted"):
                     sup["status"] = "shortlisted"
+                    if sup.get("quote_status") is None:
+                        sup["quote_status"] = "unquoted"
                     changed = True
                     count += 1
             if changed:
@@ -1198,6 +1204,8 @@ async def partial_rfq_shortlist_supplier_all_items(
                 if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
                     if sup.get("status") != "shortlisted":
                         sup["status"] = "shortlisted"
+                        if sup.get("quote_status") is None:
+                            sup["quote_status"] = "unquoted"
                         changed = True
                         count += 1
             if changed:
@@ -1376,6 +1384,161 @@ async def partial_rfq_remove_supplier(
         rfq.updated_at = datetime.now(timezone.utc)
         session.commit()
         return JSONResponse({"status": "ok"})
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Quotation Tab endpoints
+# ---------------------------------------------------------------------------
+
+@router.patch("/partial/rfqs/{rfq_id}/items/{line}/pricing")
+async def quotation_update_item_pricing(
+    request: Request, rfq_id: str, line: int,
+    user: dict = Depends(require_user),
+):
+    """Update cost_price / sale_price on an RFQ line item."""
+    body = await request.json()
+    from includes.dashboard.models import RFQ, RFQItem
+    from starlette.responses import Response
+
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if not rfq:
+            return JSONResponse({"status": "error", "message": f"RFQ '{rfq_id}' not found"}, status_code=404)
+        line_item = session.query(RFQItem).filter(
+            RFQItem.rfq_id == rfq.id, RFQItem.line == line
+        ).first()
+        if not line_item:
+            return JSONResponse({"status": "error", "message": f"Line {line} not found"}, status_code=404)
+
+        for field in ("cost_price", "sale_price"):
+            if field in body:
+                setattr(line_item, field, body[field])
+
+        session.commit()
+        return Response(status_code=204)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+@router.patch("/partial/rfqs/{rfq_id}/items/{line}/supplier-quote")
+async def quotation_update_supplier_quote(
+    request: Request, rfq_id: str, line: int,
+    user: dict = Depends(require_user),
+):
+    """Update quote fields on a supplier within a line item's JSONB suppliers array."""
+    body = await request.json()
+    supplier_name = (body.get("supplier_name") or "").strip()
+    if not supplier_name:
+        return JSONResponse({"status": "error", "message": "Missing supplier_name"}, status_code=400)
+
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+    from starlette.responses import Response
+
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if not rfq:
+            return JSONResponse({"status": "error", "message": f"RFQ '{rfq_id}' not found"}, status_code=404)
+        line_item = session.query(RFQItem).filter(
+            RFQItem.rfq_id == rfq.id, RFQItem.line == line
+        ).first()
+        if not line_item:
+            return JSONResponse({"status": "error", "message": f"Line {line} not found"}, status_code=404)
+
+        suppliers = list(line_item.suppliers or [])
+        name_lower = supplier_name.lower()
+        matched = None
+        for sup in suppliers:
+            if (sup.get("name") or "").lower() == name_lower:
+                matched = sup
+                break
+        if not matched:
+            return JSONResponse({"status": "error", "message": f"Supplier '{supplier_name}' not found on line {line}"}, status_code=404)
+
+        quote_fields = ("quote_status", "quote_cost", "quote_currency", "quote_leadtime")
+        for field in quote_fields:
+            if field in body:
+                matched[field] = body[field]
+
+        line_item.suppliers = suppliers
+        flag_modified(line_item, "suppliers")
+        session.commit()
+        return Response(status_code=204)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+@router.post("/partial/rfqs/{rfq_id}/items/{line}/select-supplier")
+async def quotation_select_supplier(
+    request: Request, rfq_id: str, line: int,
+    user: dict = Depends(require_user),
+):
+    """Select a winning supplier for a line item. Toggles off if already selected."""
+    body = await request.json()
+    supplier_name = (body.get("supplier_name") or "").strip()
+    if not supplier_name:
+        return JSONResponse({"status": "error", "message": "Missing supplier_name"}, status_code=400)
+
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+    from starlette.responses import Response
+
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if not rfq:
+            return JSONResponse({"status": "error", "message": f"RFQ '{rfq_id}' not found"}, status_code=404)
+        line_item = session.query(RFQItem).filter(
+            RFQItem.rfq_id == rfq.id, RFQItem.line == line
+        ).first()
+        if not line_item:
+            return JSONResponse({"status": "error", "message": f"Line {line} not found"}, status_code=404)
+
+        suppliers = list(line_item.suppliers or [])
+        name_lower = supplier_name.lower()
+        target_supplier = None
+        for sup in suppliers:
+            if (sup.get("name") or "").lower() == name_lower:
+                target_supplier = sup
+                break
+        if not target_supplier:
+            return JSONResponse({"status": "error", "message": f"Supplier '{supplier_name}' not found on line {line}"}, status_code=404)
+
+        if target_supplier.get("quote_status") == "selected":
+            # Deselect: revert to "quoted"
+            target_supplier["quote_status"] = "quoted"
+        else:
+            # Select this one, deselect any previous selection
+            for sup in suppliers:
+                if sup.get("quote_status") == "selected":
+                    sup["quote_status"] = "quoted"
+            target_supplier["quote_status"] = "selected"
+            # Copy supplier's quoted cost to item cost_price
+            quote_cost = target_supplier.get("quote_cost")
+            if quote_cost is not None:
+                from decimal import Decimal, InvalidOperation
+                try:
+                    line_item.cost_price = Decimal(str(quote_cost))
+                except (InvalidOperation, ValueError):
+                    pass
+
+        line_item.suppliers = suppliers
+        flag_modified(line_item, "suppliers")
+        session.commit()
+        return Response(status_code=204)
     except Exception:
         session.rollback()
         raise
