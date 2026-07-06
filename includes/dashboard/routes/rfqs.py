@@ -14,7 +14,7 @@ from ._helpers import router, templates, require_user, _render
 from .api import _lookup_rfq_thread_id
 
 RFQ_PAGE_SIZE = 25
-RFQ_ALLOWED_TABS = {"items", "suppliers", "communications", "quotation"}
+RFQ_ALLOWED_TABS = {"items", "suppliers", "communications", "quotation", "quotation-old"}
 
 
 # ---------------------------------------------------------------------------
