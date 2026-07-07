@@ -720,6 +720,13 @@
                 _saveExpanded() {
                     try { sessionStorage.setItem('rfq-expanded-' + this.rfqId, JSON.stringify(this.expanded)); } catch(e) {}
                 },
+                _restoreScroll(sx) {
+                    document.addEventListener('htmx:afterSettle', function restore() {
+                        var w = document.querySelector('#quotation-container .overflow-x-auto');
+                        if (w) w.scrollLeft = sx;
+                        document.removeEventListener('htmx:afterSettle', restore);
+                    });
+                },
                 toggle(line) {
                     this.expanded[line] = !this.expanded[line];
                     this.checkAllExpanded();
@@ -1067,14 +1074,35 @@
                     });
                 },
 
-                updateSupplierQuote(line, supplierName, field, value) {
+                updateSupplierQuote(line, supplierName, field, value, isSelected) {
+                    var self = this;
                     var body = {supplier_name: supplierName};
                     body[field] = field === 'quote_cost' ? (parseFloat(value) || null) : value;
+                    var wrapper = document.querySelector('#quotation-container .overflow-x-auto');
+                    var sx = wrapper ? wrapper.scrollLeft : 0;
                     fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/supplier-quote', {
                         method: 'PATCH',
                         headers: {'Content-Type': 'application/json'},
                         credentials: 'same-origin',
                         body: JSON.stringify(body)
+                    }).then(function() {
+                        // If this is a selected supplier, also update the item's cost_price
+                        if (field === 'quote_cost' && isSelected) {
+                            fetch('/partial/rfqs/' + self.rfqId + '/items/' + line + '/pricing', {
+                                method: 'PATCH',
+                                headers: {'Content-Type': 'application/json'},
+                                credentials: 'same-origin',
+                                body: JSON.stringify({cost_price: parseFloat(value) || null})
+                            }).then(function() {
+                                htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                                    {target: '#main-content'});
+                                self._restoreScroll(sx);
+                            });
+                        } else if (field === 'quote_cost') {
+                            htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                                {target: '#main-content'});
+                            self._restoreScroll(sx);
+                        }
                     });
                 },
 
@@ -1082,6 +1110,8 @@
                     var next = {unquoted: 'quoted', quoted: 'declined', declined: 'unquoted'};
                     var self = this;
                     var body = {supplier_name: supplierName, quote_status: next[current] || 'quoted'};
+                    var wrapper = document.querySelector('#quotation-container .overflow-x-auto');
+                    var sx = wrapper ? wrapper.scrollLeft : 0;
                     fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/supplier-quote', {
                         method: 'PATCH',
                         headers: {'Content-Type': 'application/json'},
@@ -1090,11 +1120,15 @@
                     }).then(function() {
                         htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
                             {target: '#main-content'});
+                        self._restoreScroll(sx);
                     });
                 },
 
                 selectSupplier(line, supplierName) {
                     var self = this;
+                    // Save scroll before refresh
+                    var wrapper = document.querySelector('#quotation-container .overflow-x-auto');
+                    var sx = wrapper ? wrapper.scrollLeft : 0;
                     fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/select-supplier', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
@@ -1103,6 +1137,40 @@
                     }).then(function() {
                         htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
                             {target: '#main-content'});
+                        self._restoreScroll(sx);
+                    });
+                },
+
+                toggleDeclined(line, supplierName, isDeclined) {
+                    var self = this;
+                    var newStatus = isDeclined ? 'unquoted' : 'declined';
+                    var body = {supplier_name: supplierName, quote_status: newStatus};
+                    if (!isDeclined) {
+                        body.quote_cost = null;
+                    }
+                    var wrapper = document.querySelector('#quotation-container .overflow-x-auto');
+                    var sx = wrapper ? wrapper.scrollLeft : 0;
+                    fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/supplier-quote', {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify(body)
+                    }).then(function() {
+                        htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                            {target: '#main-content'});
+                        self._restoreScroll(sx);
+                    });
+                },
+
+                updateSupplierMeta(supplierName, field, value) {
+                    fetch('/partial/rfqs/' + this.rfqId + '/supplier-meta', {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify({
+                            supplier_name: supplierName,
+                            [field]: field === 'shipping_cost' ? (parseFloat(value) || null) : value
+                        })
                     });
                 },
 

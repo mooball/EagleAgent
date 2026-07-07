@@ -23,6 +23,7 @@ from includes.tools.rfq_crud import (  # noqa: F401
     _assign_sync, _update_status_sync, _add_note_sync, _link_external_sync,
     _update_item_groups_sync,
     _find_brand_suppliers_sync, _cross_apply_suppliers_sync,
+    _select_quote_sync, _decline_quote_sync, _set_supplier_meta_sync,
 )
 from includes.tools.rfq_render import (  # noqa: F401
     _render_rfq_summary, _render_rfq_list, _render_rfq_brief_summary,
@@ -30,6 +31,193 @@ from includes.tools.rfq_render import (  # noqa: F401
 from config.settings import Config
 
 logger = logging.getLogger(__name__)
+
+
+def _build_quotation_snapshot(rfq: dict) -> str:
+    """Build a comprehensive Markdown snapshot of an RFQ's quotation state.
+
+    Dual-view structure:
+      A. Header + item×supplier price matrix (compact comparison)
+      B. Per-supplier detail sections (shipping, notes, terms, item list)
+      C. Totals row
+
+    Args:
+        rfq: RFQ dict from _get_rfq_dict_sync / _rfq_to_dict.
+
+    Returns:
+        Markdown string suitable for LLM consumption.
+    """
+    lines = []
+
+    # ── Header ──────────────────────────────────────────────────────────
+    rfq_id = rfq.get("id", "???")
+    customer = rfq.get("customer", "Unknown")
+    status = (rfq.get("status") or "draft").replace("_", " ").title()
+    assigned = rfq.get("assigned_to", "Unassigned")
+    created = rfq.get("created_date", "")
+    ref = rfq.get("reference", "")
+    ns_opp = rfq.get("netsuite_opportunity", "")
+    hubspot = rfq.get("hubspot_deal", "")
+    customer_id = rfq.get("customer_id", "")
+    contact = rfq.get("customer_contact") or {}
+
+    lines.append(f"# {rfq_id} — Quotation Status")
+    header_meta = [f"**Customer:** {customer}"]
+    if customer_id:
+        header_meta[-1] += f" (ID: {customer_id})"
+    if contact:
+        parts = []
+        if contact.get("name"):
+            parts.append(contact["name"])
+        if contact.get("email"):
+            parts.append(contact["email"])
+        if contact.get("phone"):
+            parts.append(contact["phone"])
+        if parts:
+            header_meta[-1] += f" | **Contact:** {' — '.join(parts)}"
+    header_meta.append(f"**Status:** {status}")
+    if created:
+        header_meta.append(f"**Created:** {created}")
+    header_meta.append(f"**Assigned to:** {assigned}")
+    lines.append(" | ".join(header_meta))
+
+    ext_ids = []
+    if ref:
+        ext_ids.append(f"**Reference:** {ref}")
+    if ns_opp:
+        ext_ids.append(f"**NetSuite Opp:** {ns_opp}")
+    if hubspot:
+        ext_ids.append(f"**HubSpot:** {hubspot}")
+    if ext_ids:
+        lines.append(" | ".join(ext_ids))
+
+    items = rfq.get("items", [])
+    supplier_meta = rfq.get("supplier_meta") or {}
+
+    # ── Collect unique shortlisted suppliers ─────────────────────────────
+    supplier_names = []
+    for item in items:
+        for s in (item.get("suppliers") or []):
+            name = s.get("name", "")
+            if name and s.get("status") in ("shortlisted", "selected") and name not in supplier_names:
+                supplier_names.append(name)
+
+    if not items:
+        lines.append("\n*No items on this RFQ.*")
+        return "\n".join(lines)
+
+    # ── Section A: Price Matrix ──────────────────────────────────────────
+    lines.append("\n## Price Matrix")
+    # Build header: # | Description | Part # | NS ID | Brand | Qty | Cost | Sale | Supplier...
+    matrix_header = ["#", "Description", "Part #", "NS ID", "Brand", "Qty", "Cost", "Sale"]
+    matrix_header.extend(supplier_names)
+    lines.append("| " + " | ".join(matrix_header) + " |")
+    lines.append("|" + "|".join(["---"] * len(matrix_header)) + "|")
+
+    total_cost = 0
+    total_sale = 0
+
+    for item in items:
+        line_no = item.get("line", "?")
+        desc = (item.get("input_description") or "—")[:60]
+        pn = item.get("part_number") or "—"
+        ns_id = item.get("input_code") or "—"  # NetSuite internal ID
+        brand = item.get("brand") or "—"
+        qty = item.get("quantity") or 0
+        cost = item.get("cost_price")
+        sale = item.get("sale_price")
+
+        if cost:
+            total_cost += float(cost) * (qty or 0)
+        if sale:
+            total_sale += float(sale) * (qty or 0)
+
+        cost_str = f"${float(cost):,.2f}" if cost else "—"
+        sale_str = f"${float(sale):,.2f}" if sale else "—"
+
+        row = [
+            str(line_no), desc, pn, ns_id, brand, str(qty), cost_str, sale_str
+        ]
+
+        # Supplier columns
+        for sup_name in supplier_names:
+            cell = "—"
+            for s in (item.get("suppliers") or []):
+                if s.get("name") == sup_name and s.get("status") in ("shortlisted", "selected"):
+                    qc = s.get("quote_cost")
+                    qs = s.get("quote_status")
+                    curr = s.get("quote_currency")
+                    if qs == "declined":
+                        cell = "✗"
+                    elif qc is not None:
+                        prefix = "$" if (not curr or curr == "AUD") else f"{curr} "
+                        if qs == "selected":
+                            cell = f"{prefix}{float(qc):,.2f} ★"
+                        else:
+                            cell = f"{prefix}{float(qc):,.2f}"
+                    break
+            row.append(cell)
+
+        lines.append("| " + " | ".join(row) + " |")
+
+    lines.append(f"\n**Key:** ★ = selected, ✗ = declined, — = not quoted")
+    lines.append(f"**Totals:** Cost ${total_cost:,.2f} | Sale ${total_sale:,.2f}")
+
+    # ── Section B: Per-Supplier Detail ───────────────────────────────────
+    if supplier_names:
+        lines.append("\n## Supplier Details")
+        for sup_name in supplier_names:
+            meta = supplier_meta.get(sup_name, {})
+            shipping = meta.get("shipping_cost")
+            shipping_curr = meta.get("shipping_currency") or "AUD"
+            notes = meta.get("notes") or ""
+            terms = meta.get("terms") or ""
+
+            lines.append(f"\n### {sup_name}")
+            meta_parts = []
+            if shipping is not None:
+                prefix = "$" if shipping_curr == "AUD" else f"{shipping_curr} "
+                meta_parts.append(f"**Shipping:** {prefix}{float(shipping):,.2f}")
+            else:
+                meta_parts.append("**Shipping:** —")
+            if notes:
+                meta_parts.append(f"**Notes:** {notes}")
+            if terms:
+                meta_parts.append(f"**Terms:** {terms}")
+            lines.append(" | ".join(meta_parts))
+
+            # Item sub-table for this supplier
+            sup_items = []
+            for item in items:
+                for s in (item.get("suppliers") or []):
+                    if s.get("name") == sup_name and s.get("status") in ("shortlisted", "selected"):
+                        qc = s.get("quote_cost")
+                        qs = s.get("quote_status", "unquoted")
+                        curr = s.get("quote_currency")
+                        prefix = "$" if (not curr or curr == "AUD") else f"{curr} "
+                        price_str = f"{prefix}{float(qc):,.2f}" if qc is not None else "—"
+                        status_str = qs if qs != "unquoted" else "awaiting"
+                        sup_items.append({
+                            "line": item.get("line", "?"),
+                            "desc": (item.get("input_description") or "—")[:50],
+                            "pn": item.get("part_number") or "—",
+                            "ns_id": item.get("input_code") or "—",
+                            "qty": item.get("quantity") or 0,
+                            "price": price_str,
+                            "status": status_str,
+                        })
+                        break
+
+            if sup_items:
+                lines.append("")
+                lines.append("| Line | Item | Part # | NS ID | Qty | Price | Status |")
+                lines.append("|------|------|--------|-------|-----|-------|--------|")
+                for si in sup_items:
+                    lines.append(f"| {si['line']} | {si['desc']} | {si['pn']} | {si['ns_id']} | {si['qty']} | {si['price']} | {si['status']} |")
+            else:
+                lines.append("\n*No items quoted for this supplier.*")
+
+    return "\n".join(lines)
 
 
 async def _next_rfq_number(store) -> str:
@@ -536,7 +724,24 @@ def create_quote_tools(user_id: str) -> list:
           update_supplier — Update a supplier on a line item. data keys:
                           line (required), name (required), plus any of: status,
                           price, price_type, currency, lead_time, notes,
-                          contacts, purchase_ref
+                          contacts, purchase_ref, quote_cost, quote_status,
+                          quote_currency, quote_leadtime.
+          update_quote  — Update quotation fields on a supplier×item. data keys:
+                          line (required), name (required), plus any of:
+                          quote_cost (float), quote_status (unquoted/quoted/
+                          declined/selected), quote_currency (3-letter ISO),
+                          quote_leadtime (e.g. '2 weeks').
+          select_quote  — Mark a supplier as selected on a line item. Auto-
+                          deselects any previous selection and copies the
+                          quote_cost to the item's cost_price. Toggles off
+                          if already selected. data keys: line (required),
+                          name (required).
+          decline_quote — Mark a supplier as declined and clear their price.
+                          data keys: line (required), name (required).
+          set_supplier_meta — Set RFQ-level supplier metadata. data keys:
+                          name (required), plus any of: shipping_cost (float),
+                          shipping_currency (3-letter ISO), notes (str),
+                          terms (str).
           clear_suppliers — Remove all suppliers from line item(s). data keys:
                           line (optional, int — if omitted clears ALL lines)
           assign        — Reassign the RFQ. data keys: assigned_to (required)
@@ -589,6 +794,10 @@ def create_quote_tools(user_id: str) -> list:
             "add_note": lambda: asyncio.to_thread(_add_note_sync, rfq_id, data, user_id),
             "link_external": lambda: asyncio.to_thread(_link_external_sync, rfq_id, data, user_id),
             "group_items": lambda: asyncio.to_thread(_update_item_groups_sync, rfq_id, data.get("item_groups", data), user_id),
+            "update_quote": lambda: asyncio.to_thread(_update_supplier_sync, rfq_id, data, user_id),
+            "select_quote": lambda: asyncio.to_thread(_select_quote_sync, rfq_id, data, user_id),
+            "decline_quote": lambda: asyncio.to_thread(_decline_quote_sync, rfq_id, data, user_id),
+            "set_supplier_meta": lambda: asyncio.to_thread(_set_supplier_meta_sync, rfq_id, data, user_id),
         }
 
         handler = _ACTION_MAP.get(action)
@@ -597,7 +806,7 @@ def create_quote_tools(user_id: str) -> list:
                 f"Error: unknown action '{action}'. Valid actions: create, "
                 "update, update_item, delete_item, add_items, add_supplier, update_supplier, "
                 "clear_suppliers, assign, update_status, add_note, link_external, "
-                "group_items."
+                "group_items, update_quote, select_quote, decline_quote, set_supplier_meta."
             )
 
         if action != "create" and not rfq_id:
@@ -963,4 +1172,26 @@ def create_quote_tools(user_id: str) -> list:
 
         return " ".join(parts)
 
-    return [manage_rfq, get_rfq, classify_items, validate_items, find_previous_suppliers, group_items]
+    @tool
+    async def view_rfq_quotation(rfq_id: str) -> str:
+        """Get a comprehensive Markdown snapshot of an RFQ's quotation state.
+
+        Returns a dual-view report:
+        1. Item×Supplier price matrix — all items and their quoted prices from
+           each shortlisted supplier, with selection status (★ selected, ✗ declined).
+        2. Per-supplier detail sections — shipping cost, notes, terms, and the
+           full list of items each supplier was asked to quote on.
+
+        Includes NetSuite internal IDs, customer contact info, totals, and
+        external reference IDs. Use this before any quotation work to get
+        the full picture in a single call.
+
+        Args:
+            rfq_id: The RFQ identifier (e.g. 'RFQ-2026-0039').
+        """
+        rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+        if not rfq:
+            return f"RFQ '{rfq_id}' not found."
+        return _build_quotation_snapshot(rfq)
+
+    return [manage_rfq, get_rfq, classify_items, validate_items, find_previous_suppliers, group_items, view_rfq_quotation]

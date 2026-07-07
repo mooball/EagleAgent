@@ -261,6 +261,7 @@ class RFQ(Base):
     email_status = Column(String, nullable=True)              # 'no_email_sent' | 'draft_pending' | 'sent' | 'awaiting_reply'
     last_email_sent_at = Column(DateTime(timezone=True), nullable=True)  # Most recent send time
     supplier_emails = Column(JSONB, nullable=True)            # [{email, name}, ...] contact list for multi-supplier RFQs
+    supplier_meta = Column(JSONB, nullable=True)               # {supplier_name: {shipping_cost, shipping_currency, notes, terms, ...}}
     
     updated_at = Column(DateTime(timezone=True), nullable=True)
     pipeline_stage = Column(String, nullable=False, server_default='unprocessed')  # unprocessed/classified/validation_gate/validated/grouped/suppliers_internal/awaiting_web_search/complete
