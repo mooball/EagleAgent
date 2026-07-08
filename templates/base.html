@@ -66,12 +66,19 @@
         </nav>
 
         <div class="flex items-center gap-1">
-            <!-- Agent working indicator -->
-            <div x-show="agentWorking" x-cloak x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 scale-90" x-transition:enter-end="opacity-100 scale-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
-                 class="flex items-center gap-1.5 px-2.5 py-1 bg-blue-600 text-white text-xs font-medium rounded-full mr-2">
-                <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                <span x-text="agentWorkingLabel"></span>
-            </div>
+            <!-- Agent working indicator (clickable to stop) -->
+            <button x-show="agentWorking" x-cloak x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 scale-90" x-transition:enter-end="opacity-100 scale-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+                 x-data="{ hovered: false }"
+                 @mouseenter="hovered = true" @mouseleave="hovered = false"
+                 @click="stopAgent()"
+                 :class="hovered ? 'bg-red-600' : 'bg-blue-600'"
+                 class="flex items-center gap-1.5 px-2.5 py-1 text-white text-xs font-medium rounded-full mr-2 cursor-pointer transition-colors"
+                 title="Click to stop agent">
+                <svg x-show="!hovered" class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                <svg x-show="hovered" class="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+                <span x-show="!hovered" x-text="agentWorkingLabel"></span>
+                <span x-show="hovered">Stop</span>
+            </button>
 
             <!-- Agent panel controls -->
             <div class="flex items-center gap-0.5 mr-2">
@@ -159,8 +166,16 @@
                        class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                         Mailbox Scanning
                     </a>
-                    <a href="/admin/emails"
-                       hx-get="/admin/emails" hx-target="#main-content" hx-push-url="/admin/emails"
+                    <a href="/emails"
+                       hx-get="/emails" hx-target="#main-content" hx-push-url="/emails"
+                       @click="userMenuOpen = false"
+                       class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        Email Logs
+                    </a>
+                    {% endif %}
+                    {% if user and user.role != 'Admin' %}
+                    <a href="/emails"
+                       hx-get="/emails" hx-target="#main-content" hx-push-url="/emails"
                        @click="userMenuOpen = false"
                        class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                         Email Logs
@@ -383,6 +398,29 @@
                                 }
                             }
                         }
+                        if (event.data?.type === 'session_id' && event.data.sessionId) {
+                            // Track the iframe's Chainlit session_id for cookie reclaim
+                            this._chainlitSessionId = event.data.sessionId;
+                        }
+                    });
+
+                    // Reclaim the Chainlit session cookie when this tab gains focus.
+                    // Prevents multi-tab cookie collision (last tab to connect owns
+                    // the cookie; switching back would send the wrong session_id).
+                    document.addEventListener('visibilitychange', () => {
+                        if (document.visibilityState === 'visible' && this._chainlitSessionId) {
+                            fetch('/chat/set-session-cookie', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                credentials: 'same-origin',
+                                body: JSON.stringify({session_id: this._chainlitSessionId}),
+                            }).catch(() => {});
+                            // Also re-push dashboard context so the agent knows
+                            // which RFQ this tab is viewing (context is per-user,
+                            // not per-tab, so switching tabs can leave stale context).
+                            this.updateContext();
+                            this.pushContext();
+                        }
                     });
 
                     // Set initial context from the page (may switch iframe to an RFQ thread)
@@ -473,6 +511,15 @@
                     if (iframe?.contentWindow) {
                         iframe.contentWindow.postMessage({ type: 'theme-change', theme: theme }, '*');
                     }
+                },
+
+                stopAgent() {
+                    fetch('/api/stop-agent', { method: 'POST', credentials: 'same-origin' })
+                        .then(() => {
+                            this.agentWorking = false;
+                            clearTimeout(this._agentWorkingTimeout);
+                        })
+                        .catch(err => console.warn('[stopAgent] failed:', err));
                 },
 
                 updateContext() {
@@ -719,6 +766,13 @@
                 },
                 _saveExpanded() {
                     try { sessionStorage.setItem('rfq-expanded-' + this.rfqId, JSON.stringify(this.expanded)); } catch(e) {}
+                },
+                _restoreScroll(sx) {
+                    document.addEventListener('htmx:afterSettle', function restore() {
+                        var w = document.querySelector('#quotation-container .overflow-x-auto');
+                        if (w) w.scrollLeft = sx;
+                        document.removeEventListener('htmx:afterSettle', restore);
+                    });
                 },
                 toggle(line) {
                     this.expanded[line] = !this.expanded[line];
@@ -1067,14 +1121,35 @@
                     });
                 },
 
-                updateSupplierQuote(line, supplierName, field, value) {
+                updateSupplierQuote(line, supplierName, field, value, isSelected) {
+                    var self = this;
                     var body = {supplier_name: supplierName};
                     body[field] = field === 'quote_cost' ? (parseFloat(value) || null) : value;
+                    var wrapper = document.querySelector('#quotation-container .overflow-x-auto');
+                    var sx = wrapper ? wrapper.scrollLeft : 0;
                     fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/supplier-quote', {
                         method: 'PATCH',
                         headers: {'Content-Type': 'application/json'},
                         credentials: 'same-origin',
                         body: JSON.stringify(body)
+                    }).then(function() {
+                        // If this is a selected supplier, also update the item's cost_price
+                        if (field === 'quote_cost' && isSelected) {
+                            fetch('/partial/rfqs/' + self.rfqId + '/items/' + line + '/pricing', {
+                                method: 'PATCH',
+                                headers: {'Content-Type': 'application/json'},
+                                credentials: 'same-origin',
+                                body: JSON.stringify({cost_price: parseFloat(value) || null})
+                            }).then(function() {
+                                htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                                    {target: '#main-content'});
+                                self._restoreScroll(sx);
+                            });
+                        } else if (field === 'quote_cost') {
+                            htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                                {target: '#main-content'});
+                            self._restoreScroll(sx);
+                        }
                     });
                 },
 
@@ -1082,6 +1157,8 @@
                     var next = {unquoted: 'quoted', quoted: 'declined', declined: 'unquoted'};
                     var self = this;
                     var body = {supplier_name: supplierName, quote_status: next[current] || 'quoted'};
+                    var wrapper = document.querySelector('#quotation-container .overflow-x-auto');
+                    var sx = wrapper ? wrapper.scrollLeft : 0;
                     fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/supplier-quote', {
                         method: 'PATCH',
                         headers: {'Content-Type': 'application/json'},
@@ -1090,11 +1167,15 @@
                     }).then(function() {
                         htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
                             {target: '#main-content'});
+                        self._restoreScroll(sx);
                     });
                 },
 
                 selectSupplier(line, supplierName) {
                     var self = this;
+                    // Save scroll before refresh
+                    var wrapper = document.querySelector('#quotation-container .overflow-x-auto');
+                    var sx = wrapper ? wrapper.scrollLeft : 0;
                     fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/select-supplier', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
@@ -1103,6 +1184,40 @@
                     }).then(function() {
                         htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
                             {target: '#main-content'});
+                        self._restoreScroll(sx);
+                    });
+                },
+
+                toggleDeclined(line, supplierName, isDeclined) {
+                    var self = this;
+                    var newStatus = isDeclined ? 'unquoted' : 'declined';
+                    var body = {supplier_name: supplierName, quote_status: newStatus};
+                    if (!isDeclined) {
+                        body.quote_cost = null;
+                    }
+                    var wrapper = document.querySelector('#quotation-container .overflow-x-auto');
+                    var sx = wrapper ? wrapper.scrollLeft : 0;
+                    fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/supplier-quote', {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify(body)
+                    }).then(function() {
+                        htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                            {target: '#main-content'});
+                        self._restoreScroll(sx);
+                    });
+                },
+
+                updateSupplierMeta(supplierName, field, value) {
+                    fetch('/partial/rfqs/' + this.rfqId + '/supplier-meta', {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify({
+                            supplier_name: supplierName,
+                            [field]: field === 'shipping_cost' ? (parseFloat(value) || null) : value
+                        })
                     });
                 },
 

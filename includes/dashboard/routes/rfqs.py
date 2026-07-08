@@ -14,7 +14,7 @@ from ._helpers import router, templates, require_user, _render
 from .api import _lookup_rfq_thread_id
 
 RFQ_PAGE_SIZE = 25
-RFQ_ALLOWED_TABS = {"items", "suppliers", "communications", "quotation"}
+RFQ_ALLOWED_TABS = {"items", "suppliers", "communications", "quotation", "quotation-old"}
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +431,7 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
                     et.created_at,
                     et.supplier_id,
                     et.customer_id,
+                    et.supplier_pipeline_result,
                     s.name AS supplier_name,
                     c.companyname AS customer_name
                 FROM email_tracking et
@@ -496,6 +497,10 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
             thread["last_time"] = event["display_time"]
             if event.get("direction") == "received":
                 thread["has_reply"] = True
+            # Track latest pipeline classification for thread header
+            spr = event.get("supplier_pipeline_result")
+            if spr and spr.get("classification"):
+                thread["latest_classification"] = spr["classification"]
 
         # Group threads by source
         source_groups: OrderedDict = OrderedDict()
@@ -1114,6 +1119,11 @@ async def partial_rfq_shortlist_all(
                     sup["status"] = "shortlisted"
                     if sup.get("quote_status") is None:
                         sup["quote_status"] = "unquoted"
+                    # Copy supplier's currency to quote_currency if not already set
+                    if not sup.get("quote_currency"):
+                        sup_currency = sup.get("currency")
+                        if sup_currency:
+                            sup["quote_currency"] = sup_currency
                     changed = True
                     count += 1
             if changed:
@@ -1206,6 +1216,10 @@ async def partial_rfq_shortlist_supplier_all_items(
                         sup["status"] = "shortlisted"
                         if sup.get("quote_status") is None:
                             sup["quote_status"] = "unquoted"
+                        if not sup.get("quote_currency"):
+                            sup_currency = sup.get("currency")
+                            if sup_currency:
+                                sup["quote_currency"] = sup_currency
                         changed = True
                         count += 1
             if changed:
@@ -1537,6 +1551,42 @@ async def quotation_select_supplier(
 
         line_item.suppliers = suppliers
         flag_modified(line_item, "suppliers")
+        session.commit()
+        return Response(status_code=204)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+@router.patch("/partial/rfqs/{rfq_id}/supplier-meta")
+async def quotation_update_supplier_meta(
+    request: Request, rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Update a supplier's RFQ-level metadata (shipping, notes, terms)."""
+    body = await request.json()
+    supplier_name = (body.get("supplier_name") or "").strip()
+    if not supplier_name:
+        return JSONResponse({"status": "error", "message": "Missing supplier_name"}, status_code=400)
+
+    from includes.dashboard.models import RFQ
+
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if not rfq:
+            return JSONResponse({"status": "error", "message": f"RFQ '{rfq_id}' not found"}, status_code=404)
+
+        meta = dict(rfq.supplier_meta or {})
+        supplier_meta = dict(meta.get(supplier_name, {}))
+        for key in ("shipping_cost", "shipping_currency", "notes", "terms"):
+            if key in body:
+                val = body[key]
+                supplier_meta[key] = val if val != "" and val is not None else None
+        meta[supplier_name] = supplier_meta
+        rfq.supplier_meta = meta
         session.commit()
         return Response(status_code=204)
     except Exception:

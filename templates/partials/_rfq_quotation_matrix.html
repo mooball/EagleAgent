@@ -1,0 +1,301 @@
+{# Quotation matrix view — items × suppliers grid #}
+{% set items = rfq.get('items', []) %}
+{% if items %}
+
+{# Build ordered list of unique shortlisted suppliers across all items #}
+{% set supplier_names = [] %}
+{% for item in items %}
+    {% for s in (item.suppliers or []) %}
+        {% if s.status in ('shortlisted', 'selected') and s.name not in supplier_names %}
+            {% set _ = supplier_names.append(s.name) %}
+        {% endif %}
+    {% endfor %}
+{% endfor %}
+
+<div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-x-auto"
+     x-data="{ scrollX: 0 }" @scroll="scrollX = $el.scrollLeft">
+    <style>
+        .freeze-shadow { box-shadow: 1px 0 0 0 rgba(0,0,0,0.08); }
+        .dark .freeze-shadow { box-shadow: 1px 0 0 0 rgba(255,255,255,0.06); }
+        .quote-selected { background: #dcfce7; color: #166534; }
+        .dark .quote-selected { background: #14532d; color: #bbf7d0; }
+        .quote-declined { background: #fef2f2; }
+        .dark .quote-declined { background: #3b1a1a; }
+        .freeze-cell { background: #fff; }
+        .dark .freeze-cell { background: #1f2937; }
+        tr:hover .freeze-cell { background: #f9fafb; }
+        .dark tr:hover .freeze-cell { background: #374151; }
+        .cost-sale-col { border-left: 2px solid #d1d5db; border-right: 2px solid #d1d5db; background: #f8fafc; }
+        .dark .cost-sale-col { border-color: #4b5563; background: rgba(55, 65, 81, 0.25); }
+    </style>
+    <table class="w-full text-sm table-auto border-separate border-spacing-0">
+        <thead class="bg-gray-50 dark:bg-gray-700 border-b-2 border-gray-200 dark:border-gray-600 sticky top-0 z-10">
+            <tr>
+                <th class="!p-0 text-center font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap w-10">
+                    <div class="px-3 py-2.5 relative z-20 bg-gray-50 dark:bg-gray-700 freeze-shadow"
+                         :style="'transform: translateX(' + scrollX + 'px)'">#</div>
+                </th>
+                <th class="!p-0 text-left font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                    <div class="px-3 py-2.5 truncate relative z-20 bg-gray-50 dark:bg-gray-700 freeze-shadow"
+                         :style="'max-width: 350px; transform: translateX(' + scrollX + 'px)'">Description</div>
+                </th>
+                <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">Part #</th>
+                <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">Brand</th>
+                <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap w-14">Qty</th>
+                <th class="text-right px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap cost-sale-col">Cost</th>
+                <th class="text-right px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap cost-sale-col">Sale</th>
+                {% for name in supplier_names %}
+                {% set sm = (rfq.get('supplier_meta', {}) or {}).get(name, {}) %}
+                {% set lead_times = [] %}
+                {% for item in items %}
+                    {% for s in (item.suppliers or []) %}
+                        {% if s.name == name and s.quote_leadtime and s.quote_leadtime not in lead_times %}
+                            {% set _ = lead_times.append(s.quote_leadtime) %}
+                        {% endif %}
+                    {% endfor %}
+                {% endfor %}
+                {% set has_meta = sm.get('notes') or sm.get('terms') or lead_times %}
+                <th class="text-right px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap border-l border-gray-200 dark:border-gray-700"
+                    title="{{ name }}">
+                    <span class="inline-flex items-center gap-1">
+                        {{ name | truncate(14, true, '…') }}
+                        {% if has_meta %}
+                        <button @click.stop="$dispatch('show-supplier-meta', {name: '{{ name | replace("'", "\\'") }}', lead: '{{ lead_times | join("; ") | replace("'", "\\'") }}', terms: '{{ (sm.get("terms") or "") | replace("'", "\\'") }}', notes: '{{ (sm.get("notes") or "") | replace("'", "\\'") }}', rect: JSON.stringify($el.getBoundingClientRect())})"
+                                class="text-blue-400 hover:text-blue-600 dark:text-blue-500 dark:hover:text-blue-300 focus:outline-none" title="Supplier notes">
+                            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path></svg>
+                        </button>
+                        {% endif %}
+                    </span>
+                </th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+            {% for item in items %}
+            {% set qty = item.quantity or 0 %}
+            <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 group">
+                <td class="!p-0 text-center font-mono text-xs text-gray-500">
+                    <div class="px-3 py-2.5 relative z-10 freeze-cell freeze-shadow"
+                         :style="'transform: translateX(' + scrollX + 'px)'">{{ item.line }}</div>
+                </td>
+                <td class="!p-0">
+                    <div class="px-3 py-2.5 truncate relative z-10 freeze-cell freeze-shadow"
+                         :style="'max-width: 350px; transform: translateX(' + scrollX + 'px)'" title="{{ item.input_description or '' }}">{{ item.input_description or '—' }}</div>
+                </td>
+                <td class="px-3 py-2.5 font-mono text-xs whitespace-nowrap">{{ item.part_number or '—' }}</td>
+                <td class="px-3 py-2.5 whitespace-nowrap">{{ item.brand or '—' }}</td>
+                <td class="px-3 py-2.5 text-center whitespace-nowrap">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
+
+                {# Cost (editable) #}
+                <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col" @click.stop>
+                    <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right"
+                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(item.cost_price) if item.cost_price is not none else '—' }}</span>
+                    <input type="text" inputmode="decimal"
+                           class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                           value="{{ item.cost_price if item.cost_price is not none else '' }}"
+                           placeholder="0.00"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'cost_price', $el.value)"
+                           @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
+                </td>
+
+                {# Sale (editable) #}
+                <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col" @click.stop>
+                    <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right"
+                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(item.sale_price) if item.sale_price is not none else '—' }}</span>
+                    <input type="text" inputmode="decimal"
+                           class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                           value="{{ item.sale_price if item.sale_price is not none else '' }}"
+                           placeholder="0.00"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'sale_price', $el.value)"
+                           @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
+                </td>
+
+                {# Supplier quote columns #}
+                {% for name in supplier_names %}
+                    {% set ns = namespace(quote_cost=None, quote_status=None, quote_currency=None, is_shortlisted=False) %}
+                    {% for s in (item.suppliers or []) %}
+                        {% if s.name == name and s.status in ('shortlisted', 'selected') %}
+                            {% set ns.quote_cost = s.quote_cost %}
+                            {% set ns.quote_status = s.quote_status %}
+                            {% set ns.quote_currency = s.quote_currency %}
+                            {% set ns.is_shortlisted = True %}
+                        {% endif %}
+                    {% endfor %}
+                    {% if ns.is_shortlisted %}
+                        {% if ns.quote_status == 'selected' %}
+                <td class="px-2 py-2.5 text-right font-mono whitespace-nowrap quote-selected border-l border-gray-100 dark:border-gray-700" @click.stop>
+                        {% elif ns.quote_status == 'declined' %}
+                <td class="px-2 py-2.5 text-right font-mono whitespace-nowrap quote-declined border-l border-gray-100 dark:border-gray-700" @click.stop>
+                        {% else %}
+                <td class="px-2 py-2.5 text-right font-mono whitespace-nowrap bg-white dark:bg-gray-800 border-l border-gray-100 dark:border-gray-700" @click.stop>
+                        {% endif %}
+                    <div class="flex items-center justify-end gap-3">
+                        {# Select star — only available when quoted (has price) and not declined #}
+                        {% if ns.quote_status == 'selected' %}
+                        <span class="shrink-0 cursor-pointer text-yellow-500 text-base leading-none hover:text-yellow-600 inline-block"
+                              style="transform: scale(1.6)"
+                              @click.stop="selectSupplier({{ item.line }}, '{{ name | replace("'", "\\'") }}')" title="Deselect supplier">★</span>
+                        {% elif ns.quote_status != 'declined' and ns.quote_cost is not none %}
+                        <span class="shrink-0 cursor-pointer opacity-0 group-hover:opacity-100 text-gray-300 dark:text-gray-500 text-base leading-none hover:text-yellow-500 transition-opacity inline-block"
+                              style="transform: scale(1.6)"
+                              @click.stop="selectSupplier({{ item.line }}, '{{ name | replace("'", "\\'") }}')" title="Select supplier">☆</span>
+                        {% endif %}
+                        {# Price — inline-flex keeps span+input as siblings #}
+                        {% set is_dollar = not ns.quote_currency or ns.quote_currency in ('AUD', 'USD', 'NZD', 'CAD', 'SGD', 'HKD') %}
+                        {% set price_str = ('$%.2f'|format(ns.quote_cost or 0)) if is_dollar else (ns.quote_currency + ' ' + '%.2f'|format(ns.quote_cost or 0)) %}
+                        <span class="inline-flex">
+                            {% if ns.quote_status == 'declined' %}
+                            <span class="px-1.5 py-0.5 -my-0.5 -mx-1 inline-block min-w-[50px] text-right text-gray-400 dark:text-gray-500">{{ price_str if ns.quote_cost is not none else '—' }}</span>
+                            {% else %}
+                            <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1.5 py-0.5 -my-0.5 -mx-1 inline-block min-w-[50px] text-right"
+                                  @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ price_str if ns.quote_cost is not none else '—' }}</span>
+                            <input type="text" inputmode="decimal"
+                                   class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                                   value="{{ ns.quote_cost if ns.quote_cost is not none else '' }}"
+                                   placeholder="0.00"
+                                   @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierQuote({{ item.line }}, '{{ name | replace("'", "\\'") }}', 'quote_cost', $el.value, {{ 'true' if ns.quote_status == 'selected' else 'false' }})"
+                                   @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
+                            {% endif %}
+                        </span>
+                        {# Decline toggle — ✕ always visible when declined, shows on hover otherwise #}
+                        {% if ns.quote_status == 'declined' %}
+                        <span class="shrink-0 cursor-pointer text-red-500 hover:text-red-400 text-base leading-none inline-block"
+                              style="transform: scale(1.6)"
+                              @click.stop="toggleDeclined({{ item.line }}, '{{ name | replace("'", "\\'") }}', true)" title="Undo decline">✕</span>
+                        {% else %}
+                        <span class="shrink-0 cursor-pointer opacity-0 group-hover:opacity-100 text-gray-300 dark:text-gray-500 hover:text-red-400 text-base leading-none transition-opacity inline-block"
+                              style="transform: scale(1.6)"
+                              @click.stop="toggleDeclined({{ item.line }}, '{{ name | replace("'", "\\'") }}', false)" title="Mark as declined">✕</span>
+                        {% endif %}
+                    </div>
+                </td>
+                    {% else %}
+                <td class="px-3 py-2.5 bg-gray-50 dark:bg-gray-800/50 border-l border-gray-100 dark:border-gray-700"></td>
+                    {% endif %}
+                {% endfor %}
+            </tr>
+            {% endfor %}
+
+            {# Freight row — visual only, no backend storage yet #}
+            <tr class="border-t border-gray-200 dark:border-gray-700">
+                <td class="!p-0">
+                    <div class="px-3 py-2.5 relative z-10 bg-white dark:bg-gray-800 freeze-shadow"
+                         :style="'transform: translateX(' + scrollX + 'px)'">&nbsp;</div>
+                </td>
+                <td class="!p-0 font-medium text-gray-600 dark:text-gray-300 whitespace-nowrap">
+                    <div class="px-3 py-2.5 truncate relative z-10 bg-white dark:bg-gray-800 freeze-shadow"
+                         :style="'max-width: 350px; transform: translateX(' + scrollX + 'px)'">🚚 Freight</div>
+                </td>
+                <td class="px-3 py-2.5 whitespace-nowrap text-gray-400"></td>
+                <td class="px-3 py-2.5 whitespace-nowrap text-gray-400"></td>
+                <td class="px-3 py-2.5 text-center whitespace-nowrap text-gray-400">1</td>
+
+                {# Freight Cost (visual only) #}
+                <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col" @click.stop>
+                    <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right text-gray-400"
+                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">—</span>
+                    <input type="text" inputmode="decimal"
+                           class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                           placeholder="0.00"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'"
+                           @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
+                </td>
+
+                {# Freight Sale (visual only) #}
+                <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col" @click.stop>
+                    <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right text-gray-400"
+                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">—</span>
+                    <input type="text" inputmode="decimal"
+                           class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                           placeholder="0.00"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'"
+                           @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
+                </td>
+
+                {# Freight supplier quote columns — reads/writes supplier_meta on the RFQ #}
+                {% for name in supplier_names %}
+                    {% set sm = (rfq.get('supplier_meta', {}) or {}).get(name, {}) %}
+                    {% set shipping_cost = sm.get('shipping_cost') %}
+                <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap border-l border-gray-100 dark:border-gray-700" @click.stop>
+                    <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right text-gray-400"
+                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(shipping_cost) if shipping_cost is not none else '—' }}</span>
+                    <input type="text" inputmode="decimal"
+                           class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                           value="{{ shipping_cost if shipping_cost is not none else '' }}"
+                           placeholder="0.00"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierMeta('{{ name | replace("'", "\\'") }}', 'shipping_cost', $el.value)"
+                           @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
+                </td>
+                {% endfor %}
+            </tr>
+        </tbody>
+
+        {# Totals row #}
+        {% if items | length > 0 %}
+        <tfoot class="border-t-2 border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700">
+            {% set ns = namespace(total_cost=0, total_sale=0) %}
+            {% for item in items %}
+                {% set qty = item.quantity or 0 %}
+                {% if item.cost_price %}
+                    {% set ns.total_cost = ns.total_cost + (qty * (item.cost_price | float)) %}
+                {% endif %}
+                {% if item.sale_price %}
+                    {% set ns.total_sale = ns.total_sale + (qty * (item.sale_price | float)) %}
+                {% endif %}
+            {% endfor %}
+            <tr>
+                <td class="!p-0">
+                    <div class="px-3 py-2.5 relative z-10 bg-gray-50 dark:bg-gray-700 freeze-shadow"
+                         :style="'transform: translateX(' + scrollX + 'px)'">&nbsp;</div>
+                </td>
+                <td class="!p-0">
+                    <div class="px-3 py-2.5 relative z-10 bg-gray-50 dark:bg-gray-700 freeze-shadow"
+                         :style="'max-width: 350px; transform: translateX(' + scrollX + 'px)'">&nbsp;</div>
+                </td>
+                <td colspan="3" class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 bg-gray-50 dark:bg-gray-700">Totals</td>
+                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col">{{ '%.2f' | format(ns.total_cost) if ns.total_cost else '—' }}</td>
+                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col">{{ '%.2f' | format(ns.total_sale) if ns.total_sale else '—' }}</td>
+                {% for _ in supplier_names %}
+                <td></td>
+                {% endfor %}
+            </tr>
+        </tfoot>
+        {% endif %}
+    </table>
+    <div style="height: 14px;"></div>
+</div>
+
+{# Supplier meta popover — rendered outside table to escape overflow clipping #}
+<div x-data="{ open: false, name: '', lead: '', terms: '', notes: '', top: '0px', left: '0px' }"
+     @show-supplier-meta.window="
+        const d = $event.detail;
+        if (open && name === d.name) { open = false; return; }
+        const r = JSON.parse(d.rect);
+        top = (r.bottom + 4) + 'px';
+        left = Math.min(r.left, window.innerWidth - 350) + 'px';
+        name = d.name; lead = d.lead; terms = d.terms; notes = d.notes;
+        open = true;
+     "
+     @click.outside="open = false"
+     @keydown.escape.window="open = false">
+    <div x-show="open" x-cloak x-transition.opacity
+         :style="'position:fixed; top:' + top + '; left:' + left + '; z-index:9999; width:21rem;'"
+         class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg shadow-xl p-3 text-left text-xs text-gray-700 dark:text-gray-300"
+         style="word-wrap: break-word;">
+        <div class="font-semibold text-gray-900 dark:text-gray-100 mb-2 text-sm" x-text="name"></div>
+        <template x-if="lead">
+            <div class="mb-1.5"><span class="font-medium text-gray-500 dark:text-gray-400">Lead time:</span> <span x-text="lead"></span></div>
+        </template>
+        <template x-if="terms">
+            <div class="mb-1.5"><span class="font-medium text-gray-500 dark:text-gray-400">Terms:</span> <span x-text="terms"></span></div>
+        </template>
+        <template x-if="notes">
+            <div class="mb-1.5"><span class="font-medium text-gray-500 dark:text-gray-400">Notes:</span> <span x-text="notes"></span></div>
+        </template>
+    </div>
+</div>
+{% else %}
+<div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+    <p class="text-sm text-gray-500 dark:text-gray-400 italic">No items on this RFQ yet.</p>
+</div>
+{% endif %}

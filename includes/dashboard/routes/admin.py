@@ -508,6 +508,7 @@ def _query_email_logs(session, q: str = "", user_filter: str = "", page: int = 1
                 et.sent_at,
                 et.created_at,
                 et.match_type,
+                et.supplier_pipeline_result,
                 s.name AS supplier_name,
                 c.companyname AS customer_name
             FROM email_tracking et
@@ -546,21 +547,31 @@ def _get_email_user_list(session) -> list[dict]:
     return [{"email": r[0], "name": r[1]} for r in rows]
 
 
-@router.get("/admin/emails")
-async def admin_email_logs(request: Request, user: dict = require_admin,
-                           q: str = "", user_filter: str = "", page: int = 1):
-    """Admin page showing all tracked email communications."""
+def _resolve_email_filter(user: dict, user_filter: str) -> tuple[str, bool]:
+    """Return (effective_user_filter, can_change_filter) based on user role."""
+    if user["role"] == "Admin":
+        return user_filter, True
+    # Non-admin: always filter to their own email
+    return user.get("email", ""), False
+
+
+@router.get("/emails")
+async def email_logs(request: Request, user: dict = Depends(_helpers.require_user),
+                     q: str = "", user_filter: str = "", page: int = 1):
+    """Email logs page — all staff can view their own; admins see all."""
+    effective_filter, can_change_filter = _resolve_email_filter(user, user_filter)
     session = _helpers.get_session()
     try:
-        emails, total, has_more, next_page = _query_email_logs(session, q, user_filter, page)
-        email_users = _get_email_user_list(session)
+        emails, total, has_more, next_page = _query_email_logs(session, q, effective_filter, page)
+        email_users = _get_email_user_list(session) if can_change_filter else []
         ctx = {
             "emails": emails,
             "page_title": "Email Logs",
             "email_count": total,
             "q": q,
-            "user_filter": user_filter,
+            "user_filter": effective_filter,
             "email_users": email_users,
+            "can_change_filter": can_change_filter,
             "has_more": has_more,
             "next_page": next_page,
         }
@@ -571,17 +582,25 @@ async def admin_email_logs(request: Request, user: dict = require_admin,
         session.close()
 
 
-@router.get("/partial/admin/email-rows")
-async def partial_admin_email_rows(request: Request, user: dict = require_admin,
-                                   q: str = "", user_filter: str = "", page: int = 1) -> HTMLResponse:
+@router.get("/admin/emails")
+async def admin_email_logs_redirect(request: Request, user: dict = Depends(_helpers.require_user)):
+    """Redirect old /admin/emails URL to /emails."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/emails", status_code=302)
+
+
+@router.get("/partial/email-rows")
+async def partial_email_rows(request: Request, user: dict = Depends(_helpers.require_user),
+                             q: str = "", user_filter: str = "", page: int = 1) -> HTMLResponse:
     """Return just the <tr> rows + sentinel for infinite scroll."""
+    effective_filter, _ = _resolve_email_filter(user, user_filter)
     session = _helpers.get_session()
     try:
-        emails, total, has_more, next_page = _query_email_logs(session, q, user_filter, page)
+        emails, total, has_more, next_page = _query_email_logs(session, q, effective_filter, page)
         return templates.TemplateResponse(request, "partials/_email_rows.html", {
             "emails": emails,
             "q": q,
-            "user_filter": user_filter,
+            "user_filter": effective_filter,
             "has_more": has_more,
             "next_page": next_page,
         })
@@ -589,22 +608,24 @@ async def partial_admin_email_rows(request: Request, user: dict = require_admin,
         session.close()
 
 
-@router.get("/partial/admin/emails")
-async def partial_admin_emails(request: Request, user: dict = require_admin,
-                               q: str = "", user_filter: str = "", page: int = 1) -> HTMLResponse:
+@router.get("/partial/emails")
+async def partial_emails(request: Request, user: dict = Depends(_helpers.require_user),
+                         q: str = "", user_filter: str = "", page: int = 1) -> HTMLResponse:
     """Return the full email logs partial (for filter form submissions via HTMX)."""
+    effective_filter, can_change_filter = _resolve_email_filter(user, user_filter)
     session = _helpers.get_session()
     try:
-        emails, total, has_more, next_page = _query_email_logs(session, q, user_filter, page)
-        email_users = _get_email_user_list(session)
+        emails, total, has_more, next_page = _query_email_logs(session, q, effective_filter, page)
+        email_users = _get_email_user_list(session) if can_change_filter else []
         ctx = {
             "user": user,
             "emails": emails,
             "page_title": "Email Logs",
             "email_count": total,
             "q": q,
-            "user_filter": user_filter,
+            "user_filter": effective_filter,
             "email_users": email_users,
+            "can_change_filter": can_change_filter,
             "has_more": has_more,
             "next_page": next_page,
         }
@@ -700,7 +721,7 @@ async def admin_mailbox_toggle(request: Request, email: str, user: dict = requir
 # ---------------------------------------------------------------------------
 
 @router.get("/api/admin/search-entities")
-async def api_search_entities(request: Request, type: str, q: str, user: dict = require_admin):
+async def api_search_entities(request: Request, type: str, q: str, user: dict = Depends(_helpers.require_user)):
     """Search suppliers or customers by name for the email linking UI."""
     if not q or len(q) < 2:
         return JSONResponse({"results": []})
@@ -726,7 +747,7 @@ async def api_search_entities(request: Request, type: str, q: str, user: dict = 
 
 
 @router.post("/api/admin/link-email")
-async def api_link_email(request: Request, user: dict = require_admin):
+async def api_link_email(request: Request, user: dict = Depends(_helpers.require_user)):
     """Link an email to an RFQ, customer, or supplier. Optionally save domain for future matching."""
     from includes.dashboard.models import EmailTracking, Supplier, Customer
 
@@ -760,6 +781,10 @@ async def api_link_email(request: Request, user: dict = require_admin):
                 {"token": rfq_token, "tid": tracking.gmail_thread_id or "", "eid": email_id}
             )
             session.commit()
+            # Trigger quote pipeline if now linked to both RFQ + supplier
+            if tracking.supplier_id and tracking.direction == "received":
+                from includes.tools.supplier_quote_pipeline import trigger_supplier_quote_pipeline
+                trigger_supplier_quote_pipeline(email_id, user_id=user.get("email", "manual"))
             return JSONResponse({"status": "ok", "message": f"Linked thread to {rfq_token}"})
 
         elif link_type == "customer":
@@ -806,6 +831,11 @@ async def api_link_email(request: Request, user: dict = require_admin):
             session.commit()
             supplier = session.query(Supplier).filter(Supplier.id == entity_id).first()
             name = supplier.name if supplier else "supplier"
+            # Trigger quote pipeline if now linked to both supplier + RFQ
+            rfq_id = tracking.rfq_token or tracking.rfq_id
+            if rfq_id and tracking.direction == "received":
+                from includes.tools.supplier_quote_pipeline import trigger_supplier_quote_pipeline
+                trigger_supplier_quote_pipeline(email_id, user_id=user.get("email", "manual"))
             return JSONResponse({"status": "ok", "message": f"Linked to {name}. {domain_msg}".strip()})
 
         else:

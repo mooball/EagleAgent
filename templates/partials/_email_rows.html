@@ -57,8 +57,38 @@ Object.assign(window._emailData || {}, {
         <span class="text-gray-400">→</span>
         <span>{{ e.recipient_email or '—' }}</span>
     </td>
-    <td class="px-2 py-1.5 max-w-[300px] truncate" title="{{ e.subject or '' }}">
-        {{ e.subject or '(no subject)' }}
+    <td class="px-2 py-1.5 max-w-[300px]" title="{{ e.subject or '' }}">
+        <div class="flex items-center gap-1.5">
+            <span class="truncate">{{ e.subject or '(no subject)' }}</span>
+            {% if e.supplier_pipeline_result %}
+                {% set spr_class = e.supplier_pipeline_result.get('classification', '') %}
+                {% if spr_class == 'quote_response' %}
+                <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 cursor-pointer"
+                      data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Quote</span>
+                {% elif spr_class == 'declined' %}
+                <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 cursor-pointer"
+                      data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Declined</span>
+                {% elif spr_class == 'clarification_required' %}
+                <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300 cursor-pointer"
+                      data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Clarification</span>
+                {% elif spr_class == 'acknowledgement' %}
+                <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 cursor-pointer"
+                      data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Ack</span>
+                {% elif spr_class == 'not_quote' %}
+                <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400 cursor-pointer"
+                      data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">—</span>
+                {% elif spr_class == 'needs_review' %}
+                <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 cursor-pointer"
+                      data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Review</span>
+                {% endif %}
+            {% endif %}
+        </div>
     </td>
     <td class="px-2 py-1.5 whitespace-nowrap text-gray-500 dark:text-gray-400">
         {{ e.display_time }}
@@ -67,7 +97,7 @@ Object.assign(window._emailData || {}, {
 {% endfor %}
 {% if has_more %}
 <tr id="email-sentinel"
-    hx-get="/partial/admin/email-rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}{% if user_filter %}&user_filter={{ user_filter }}{% endif %}"
+    hx-get="/partial/email-rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}{% if user_filter %}&user_filter={{ user_filter }}{% endif %}"
     hx-trigger="intersect"
     hx-target="this"
     hx-swap="outerHTML">

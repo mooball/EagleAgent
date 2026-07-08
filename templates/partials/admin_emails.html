@@ -3,11 +3,12 @@
 {{ page_header("Email Logs") }}
 
 <!-- Filter bar -->
-<form hx-get="/partial/admin/emails" hx-target="#main-content" hx-push-url="/admin/emails"
+<form hx-get="/partial/emails" hx-target="#main-content" hx-push-url="/emails"
       class="flex flex-wrap items-center gap-2 mb-4">
     <input type="text" name="q" value="{{ q or '' }}"
            placeholder="Search subject, customer, supplier…"
            class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-64">
+    {% if can_change_filter is not defined or can_change_filter %}
     <select name="user_filter"
             class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
         <option value="">All users</option>
@@ -15,12 +16,13 @@
         <option value="{{ ue.email }}" {% if user_filter == ue.email %}selected{% endif %}>{{ ue.name }} ({{ ue.email }})</option>
         {% endfor %}
     </select>
+    {% endif %}
     <button type="submit"
             class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">
         Filter
     </button>
-    {% if q or user_filter %}
-    <a href="/admin/emails" hx-get="/partial/admin/emails" hx-target="#main-content" hx-push-url="/admin/emails"
+    {% if q or (can_change_filter is not defined or can_change_filter) and user_filter %}
+    <a href="/emails" hx-get="/partial/emails" hx-target="#main-content" hx-push-url="/emails"
        class="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200">
         Clear
     </a>
@@ -260,4 +262,106 @@ window._emailData = {
             </div>
     {% endset %}
     {% include "partials/_email_viewer_modal.html" %}
+
+    <!-- Pipeline Detail Modal -->
+    <div x-data="{ showPipeline: false, pd: {} }"
+         @show-pipeline-detail.window="pd = $event.detail; showPipeline = true"
+         @keydown.escape.window="showPipeline = false">
+        <template x-if="showPipeline">
+            <div class="fixed inset-0 z-[60] flex items-center justify-center" @click.self="showPipeline = false">
+                <div class="fixed inset-0 bg-black/40"></div>
+                <div class="relative z-10 bg-white dark:bg-gray-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-md mx-4 max-h-[80vh] overflow-y-auto">
+                    <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 text-sm">Supplier Pipeline Result</h3>
+                        <button @click="showPipeline = false" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
+                    </div>
+                    <div class="px-4 py-3 text-sm space-y-3">
+                        <!-- Classification -->
+                        <div>
+                            <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Classification</span>
+                            <div class="mt-0.5">
+                                <span x-show="pd.classification === 'quote_response'" class="px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">Quote Response</span>
+                                <span x-show="pd.classification === 'declined'" class="px-2 py-0.5 text-xs rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">Declined</span>
+                                <span x-show="pd.classification === 'clarification_required'" class="px-2 py-0.5 text-xs rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">Clarification Required</span>
+                                <span x-show="pd.classification === 'acknowledgement'" class="px-2 py-0.5 text-xs rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">Acknowledgement</span>
+                                <span x-show="pd.classification === 'not_quote'" class="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">Not a Quote</span>
+                                <span x-show="pd.classification === 'needs_review'" class="px-2 py-0.5 text-xs rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">Needs Review</span>
+                            </div>
+                            <p class="mt-1 text-xs text-gray-600 dark:text-gray-400" x-text="pd.reason"></p>
+                        </div>
+
+                        <!-- Supplier & RFQ -->
+                        <template x-if="pd.supplier_name || pd.rfq_id">
+                            <div class="flex gap-4 text-xs">
+                                <template x-if="pd.supplier_name">
+                                    <div><span class="font-medium text-gray-500 dark:text-gray-400">Supplier:</span> <span x-text="pd.supplier_name"></span></div>
+                                </template>
+                                <template x-if="pd.rfq_id">
+                                    <div><span class="font-medium text-gray-500 dark:text-gray-400">RFQ:</span> <span x-text="pd.rfq_id"></span></div>
+                                </template>
+                            </div>
+                        </template>
+
+                        <!-- Quotes -->
+                        <template x-if="pd.quotes && pd.quotes.length > 0">
+                            <div>
+                                <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Extracted Quotes</span>
+                                <div class="mt-1 space-y-1">
+                                    <template x-for="q in pd.quotes" :key="q.item_line">
+                                        <div class="flex items-center gap-2 text-xs bg-gray-50 dark:bg-gray-700/50 rounded px-2 py-1">
+                                            <span class="font-mono text-gray-500" x-text="'Line ' + q.item_line"></span>
+                                            <span class="font-semibold" x-text="'$' + parseFloat(q.price).toFixed(2) + ' ' + (q.currency || 'AUD')"></span>
+                                            <span x-show="q.confidence" class="text-gray-400" x-text="'[' + q.confidence + ']'"></span>
+                                            <span x-show="q.lead_time" class="text-gray-500 truncate" x-text="q.lead_time"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+
+                        <!-- Shipping / Terms / Notes -->
+                        <template x-if="pd.shipping || pd.terms || pd.notes">
+                            <div class="text-xs space-y-1 border-t border-gray-100 dark:border-gray-700 pt-2">
+                                <template x-if="pd.shipping">
+                                    <div><span class="font-medium text-gray-500 dark:text-gray-400">Shipping:</span> <span x-text="'$' + pd.shipping.cost + ' ' + (pd.shipping.currency || 'AUD')"></span></div>
+                                </template>
+                                <template x-if="pd.terms">
+                                    <div><span class="font-medium text-gray-500 dark:text-gray-400">Terms:</span> <span x-text="pd.terms"></span></div>
+                                </template>
+                                <template x-if="pd.notes">
+                                    <div><span class="font-medium text-gray-500 dark:text-gray-400">Notes:</span> <span x-text="pd.notes"></span></div>
+                                </template>
+                            </div>
+                        </template>
+
+                        <!-- Actions Applied -->
+                        <template x-if="pd.actions && pd.actions.length > 0">
+                            <div>
+                                <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Actions Applied</span>
+                                <ul class="mt-1 space-y-0.5 text-xs text-gray-700 dark:text-gray-300">
+                                    <template x-for="a in pd.actions" :key="a">
+                                        <li class="pl-2 border-l-2 border-green-300 dark:border-green-700" x-text="a"></li>
+                                    </template>
+                                </ul>
+                            </div>
+                        </template>
+
+                        <!-- Error -->
+                        <template x-if="pd.error">
+                            <div class="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded px-2 py-1">
+                                <span class="font-medium">Error:</span> <span x-text="pd.error"></span>
+                            </div>
+                        </template>
+
+                        <!-- Processed at -->
+                        <template x-if="pd.processed_at">
+                            <div class="text-[10px] text-gray-400 dark:text-gray-500 pt-1 border-t border-gray-100 dark:border-gray-700" x-text="'Processed: ' + new Date(pd.processed_at).toLocaleString()"></div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
 </div>

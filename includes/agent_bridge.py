@@ -33,6 +33,77 @@ logger = logging.getLogger(__name__)
 # Chainlit session so that thread_id pinning cannot race.
 _session_locks: Dict[str, asyncio.Lock] = {}
 
+# ---------------------------------------------------------------------------
+# Cooperative cancellation via per-session Events
+# ---------------------------------------------------------------------------
+# Each session gets an asyncio.Event that is SET when a stop is requested.
+# Long-running action callbacks check this flag at natural break points
+# and exit early if set. A dedicated /api/stop-agent endpoint sets the flag
+# (bypassing the session lock) and optionally cancels tracked asyncio Tasks.
+
+_cancel_events: Dict[str, asyncio.Event] = {}
+_running_tasks: Dict[str, set[asyncio.Task]] = {}
+
+
+def _get_cancel_event(session_id: str) -> asyncio.Event:
+    """Get or create the cancellation event for a session."""
+    if session_id not in _cancel_events:
+        _cancel_events[session_id] = asyncio.Event()
+    return _cancel_events[session_id]
+
+
+def is_stop_requested(session_id: str) -> bool:
+    """Check if stop has been requested for this session. Non-blocking."""
+    ev = _cancel_events.get(session_id)
+    return ev.is_set() if ev else False
+
+
+def register_task(task: asyncio.Task, session_id: str) -> None:
+    """Register a running agent task so it can be cancelled via stop."""
+    if session_id not in _running_tasks:
+        _running_tasks[session_id] = set()
+    _running_tasks[session_id].add(task)
+
+
+def unregister_task(task: asyncio.Task, session_id: str) -> None:
+    """Remove a completed/cancelled task from the registry."""
+    tasks = _running_tasks.get(session_id)
+    if tasks:
+        tasks.discard(task)
+
+
+async def request_stop(session_id: str) -> int:
+    """Request cancellation of all agent work for a session.
+
+    Sets the cooperative cancel flag AND cancels tracked asyncio Tasks.
+    Returns the number of tasks cancelled.
+    """
+    # Set cooperative flag — callbacks will check this at break points
+    ev = _get_cancel_event(session_id)
+    ev.set()
+
+    # Also cancel tracked asyncio tasks (effective for astream_events loops)
+    cancelled = 0
+    tasks = list(_running_tasks.get(session_id, set()))
+    for t in tasks:
+        if not t.done():
+            t.cancel()
+            cancelled += 1
+    _running_tasks.pop(session_id, None)
+
+    if cancelled:
+        logger.info(f"[agent-bridge] Cancelled {cancelled} task(s) for session {session_id[:8]}")
+    else:
+        logger.info(f"[agent-bridge] Stop requested for session {session_id[:8]} (cooperative flag set)")
+    return cancelled
+
+
+def clear_stop(session_id: str) -> None:
+    """Clear the cancel flag so the session can accept new work."""
+    ev = _cancel_events.get(session_id)
+    if ev:
+        ev.clear()
+
 
 # ---------------------------------------------------------------------------
 # Agent → Dashboard helpers

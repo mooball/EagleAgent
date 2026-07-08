@@ -5,10 +5,11 @@ Orchestrates nightly post-processing tasks after NetSuite entity syncs have
 already run (via the background NETSUITE_SYNC_ENABLED loop in main.py).
 
 Steps:
-  1. Link Supplier Brands (--since 2d — post-sync linking)
-  2. Categorize Suppliers (--limit 100 — batch of uncategorized)
-  3. Generate Supplier Notes (--limit 100 — research missing notes)
-  4. Update Supplier Embeddings (re-embed any with NULL embedding)
+  1. Prune Checkpoints (keep last 5 per thread — limits DB bloat)
+  2. Link Supplier Brands (--since 2d — post-sync linking)
+  3. Categorize Suppliers (--limit 100 — batch of uncategorized)
+  4. Generate Supplier Notes (--limit 100 — research missing notes)
+  5. Update Supplier Embeddings (re-embed any with NULL embedding)
 
 Usage:
   uv run python -m scripts.nightly_sync
@@ -48,6 +49,12 @@ def ensure_google_credentials():
     print(f"✅ Decoded service account credentials to {creds_file}")
 
 STEPS = [
+    {
+        "name": "prune_checkpoints",
+        "module": "scripts.prune_checkpoints",
+        "args": ["--keep", "5"],
+        "description": "Prune old LangGraph checkpoints (keep last 5 per thread)",
+    },
     {
         "name": "link_supplier_brands",
         "module": "scripts.link_supplier_brands",

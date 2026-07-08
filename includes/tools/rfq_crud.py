@@ -111,6 +111,7 @@ def _rfq_to_dict(rfq) -> dict:
         "history": rfq.history or [],
         "item_groups": rfq.item_groups,
         "pipeline_stage": getattr(rfq, "pipeline_stage", "unprocessed") or "unprocessed",
+        "supplier_meta": rfq.supplier_meta or {},
         "items": [_item_to_dict(item) for item in (rfq.items or [])],
     }
 
@@ -575,11 +576,17 @@ def _delete_item_sync(rfq_number: str, line_num: int, user_id: str) -> dict | st
         session.delete(line_item)
         session.flush()  # commit delete before renumbering to avoid unique constraint
 
-        # Renumber remaining items using raw SQL to avoid ORM batch conflicts
+        # Renumber remaining items: shift to negative first to avoid unique
+        # constraint violations (PostgreSQL checks per-row during UPDATE,
+        # so line 7→6 can collide with existing line 6 if processed first).
         from sqlalchemy import text
         session.execute(
-            text("UPDATE rfq_items SET line = line - 1 WHERE rfq_id = :rfq_id AND line > :line"),
+            text("UPDATE rfq_items SET line = -(line - 1) WHERE rfq_id = :rfq_id AND line > :line"),
             {"rfq_id": rfq.id, "line": line_num},
+        )
+        session.execute(
+            text("UPDATE rfq_items SET line = -line WHERE rfq_id = :rfq_id AND line < 0"),
+            {"rfq_id": rfq.id},
         )
 
         now = _now_iso()
@@ -781,6 +788,130 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             rfq.status = "in_progress"
             history.append({"date": now, "user": "system", "action": "Status auto-changed to in_progress (suppliers added)"})
 
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _select_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
+    """Mark a supplier's quote as selected on a line item.
+
+    Deselects any previous selection on that item. Copies the selected
+    quote_cost to the item's cost_price.
+    """
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+    from decimal import Decimal, InvalidOperation
+
+    line_num = _get_line(data)
+    name = data.get("name")
+    if line_num is None or not name:
+        return "Error: 'line' and 'name' are required for select_quote."
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+
+        line_item = session.query(RFQItem).filter(
+            RFQItem.rfq_id == rfq.id, RFQItem.line == line_num
+        ).first()
+        if not line_item:
+            return f"Error: line {line_num} not found in {rfq_number}."
+
+        suppliers = list(line_item.suppliers or [])
+        target = None
+        for s in suppliers:
+            if (s.get("name") or "").lower() == name.lower():
+                target = s
+                break
+        if not target:
+            return f"Error: supplier '{name}' not found on line {line_num}."
+
+        if target.get("quote_status") == "selected":
+            # Toggle off
+            target["quote_status"] = "quoted"
+            line_item.cost_price = None
+        else:
+            # Select this one; deselect any previous
+            for s in suppliers:
+                if s.get("quote_status") == "selected":
+                    s["quote_status"] = "quoted"
+            target["quote_status"] = "selected"
+            # Copy quote_cost to item cost_price
+            qc = target.get("quote_cost")
+            if qc is not None:
+                try:
+                    line_item.cost_price = Decimal(str(qc))
+                except (InvalidOperation, ValueError):
+                    pass
+
+        line_item.suppliers = suppliers
+        flag_modified(line_item, "suppliers")
+
+        now = _now_iso()
+        history = list(rfq.history or [])
+        history.append({
+            "date": now, "user": user_id,
+            "action": f"Selected '{name}' on line {line_num}",
+        })
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _decline_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
+    """Mark a supplier's quote as declined and clear its price."""
+    data = dict(data)
+    data["quote_status"] = "declined"
+    data["quote_cost"] = None
+    return _update_supplier_sync(rfq_number, data, user_id)
+
+
+def _set_supplier_meta_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
+    """Write supplier-level metadata (shipping, notes, terms) to rfqs.supplier_meta."""
+    from includes.dashboard.models import RFQ
+
+    name = data.get("name")
+    if not name:
+        return "Error: 'name' is required for set_supplier_meta."
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+
+        meta = dict(rfq.supplier_meta or {})
+        entry = dict(meta.get(name, {}))
+        for key in ("shipping_cost", "shipping_currency", "notes", "terms"):
+            if key in data:
+                val = data[key]
+                entry[key] = val if val is not None and val != "" else None
+        meta[name] = entry
+        rfq.supplier_meta = meta
+
+        now = _now_iso()
+        history = list(rfq.history or [])
+        history.append({
+            "date": now, "user": user_id,
+            "action": f"Updated supplier meta for '{name}'",
+        })
         rfq.history = history
         rfq.updated_at = _now_dt()
         session.commit()

@@ -45,6 +45,28 @@ logger = logging.getLogger(__name__)
 # Only scan @eagle-exports.com mailboxes
 SCAN_DOMAIN = "eagle-exports.com"
 
+# Collect email IDs that may be quote responses (populated during process_message)
+_quote_pipeline_candidates: list[int] = []
+
+
+def _trigger_supplier_quote_pipelines(session):
+    """Fire supplier quote pipeline for any candidates collected during this sync run."""
+    global _quote_pipeline_candidates
+    if not _quote_pipeline_candidates:
+        return
+
+    candidates = _quote_pipeline_candidates[:]
+    _quote_pipeline_candidates.clear()
+
+    try:
+        from includes.tools.supplier_quote_pipeline import trigger_supplier_quote_pipeline
+        for email_id in candidates:
+            trigger_supplier_quote_pipeline(email_id, user_id="gmail-sync")
+        if candidates:
+            logger.info(f"[quote-pipeline] Triggered for {len(candidates)} email(s): {candidates}")
+    except Exception as e:
+        logger.error(f"[quote-pipeline] Failed to trigger: {e}")
+
 
 def get_enabled_mailboxes(session) -> list[str]:
     """Return list of user emails that should be scanned."""
@@ -672,6 +694,11 @@ def process_message(
                     updated_at=datetime.now(timezone.utc),
                 )
                 session.add(tracking)
+                # Queue for quote pipeline if received + linked to RFQ + has supplier
+                if (direction == "received" and
+                        tracking.rfq_token and tracking.supplier_id):
+                    session.flush()
+                    _quote_pipeline_candidates.append(tracking.id)
         return "tier1"
 
     # --- Tier 2: Subject pattern match ---
@@ -733,6 +760,11 @@ def process_message(
                     updated_at=datetime.now(timezone.utc),
                 )
                 session.add(tracking)
+                # Queue for quote pipeline if received + linked to RFQ + has supplier
+                if (direction == "received" and
+                        tracking.rfq_token and tracking.supplier_id):
+                    session.flush()
+                    _quote_pipeline_candidates.append(tracking.id)
             return "tier2"
 
     # --- Tier 3: Contact/domain match ---
@@ -847,6 +879,9 @@ def sync_mailbox(session, user_email: str, domain_index: dict, dry_run: bool = F
     if not dry_run and new_history_id > cursor:
         update_cursor(session, user_email, new_history_id)
         session.commit()
+
+        # Trigger quote pipeline for any newly-linked received emails
+        _trigger_supplier_quote_pipelines(session)
 
     counts["new_history_id"] = new_history_id
     return counts
