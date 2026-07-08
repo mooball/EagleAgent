@@ -576,11 +576,17 @@ def _delete_item_sync(rfq_number: str, line_num: int, user_id: str) -> dict | st
         session.delete(line_item)
         session.flush()  # commit delete before renumbering to avoid unique constraint
 
-        # Renumber remaining items using raw SQL to avoid ORM batch conflicts
+        # Renumber remaining items: shift to negative first to avoid unique
+        # constraint violations (PostgreSQL checks per-row during UPDATE,
+        # so line 7→6 can collide with existing line 6 if processed first).
         from sqlalchemy import text
         session.execute(
-            text("UPDATE rfq_items SET line = line - 1 WHERE rfq_id = :rfq_id AND line > :line"),
+            text("UPDATE rfq_items SET line = -(line - 1) WHERE rfq_id = :rfq_id AND line > :line"),
             {"rfq_id": rfq.id, "line": line_num},
+        )
+        session.execute(
+            text("UPDATE rfq_items SET line = -line WHERE rfq_id = :rfq_id AND line < 0"),
+            {"rfq_id": rfq.id},
         )
 
         now = _now_iso()
