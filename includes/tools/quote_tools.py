@@ -764,7 +764,7 @@ def create_quote_tools(user_id: str) -> list:
         # Gemini models sometimes pass data as a JSON string instead of a dict.
         if isinstance(data, str):
             import json
-            logger.warning(f"manage_rfq: 'data' received as string, parsing JSON: {data[:200]}")
+            logger.debug(f"manage_rfq: 'data' received as string, parsing JSON: {data[:200]}")
             try:
                 data = json.loads(data)
             except (json.JSONDecodeError, ValueError):

@@ -361,6 +361,8 @@ async def start():
     try:
         chainlit_thread_id = cl.context.session.thread_id
         await cl.send_window_message({"type": "thread_id", "threadId": chainlit_thread_id})
+        # Also send the session_id so the parent can reclaim the cookie on tab focus
+        await cl.send_window_message({"type": "session_id", "sessionId": cl.context.session.id})
     except Exception:
         pass
 
@@ -555,6 +557,7 @@ async def on_chat_resume(thread: ThreadDict):
     # Notify the parent frame of this thread's id so it can track it
     try:
         await cl.send_window_message({"type": "thread_id", "threadId": thread_id})
+        await cl.send_window_message({"type": "session_id", "sessionId": cl.context.session.id})
     except Exception:
         pass
 

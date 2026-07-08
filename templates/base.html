@@ -390,6 +390,24 @@
                                 }
                             }
                         }
+                        if (event.data?.type === 'session_id' && event.data.sessionId) {
+                            // Track the iframe's Chainlit session_id for cookie reclaim
+                            this._chainlitSessionId = event.data.sessionId;
+                        }
+                    });
+
+                    // Reclaim the Chainlit session cookie when this tab gains focus.
+                    // Prevents multi-tab cookie collision (last tab to connect owns
+                    // the cookie; switching back would send the wrong session_id).
+                    document.addEventListener('visibilitychange', () => {
+                        if (document.visibilityState === 'visible' && this._chainlitSessionId) {
+                            fetch('/chat/set-session-cookie', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                credentials: 'same-origin',
+                                body: JSON.stringify({session_id: this._chainlitSessionId}),
+                            }).catch(() => {});
+                        }
                     });
 
                     // Set initial context from the page (may switch iframe to an RFQ thread)
