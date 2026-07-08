@@ -407,6 +407,11 @@
                                 credentials: 'same-origin',
                                 body: JSON.stringify({session_id: this._chainlitSessionId}),
                             }).catch(() => {});
+                            // Also re-push dashboard context so the agent knows
+                            // which RFQ this tab is viewing (context is per-user,
+                            // not per-tab, so switching tabs can leave stale context).
+                            this.updateContext();
+                            this.pushContext();
                         }
                     });
 
