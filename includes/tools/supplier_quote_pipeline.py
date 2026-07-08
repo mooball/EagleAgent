@@ -228,6 +228,8 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
                     max_output_tokens=150,
                 ),
             )
+            if not response.text:
+                raise ValueError("LLM returned empty response")
             raw = response.text.strip()
             # Parse JSON from response (handle markdown code fences)
             if raw.startswith("```"):
@@ -413,7 +415,7 @@ def _extract_image_with_gemini(image_bytes: bytes, filename: str, mime_type: str
 
 
 def _extract_spreadsheet_with_gemini(data: bytes, filename: str, mime_type: str) -> str:
-    """Extract spreadsheet content. For CSV, parse directly; for Excel, use Gemini."""
+    """Extract spreadsheet content. For CSV, parse directly; for Excel, convert locally."""
     if filename.lower().endswith(".csv"):
         try:
             text = data.decode("utf-8", errors="replace")
@@ -422,30 +424,34 @@ def _extract_spreadsheet_with_gemini(data: bytes, filename: str, mime_type: str)
         except Exception:
             pass
 
-    # For Excel files, pass to Gemini
-    from google import genai as _genai
-    from google.genai import types as _types
-
+    # For Excel files, parse locally with openpyxl (Gemini doesn't accept xlsx uploads)
     try:
-        client = _genai.Client(http_options={"timeout": 120000})
-        response = client.models.generate_content(
-            model=Config.DEFAULT_MODEL,
-            contents=[
-                _types.Part.from_bytes(data=data, mime_type=mime_type),
-                (
-                    "Extract all data from this spreadsheet. Present as Markdown tables. "
-                    "Include all pricing, part numbers, quantities, and any notes. "
-                    "Preserve column headers and row relationships."
-                ),
-            ],
-            config=_types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=8192,
-            ),
-        )
-        return response.text or "*[No content extracted]*"
+        import io
+        from openpyxl import load_workbook
+
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        parts = []
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            rows = list(ws.iter_rows(values_only=True))
+            if not rows:
+                continue
+            parts.append(f"## Sheet: {sheet_name}\n")
+            # Format as Markdown table
+            header = rows[0]
+            col_names = [str(c) if c is not None else "" for c in header]
+            parts.append("| " + " | ".join(col_names) + " |")
+            parts.append("| " + " | ".join(["---"] * len(col_names)) + " |")
+            for row in rows[1:200]:  # Cap at 200 data rows
+                cells = [str(c) if c is not None else "" for c in row]
+                parts.append("| " + " | ".join(cells) + " |")
+        wb.close()
+        result_text = "\n".join(parts)
+        if not result_text.strip():
+            return "*[Spreadsheet appears empty]*"
+        return result_text[:8000]
     except Exception as e:
-        logger.error(f"Gemini spreadsheet extraction failed for {filename}: {e}")
+        logger.error(f"Local spreadsheet extraction failed for {filename}: {e}")
         return f"*[Spreadsheet extraction failed: {e}]*"
 
 
