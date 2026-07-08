@@ -3,11 +3,12 @@
 {{ page_header("Email Logs") }}
 
 <!-- Filter bar -->
-<form hx-get="/partial/admin/emails" hx-target="#main-content" hx-push-url="/admin/emails"
+<form hx-get="/partial/emails" hx-target="#main-content" hx-push-url="/emails"
       class="flex flex-wrap items-center gap-2 mb-4">
     <input type="text" name="q" value="{{ q or '' }}"
            placeholder="Search subject, customer, supplier…"
            class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-64">
+    {% if can_change_filter is not defined or can_change_filter %}
     <select name="user_filter"
             class="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
         <option value="">All users</option>
@@ -15,12 +16,13 @@
         <option value="{{ ue.email }}" {% if user_filter == ue.email %}selected{% endif %}>{{ ue.name }} ({{ ue.email }})</option>
         {% endfor %}
     </select>
+    {% endif %}
     <button type="submit"
             class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700">
         Filter
     </button>
-    {% if q or user_filter %}
-    <a href="/admin/emails" hx-get="/partial/admin/emails" hx-target="#main-content" hx-push-url="/admin/emails"
+    {% if q or (can_change_filter is not defined or can_change_filter) and user_filter %}
+    <a href="/emails" hx-get="/partial/emails" hx-target="#main-content" hx-push-url="/emails"
        class="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200">
         Clear
     </a>

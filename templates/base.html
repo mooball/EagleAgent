@@ -166,8 +166,16 @@
                        class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                         Mailbox Scanning
                     </a>
-                    <a href="/admin/emails"
-                       hx-get="/admin/emails" hx-target="#main-content" hx-push-url="/admin/emails"
+                    <a href="/emails"
+                       hx-get="/emails" hx-target="#main-content" hx-push-url="/emails"
+                       @click="userMenuOpen = false"
+                       class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        Email Logs
+                    </a>
+                    {% endif %}
+                    {% if user and user.role != 'Admin' %}
+                    <a href="/emails"
+                       hx-get="/emails" hx-target="#main-content" hx-push-url="/emails"
                        @click="userMenuOpen = false"
                        class="block px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                         Email Logs

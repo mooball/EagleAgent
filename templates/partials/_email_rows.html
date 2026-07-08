@@ -67,7 +67,7 @@ Object.assign(window._emailData || {}, {
 {% endfor %}
 {% if has_more %}
 <tr id="email-sentinel"
-    hx-get="/partial/admin/email-rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}{% if user_filter %}&user_filter={{ user_filter }}{% endif %}"
+    hx-get="/partial/email-rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}{% if user_filter %}&user_filter={{ user_filter }}{% endif %}"
     hx-trigger="intersect"
     hx-target="this"
     hx-swap="outerHTML">
