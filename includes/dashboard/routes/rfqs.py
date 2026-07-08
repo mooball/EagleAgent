@@ -431,6 +431,7 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
                     et.created_at,
                     et.supplier_id,
                     et.customer_id,
+                    et.supplier_pipeline_result,
                     s.name AS supplier_name,
                     c.companyname AS customer_name
                 FROM email_tracking et
@@ -496,6 +497,10 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
             thread["last_time"] = event["display_time"]
             if event.get("direction") == "received":
                 thread["has_reply"] = True
+            # Track latest pipeline classification for thread header
+            spr = event.get("supplier_pipeline_result")
+            if spr and spr.get("classification"):
+                thread["latest_classification"] = spr["classification"]
 
         # Group threads by source
         source_groups: OrderedDict = OrderedDict()

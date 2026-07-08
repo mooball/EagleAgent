@@ -406,11 +406,7 @@
                     class="px-3 py-2 text-sm border-b-2 transition-colors {% if active_tab == 'quotation' %}border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400 font-medium{% else %}border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200{% endif %}">
                 Quotation
             </button>
-            <button type="button"
-                    hx-get="/partial/rfqs/{{ rfq.id }}/quotation-old" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}/quotation-old"
-                    class="px-3 py-2 text-sm border-b-2 transition-colors {% if active_tab == 'quotation-old' %}border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400 font-medium{% else %}border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200{% endif %}">
-                Quotation (old)
-            </button>
+            {# Legacy quotation tab hidden — route still active at /quotation-old #}
         </nav>
     </div>
 
@@ -698,6 +694,17 @@
                             <span class="flex-shrink-0 w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-gray-600"></span>
                             {% endif %}
                             <span class="text-xs text-gray-700 dark:text-gray-300 truncate flex-1">{{ thread.subject }}</span>
+                            {% if thread.latest_classification == 'quote_response' %}
+                            <span class="flex-shrink-0 text-[10px] px-1 py-px rounded-full bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">Quote</span>
+                            {% elif thread.latest_classification == 'declined' %}
+                            <span class="flex-shrink-0 text-[10px] px-1 py-px rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">Declined</span>
+                            {% elif thread.latest_classification == 'clarification_required' %}
+                            <span class="flex-shrink-0 text-[10px] px-1 py-px rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">Clarification</span>
+                            {% elif thread.latest_classification == 'acknowledgement' %}
+                            <span class="flex-shrink-0 text-[10px] px-1 py-px rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">Ack</span>
+                            {% elif thread.latest_classification == 'needs_review' %}
+                            <span class="flex-shrink-0 text-[10px] px-1 py-px rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">Review</span>
+                            {% endif %}
                             <span class="flex-shrink-0 text-[10px] px-1 py-px rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">{{ thread.message_count }}</span>
                             <span class="flex-shrink-0 text-[10px] text-gray-400 dark:text-gray-500 whitespace-nowrap">{{ thread.last_time }}</span>
                         </button>
@@ -716,6 +723,34 @@
                                         {% else %}bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300{% endif %}">
                                         {{ msg.direction }}
                                     </span>
+                                    {% if msg.supplier_pipeline_result %}
+                                        {% set spr_class = msg.supplier_pipeline_result.get('classification', '') %}
+                                        {% if spr_class == 'quote_response' %}
+                                    <span class="text-[10px] px-1 py-px rounded-full bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 cursor-pointer"
+                                          data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
+                                          @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Quote</span>
+                                        {% elif spr_class == 'declined' %}
+                                    <span class="text-[10px] px-1 py-px rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 cursor-pointer"
+                                          data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
+                                          @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Declined</span>
+                                        {% elif spr_class == 'clarification_required' %}
+                                    <span class="text-[10px] px-1 py-px rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300 cursor-pointer"
+                                          data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
+                                          @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Clarification</span>
+                                        {% elif spr_class == 'acknowledgement' %}
+                                    <span class="text-[10px] px-1 py-px rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 cursor-pointer"
+                                          data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
+                                          @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Ack</span>
+                                        {% elif spr_class == 'not_quote' %}
+                                    <span class="text-[10px] px-1 py-px rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400 cursor-pointer"
+                                          data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
+                                          @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">—</span>
+                                        {% elif spr_class == 'needs_review' %}
+                                    <span class="text-[10px] px-1 py-px rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 cursor-pointer"
+                                          data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
+                                          @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Review</span>
+                                        {% endif %}
+                                    {% endif %}
                                     <span class="text-xs font-medium text-gray-700 dark:text-gray-300">
                                         {{ msg.sender_email or msg.user_email or '—' }}
                                     </span>
@@ -737,6 +772,84 @@
             <!-- Email modal -->
             <div x-data="emailViewer">
             {% include "partials/_email_viewer_modal.html" %}
+            </div>
+
+            <!-- Pipeline Detail Modal -->
+            <div x-data="{ showPipeline: false, pd: {} }"
+                 @show-pipeline-detail.window="pd = $event.detail; showPipeline = true"
+                 @keydown.escape.window="showPipeline = false">
+                <template x-if="showPipeline">
+                    <div class="fixed inset-0 z-[60] flex items-center justify-center" @click.self="showPipeline = false">
+                        <div class="fixed inset-0 bg-black/40"></div>
+                        <div class="relative z-10 bg-white dark:bg-gray-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-md mx-4 max-h-[80vh] overflow-y-auto">
+                            <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                                <h3 class="font-semibold text-gray-900 dark:text-gray-100 text-sm">Supplier Pipeline Result</h3>
+                                <button @click="showPipeline = false" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                </button>
+                            </div>
+                            <div class="px-4 py-3 text-sm space-y-3">
+                                <div>
+                                    <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Classification</span>
+                                    <div class="mt-0.5">
+                                        <span x-show="pd.classification === 'quote_response'" class="px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">Quote Response</span>
+                                        <span x-show="pd.classification === 'declined'" class="px-2 py-0.5 text-xs rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">Declined</span>
+                                        <span x-show="pd.classification === 'clarification_required'" class="px-2 py-0.5 text-xs rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">Clarification Required</span>
+                                        <span x-show="pd.classification === 'acknowledgement'" class="px-2 py-0.5 text-xs rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">Acknowledgement</span>
+                                        <span x-show="pd.classification === 'not_quote'" class="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">Not a Quote</span>
+                                        <span x-show="pd.classification === 'needs_review'" class="px-2 py-0.5 text-xs rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">Needs Review</span>
+                                    </div>
+                                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-400" x-text="pd.reason"></p>
+                                </div>
+                                <template x-if="pd.quotes && pd.quotes.length > 0">
+                                    <div>
+                                        <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Extracted Quotes</span>
+                                        <div class="mt-1 space-y-1">
+                                            <template x-for="q in pd.quotes" :key="q.item_line">
+                                                <div class="flex items-center gap-2 text-xs bg-gray-50 dark:bg-gray-700/50 rounded px-2 py-1">
+                                                    <span class="font-mono text-gray-500" x-text="'Line ' + q.item_line"></span>
+                                                    <span class="font-semibold" x-text="'$' + parseFloat(q.price).toFixed(2) + ' ' + (q.currency || 'AUD')"></span>
+                                                    <span x-show="q.lead_time" class="text-gray-500 truncate" x-text="q.lead_time"></span>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                                <template x-if="pd.shipping || pd.terms || pd.notes">
+                                    <div class="text-xs space-y-1 border-t border-gray-100 dark:border-gray-700 pt-2">
+                                        <template x-if="pd.shipping">
+                                            <div><span class="font-medium text-gray-500 dark:text-gray-400">Shipping:</span> <span x-text="'$' + pd.shipping.cost + ' ' + (pd.shipping.currency || 'AUD')"></span></div>
+                                        </template>
+                                        <template x-if="pd.terms">
+                                            <div><span class="font-medium text-gray-500 dark:text-gray-400">Terms:</span> <span x-text="pd.terms"></span></div>
+                                        </template>
+                                        <template x-if="pd.notes">
+                                            <div><span class="font-medium text-gray-500 dark:text-gray-400">Notes:</span> <span x-text="pd.notes"></span></div>
+                                        </template>
+                                    </div>
+                                </template>
+                                <template x-if="pd.actions && pd.actions.length > 0">
+                                    <div>
+                                        <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Actions Applied</span>
+                                        <ul class="mt-1 space-y-0.5 text-xs text-gray-700 dark:text-gray-300">
+                                            <template x-for="a in pd.actions" :key="a">
+                                                <li class="pl-2 border-l-2 border-green-300 dark:border-green-700" x-text="a"></li>
+                                            </template>
+                                        </ul>
+                                    </div>
+                                </template>
+                                <template x-if="pd.error">
+                                    <div class="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded px-2 py-1">
+                                        <span class="font-medium">Error:</span> <span x-text="pd.error"></span>
+                                    </div>
+                                </template>
+                                <template x-if="pd.processed_at">
+                                    <div class="text-[10px] text-gray-400 dark:text-gray-500 pt-1 border-t border-gray-100 dark:border-gray-700" x-text="'Processed: ' + new Date(pd.processed_at).toLocaleString()"></div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </template>
             </div>
         {% else %}
         <p class="text-sm text-gray-500 dark:text-gray-400 mt-2">No logged emails yet for this RFQ.</p>

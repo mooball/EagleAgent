@@ -391,6 +391,9 @@ class EmailTracking(Base):
     sender_name = Column(String, nullable=True)
     all_recipients = Column(JSONB, nullable=True)
 
+    # Supplier quote pipeline result
+    supplier_pipeline_result = Column(JSONB, nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=True)
     updated_at = Column(DateTime(timezone=True), nullable=True)
 

@@ -508,6 +508,7 @@ def _query_email_logs(session, q: str = "", user_filter: str = "", page: int = 1
                 et.sent_at,
                 et.created_at,
                 et.match_type,
+                et.supplier_pipeline_result,
                 s.name AS supplier_name,
                 c.companyname AS customer_name
             FROM email_tracking et
@@ -780,6 +781,10 @@ async def api_link_email(request: Request, user: dict = Depends(_helpers.require
                 {"token": rfq_token, "tid": tracking.gmail_thread_id or "", "eid": email_id}
             )
             session.commit()
+            # Trigger quote pipeline if now linked to both RFQ + supplier
+            if tracking.supplier_id and tracking.direction == "received":
+                from includes.tools.supplier_quote_pipeline import trigger_supplier_quote_pipeline
+                trigger_supplier_quote_pipeline(email_id, user_id=user.get("email", "manual"))
             return JSONResponse({"status": "ok", "message": f"Linked thread to {rfq_token}"})
 
         elif link_type == "customer":
@@ -826,6 +831,11 @@ async def api_link_email(request: Request, user: dict = Depends(_helpers.require
             session.commit()
             supplier = session.query(Supplier).filter(Supplier.id == entity_id).first()
             name = supplier.name if supplier else "supplier"
+            # Trigger quote pipeline if now linked to both supplier + RFQ
+            rfq_id = tracking.rfq_token or tracking.rfq_id
+            if rfq_id and tracking.direction == "received":
+                from includes.tools.supplier_quote_pipeline import trigger_supplier_quote_pipeline
+                trigger_supplier_quote_pipeline(email_id, user_id=user.get("email", "manual"))
             return JSONResponse({"status": "ok", "message": f"Linked to {name}. {domain_msg}".strip()})
 
         else:

@@ -15,6 +15,7 @@ import logging
 from .base import BaseSubAgent
 from includes.tools.product_tools import search_products, search_brands, search_suppliers, part_purchase_history, search_purchase_history
 from includes.tools.quote_tools import create_quote_tools
+from includes.tools.supplier_quote_pipeline import create_supplier_quote_tools
 from includes.prompts import load_prompt
 
 logger = logging.getLogger(__name__)
@@ -827,6 +828,7 @@ class ProcurementAgent(BaseSubAgent):
         tools = [search_products, search_brands, search_suppliers, part_purchase_history, search_purchase_history]
         if not self._internal_only:
             tools.extend(create_quote_tools(user_id))
+            tools.extend(create_supplier_quote_tools(user_id))
         return tools
     
     def get_system_prompt(self) -> str:
