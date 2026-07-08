@@ -666,6 +666,30 @@ async def on_action_cancel_job(action: cl.Action):
         ).send()
 
 
+@cl.action_callback("stop_agent")
+async def on_action_stop_agent(action: cl.Action):
+    """Stop all running agent tasks for the current session.
+
+    This is dispatched by the blue badge click via /api/stop-agent (which
+    bypasses the bridge lock), but also registered as a Chainlit action
+    callback for fallback use.
+    """
+    from includes.agent_bridge import request_stop
+    session_id = cl.context.session.id
+    cancelled = await request_stop(session_id)
+    if cancelled:
+        await cl.Message(
+            content=f"⏹ Stopped {cancelled} running task(s).",
+            author="EagleAgent",
+        ).send()
+    else:
+        await cl.Message(
+            content="⏹ Stop requested — finishing current operation...",
+            author="EagleAgent",
+        ).send()
+    await notify_dashboard("agent_done")
+
+
 # RFQ action callbacks are registered via @cl.action_callback decorators
 # in rfq_actions — importing the module is enough.
 import includes.chat.rfq_actions  # noqa: F401 — registers Chainlit callbacks
@@ -797,7 +821,15 @@ async def main(message: cl.Message):
     await msg.send()
     # Store active message so pipeline code can stream to it
     cl.user_session.set("active_msg", msg)
-    
+
+    # Register this task for cancellation via stop-agent
+    from includes.agent_bridge import register_task, unregister_task, clear_stop, is_stop_requested
+    session_id = cl.context.session.id
+    current_task = asyncio.current_task()
+    if current_task:
+        clear_stop(session_id)  # Reset any stale cancel flag from previous run
+        register_task(current_task, session_id)
+
     import time
     request_start = time.monotonic()
     active_agent = "GeneralAgent"
@@ -924,6 +956,15 @@ async def main(message: cl.Message):
     last_event_time = request_start
     try:
       async for event in active_graph.astream_events(inputs, config=graph_config, version="v1"):
+        # Cooperative stop check — exit the stream loop if stop was requested
+        if is_stop_requested(session_id):
+            logger.info(f"[stop-agent] Cooperative stop in astream_events for session {session_id[:8]}")
+            await msg.stream_token("\n\n⏹ *Stopped by user.*")
+            if active_step:
+                await active_step.remove()
+                active_step = None
+            break
+
         kind = event["event"]
         name = event.get("name", "")
         tags = event.get("tags", [])
@@ -1074,6 +1115,13 @@ async def main(message: cl.Message):
                 total_all_tokens += usage.get("total_tokens", 0)
                 current_total = cl.user_session.get("total_tokens_used", 0)
                 cl.user_session.set("total_tokens_used", current_total + usage.get("total_tokens", 0))
+    except asyncio.CancelledError:
+        logger.info(f"[stop-agent] Graph stream cancelled for session {session_id[:8]}")
+        await msg.stream_token("\n\n⏹ *Stopped by user.*")
+        # Clean up tool status indicator
+        if active_step:
+            await active_step.remove()
+            active_step = None
     except Exception as e:
         logger.error(f"Graph execution error: {e}", exc_info=True)
         error_text = str(e)
@@ -1081,6 +1129,10 @@ async def main(message: cl.Message):
             await msg.stream_token("\n\nSorry, the AI model is temporarily overloaded. Please try again in a moment.")
         else:
             await msg.stream_token("\n\nSorry, an unexpected error occurred. Please try again.")
+    finally:
+        # Unregister this task from the stop-agent registry
+        if current_task:
+            unregister_task(current_task, session_id)
 
     # Flush any remaining buffered text — this is the final agent response
     # (no tool call followed, so it's safe to show the user)

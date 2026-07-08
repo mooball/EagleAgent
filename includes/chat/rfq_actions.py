@@ -10,7 +10,7 @@ import logging
 
 import chainlit as cl
 
-from includes.agent_bridge import notify_dashboard
+from includes.agent_bridge import notify_dashboard, is_stop_requested, clear_stop
 from includes.tools.quote_tools import (
     _update_supplier_sync, _update_item_sync, _add_supplier_sync,
     _clear_suppliers_sync, _get_rfq_dict_sync,
@@ -84,6 +84,21 @@ async def _main_pinned(synthetic_msg, pinned_thread_id: str):
     else:
         async with _thread_swap(pinned_thread_id):
             await main(synthetic_msg)
+
+
+def _should_stop() -> bool:
+    """Check if the user has requested a stop for the current session."""
+    try:
+        session_id = cl.context.session.id
+        return is_stop_requested(session_id)
+    except Exception:
+        return False
+
+
+async def _handle_stop(pinned_tid: str) -> None:
+    """Send a stopped message and clean up when stop is detected."""
+    await _send_pinned("⏹ *Stopped by user.*", pinned_tid, author="EagleAgent")
+    await notify_dashboard("agent_done")
 
 
 def _cross_apply_suppliers_sync(rfq_number: str, line_num: int, suppliers: list[dict]) -> None:
@@ -195,6 +210,11 @@ async def on_rfq_identify_items(action: cl.Action) -> None:
         return
 
     async with _pin_thread() as pinned_tid:
+        # Clear any stale stop flag from a previous run
+        try:
+            clear_stop(cl.context.session.id)
+        except Exception:
+            pass
 
         await _send_pinned(
             f"Classifying & validating {len(items)} item(s) in {rfq_id}...",
@@ -211,6 +231,9 @@ async def on_rfq_identify_items(action: cl.Action) -> None:
             classification_summary = []
 
             for ui_item in items:
+                if _should_stop():
+                    await _handle_stop(pinned_tid)
+                    return
                 line = ui_item.get("line")
                 description = ui_item.get("description", "")
                 part_number = ui_item.get("part_number", "")
@@ -255,6 +278,9 @@ async def on_rfq_identify_items(action: cl.Action) -> None:
                 need_web = []     # items needing web search for discrepancy check
 
                 for ui_item in to_validate:
+                    if _should_stop():
+                        await _handle_stop(pinned_tid)
+                        return
                     line = ui_item.get("line")
                     part_number = ui_item.get("part_number", "")
                     brand = ui_item.get("brand", "")
@@ -490,6 +516,10 @@ async def on_rfq_find_web_suppliers_for_line(action: cl.Action) -> None:
                 existing_suppliers=existing,
                 quantity=f"{quantity} {uom}".strip(),
             )
+
+            if _should_stop():
+                await _handle_stop(pinned_tid)
+                return
 
             if suppliers:
                 user_id = cl.user_session.get("user_id", "unknown")
@@ -756,6 +786,8 @@ async def on_rfq_pipeline_web_search(action: cl.Action) -> None:
 
         async def _run_search(label, lines, items_for_search):
             async with sem:
+                if _should_stop():
+                    return 0
                 primary = items_for_search[0]
                 all_existing = set()
                 for it in items_for_search:
@@ -770,8 +802,13 @@ async def on_rfq_pipeline_web_search(action: cl.Action) -> None:
                     quantity=f"{primary.get('quantity', '')} {primary.get('uom', '')}".strip(),
                 )
 
+                if _should_stop():
+                    return 0
+
                 if suppliers:
                     for line_num in lines:
+                        if _should_stop():
+                            return 0
                         await asyncio.to_thread(
                             _add_supplier_sync, rfq_id,
                             {"line": line_num, "suppliers": suppliers},
@@ -1038,6 +1075,12 @@ async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
     if not pinned_tid:
         pinned_tid = cl.user_session.get("thread_id")
 
+    # Clear any stale stop flag from a previous run
+    try:
+        clear_stop(cl.context.session.id)
+    except Exception:
+        pass
+
     rfq_id = payload.get("rfq_id", "???")
     confirmed_items = payload.get("items", [])
 
@@ -1063,6 +1106,9 @@ async def _phase_previous_suppliers(payload: dict, pinned_tid: str = None):
         suppliers_by_line = {}  # line -> list of supplier dicts
 
         for item in confirmed_items:
+            if _should_stop():
+                await _handle_stop(pinned_tid)
+                return
             line = item.get("line")
             part_number = item.get("part_number", "")
             existing = item.get("existing_suppliers", [])
@@ -1237,6 +1283,9 @@ async def _phase_brand_suppliers(payload: dict, pinned_tid: str = None):
         )
 
         for item in confirmed_items:
+            if _should_stop():
+                await _handle_stop(pinned_tid)
+                return
             line = item.get("line")
             brand = (item.get("brand") or "").strip()
             if not brand or brand.lower() == "other":
@@ -1348,6 +1397,12 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
     if not pinned_tid:
         pinned_tid = cl.user_session.get("thread_id")
 
+    # Clear any stale stop flag from a previous run
+    try:
+        clear_stop(cl.context.session.id)
+    except Exception:
+        pass
+
     rfq_id = payload.get("rfq_id", "???")
     confirmed_items = payload.get("items", [])
     user_id = cl.user_session.get("user_id", "unknown")
@@ -1447,6 +1502,8 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
 
         async def _run_search(idx, label, lines, items_for_search):
             """Run a single web search + save results. Returns count added."""
+            if _should_stop():
+                return 0
             primary = items_for_search[0]
             all_existing = set()
             for it in items_for_search:
@@ -1461,8 +1518,13 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
                 quantity=f"{primary.get('quantity', '')} {primary.get('uom', '')}".strip(),
             )
 
+            if _should_stop():
+                return 0
+
             if suppliers:
                 for line_num in lines:
+                    if _should_stop():
+                        return 0
                     await asyncio.to_thread(
                         _add_supplier_sync, rfq_id,
                         {"line": line_num, "suppliers": suppliers},
@@ -1500,6 +1562,11 @@ async def _phase_new_suppliers(payload: dict, pinned_tid: str = None):
         await notify_dashboard("agent_working", {
             "label": f"Web searching {total_searches} items ({WEB_SEARCH_CONCURRENCY} concurrent)..."
         })
+
+        # Check for stop before launching the expensive web searches
+        if _should_stop():
+            await _handle_stop(pinned_tid)
+            return
 
         # Launch all searches with bounded concurrency
         tasks = [

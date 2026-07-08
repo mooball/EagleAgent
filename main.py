@@ -14,7 +14,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -360,6 +360,27 @@ async def update_dashboard_context(request: Request):
 from includes.agent_bridge import handle_bridge_request
 
 app.post("/api/agent-bridge")(handle_bridge_request)
+
+
+@app.post("/api/stop-agent")
+async def stop_agent(request: Request):
+    """Stop all running agent tasks for the current session.
+
+    This endpoint bypasses the bridge's per-session lock intentionally —
+    the lock is held by the running action, so dispatching stop through
+    the bridge would deadlock.
+    """
+    user = get_current_user(request)
+    if not user:
+        return Response(status_code=401)
+
+    session_id = request.cookies.get("X-Chainlit-Session-id")
+    if not session_id:
+        return JSONResponse({"error": "No active session"}, status_code=400)
+
+    from includes.agent_bridge import request_stop
+    cancelled = await request_stop(session_id)
+    return JSONResponse({"stopped": True, "cancelled_tasks": cancelled})
 
 
 @app.get("/api/dashboard-context")
