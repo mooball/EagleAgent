@@ -1,12 +1,22 @@
 # Plan: Quotation Tools for EagleAgent
 
+## Status
+- ✅ Phase 1 — `view_rfq_quotation` snapshot tool
+- ✅ Phase 2 — `manage_rfq` extended with quotation actions
+- ⬜ Phase 3 — Email quote pipeline (classify → extract → interpret)
+- ⬜ Phase 4 — Wiring (Gmail sync + admin linking triggers, agent registration)
+
 ## Overview
 Build LangGraph tools that give the EagleAgent the ability to read, interpret, and update RFQ quotation data. The agent should be able to: (1) get a comprehensive snapshot of an RFQ's quotation state, (2) update quote prices, statuses, shipping, and notes per supplier, and (3) parse supplier emails to automatically extract and apply quote data.
 
-## Current State
-- RFQ data model now includes: `rfq_items.cost_price/sale_price`, supplier JSONB fields (`quote_cost`, `quote_status`, `quote_currency`, `quote_leadtime`), and `rfqs.supplier_meta` (`shipping_cost`, `notes`, `terms` per supplier).
-- The existing `manage_rfq` tool has `add_supplier` and `update_supplier` actions that work with the old `price`/`currency` fields, not the new `quote_*` fields.
-- There is no tool for viewing the full quotation state or for parsing supplier emails.
+## Current State (updated 2026-07-08)
+- ✅ `view_rfq_quotation` tool implemented — dual-view Markdown snapshot.
+- ✅ `manage_rfq` extended with `update_quote`, `select_quote`, `decline_quote`, `set_supplier_meta`.
+- ✅ `add_supplier` / `update_supplier` already support `quote_*` fields.
+- ✅ `supplier_meta` JSONB column added to `rfqs` with migration, serialization, and API endpoint.
+- ✅ Quote currency display on matrix cells; auto-populated from supplier currency on shortlist.
+- ⬜ Email quote pipeline (Phase 3) — classify, extract, interpret.
+- ⬜ Wiring triggers (Phase 4) — Gmail sync + admin linking.
 
 ## Target State
 
@@ -46,7 +56,7 @@ Shipping cost, notes, and terms are RFQ×supplier, not item×supplier. The `set_
 
 ---
 
-## Phase 1 — `view_rfq_quotation` (Snapshot Tool)
+## ✅ Phase 1 — `view_rfq_quotation` (Snapshot Tool)
 
 ### 1.1 Create the snapshot builder function
 **File:** `includes/tools/quote_tools.py`
@@ -100,7 +110,7 @@ Add a test that calls `view_rfq_quotation` with a known RFQ and verifies the Mar
 
 ---
 
-## Phase 2 — Extend `manage_rfq` with quotation actions
+## ✅ Phase 2 — Extend `manage_rfq` with quotation actions
 
 ### 2.1 Add `update_quote` action
 **File:** `includes/tools/quote_tools.py` — inside `manage_rfq`
@@ -140,7 +150,7 @@ Add tests for each new action:
 
 ---
 
-## Phase 3 — Email Quote Pipeline
+## ⬜ Phase 3 — Email Quote Pipeline
 
 Supplier quotes arrive via email in varied formats: plain text body, HTML body, attached PDFs, inline images from brochures. A single `parse_supplier_email` tool is insufficient. The pipeline has three stages:
 
@@ -257,38 +267,76 @@ The tool auto-applies updates and returns a summary. The agent can undo or corre
 
 ---
 
-## Phase 4 — Wiring
+## ⬜ Phase 4 — Wiring
 
-### 4.1 Integration with Gmail sync pipeline
+### 4.1 Trigger points — two paths into the pipeline
+
+The quote extraction pipeline triggers whenever an email is linked to BOTH an RFQ and a supplier. Two trigger points:
+
+#### A. Automatic — Gmail sync matching
 **File:** `scripts/sync_gmail_mailboxes.py`
 
-The existing `sync_mailbox()` function already:
-1. Fetches new emails via Gmail History API
-2. Runs three-tier matching (by ID → by subject → by contact/domain)
-3. Links emails to RFQs (`rfq_id`) and suppliers (`supplier_id`) in `email_tracking`
-
-**New step after matching:** When an email matches BOTH an RFQ and a supplier, pass it through the quote extraction pipeline:
+After the existing three-tier matching (by ID → by subject → by contact/domain), when `tracking.rfq_id` and `tracking.supplier_id` are both set:
 
 ```python
-# After existing matching logic in sync_mailbox():
 if tracking.rfq_id and tracking.supplier_id:
-    # This email is from a known supplier about a known RFQ — check for quotes
-    from includes.tools.email_parser import classify_supplier_email
-    classification = classify_supplier_email(tracking.id)
-    if classification == "quote_response":
-        from includes.tools.email_parser import extract_email_content, interpret_quote_response
-        content = extract_email_content(tracking.id)
-        supplier_name = tracking.sender_name or tracking.sender_email
-        result = interpret_quote_response(tracking.rfq_id, supplier_name, content)
-        logger.info(f"[quote-pipeline] Processed email {tracking.id}: {result[:200]}")
+    _trigger_quote_pipeline(tracking.id)
 ```
 
-**Sync vs async consideration:** The sync script runs in a thread pool (`asyncio.to_thread`). The quote pipeline tools use async LLM calls. May need to run the pipeline in a separate async context or use `asyncio.run()` within the thread.
+#### B. Manual — Admin email linking API
+**File:** `includes/dashboard/routes/admin.py` — `api_link_email` endpoint
+
+When an admin links an email to an RFQ (`link_type == "rfq"`) and the email already has a `supplier_id`, or vice versa. After the UPDATE:
+
+```python
+# After linking: if both RFQ and supplier are now linked, trigger pipeline
+from includes.tools.email_parser import _trigger_quote_pipeline_if_linked
+_trigger_quote_pipeline_if_linked(email_id)
+```
+
+#### C. Shared helper
+**File:** `includes/tools/email_parser.py`
+
+```python
+def _trigger_quote_pipeline_if_linked(email_tracking_id: int) -> None:
+    """Check if email is linked to both RFQ+supplier, and if so, run the quote pipeline.
+    
+    Called from both the Gmail sync (automatic) and admin link API (manual).
+    Runs the pipeline in a background thread to avoid blocking the request.
+    """
+    from includes.dashboard.models import EmailTracking
+    from includes.dashboard.database import get_session
+    
+    session = get_session()
+    try:
+        tracking = session.query(EmailTracking).filter(EmailTracking.id == email_tracking_id).first()
+        if not tracking or not tracking.rfq_id or not tracking.supplier_id:
+            return
+        
+        # Run pipeline in background thread
+        import threading
+        def _run():
+            try:
+                classification = classify_supplier_email(email_tracking_id)
+                if classification == "quote_response":
+                    content = extract_email_content(email_tracking_id)
+                    supplier_name = tracking.sender_name or tracking.sender_email or "Unknown"
+                    result = interpret_quote_response(tracking.rfq_id, supplier_name, content)
+                    logger.info(f"[quote-pipeline] {email_tracking_id}: {result[:200]}")
+            except Exception as e:
+                logger.error(f"[quote-pipeline] Failed for {email_tracking_id}: {e}")
+        
+        threading.Thread(target=_run, daemon=True).start()
+    finally:
+        session.close()
+```
+
+**Design note:** The pipeline runs in a background thread so it doesn't block the HTTP request (manual link) or the sync loop (automatic). Failures are logged but don't propagate — the email still gets linked even if quote extraction fails.
 
 ### 4.2 Register tools for agent use
 **File:** `includes/agents/` — Add `view_rfq_quotation`, `classify_supplier_email`, `extract_email_content`, `interpret_quote_response` to the appropriate agent profiles for user-initiated "process this email" commands. The automated pipeline handles the common case; the tools let users manually trigger processing for specific emails.
 
-### 4.2 Suggested agent workflow
+### 4.3 Suggested agent workflow
 ```
 User: "Check if any suppliers have replied with quotes"
   → Agent: for each recent email from shortlisted suppliers:
@@ -300,7 +348,7 @@ User: "Check if any suppliers have replied with quotes"
             Shipping from ABC is $15.00. See the quotation tab for details."
 ```
 
-### 4.3 Integration test
+### 4.4 Integration test
 End-to-end test:
 1. Create RFQ with items and shortlisted suppliers
 2. Create an email_tracking record linked to the RFQ from a supplier, with a PDF attachment containing quote data
