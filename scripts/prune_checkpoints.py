@@ -66,11 +66,21 @@ def prune(session, keep: int = 5, dry_run: bool = False):
         """), {"tid": thread_id, "ns": checkpoint_ns, "kids": keep_id_list})
         deleted_w = result_w.rowcount
 
-        # Delete checkpoint_blobs for old checkpoints (channel = checkpoint_id)
+        # Delete checkpoint_blobs not referenced by any kept checkpoint.
+        # Blobs are keyed by (thread_id, checkpoint_ns, channel, version);
+        # kept checkpoints reference them via checkpoint->'channel_versions' JSONB.
         result_b = session.execute(text("""
-            DELETE FROM checkpoint_blobs
-            WHERE thread_id = :tid AND checkpoint_ns = :ns
-              AND channel != ALL(:kids)
+            DELETE FROM checkpoint_blobs b
+            WHERE b.thread_id = :tid AND b.checkpoint_ns = :ns
+              AND NOT EXISTS (
+                SELECT 1 FROM checkpoints c,
+                jsonb_each_text(c.checkpoint -> 'channel_versions') cv
+                WHERE c.thread_id = b.thread_id
+                  AND c.checkpoint_ns = b.checkpoint_ns
+                  AND c.checkpoint_id = ANY(:kids)
+                  AND cv.key = b.channel
+                  AND cv.value = b.version
+              )
         """), {"tid": thread_id, "ns": checkpoint_ns, "kids": keep_id_list})
         deleted_b = result_b.rowcount
 
