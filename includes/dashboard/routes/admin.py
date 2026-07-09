@@ -598,12 +598,12 @@ async def partial_email_rows(request: Request, user: dict = Depends(_helpers.req
     try:
         emails, total, has_more, next_page = _query_email_logs(session, q, effective_filter, page)
         return templates.TemplateResponse(request, "partials/_email_rows.html", {
+            "user": user,
             "emails": emails,
             "q": q,
             "user_filter": effective_filter,
             "has_more": has_more,
             "next_page": next_page,
-            "current_user": user,
         })
     finally:
         session.close()
