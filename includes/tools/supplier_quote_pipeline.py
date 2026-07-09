@@ -743,7 +743,7 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                     return
                 # Must be received, linked to RFQ, and have a supplier
                 if tracking.direction != "received":
-                    logger.debug(f"[quote-pipeline] #{email_tracking_id}: skipped (direction={tracking.direction})")
+                    logger.info(f"[quote-pipeline] #{email_tracking_id}: skipped (direction={tracking.direction})")
                     return
                 rfq_id = tracking.rfq_token or tracking.rfq_id
                 if not rfq_id:
