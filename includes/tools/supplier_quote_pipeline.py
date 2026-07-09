@@ -229,6 +229,13 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
                 ),
             )
             if not response.text:
+                # Log WHY the response was empty (safety filter, recitation, etc.)
+                candidates = getattr(response, 'candidates', None)
+                if candidates and candidates[0].finish_reason:
+                    reason = candidates[0].finish_reason
+                    logger.warning(f"LLM classify empty for #{email_tracking_id}: finish_reason={reason}")
+                else:
+                    logger.warning(f"LLM classify empty for #{email_tracking_id}: no candidates returned")
                 raise ValueError("LLM returned empty response")
             raw = response.text.strip()
             # Parse JSON from response (handle markdown code fences)
@@ -379,7 +386,12 @@ def _extract_pdf_with_gemini(pdf_bytes: bytes, filename: str) -> str:
                 max_output_tokens=8192,
             ),
         )
-        return response.text or "*[No content extracted]*"
+        if not response.text:
+            candidates = getattr(response, 'candidates', None)
+            if candidates and candidates[0].finish_reason:
+                logger.warning(f"Gemini PDF extraction empty for {filename}: finish_reason={candidates[0].finish_reason}")
+            return "*[No content extracted from PDF]*"
+        return response.text
     except Exception as e:
         logger.error(f"Gemini PDF extraction failed for {filename}: {e}")
         return f"*[PDF extraction failed: {e}]*"
@@ -551,6 +563,13 @@ Rules:
             ),
         )
         raw_text = (response.text or "").strip()
+        if not raw_text:
+            candidates = getattr(response, 'candidates', None)
+            if candidates and candidates[0].finish_reason:
+                reason = candidates[0].finish_reason
+                logger.warning(f"LLM interpret empty: finish_reason={reason}")
+            else:
+                logger.warning(f"LLM interpret empty: no candidates returned")
     except Exception as e:
         return {"error": f"LLM interpretation failed: {e}"}
 
