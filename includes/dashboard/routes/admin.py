@@ -603,6 +603,7 @@ async def partial_email_rows(request: Request, user: dict = Depends(_helpers.req
             "user_filter": effective_filter,
             "has_more": has_more,
             "next_page": next_page,
+            "current_user": user,
         })
     finally:
         session.close()
@@ -844,6 +845,37 @@ async def api_link_email(request: Request, user: dict = Depends(_helpers.require
     except Exception as e:
         session.rollback()
         logger.error(f"Error linking email {email_id}: {e}")
+        return JSONResponse({"status": "error", "message": str(e)})
+    finally:
+        session.close()
+
+
+@router.post("/api/emails/{email_id}/run-pipeline")
+async def api_run_email_pipeline(email_id: int, request: Request,
+                                  user: dict = Depends(_helpers.require_user)):
+    """Trigger the supplier quote pipeline for a specific email (admin only)."""
+    if user.get("role") != "Admin":
+        return JSONResponse({"status": "error", "message": "Admin only"}, status_code=403)
+
+    session = _helpers.get_session()
+    try:
+        from includes.dashboard.models import EmailTracking
+        tracking = session.query(EmailTracking).filter(EmailTracking.id == email_id).first()
+        if not tracking:
+            return JSONResponse({"status": "error", "message": "Email not found"}, status_code=404)
+        if not (tracking.rfq_token or tracking.rfq_id):
+            return JSONResponse({"status": "error", "message": "Email not linked to an RFQ"}, status_code=400)
+        if not tracking.supplier_id:
+            return JSONResponse({"status": "error", "message": "Email not linked to a supplier"}, status_code=400)
+        if tracking.direction != "received":
+            return JSONResponse({"status": "error", "message": "Email is not inbound"}, status_code=400)
+
+        from includes.tools.supplier_quote_pipeline import trigger_supplier_quote_pipeline
+        trigger_supplier_quote_pipeline(email_id, user_id=user.get("email", "admin"))
+        logger.info(f"Admin {user.get('email')} triggered pipeline for email #{email_id}")
+        return JSONResponse({"status": "ok", "message": f"Pipeline triggered for email #{email_id}"})
+    except Exception as e:
+        logger.error(f"Error triggering pipeline for email #{email_id}: {e}")
         return JSONResponse({"status": "error", "message": str(e)})
     finally:
         session.close()

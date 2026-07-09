@@ -87,6 +87,12 @@ Object.assign(window._emailData || {}, {
                       data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
                       @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Review</span>
                 {% endif %}
+            {% elif current_user and current_user.role == 'Admin' and (e.rfq_token or e.rfq_id) and e.supplier_name %}
+                <button class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-800/40 cursor-pointer"
+                        @click.stop
+                        hx-post="/api/emails/{{ e.id }}/run-pipeline"
+                        hx-swap="outerHTML"
+                        title="Run supplier quote pipeline">Run</button>
             {% endif %}
         </div>
     </td>
