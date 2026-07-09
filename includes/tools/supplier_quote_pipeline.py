@@ -234,7 +234,6 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
                 ],
                 config=_types.GenerateContentConfig(
                     temperature=0.0,
-                    max_output_tokens=1024,
                 ),
             )
             if not response.text:
@@ -242,8 +241,8 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
                 candidates = getattr(response, 'candidates', None)
                 if candidates and candidates[0].finish_reason:
                     reason = candidates[0].finish_reason
-                    print(f"[quote-pipeline] #{email_tracking_id}: LLM empty response — finish_reason={reason}", flush=True)
-                    logger.warning(f"LLM classify empty for #{email_tracking_id}: finish_reason={reason}")
+                    print(f"[quote-pipeline] #{email_tracking_id}: LLM empty response — finish_reason={reason} (model={_PIPELINE_MODEL})", flush=True)
+                    logger.warning(f"LLM classify empty for #{email_tracking_id}: finish_reason={reason} (model={_PIPELINE_MODEL})")
                 else:
                     print(f"[quote-pipeline] #{email_tracking_id}: LLM empty response — no candidates", flush=True)
                     logger.warning(f"LLM classify empty for #{email_tracking_id}: no candidates returned")
@@ -400,7 +399,6 @@ def _extract_pdf_with_gemini(pdf_bytes: bytes, filename: str) -> str:
             ],
             config=_types.GenerateContentConfig(
                 temperature=0.1,
-                max_output_tokens=8192,
             ),
         )
         if not response.text:
@@ -434,7 +432,6 @@ def _extract_image_with_gemini(image_bytes: bytes, filename: str, mime_type: str
             ],
             config=_types.GenerateContentConfig(
                 temperature=0.1,
-                max_output_tokens=4096,
             ),
         )
         return response.text or "*[No content extracted]*"
@@ -576,7 +573,6 @@ Rules:
             contents=prompt,
             config=_types.GenerateContentConfig(
                 temperature=0.1,
-                max_output_tokens=4096,
             ),
         )
         raw_text = (response.text or "").strip()
