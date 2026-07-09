@@ -19,6 +19,9 @@ from langchain_core.tools import tool
 
 from config.settings import Config
 
+# Model for pipeline LLM calls — falls back to DEFAULT_MODEL if not set
+_PIPELINE_MODEL = Config.QUOTE_PIPELINE_MODEL or Config.DEFAULT_MODEL
+
 logger = logging.getLogger(__name__)
 
 # Quote indicator keywords for classification
@@ -219,7 +222,7 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
 
             client = _genai.Client(http_options={"timeout": 30000})
             response = client.models.generate_content(
-                model=Config.DEFAULT_MODEL,
+                model=_PIPELINE_MODEL,
                 contents=[
                     f"{_SUPPLIER_CLASSIFY_PROMPT}\n\n---\n\n{email_context}",
                 ],
@@ -366,7 +369,7 @@ def _extract_pdf_with_gemini(pdf_bytes: bytes, filename: str) -> str:
     try:
         client = _genai.Client(http_options={"timeout": 120000})
         response = client.models.generate_content(
-            model=Config.DEFAULT_MODEL,
+            model=_PIPELINE_MODEL,
             contents=[
                 _types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
                 (
@@ -405,7 +408,7 @@ def _extract_image_with_gemini(image_bytes: bytes, filename: str, mime_type: str
     try:
         client = _genai.Client(http_options={"timeout": 60000})
         response = client.models.generate_content(
-            model=Config.DEFAULT_MODEL,
+            model=_PIPELINE_MODEL,
             contents=[
                 _types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
                 (
@@ -555,7 +558,7 @@ Rules:
     try:
         client = _genai.Client(http_options={"timeout": 120000})
         response = client.models.generate_content(
-            model=Config.DEFAULT_MODEL,
+            model=_PIPELINE_MODEL,
             contents=prompt,
             config=_types.GenerateContentConfig(
                 temperature=0.1,

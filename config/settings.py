@@ -68,6 +68,8 @@ class Config:
     RESEARCH_AGENT_MODEL = os.getenv("RESEARCH_AGENT_MODEL", "")
     # Supervisor only picks between agents — use a fast model by default
     SUPERVISOR_MODEL = os.getenv("SUPERVISOR_MODEL", "gemini-2.0-flash")
+    # Supplier quote pipeline (classify, extract, interpret)
+    QUOTE_PIPELINE_MODEL = os.getenv("QUOTE_PIPELINE_MODEL", "")
 
     # Model temperature (0.0 - 1.0)
     DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
