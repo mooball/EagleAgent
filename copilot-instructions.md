@@ -1,3 +1,24 @@
+# ⚠️ AI BEHAVIOR RULES — READ FIRST ⚠️
+
+**CRITICAL: These rules override all other instincts. Violating them is unacceptable.**
+
+## 1. Propose, Don't Implement
+**NEVER write code or edit files without explicit user approval.**
+When you identify a bug or feature:
+1. Investigate and diagnose the root cause
+2. Present your findings and proposed fix
+3. WAIT for "yes", "go ahead", "implement that", or similar explicit approval
+4. Only THEN make changes
+
+## 2. Never Auto-Commit
+Present the diff and ask before committing. Do not commit unless explicitly asked.
+
+## 3. Never Modify Production Data Without Approval
+Do not run INSERT/UPDATE/DELETE on the production database without explicit approval.
+Stop at diagnosis and ask. Read-only queries are fine.
+
+---
+
 # Copilot Instructions for EagleAgent
 
 ## Language & Tooling
