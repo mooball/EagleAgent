@@ -696,7 +696,7 @@ def process_message(
                 session.add(tracking)
                 # Queue for quote pipeline if received + linked to RFQ + has supplier
                 if (direction == "received" and
-                        tracking.rfq_token and tracking.supplier_id):
+                        (tracking.rfq_token or tracking.rfq_id) and tracking.supplier_id):
                     session.flush()
                     _quote_pipeline_candidates.append(tracking.id)
         return "tier1"
@@ -762,7 +762,7 @@ def process_message(
                 session.add(tracking)
                 # Queue for quote pipeline if received + linked to RFQ + has supplier
                 if (direction == "received" and
-                        tracking.rfq_token and tracking.supplier_id):
+                        (tracking.rfq_token or tracking.rfq_id) and tracking.supplier_id):
                     session.flush()
                     _quote_pipeline_candidates.append(tracking.id)
             return "tier2"
