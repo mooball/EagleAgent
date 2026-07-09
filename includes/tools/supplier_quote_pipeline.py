@@ -731,12 +731,18 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
             try:
                 tracking = _get_email_tracking(session, email_tracking_id)
                 if not tracking:
+                    logger.warning(f"[quote-pipeline] #{email_tracking_id}: email not found in DB")
                     return
                 # Must be received, linked to RFQ, and have a supplier
                 if tracking.direction != "received":
+                    logger.debug(f"[quote-pipeline] #{email_tracking_id}: skipped (direction={tracking.direction})")
                     return
                 rfq_id = tracking.rfq_token or tracking.rfq_id
-                if not rfq_id or not tracking.supplier_id:
+                if not rfq_id:
+                    logger.warning(f"[quote-pipeline] #{email_tracking_id}: no RFQ link")
+                    return
+                if not tracking.supplier_id:
+                    logger.warning(f"[quote-pipeline] #{email_tracking_id}: no supplier link (rfq_token={tracking.rfq_token})")
                     return
             finally:
                 session.close()
@@ -753,7 +759,7 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                     "rfq_id": classification.get("rfq_id"),
                     "processed_at": _now_iso(),
                 })
-                logger.debug(
+                logger.info(
                     f"[quote-pipeline] #{email_tracking_id}: classified as "
                     f"{classification['classification']}: {classification['reason']}"
                 )
