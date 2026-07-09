@@ -554,6 +554,9 @@ Rules:
     except Exception as e:
         return {"error": f"LLM interpretation failed: {e}"}
 
+    if not raw_text:
+        return {"error": "LLM returned empty response for interpretation"}
+
     # Parse JSON from response
     cleaned = raw_text
     if "```json" in cleaned:
