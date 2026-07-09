@@ -234,7 +234,7 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
                 ],
                 config=_types.GenerateContentConfig(
                     temperature=0.0,
-                    max_output_tokens=150,
+                    max_output_tokens=1024,
                 ),
             )
             if not response.text:
