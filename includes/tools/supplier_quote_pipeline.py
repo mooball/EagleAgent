@@ -247,7 +247,11 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
             # Parse JSON from response (handle markdown code fences)
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            parsed = json.loads(raw)
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning(f"LLM classify bad JSON for #{email_tracking_id}: {raw[:200]}")
+                raise
             result["classification"] = parsed.get("classification", "needs_review")
             result["reason"] = parsed.get("reason", "LLM classified")
         except Exception as e:
