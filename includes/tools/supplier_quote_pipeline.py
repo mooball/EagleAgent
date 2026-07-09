@@ -77,12 +77,15 @@ def _save_pipeline_result(email_tracking_id: int, result: dict) -> None:
     session = _get_session()
     try:
         tracking = _get_email_tracking(session, email_tracking_id)
-        if tracking:
-            tracking.supplier_pipeline_result = result
-            session.commit()
+        if not tracking:
+            logger.warning(f"[quote-pipeline] #{email_tracking_id}: cannot save result — email not found")
+            return
+        tracking.supplier_pipeline_result = result
+        session.commit()
+        logger.info(f"[quote-pipeline] #{email_tracking_id}: result saved ({result.get('classification', '?')})")
     except Exception as e:
         session.rollback()
-        logger.warning(f"Failed to save pipeline result for #{email_tracking_id}: {e}")
+        logger.warning(f"[quote-pipeline] #{email_tracking_id}: failed to save result — {e}")
     finally:
         session.close()
 
@@ -727,6 +730,7 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
 
     def _run():
         try:
+            logger.info(f"[quote-pipeline] #{email_tracking_id}: thread started")
             session = _get_session()
             try:
                 tracking = _get_email_tracking(session, email_tracking_id)
