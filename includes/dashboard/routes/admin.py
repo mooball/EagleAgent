@@ -867,8 +867,6 @@ async def api_run_email_pipeline(email_id: int, request: Request,
             return JSONResponse({"status": "error", "message": "Email not linked to an RFQ"}, status_code=400)
         if not tracking.supplier_id:
             return JSONResponse({"status": "error", "message": "Email not linked to a supplier"}, status_code=400)
-        if tracking.direction != "received":
-            return JSONResponse({"status": "error", "message": "Email is not inbound"}, status_code=400)
 
         from includes.tools.supplier_quote_pipeline import trigger_supplier_quote_pipeline
         trigger_supplier_quote_pipeline(email_id, user_id=user.get("email", "admin"))
