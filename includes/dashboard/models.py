@@ -252,7 +252,7 @@ class RFQ(Base):
     created_date = Column(Date, nullable=False)
     assigned_to = Column(String, nullable=True)
     thread_id = Column(String, nullable=True)
-    status = Column(String, nullable=False, default='draft')  # draft/in_progress/awaiting_quotes/completed/cancelled
+    status = Column(String, nullable=False, default='draft')  # draft/in_progress/closed_won/closed_lost — maps to NetSuite Opportunity status A/B/C/D
     notes = Column(Text, nullable=True)
     history = Column(JSONB, nullable=True)                    # [{date, user, action}, ...]
     item_groups = Column(JSONB, nullable=True)                # {groups: [...], ungrouped: [...]}

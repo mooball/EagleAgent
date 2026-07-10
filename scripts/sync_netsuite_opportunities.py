@@ -30,6 +30,40 @@ from includes.netsuite.sync_utils import parse_netsuite_date, parse_since, get_e
 from config.settings import Config
 
 
+# Map Opportunity status codes to RFQ status values
+# A=In Progress, B=Issued Quote, C=Closed Won, D=Closed Lost
+_OPPORTUNITY_TO_RFQ_STATUS = {
+    "A": "in_progress",
+    "B": "in_progress",   # Issued Quote — not yet a distinct RFQ status
+    "C": "closed_won",
+    "D": "closed_lost",
+}
+
+
+def _sync_linked_rfq_status(session, opportunity_number: str, new_opp_status: str) -> int:
+    """Update status of RFQs linked to this Opportunity, skipping drafts.
+    
+    Returns the number of RFQs updated.
+    """
+    rfq_status = _OPPORTUNITY_TO_RFQ_STATUS.get(new_opp_status)
+    if not rfq_status:
+        return 0
+    
+    from includes.dashboard.models import RFQ
+    
+    # Find linked RFQs (not drafts) with a different status
+    linked = session.query(RFQ).filter(
+        RFQ.netsuite_opportunity == opportunity_number,
+        RFQ.status != "draft",
+        RFQ.status != rfq_status,
+    ).all()
+    
+    for rfq in linked:
+        rfq.status = rfq_status
+    
+    return len(linked)
+
+
 def sync_opportunities(since_date: str, dry_run: bool = False):
     """Sync opportunities from NetSuite.
     
@@ -102,12 +136,29 @@ def sync_opportunities(since_date: str, dry_run: bool = False):
                     ).scalars().first()
 
                     if existing:
+                        old_status = existing.status
                         for key, value in opp_data.items():
                             setattr(existing, key, value)
                         updated += 1
+                        # Sync linked RFQ status if opportunity status changed
+                        new_status = opp_data.get("status")
+                        if new_status and new_status != old_status:
+                            rfqs_synced = _sync_linked_rfq_status(
+                                session, opp_data["opportunity_number"], new_status
+                            )
+                            if rfqs_synced:
+                                print(f"  ↳ Synced {rfqs_synced} RFQ(s) to status '{_OPPORTUNITY_TO_RFQ_STATUS.get(new_status, '?')}'")
                     else:
                         session.add(Opportunity(netsuite_id=netsuite_id, **opp_data))
                         inserted += 1
+                        # Sync linked RFQs for new opportunities too
+                        new_status = opp_data.get("status")
+                        if new_status:
+                            rfqs_synced = _sync_linked_rfq_status(
+                                session, opp_data["opportunity_number"], new_status
+                            )
+                            if rfqs_synced:
+                                print(f"  ↳ Synced {rfqs_synced} RFQ(s) to status '{_OPPORTUNITY_TO_RFQ_STATUS.get(new_status, '?')}'")
 
                 except Exception as e:
                     session.rollback()

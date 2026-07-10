@@ -1059,7 +1059,7 @@ def _assign_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
 def _update_status_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     from includes.dashboard.models import RFQ
     new_status = data.get("status")
-    valid = {"draft", "in_progress", "awaiting_quotes", "completed", "cancelled"}
+    valid = {"draft", "in_progress", "closed_won", "closed_lost"}
     if new_status not in valid:
         return f"Error: status must be one of {', '.join(sorted(valid))}."
 
@@ -1113,7 +1113,7 @@ def _add_note_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
 
 
 def _link_external_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
-    from includes.dashboard.models import RFQ
+    from includes.dashboard.models import RFQ, Opportunity
     linked = []
     if "netsuite_opportunity" not in data and "hubspot_deal" not in data:
         return "Error: provide netsuite_opportunity and/or hubspot_deal."
@@ -1126,6 +1126,17 @@ def _link_external_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
         if "netsuite_opportunity" in data:
             rfq.netsuite_opportunity = data["netsuite_opportunity"]
             linked.append(f"NetSuite: {data['netsuite_opportunity']}")
+            # Immediately sync RFQ status to match the Opportunity
+            opp = session.query(Opportunity).filter(
+                Opportunity.opportunity_number == data["netsuite_opportunity"]
+            ).first()
+            if opp and opp.status:
+                _OPP_TO_RFQ = {"A": "in_progress", "B": "in_progress", "C": "closed_won", "D": "closed_lost"}
+                new_status = _OPP_TO_RFQ.get(opp.status)
+                if new_status and rfq.status != new_status:
+                    old_status = rfq.status
+                    rfq.status = new_status
+                    linked.append(f"status {old_status}→{new_status}")
         if "hubspot_deal" in data:
             rfq.hubspot_deal = data["hubspot_deal"]
             linked.append(f"HubSpot: {data['hubspot_deal']}")
