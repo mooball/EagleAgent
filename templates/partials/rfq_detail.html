@@ -50,8 +50,8 @@
                         <button @click.stop="statusOpen = !statusOpen" type="button"
                                 class="text-xs px-2 py-0.5 rounded-full cursor-pointer transition-colors
                                        {% if status == 'draft' %}bg-gray-600 text-gray-100 hover:bg-gray-500
-                                       {% elif status == 'in_progress' %}bg-blue-600 text-blue-100 hover:bg-blue-500
-                                       {% elif status == 'issued_quote' %}bg-amber-600 text-amber-100 hover:bg-amber-500
+                                       {% elif status == 'in_progress' %}bg-amber-600 text-amber-100 hover:bg-amber-500
+                                       {% elif status == 'issued_quote' %}bg-blue-600 text-blue-100 hover:bg-blue-500
                                        {% elif status == 'closed_won' %}bg-green-600 text-green-100 hover:bg-green-500
                                        {% elif status == 'closed_lost' %}bg-red-600 text-red-100 hover:bg-red-500{% endif %}">
                             {% if status == 'draft' %}Draft{% elif status == 'in_progress' %}In Progress{% elif status == 'issued_quote' %}Issued Quote{% elif status == 'closed_won' %}Closed Won{% elif status == 'closed_lost' %}Closed Lost{% endif %}
@@ -59,7 +59,7 @@
                         </button>
                         <div x-show="statusOpen" @click.outside="statusOpen = false" x-cloak
                              class="absolute left-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 w-max">
-                            {% for val, label, bg in [('draft', 'Draft', 'bg-gray-600'), ('in_progress', 'In Progress', 'bg-blue-600'), ('issued_quote', 'Issued Quote', 'bg-amber-600'), ('closed_won', 'Closed Won', 'bg-green-600'), ('closed_lost', 'Closed Lost', 'bg-red-600')] %}
+                            {% for val, label, bg in [('draft', 'Draft', 'bg-gray-600'), ('in_progress', 'In Progress', 'bg-amber-600'), ('issued_quote', 'Issued Quote', 'bg-blue-600'), ('closed_won', 'Closed Won', 'bg-green-600'), ('closed_lost', 'Closed Lost', 'bg-red-600')] %}
                             <button type="button" @click="statusOpen = false"
                                     hx-patch="/partial/rfqs/{{ rfq.id }}/status" hx-vals='{"status": "{{ val }}"}'
                                     hx-target="#main-content"
