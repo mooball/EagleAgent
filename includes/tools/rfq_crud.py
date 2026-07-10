@@ -1059,7 +1059,7 @@ def _assign_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
 def _update_status_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     from includes.dashboard.models import RFQ
     new_status = data.get("status")
-    valid = {"draft", "in_progress", "closed_won", "closed_lost"}
+    valid = {"draft", "in_progress", "issued_quote", "closed_won", "closed_lost"}
     if new_status not in valid:
         return f"Error: status must be one of {', '.join(sorted(valid))}."
 
@@ -1131,7 +1131,7 @@ def _link_external_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
                 Opportunity.opportunity_number == data["netsuite_opportunity"]
             ).first()
             if opp and opp.status:
-                _OPP_TO_RFQ = {"A": "in_progress", "B": "in_progress", "C": "closed_won", "D": "closed_lost"}
+                _OPP_TO_RFQ = {"A": "in_progress", "B": "issued_quote", "C": "closed_won", "D": "closed_lost"}
                 new_status = _OPP_TO_RFQ.get(opp.status)
                 if new_status and rfq.status != new_status:
                     old_status = rfq.status

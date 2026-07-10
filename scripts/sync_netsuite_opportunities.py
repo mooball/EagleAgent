@@ -34,7 +34,7 @@ from config.settings import Config
 # A=In Progress, B=Issued Quote, C=Closed Won, D=Closed Lost
 _OPPORTUNITY_TO_RFQ_STATUS = {
     "A": "in_progress",
-    "B": "in_progress",   # Issued Quote — not yet a distinct RFQ status
+    "B": "issued_quote",
     "C": "closed_won",
     "D": "closed_lost",
 }

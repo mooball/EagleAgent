@@ -556,7 +556,7 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
             if mine == "1" and user_email:
                 query = query.filter(RFQ.assigned_to.ilike(user_email))
             if status == "active":
-                query = query.filter(RFQ.status.in_(["in_progress"]))
+                query = query.filter(RFQ.status.in_(["in_progress", "issued_quote"]))
             elif status and status != "all":
                 query = query.filter(RFQ.status == status)
             query = query.order_by(RFQ.rfq_number.desc())
