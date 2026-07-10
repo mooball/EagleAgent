@@ -140,15 +140,14 @@
                               style="transform: scale(1.6)"
                               @click.stop="selectSupplier({{ item.line }}, '{{ name | replace("'", "\\'") }}')" title="Select supplier">☆</span>
                         {% endif %}
-                        {# Price — inline-flex keeps span+input as siblings #}
-                        {% set is_dollar = not ns.quote_currency or ns.quote_currency in ('AUD', 'USD', 'NZD', 'CAD', 'SGD', 'HKD') %}
-                        {% set price_str = ('$%.2f'|format(ns.quote_cost or 0)) if is_dollar else (ns.quote_currency + ' ' + '%.2f'|format(ns.quote_cost or 0)) %}
+                        {# Price — always show $ prefix, trailing currency code for non-AUD #}
+                        {% set price_str = '$%.2f'|format(ns.quote_cost or 0) %}
                         <span class="inline-flex">
                             {% if ns.quote_status == 'declined' %}
-                            <span class="px-1.5 py-0.5 -my-0.5 -mx-1 inline-block min-w-[50px] text-right text-gray-400 dark:text-gray-500">{{ price_str if ns.quote_cost is not none else '—' }}</span>
+                            <span class="px-1.5 py-0.5 -my-0.5 -mx-1 inline-block min-w-[50px] text-right text-gray-400 dark:text-gray-500">{{ price_str if ns.quote_cost is not none else '—' }}{% if ns.quote_currency and ns.quote_currency != 'AUD' %} <span class="text-[10px] opacity-60">{{ ns.quote_currency }}</span>{% endif %}</span>
                             {% else %}
                             <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1.5 py-0.5 -my-0.5 -mx-1 inline-block min-w-[50px] text-right"
-                                  @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ price_str if ns.quote_cost is not none else '—' }}</span>
+                                  @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ price_str if ns.quote_cost is not none else '—' }}{% if ns.quote_currency and ns.quote_currency != 'AUD' %} <span class="text-[10px] opacity-60">{{ ns.quote_currency }}</span>{% endif %}</span>
                             <input type="text" inputmode="decimal"
                                    class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                                    value="{{ ns.quote_cost if ns.quote_cost is not none else '' }}"
