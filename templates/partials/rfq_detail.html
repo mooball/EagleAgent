@@ -109,11 +109,11 @@
                     {% set status = rfq.status or 'draft' %}
                     <span class="text-xs px-2 py-0.5 rounded-full
                            {% if status == 'draft' %}bg-gray-600 text-gray-100
-                           {% elif status == 'in_progress' %}bg-blue-600 text-blue-100
-                           {% elif status == 'awaiting_quotes' %}bg-amber-600 text-amber-100
-                           {% elif status == 'completed' %}bg-green-600 text-green-100
-                           {% elif status == 'cancelled' %}bg-red-600 text-red-100{% endif %}">
-                        {% if status == 'draft' %}Draft{% elif status == 'in_progress' %}In Progress{% elif status == 'awaiting_quotes' %}Awaiting Quotes{% elif status == 'completed' %}Completed{% elif status == 'cancelled' %}Cancelled{% endif %}
+                           {% elif status == 'in_progress' %}bg-amber-600 text-amber-100
+                           {% elif status == 'issued_quote' %}bg-blue-600 text-blue-100
+                           {% elif status == 'closed_won' %}bg-green-600 text-green-100
+                           {% elif status == 'closed_lost' %}bg-red-600 text-red-100{% endif %}">
+                        {% if status == 'draft' %}Draft{% elif status == 'in_progress' %}In Progress{% elif status == 'issued_quote' %}Issued Quote{% elif status == 'closed_won' %}Closed Won{% elif status == 'closed_lost' %}Closed Lost{% endif %}
                     </span>
                 </div>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">

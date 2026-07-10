@@ -447,7 +447,7 @@ def _list_rfqs_sync(assigned_to: str | None = None, status: str | None = None) -
 
 def _update_rfq_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update RFQ header fields. Returns dict or error string."""
-    from includes.dashboard.models import RFQ
+    from includes.dashboard.models import RFQ, Opportunity
     session = _get_session()
     try:
         rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
@@ -476,6 +476,18 @@ def _update_rfq_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                     changes.append(key)
         if not changes:
             return f"Error: provide at least one of {', '.join(updatable)} to update."
+
+        # If netsuite_opportunity was linked, sync RFQ status to match the Opportunity
+        if "netsuite_opportunity" in changes:
+            opp = session.query(Opportunity).filter(
+                Opportunity.opportunity_number == data["netsuite_opportunity"]
+            ).first()
+            if opp and opp.status:
+                _OPP_TO_RFQ = {"A": "in_progress", "B": "issued_quote", "C": "closed_won", "D": "closed_lost"}
+                new_status = _OPP_TO_RFQ.get(opp.status)
+                if new_status and rfq.status != new_status:
+                    rfq.status = new_status
+                    changes.append(f"status→{new_status}")
 
         now = _now_iso()
         history = list(rfq.history or [])
