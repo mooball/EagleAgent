@@ -131,8 +131,18 @@ Classify the email into ONE of these categories:
 IMPORTANT: If the email says they are attaching a quote/price list (even if you can't see the
 attachment content), classify as quote_response.
 
+If the email IS a quote_response, also identify which attachments (by filename) are likely
+to contain the actual quote/pricing data. Look at filenames (PDFs, spreadsheets, images
+named like "quote", "quotation", "price list") and body context ("see attached",
+"please find attached quote"). Err on the side of inclusion — it's better to extract
+a non-quote attachment than to miss quote data. Include inline images if the body
+references them as containing quote data.
+
 Respond with ONLY a JSON object:
-{"classification": "quote_response"|"clarification_required"|"declined"|"acknowledgement"|"not_quote"|"needs_review", "reason": "<brief explanation>"}
+{"classification": "quote_response"|"clarification_required"|"declined"|"acknowledgement"|"not_quote"|"needs_review", "reason": "<brief explanation>", "quote_attachments": ["filename1.pdf", "filename2.png"]}
+
+The "quote_attachments" field is only required for quote_response. For other
+classifications, omit it or use an empty list.
 """
 
 
@@ -259,6 +269,7 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
                 raise
             result["classification"] = parsed.get("classification", "needs_review")
             result["reason"] = parsed.get("reason", "LLM classified")
+            result["quote_attachments"] = parsed.get("quote_attachments", [])
         except Exception as e:
             # Fallback to heuristic if LLM fails
             print(f"[quote-pipeline] #{email_tracking_id}: LLM classify FAILED — {e}", flush=True)
@@ -310,8 +321,11 @@ def _classify_heuristic_fallback(tracking) -> dict:
 # Stage 2: Extract
 # ---------------------------------------------------------------------------
 
-def _extract_email_content_sync(email_tracking_id: int) -> str:
+def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[str] | None = None) -> str:
     """Synchronous extraction: fetch body + process attachments via Gemini.
+
+    If quote_attachments is provided, only those filenames are extracted.
+    Otherwise all non-inline attachments are processed.
 
     Returns a Markdown content bundle with body + extracted attachment content.
     """
@@ -328,13 +342,24 @@ def _extract_email_content_sync(email_tracking_id: int) -> str:
         if body:
             parts.append(f"## Email Body\n\n{body}")
 
-        # Process non-inline attachments
+        # Build set of filenames to extract (case-insensitive match)
+        target_filenames = None
+        if quote_attachments:
+            target_filenames = {f.lower().strip() for f in quote_attachments}
+
+        # Process attachments
         if tracking.attachments_json and tracking.gmail_message_id:
             for att in tracking.attachments_json:
-                if att.get("inline"):
-                    continue
-
                 filename = att.get("filename", "unknown")
+                
+                # If we have a filter list, only process matching attachments
+                if target_filenames is not None:
+                    if filename.lower().strip() not in target_filenames:
+                        continue
+                else:
+                    # No filter — skip inline images (signatures/logos)
+                    if att.get("inline"):
+                        continue
                 mime_type = att.get("mime_type", "")
                 size = att.get("size", 0)
                 att_id = att.get("gmail_attachment_id")
@@ -773,6 +798,7 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                     "reason": classification["reason"],
                     "supplier_name": classification.get("supplier_name"),
                     "rfq_id": classification.get("rfq_id"),
+                    "quote_attachments": classification.get("quote_attachments", []),
                     "processed_at": _now_iso(),
                 })
                 print(f"[quote-pipeline] #{email_tracking_id}: classified as {classification['classification']}: {classification['reason']}", flush=True)
@@ -817,7 +843,7 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                 return
 
             # Stage 2: Extract
-            content = _extract_email_content_sync(email_tracking_id)
+            content = _extract_email_content_sync(email_tracking_id, classification.get("quote_attachments"))
             if content.startswith("Error:"):
                 _save_pipeline_result(email_tracking_id, {
                     "classification": "quote_response",
