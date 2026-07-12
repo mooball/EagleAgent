@@ -158,6 +158,14 @@ def opportunity_detail(request: Request, opp_id: str, user: dict = Depends(requi
         salesrep_name = None
         if opp.salesrep:
             salesrep_name = opp.salesrep.name
+
+        # Find linked RFQs
+        linked_rfqs = []
+        if opp.opportunity_number:
+            from includes.dashboard.models import RFQ
+            linked_rfqs = session.query(RFQ).filter(
+                RFQ.netsuite_opportunity == opp.opportunity_number
+            ).order_by(RFQ.rfq_number).all()
     finally:
         session.close()
 
@@ -166,6 +174,7 @@ def opportunity_detail(request: Request, opp_id: str, user: dict = Depends(requi
         "customer": customer,
         "salesrep_name": salesrep_name,
         "transactions": transactions,
+        "linked_rfqs": linked_rfqs,
         "active_nav": "opportunities",
     }
     return _render(request, "opportunity_detail.html", "partials/opportunity_detail.html", ctx, user)

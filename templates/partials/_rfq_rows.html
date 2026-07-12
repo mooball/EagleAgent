@@ -11,13 +11,13 @@
         {% if status == 'draft' %}
         <span class="text-xs px-2 py-0.5 rounded-full bg-gray-600 text-gray-100">Draft</span>
         {% elif status == 'in_progress' %}
-        <span class="text-xs px-2 py-0.5 rounded-full bg-blue-600 text-blue-100">In Progress</span>
-        {% elif status == 'awaiting_quotes' %}
-        <span class="text-xs px-2 py-0.5 rounded-full bg-amber-600 text-amber-100">Awaiting Quotes</span>
-        {% elif status == 'completed' %}
-        <span class="text-xs px-2 py-0.5 rounded-full bg-green-600 text-green-100">Completed</span>
-        {% elif status == 'cancelled' %}
-        <span class="text-xs px-2 py-0.5 rounded-full bg-red-600 text-red-100">Cancelled</span>
+        <span class="text-xs px-2 py-0.5 rounded-full bg-amber-600 text-amber-100">In Progress</span>
+        {% elif status == 'issued_quote' %}
+        <span class="text-xs px-2 py-0.5 rounded-full bg-blue-600 text-blue-100">Issued Quote</span>
+        {% elif status == 'closed_won' %}
+        <span class="text-xs px-2 py-0.5 rounded-full bg-green-600 text-green-100">Closed Won</span>
+        {% elif status == 'closed_lost' %}
+        <span class="text-xs px-2 py-0.5 rounded-full bg-red-600 text-red-100">Closed Lost</span>
         {% endif %}
     </td>
     <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ items | length }}</td>

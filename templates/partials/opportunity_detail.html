@@ -57,6 +57,18 @@
                     <dt class="text-gray-500 dark:text-gray-400">NetSuite ID</dt>
                     <dd class="font-mono text-xs">{{ opp.netsuite_id or '—' }}</dd>
 
+                    <dt class="text-gray-500 dark:text-gray-400">RFQ</dt>
+                    <dd>
+                        {% if linked_rfqs %}
+                            {% for rfq in linked_rfqs %}
+                            <a href="/rfqs/{{ rfq.rfq_number }}"
+                               hx-get="/partial/rfqs/{{ rfq.rfq_number }}" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.rfq_number }}"
+                               class="text-blue-600 dark:text-blue-400 hover:underline">{{ rfq.rfq_number }}</a>
+                            {% if not loop.last %}, {% endif %}
+                            {% endfor %}
+                        {% else %}—{% endif %}
+                    </dd>
+
                     <dt class="text-gray-500 dark:text-gray-400">Last Modified</dt>
                     <dd>{{ opp.netsuite_last_modified.strftime('%Y-%m-%d %H:%M') if opp.netsuite_last_modified else '—' }}</dd>
                 </dl>

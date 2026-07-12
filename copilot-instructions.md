@@ -10,8 +10,8 @@ When you identify a bug or feature:
 3. WAIT for "yes", "go ahead", "implement that", or similar explicit approval
 4. Only THEN make changes
 
-## 2. Never Auto-Commit
-Present the diff and ask before committing. Do not commit unless explicitly asked.
+## 2. Never Commit Without Approval
+**NEVER commit changes without explicit approval.** The user always wants to test changes locally before they're committed. Even after receiving approval to write code, wait for a separate explicit instruction to commit (e.g., "please commit", "commit now", "commit this"). Do not commit speculatively.
 
 ## 3. Never Modify Production Data Without Approval
 Do not run INSERT/UPDATE/DELETE on the production database without explicit approval.
