@@ -6,10 +6,13 @@ Three-stage pipeline:
   3. interpret_quote_response — apply: match extracted data to RFQ items and update
 
 Tools are created via create_supplier_quote_tools(user_id) and registered with the agent.
+
+LLM calls, image signature detection, and attachment extraction are delegated to
+the shared includes/email_pipeline module so future pipelines (customer request,
+customer response) reuse the same infrastructure.
 """
 
 import asyncio
-import base64
 import json
 import logging
 import re
@@ -17,10 +20,15 @@ from typing import Optional
 
 from langchain_core.tools import tool
 
-from config.settings import Config
-
-# Model for pipeline LLM calls — falls back to DEFAULT_MODEL if not set
-_PIPELINE_MODEL = Config.QUOTE_PIPELINE_MODEL or Config.DEFAULT_MODEL
+from includes.email_pipeline import (
+    llm_call_with_retry,
+    get_pipeline_model,
+    fetch_gmail_attachment_bytes,
+    extract_pdf_content,
+    extract_image_content,
+    extract_spreadsheet_content,
+    triage_image,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,22 +56,6 @@ def _get_email_tracking(session, email_tracking_id: int):
     """Fetch an EmailTracking record by ID."""
     from includes.dashboard.models import EmailTracking
     return session.query(EmailTracking).filter(EmailTracking.id == email_tracking_id).first()
-
-
-def _fetch_gmail_attachment_bytes(user_email: str, message_id: str, attachment_id: str) -> bytes | None:
-    """Fetch raw attachment bytes from Gmail API."""
-    try:
-        from includes.gmail import get_gmail_client
-        service = get_gmail_client(user_email)
-        attachment = (
-            service.users().messages().attachments()
-            .get(userId="me", messageId=message_id, id=attachment_id)
-            .execute()
-        )
-        return base64.urlsafe_b64decode(attachment["data"])
-    except Exception as e:
-        logger.warning(f"Failed to fetch attachment {message_id}/{attachment_id}: {e}")
-        return None
 
 
 def _now_iso() -> str:
@@ -233,26 +225,25 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
 
         # Call LLM for classification
         try:
-            from google import genai as _genai
             from google.genai import types as _types
 
-            client = _genai.Client(http_options={"timeout": 30000})
-            response = client.models.generate_content(
-                model=_PIPELINE_MODEL,
+            classify_model = get_pipeline_model("QUOTE", "classify")
+            response = llm_call_with_retry(
+                pipeline="QUOTE",
+                step="classify",
                 contents=[
                     f"{_SUPPLIER_CLASSIFY_PROMPT}\n\n---\n\n{email_context}",
                 ],
-                config=_types.GenerateContentConfig(
-                    temperature=0.0,
-                ),
+                temperature=0.0,
+                timeout=30000,
             )
             if not response.text:
                 # Log WHY the response was empty (safety filter, recitation, etc.)
                 candidates = getattr(response, 'candidates', None)
                 if candidates and candidates[0].finish_reason:
                     reason = candidates[0].finish_reason
-                    print(f"[quote-pipeline] #{email_tracking_id}: LLM empty response — finish_reason={reason} (model={_PIPELINE_MODEL})", flush=True)
-                    logger.warning(f"LLM classify empty for #{email_tracking_id}: finish_reason={reason} (model={_PIPELINE_MODEL})")
+                    print(f"[quote-pipeline] #{email_tracking_id}: LLM empty response — finish_reason={reason} (model={classify_model})", flush=True)
+                    logger.warning(f"LLM classify empty for #{email_tracking_id}: finish_reason={reason} (model={classify_model})")
                 else:
                     print(f"[quote-pipeline] #{email_tracking_id}: LLM empty response — no candidates", flush=True)
                     logger.warning(f"LLM classify empty for #{email_tracking_id}: no candidates returned")
@@ -322,10 +313,11 @@ def _classify_heuristic_fallback(tracking) -> dict:
 # ---------------------------------------------------------------------------
 
 def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[str] | None = None) -> str:
-    """Synchronous extraction: fetch body + process attachments via Gemini.
+    """Synchronous extraction: fetch body + process attachments.
 
-    If quote_attachments is provided, only those filenames are extracted.
-    Otherwise all non-inline attachments are processed.
+    Image attachments are triaged via the signature cache — known
+    signature/logo images are skipped automatically. The quote_attachments
+    parameter is deprecated and ignored (kept for backward compatibility).
 
     Returns a Markdown content bundle with body + extracted attachment content.
     """
@@ -342,24 +334,10 @@ def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[
         if body:
             parts.append(f"## Email Body\n\n{body}")
 
-        # Build set of filenames to extract (case-insensitive match)
-        target_filenames = None
-        if quote_attachments:
-            target_filenames = {f.lower().strip() for f in quote_attachments}
-
-        # Process attachments
+        # Process attachments — triage images via signature cache
         if tracking.attachments_json and tracking.gmail_message_id:
             for att in tracking.attachments_json:
                 filename = att.get("filename", "unknown")
-                
-                # If we have a filter list, only process matching attachments
-                if target_filenames is not None:
-                    if filename.lower().strip() not in target_filenames:
-                        continue
-                else:
-                    # No filter — skip inline images (signatures/logos)
-                    if att.get("inline"):
-                        continue
                 mime_type = att.get("mime_type", "")
                 size = att.get("size", 0)
                 att_id = att.get("gmail_attachment_id")
@@ -371,7 +349,7 @@ def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[
                 header = f"## Attachment: {filename} ({size_kb:.0f} KB)"
 
                 # Fetch raw bytes from Gmail
-                raw_bytes = _fetch_gmail_attachment_bytes(
+                raw_bytes = fetch_gmail_attachment_bytes(
                     tracking.user_email, tracking.gmail_message_id, att_id
                 )
                 if not raw_bytes:
@@ -380,13 +358,16 @@ def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[
 
                 # Process based on MIME type
                 if mime_type == "application/pdf" or filename.lower().endswith(".pdf"):
-                    extracted = _extract_pdf_with_gemini(raw_bytes, filename)
+                    extracted = extract_pdf_content(raw_bytes, filename, pipeline="QUOTE")
                     parts.append(f"{header}\n\n{extracted}")
                 elif mime_type.startswith("image/"):
-                    extracted = _extract_image_with_gemini(raw_bytes, filename, mime_type)
+                    # Triage: skip known signatures, classify unknowns
+                    if triage_image(raw_bytes, mime_type, filename, email_tracking_id, pipeline="QUOTE") == "signature":
+                        continue
+                    extracted = extract_image_content(raw_bytes, filename, mime_type, pipeline="QUOTE")
                     parts.append(f"{header}\n\n{extracted}")
                 elif "spreadsheet" in mime_type or filename.lower().endswith((".xlsx", ".xls", ".csv")):
-                    extracted = _extract_spreadsheet_with_gemini(raw_bytes, filename, mime_type)
+                    extracted = extract_spreadsheet_content(raw_bytes, filename, mime_type)
                     parts.append(f"{header}\n\n{extracted}")
                 else:
                     parts.append(f"{header}\n\n*[Unsupported attachment type: {mime_type}]*")
@@ -399,111 +380,6 @@ def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[
         session.close()
 
 
-def _extract_pdf_with_gemini(pdf_bytes: bytes, filename: str) -> str:
-    """Pass PDF bytes to Gemini for content extraction."""
-    from google import genai as _genai
-    from google.genai import types as _types
-
-    try:
-        client = _genai.Client(http_options={"timeout": 120000})
-        response = client.models.generate_content(
-            model=_PIPELINE_MODEL,
-            contents=[
-                _types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
-                (
-                    "Extract ALL pricing information, part numbers, quantities, and tabular data "
-                    "from this document. Present the data as Markdown tables. Include:\n"
-                    "- Item descriptions and part numbers\n"
-                    "- Unit prices and totals with currency\n"
-                    "- Quantities and units of measure\n"
-                    "- Shipping costs, lead times, payment terms if mentioned\n"
-                    "- Any notes or conditions\n\n"
-                    "If the document contains multiple tables, reproduce each one. "
-                    "Preserve the original structure as faithfully as possible."
-                ),
-            ],
-            config=_types.GenerateContentConfig(
-                temperature=0.1,
-            ),
-        )
-        if not response.text:
-            candidates = getattr(response, 'candidates', None)
-            if candidates and candidates[0].finish_reason:
-                logger.warning(f"Gemini PDF extraction empty for {filename}: finish_reason={candidates[0].finish_reason}")
-            return "*[No content extracted from PDF]*"
-        return response.text
-    except Exception as e:
-        logger.error(f"Gemini PDF extraction failed for {filename}: {e}")
-        return f"*[PDF extraction failed: {e}]*"
-
-
-def _extract_image_with_gemini(image_bytes: bytes, filename: str, mime_type: str) -> str:
-    """Pass image to Gemini for OCR and content extraction."""
-    from google import genai as _genai
-    from google.genai import types as _types
-
-    try:
-        client = _genai.Client(http_options={"timeout": 60000})
-        response = client.models.generate_content(
-            model=_PIPELINE_MODEL,
-            contents=[
-                _types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                (
-                    "Extract all text, pricing, and tabular data from this image. "
-                    "If it's a quotation or price list, present as a Markdown table. "
-                    "If it's a product spec sheet, extract key specifications. "
-                    "If it's general text, reproduce it faithfully."
-                ),
-            ],
-            config=_types.GenerateContentConfig(
-                temperature=0.1,
-            ),
-        )
-        return response.text or "*[No content extracted]*"
-    except Exception as e:
-        logger.error(f"Gemini image extraction failed for {filename}: {e}")
-        return f"*[Image extraction failed: {e}]*"
-
-
-def _extract_spreadsheet_with_gemini(data: bytes, filename: str, mime_type: str) -> str:
-    """Extract spreadsheet content. For CSV, parse directly; for Excel, convert locally."""
-    if filename.lower().endswith(".csv"):
-        try:
-            text = data.decode("utf-8", errors="replace")
-            # Return first 5000 chars as-is (Markdown table conversion happens in interpret step)
-            return f"```csv\n{text[:5000]}\n```"
-        except Exception:
-            pass
-
-    # For Excel files, parse locally with openpyxl (Gemini doesn't accept xlsx uploads)
-    try:
-        import io
-        from openpyxl import load_workbook
-
-        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-        parts = []
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            rows = list(ws.iter_rows(values_only=True))
-            if not rows:
-                continue
-            parts.append(f"## Sheet: {sheet_name}\n")
-            # Format as Markdown table
-            header = rows[0]
-            col_names = [str(c) if c is not None else "" for c in header]
-            parts.append("| " + " | ".join(col_names) + " |")
-            parts.append("| " + " | ".join(["---"] * len(col_names)) + " |")
-            for row in rows[1:200]:  # Cap at 200 data rows
-                cells = [str(c) if c is not None else "" for c in row]
-                parts.append("| " + " | ".join(cells) + " |")
-        wb.close()
-        result_text = "\n".join(parts)
-        if not result_text.strip():
-            return "*[Spreadsheet appears empty]*"
-        return result_text[:8000]
-    except Exception as e:
-        logger.error(f"Local spreadsheet extraction failed for {filename}: {e}")
-        return f"*[Spreadsheet extraction failed: {e}]*"
 
 
 # ---------------------------------------------------------------------------
@@ -521,10 +397,7 @@ def _interpret_quote_sync(rfq_id: str, supplier_name: str, content_bundle: str) 
       - terms: str
       - warnings: [str]
     """
-    from google import genai as _genai
-    from google.genai import types as _types
     from includes.tools.rfq_crud import _get_rfq_dict_sync
-    from includes.tools.quote_tools import _build_quotation_snapshot
 
     rfq = _get_rfq_dict_sync(rfq_id)
     if not rfq:
@@ -592,13 +465,12 @@ Rules:
 """
 
     try:
-        client = _genai.Client(http_options={"timeout": 120000})
-        response = client.models.generate_content(
-            model=_PIPELINE_MODEL,
+        response = llm_call_with_retry(
+            pipeline="QUOTE",
+            step="interpret",
             contents=prompt,
-            config=_types.GenerateContentConfig(
-                temperature=0.1,
-            ),
+            temperature=0.1,
+            timeout=300000,  # 5 min — interpret can be slow for large RFQs
         )
         raw_text = (response.text or "").strip()
         if not raw_text:
