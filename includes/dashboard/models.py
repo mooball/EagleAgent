@@ -345,6 +345,21 @@ class MailboxSyncCursor(Base):
         return f"<MailboxSyncCursor(user_email='{self.user_email}', history_id={self.last_history_id})>"
 
 
+class KnownImageSignature(Base):
+    """Cache of image checksums for skipping known signature/logo images in email pipelines."""
+    __tablename__ = 'known_image_signatures'
+
+    sha256 = Column(String(64), primary_key=True)  # hex-encoded SHA-256
+    classification = Column(String, nullable=False)  # 'signature' or 'quote_content'
+    sample_filename = Column(String, nullable=True)  # first filename seen
+    source_email_id = Column(Integer, nullable=True)  # email_tracking.id where first seen
+    size_bytes = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self):
+        return f"<KnownImageSignature(sha256='{self.sha256[:12]}...', classification='{self.classification}')>"
+
+
 class EmailTracking(Base):
     """Tracks all email lifecycle events (draft, sent, received)."""
     __tablename__ = 'email_tracking'
