@@ -249,7 +249,7 @@ class RFQ(Base):
     opportunity_id = Column(UUID(as_uuid=True), ForeignKey('opportunities.id'), nullable=True, index=True)
     hubspot_deal = Column(String, nullable=True)
     created_by = Column(String, nullable=False)
-    created_date = Column(Date, nullable=False)
+    created_date = Column(DateTime(timezone=True), nullable=False)
     assigned_to = Column(String, nullable=True)
     thread_id = Column(String, nullable=True)
     status = Column(String, nullable=False, default='draft')  # draft/in_progress/issued_quote/closed_won/closed_lost — mirrors NetSuite Opportunity A/B/C/D
