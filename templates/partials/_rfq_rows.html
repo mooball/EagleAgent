@@ -2,7 +2,14 @@
 {% set items = rfq.get('items', []) %}
 {% set status = rfq.status or 'draft' %}
 {% set is_empty = (items | length == 0) and status == 'draft' %}
-<tr class="{% if is_empty %}opacity-40{% endif %} hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
+{% set age = rfq.age_hours or 0 %}
+{% set age_class = '' %}
+{% if status == 'in_progress' and age >= 8 %}
+  {% set age_class = 'bg-red-100 bg-opacity-60 dark:bg-red-900 dark:bg-opacity-30' %}
+{% elif status == 'in_progress' and age >= 4 %}
+  {% set age_class = 'bg-amber-100 bg-opacity-60 dark:bg-amber-900 dark:bg-opacity-30' %}
+{% endif %}
+<tr class="{% if is_empty %}opacity-40{% endif %} {{ age_class }} hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
     hx-get="/partial/rfqs/{{ rfq.id }}" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}">
     <td class="px-4 py-3 font-bold text-gray-900 dark:text-gray-100 whitespace-nowrap">{{ rfq.id }}{% if rfq.netsuite_opportunity %} <span class="text-blue-600 dark:text-blue-400 font-normal">/ {{ rfq.netsuite_opportunity }}</span>{% endif %}</td>
     <td class="px-4 py-3 text-gray-700 dark:text-gray-300">{{ rfq.customer or 'Unknown' }}</td>
@@ -23,6 +30,7 @@
     <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ items | length }}</td>
     {% if mine != '1' %}<td class="px-4 py-3 text-gray-500 dark:text-gray-400">{{ rfq.assigned_to or '—' }}</td>{% endif %}
     <td class="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap">{{ rfq.created_display or rfq.created_date or '' }}</td>
+    <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400 whitespace-nowrap">{{ rfq.supplier_count or 0 }}/{{ rfq.quoted_count or 0 }}</td>
     <td class="px-4 py-1 w-8">
         {% if is_empty %}
         <button hx-delete="/partial/rfqs/{{ rfq.id }}" hx-target="closest tr" hx-swap="outerHTML"
