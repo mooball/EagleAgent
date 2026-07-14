@@ -540,11 +540,12 @@ def _render_rfq_detail_partial_response(request: Request, user: dict, rfq: dict,
 # ---------------------------------------------------------------------------
 # Fetch helper
 # ---------------------------------------------------------------------------
-async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: str = "", status: str = "active"):
+async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: str = "", status: str = "open"):
     """Fetch RFQs from SQL with optional text search and pagination.
     
     Args:
-        status: 'active' (in_progress + awaiting_quotes), 'all' (no filter), or a specific status value.
+        status: 'open' (draft + in_progress), 'quoted' (issued_quote), 'all' (no filter),
+                or a specific status value.
     """
     from includes.tools.quote_tools import _list_rfqs_sync, _rfq_to_dict
 
@@ -555,8 +556,10 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
             query = session.query(RFQ)
             if mine == "1" and user_email:
                 query = query.filter(RFQ.assigned_to.ilike(user_email))
-            if status == "active":
-                query = query.filter(RFQ.status.in_(["draft", "in_progress", "issued_quote"]))
+            if status == "open":
+                query = query.filter(RFQ.status.in_(["draft", "in_progress"]))
+            elif status == "quoted":
+                query = query.filter(RFQ.status == "issued_quote")
             elif status and status != "all":
                 query = query.filter(RFQ.status == status)
             query = query.order_by(RFQ.rfq_number.desc())
@@ -604,7 +607,7 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
 # ---------------------------------------------------------------------------
 @router.get("/rfqs")
 async def rfq_list(request: Request, user: dict = Depends(require_user),
-                   q: str = "", page: int = 1, mine: str = "1", status: str = "active"):
+                   q: str = "", page: int = 1, mine: str = "1", status: str = "open"):
     rfqs, total, has_more, next_page = await _fetch_rfqs(
         q, page, mine=mine, user_email=user.get("email", ""), status=status)
 
@@ -715,7 +718,7 @@ async def rfq_detail_tab(request: Request, rfq_id: str, tab: str,
 
 @router.get("/partial/rfqs")
 async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
-                           q: str = "", page: int = 1, mine: str = "1", status: str = "active"):
+                           q: str = "", page: int = 1, mine: str = "1", status: str = "open"):
     rfqs, total, has_more, next_page = await _fetch_rfqs(
         q, page, mine=mine, user_email=user.get("email", ""), status=status)
 
@@ -734,7 +737,7 @@ async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
 
 @router.get("/partial/rfqs/rows")
 async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
-                           q: str = "", page: int = 1, mine: str = "1", status: str = "active"):
+                           q: str = "", page: int = 1, mine: str = "1", status: str = "open"):
     """Return just the RFQ card rows + sentinel for infinite scroll."""
     rfqs, total, has_more, next_page = await _fetch_rfqs(
         q, page, mine=mine, user_email=user.get("email", ""), status=status)
