@@ -90,9 +90,82 @@ def _next_rfq_number_sync() -> str:
         session.close()
 
 
+def _get_rfq_suppliers(items: list) -> list[dict]:
+    """Return unique shortlisted/selected suppliers across RFQ items.
+
+    Deduplicated by supplier_id (fallback: name.lower()).
+    Each entry: supplier_id, name, status, quote_status, lines.
+
+    Used by _rfq_to_dict for listing counts, _build_rfq_supplier_email_data
+    for the suppliers tab, and _build_quotation_snapshot for the quotation tab.
+    """
+    suppliers: dict[str, dict] = {}
+    for item in items:
+        for s in (item.get("suppliers") or []):
+            name = (s.get("name") or "").strip()
+            if not name:
+                continue
+            status = s.get("status", "")
+            if status not in ("shortlisted", "selected"):
+                continue
+            sid = s.get("supplier_id")
+            key = str(sid) if sid else name.lower()
+            if key not in suppliers:
+                suppliers[key] = {
+                    "supplier_id": sid,
+                    "name": name,
+                    "status": status,
+                    "quote_status": s.get("quote_status"),
+                    "contacts": s.get("contacts") or [],
+                    "country": s.get("country"),
+                    "currency": s.get("currency"),
+                    "lines": [],
+                }
+            # Track the best quote_status (a supplier may be quoted on one line but not another)
+            existing_qs = suppliers[key]["quote_status"]
+            new_qs = s.get("quote_status")
+            if existing_qs != "quoted" and new_qs == "quoted":
+                suppliers[key]["quote_status"] = "quoted"
+            suppliers[key]["lines"].append(item.get("line"))
+    return list(suppliers.values())
+
+
 def _rfq_to_dict(rfq) -> dict:
     """Convert an RFQ ORM object (with items loaded) to a plain dict
     compatible with the rendering functions."""
+    from datetime import datetime, timezone, date as date_type
+    created = rfq.created_date  # DateTime(timezone=True) after migration, Date before
+    created_str = ""
+    created_display = ""
+    if created:
+        # Handle migration transition: may be datetime or date
+        is_datetime = hasattr(created, 'tzinfo')
+        if is_datetime and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        created_str = created.strftime("%Y-%m-%d") if is_datetime else str(created)
+        now = datetime.now(timezone.utc)
+        if is_datetime:
+            delta = now - created
+            hour = (created.hour % 12) or 12
+            ampm = "am" if created.hour < 12 else "pm"
+            time_str = f"{hour}:{created.minute:02d}{ampm}"
+        else:
+            # Pre-migration: no time component, use midnight as reference
+            delta = now - datetime.combine(created, datetime.min.time(), tzinfo=timezone.utc)
+            time_str = ""
+        hours = int(delta.total_seconds() / 3600)
+        age = f"{hours}h"
+        age_hours = hours
+        if time_str:
+            created_display = f"{created_str} {time_str} ({age})"
+        else:
+            created_display = f"{created_str} ({age})"
+    else:
+        age_hours = 0
+    items = [_item_to_dict(item) for item in (rfq.items or [])]
+    supplier_list = _get_rfq_suppliers(items)
+    supplier_count = len(supplier_list)
+    quoted_count = sum(1 for s in supplier_list if s["quote_status"] == "quoted")
     return {
         "id": rfq.rfq_number,
         "customer": rfq.customer,
@@ -103,7 +176,11 @@ def _rfq_to_dict(rfq) -> dict:
         "opportunity_id": str(rfq.opportunity_id) if rfq.opportunity_id else None,
         "hubspot_deal": rfq.hubspot_deal,
         "created_by": rfq.created_by,
-        "created_date": str(rfq.created_date) if rfq.created_date else "",
+        "created_date": created_str,
+        "created_display": created_display,
+        "age_hours": age_hours,
+        "supplier_count": supplier_count,
+        "quoted_count": quoted_count,
         "assigned_to": rfq.assigned_to,
         "thread_id": rfq.thread_id,
         "status": rfq.status or "draft",
@@ -112,7 +189,7 @@ def _rfq_to_dict(rfq) -> dict:
         "item_groups": rfq.item_groups,
         "pipeline_stage": getattr(rfq, "pipeline_stage", "unprocessed") or "unprocessed",
         "supplier_meta": rfq.supplier_meta or {},
-        "items": [_item_to_dict(item) for item in (rfq.items or [])],
+        "items": items,
     }
 
 
@@ -281,7 +358,7 @@ def _create_rfq_sync(data: dict, user_id: str) -> dict:
             netsuite_opportunity=data.get("netsuite_opportunity"),
             hubspot_deal=data.get("hubspot_deal"),
             created_by=user_id,
-            created_date=_today_date(),
+            created_date=_now_dt(),
             assigned_to=data.get("assigned_to", user_id),
             thread_id=data.get("thread_id"),
             status="draft",

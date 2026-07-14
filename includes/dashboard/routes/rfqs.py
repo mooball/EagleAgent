@@ -540,11 +540,12 @@ def _render_rfq_detail_partial_response(request: Request, user: dict, rfq: dict,
 # ---------------------------------------------------------------------------
 # Fetch helper
 # ---------------------------------------------------------------------------
-async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: str = "", status: str = "active"):
+async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: str = "", status: str = "open"):
     """Fetch RFQs from SQL with optional text search and pagination.
     
     Args:
-        status: 'active' (in_progress + awaiting_quotes), 'all' (no filter), or a specific status value.
+        status: 'open' (draft + in_progress), 'quoted' (issued_quote), 'all' (no filter),
+                or a specific status value.
     """
     from includes.tools.quote_tools import _list_rfqs_sync, _rfq_to_dict
 
@@ -555,8 +556,10 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
             query = session.query(RFQ)
             if mine == "1" and user_email:
                 query = query.filter(RFQ.assigned_to.ilike(user_email))
-            if status == "active":
-                query = query.filter(RFQ.status.in_(["draft", "in_progress", "issued_quote"]))
+            if status == "open":
+                query = query.filter(RFQ.status.in_(["draft", "in_progress"]))
+            elif status == "quoted":
+                query = query.filter(RFQ.status == "issued_quote")
             elif status and status != "all":
                 query = query.filter(RFQ.status == status)
             query = query.order_by(RFQ.rfq_number.desc())
@@ -604,7 +607,7 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
 # ---------------------------------------------------------------------------
 @router.get("/rfqs")
 async def rfq_list(request: Request, user: dict = Depends(require_user),
-                   q: str = "", page: int = 1, mine: str = "1", status: str = "active"):
+                   q: str = "", page: int = 1, mine: str = "1", status: str = "open"):
     rfqs, total, has_more, next_page = await _fetch_rfqs(
         q, page, mine=mine, user_email=user.get("email", ""), status=status)
 
@@ -699,6 +702,63 @@ async def rfq_detail(request: Request, rfq_id: str,
     return _render(request, "rfq_detail.html", "partials/rfq_detail.html", ctx, user)
 
 
+@router.get("/rfqs/{rfq_id}/export-items")
+async def rfq_export_items(request: Request, rfq_id: str,
+                           user: dict = Depends(require_user)):
+    """Export RFQ items as a CSV file."""
+    from includes.tools.quote_tools import _get_rfq_dict_sync
+    from fastapi.responses import Response
+    import csv, io
+
+    rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+    if not rfq:
+        return RedirectResponse("/rfqs")
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Part No", "Description", "QTY", "Purchase Price", "Sell Price", "Vendor Name", "Brand", "Department"])
+
+    for item in rfq.get("items", []):
+        part_no = item.get("part_number") or ""
+        desc = item.get("input_description") or ""
+        qty = item.get("quantity") or ""
+        brand = item.get("brand") or ""
+        sell_price = item.get("sale_price")
+
+        # Find the selected vendor: status="selected" or quote_status="selected"
+        # Fall back to the first quoted supplier
+        vendor_name = ""
+        purchase_price = ""
+        suppliers = item.get("suppliers") or []
+        selected = next(
+            (s for s in suppliers if s.get("status") == "selected" or s.get("quote_status") == "selected"),
+            None
+        )
+        if not selected:
+            selected = next(
+                (s for s in suppliers if s.get("quote_status") == "quoted"),
+                None
+            )
+        if selected:
+            vendor_name = selected.get("name") or ""
+            qc = selected.get("quote_cost")
+            if qc is not None:
+                curr = selected.get("quote_currency") or "AUD"
+                purchase_price = f"{curr} {qc}" if curr != "AUD" else str(qc)
+
+        sell_str = str(sell_price) if sell_price is not None else ""
+
+        writer.writerow([part_no, desc, qty, purchase_price, sell_str, vendor_name, brand, ""])
+
+    csv_content = output.getvalue()
+    filename = f"{rfq_id}_items.csv"
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/rfqs/{rfq_id}/{tab}")
 async def rfq_detail_tab(request: Request, rfq_id: str, tab: str,
                          user: dict = Depends(require_user)):
@@ -715,7 +775,7 @@ async def rfq_detail_tab(request: Request, rfq_id: str, tab: str,
 
 @router.get("/partial/rfqs")
 async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
-                           q: str = "", page: int = 1, mine: str = "1", status: str = "active"):
+                           q: str = "", page: int = 1, mine: str = "1", status: str = "open"):
     rfqs, total, has_more, next_page = await _fetch_rfqs(
         q, page, mine=mine, user_email=user.get("email", ""), status=status)
 
@@ -734,7 +794,7 @@ async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
 
 @router.get("/partial/rfqs/rows")
 async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
-                           q: str = "", page: int = 1, mine: str = "1", status: str = "active"):
+                           q: str = "", page: int = 1, mine: str = "1", status: str = "open"):
     """Return just the RFQ card rows + sentinel for infinite scroll."""
     rfqs, total, has_more, next_page = await _fetch_rfqs(
         q, page, mine=mine, user_email=user.get("email", ""), status=status)
