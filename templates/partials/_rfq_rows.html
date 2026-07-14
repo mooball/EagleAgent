@@ -22,7 +22,7 @@
     </td>
     <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400">{{ items | length }}</td>
     {% if mine != '1' %}<td class="px-4 py-3 text-gray-500 dark:text-gray-400">{{ rfq.assigned_to or '—' }}</td>{% endif %}
-    <td class="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap">{{ rfq.created_date or '' }}</td>
+    <td class="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap">{{ rfq.created_display or rfq.created_date or '' }}</td>
     <td class="px-4 py-1 w-8">
         {% if is_empty %}
         <button hx-delete="/partial/rfqs/{{ rfq.id }}" hx-target="closest tr" hx-swap="outerHTML"

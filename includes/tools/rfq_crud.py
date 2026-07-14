@@ -93,6 +93,20 @@ def _next_rfq_number_sync() -> str:
 def _rfq_to_dict(rfq) -> dict:
     """Convert an RFQ ORM object (with items loaded) to a plain dict
     compatible with the rendering functions."""
+    from datetime import datetime, timezone
+    created_str = str(rfq.created_date) if rfq.created_date else ""
+    updated = rfq.updated_at
+    # Build display string: "2026-07-14 9:43am (69h)"
+    created_display = created_str
+    if updated:
+        now = datetime.now(timezone.utc)
+        delta = now - updated.replace(tzinfo=timezone.utc)
+        hours = int(delta.total_seconds() / 3600)
+        age = f"{hours}h" if hours < 48 else f"{hours // 24}d"
+        hour = (updated.hour % 12) or 12
+        ampm = "am" if updated.hour < 12 else "pm"
+        time_str = f"{hour}:{updated.minute:02d}{ampm}"
+        created_display = f"{created_str} {time_str} ({age})"
     return {
         "id": rfq.rfq_number,
         "customer": rfq.customer,
@@ -103,7 +117,8 @@ def _rfq_to_dict(rfq) -> dict:
         "opportunity_id": str(rfq.opportunity_id) if rfq.opportunity_id else None,
         "hubspot_deal": rfq.hubspot_deal,
         "created_by": rfq.created_by,
-        "created_date": str(rfq.created_date) if rfq.created_date else "",
+        "created_date": created_str,
+        "created_display": created_display,
         "assigned_to": rfq.assigned_to,
         "thread_id": rfq.thread_id,
         "status": rfq.status or "draft",
