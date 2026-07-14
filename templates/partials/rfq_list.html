@@ -62,7 +62,7 @@
                 {{ th("Title") }}
                 {{ th("Status") }}
                 {{ th("Items", align="right") }}
-                {{ th("Assigned To") }}
+                {% if mine != '1' %}{{ th("Sales Rep") }}{% endif %}
                 {{ th("Created") }}
                 <th class="px-4 py-3 bg-gray-50 dark:bg-gray-800 w-8"></th>
             </tr>
