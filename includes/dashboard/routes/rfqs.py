@@ -955,6 +955,10 @@ async def partial_rfq_update(request: Request, rfq_id: str,
                 continue
             data[key] = stripped if stripped else None
 
+    # Always store netsuite_opportunity in uppercase
+    if data.get("netsuite_opportunity"):
+        data["netsuite_opportunity"] = data["netsuite_opportunity"].upper()
+
     if data:
         from includes.tools.quote_tools import _update_rfq_sync
         user_ident = user.get("identifier", "dashboard")
