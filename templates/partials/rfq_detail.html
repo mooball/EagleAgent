@@ -242,7 +242,7 @@
                                         this.oppResults = d.results || [];
                                         this.oppActiveIdx = -1;
                                         this.oppSearching = false;
-                                        if (!this.oppResults.some(r => (r.number || r.name) === this.oppSearch)) this.oppSelectedId = "";
+                                        if (!this.oppResults.some(r => (r.number || r.name || "").toUpperCase() === this.oppSearch.toUpperCase())) this.oppSelectedId = "";
                                     })
                                     .catch(() => { this.oppResults = []; this.oppActiveIdx = -1; this.oppSearching = false; });
                             }, 200);
