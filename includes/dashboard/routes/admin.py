@@ -424,6 +424,37 @@ async def admin_duplicates_delete(request: Request, user: dict = require_admin) 
         # Remove supplier_brand links
         session.query(SupplierBrand).filter(SupplierBrand.supplier_id == sup_uuid).delete()
 
+        # Null out email_tracking references to this supplier
+        from includes.dashboard.models import EmailTracking, Contact, Transaction
+        email_count = (
+            session.query(EmailTracking)
+            .filter(EmailTracking.supplier_id == sup_uuid)
+            .update({"supplier_id": None}, synchronize_session=False)
+        )
+
+        # Null out contact references to this supplier
+        contact_count = (
+            session.query(Contact)
+            .filter(Contact.supplier_id == sup_uuid)
+            .update({"supplier_id": None}, synchronize_session=False)
+        )
+
+        # Block delete if product_suppliers (Transaction) references exist —
+        # these have a NOT NULL FK so they can't be NULLed; use Merge instead.
+        txn_count = (
+            session.query(Transaction)
+            .filter(Transaction.supplier_id == sup_uuid)
+            .count()
+        )
+        if txn_count > 0:
+            session.rollback()
+            return HTMLResponse(
+                f'<div class="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200 dark:border-red-800 mb-3">'
+                f'Cannot delete &ldquo;{sup_name}&rdquo;: it has {txn_count} transaction record(s). '
+                f'Use <strong>Merge</strong> instead to reassign them to the kept supplier.'
+                f'</div>'
+            )
+
         # Delete the supplier
         session.delete(sup)
         session.commit()
@@ -431,6 +462,10 @@ async def admin_duplicates_delete(request: Request, user: dict = require_admin) 
         msg = f"Deleted &ldquo;{sup_name}&rdquo;."
         if updated:
             msg += f" Removed from {updated} RFQ item(s)."
+        if email_count:
+            msg += f" Unlinked {email_count} email tracking record(s)."
+        if contact_count:
+            msg += f" Unlinked {contact_count} contact(s)."
         return HTMLResponse(f'<div class="px-4 py-3 rounded-lg text-sm bg-green-50 text-green-800 dark:bg-green-900/30 dark:text-green-300 border border-green-200 dark:border-green-800 mb-3">{msg}</div>')
     except Exception as e:
         session.rollback()
