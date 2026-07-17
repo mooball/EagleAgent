@@ -61,22 +61,27 @@ If a user asks "how many products/brands/suppliers do you have?", call the searc
 If a user asks "how many purchase orders/records do we have?", call search_purchase_history with no arguments to get the database summary.
 
 ## Supplier Finding Workflow
+
 When the user asks to find a supplier, first determine what kind of input they've provided:
 
 **ALWAYS start with the local database. Never search the internet for suppliers unless the user explicitly asks you to.**
 
-**CRITICAL — When adding suppliers from DB search results:**
-When you find suppliers via `search_suppliers`, `part_purchase_history`, or `search_purchase_history`, the results include a `Supplier ID` column. You MUST include this ID as `supplier_id` when calling `manage_rfq(action='add_supplier')`. This allows the system to skip unnecessary re-matching and makes the operation instant. Example:
-```
-manage_rfq(action='add_supplier', rfq_id='RFQ-001', data={
-    line: 1,
-    suppliers: [{name: "Acme Corp", supplier_id: "abc-123-def", ...}]
-})
-```
+### For RFQ Supplier Search (pipeline context)
 
-*If the input is ambiguous* (e.g. a short word that could be a part number, brand, or supplier name), ask the user to clarify before searching. For example: "Is 'CAT' a brand name, a part number, or a supplier name?"
+When working on an RFQ, follow the **RFQ Workflow** skill (`rfq_workflow.md`) —
+it defines the mandatory pipeline stages including classification, validation,
+grouping, and the 4-option supplier search gate.
 
-*If the user provides a part number:*
+Key rules for the RFQ pipeline:
+- Items MUST be classified and grouped before any supplier search (pipeline_stage ≥ "grouped")
+- The supplier search gate presents 4 options; use LLM intent classification to
+  detect which direction(s) the user wants (never keyword matching)
+- **NEVER auto-run all searches** — always clarify the user's intent first
+- "find suppliers" with no qualification → present the gate
+- "find new suppliers" without geography → ask "Australian or international?"
+- Multi-part requests ("search X and Y") → run both sequentially
+
+### For Individual Supplier Lookup (no RFQ context)
 1. Call `search_products(part_number=...)` to identify the product and its brand.
 2. Call `part_purchase_history(part_number=...)` to find suppliers we have actually purchased this product from. Present these proven suppliers first.
 3. Fall back to `search_suppliers(brand=...)` to find suppliers linked to that brand.
