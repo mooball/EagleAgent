@@ -1571,8 +1571,17 @@ def _web_search_suppliers_sync(
     brand: str = "",
     existing_suppliers: list[str] | None = None,
     quantity: str = "",
+    domestic_only: bool = False,
 ) -> list[dict]:
     """Search the web for suppliers of a product using Google Search grounding.
+
+    Two-step approach:
+      1. RESEARCH — free-form search with grounding (RESEARCH_AGENT_MODEL).
+         No JSON constraints — the model freely explores and reports findings.
+      2. EXTRACT — SUPERVISOR_MODEL parses the research text into structured JSON.
+
+    Args:
+        domestic_only: If True, restrict search to Australian suppliers only.
 
     Returns a list of supplier dicts ready for _add_supplier_sync:
         [{"name", "country", "currency", "contacts", "status", "price_type", "notes", ...}]
@@ -1585,7 +1594,7 @@ def _web_search_suppliers_sync(
     existing_str = ""
     if existing_suppliers:
         existing_str = (
-            f"\n\nAlready have these suppliers (do NOT include them): "
+            f"\nAlready have these suppliers (do NOT include them): "
             f"{', '.join(existing_suppliers)}"
         )
 
@@ -1595,7 +1604,17 @@ def _web_search_suppliers_sync(
     if brand:
         product_desc = f"{brand} {product_desc}"
 
-    prompt = f"""Search the web for companies that sell or distribute this product:
+    geography_instruction = (
+        "Search ONLY for suppliers based in Australia. "
+        "Focus exclusively on Australian distributors and wholesalers."
+        if domestic_only
+        else "Search globally for suppliers — do not restrict to any country."
+    )
+
+    # =========================================================================
+    # STEP 1: Research — free-form search with grounding (no JSON constraint)
+    # =========================================================================
+    research_prompt = f"""Search the web for companies that sell or distribute this product:
 
 Product: {product_desc}
 {f"Part Number: {part_number}" if part_number else ""}
@@ -1603,107 +1622,206 @@ Product: {product_desc}
 {f"Quantity needed: {quantity}" if quantity else ""}
 {existing_str}
 
-Find 3-5 suppliers. Prioritise authorised distributors and industrial wholesalers.
-Search globally — do NOT restrict to Australia. For each supplier found, provide:
-- name: Company name
-- country: 2-letter ISO code (e.g. AU, US, GB, NZ)
-- currency: Their trading currency (e.g. AUD, USD, NZD, GBP)
-- website: Their website URL
-- email: Contact email if visible (or empty string)
-- phone: Contact phone if visible (or empty string)
-- price: Numeric price if visible (or null)
-- price_currency: Currency of the price (or null)
-- notes: Brief description of what they supply and any relevant details
+{geography_instruction}
 
-Return ONLY a JSON array of supplier objects. No other text.
-Example: [{{"name": "Example Co", "country": "AU", "currency": "AUD", "website": "https://example.com", "email": "sales@example.com", "phone": "", "price": 24.99, "price_currency": "AUD", "notes": "Industrial distributor, stocks full range"}}]"""
+Find 3–5 suppliers. Prioritise authorised distributors and industrial wholesalers.
 
+For EACH supplier, try to find as much of this information as possible:
+- Company name
+- Country (2-letter ISO code: AU, US, GB, NZ, etc.)
+- Their trading currency (AUD, USD, NZD, GBP, etc.)
+- Website URL — this is critical, search for their official site
+- Contact email — look for sales@ or info@ addresses
+- Contact phone number
+- Any visible pricing
+- Brief notes on what they supply
+
+Write your findings as a clear, detailed report. List each supplier with all the
+information you found. If you couldn't find a particular field, note it as
+"not found" rather than omitting it."""
+
+    research_text = ""
     try:
+        # Resolve model: RESEARCH_AGENT_MODEL → DEFAULT_MODEL (same as ResearchAgent)
+        web_search_model = Config.RESEARCH_AGENT_MODEL or Config.DEFAULT_MODEL
         client = _genai.Client(http_options={"timeout": 120000})
+        logger.info(f"Web search research: model={web_search_model}, product={product_desc[:80]}")
         response = client.models.generate_content(
-            model=Config.DEFAULT_MODEL,
-            contents=prompt,
+            model=web_search_model,
+            contents=research_prompt,
             config=_types.GenerateContentConfig(
                 tools=[_types.Tool(google_search=_types.GoogleSearch())],
-                temperature=0.2,
+                temperature=0.3,
             ),
         )
-        # Join ALL text parts — grounding splits text across multiple parts
-        raw_text = ""
+        # --- Detailed diagnostic logging ---
+        has_candidates = bool(response.candidates)
+        finish_reason = None
+        part_details = []
         try:
             if response.candidates:
+                finish_reason = str(response.candidates[0].finish_reason) if response.candidates[0].finish_reason else "None"
                 parts = response.candidates[0].content.parts or []
-                raw_text = "".join(
-                    p.text for p in parts
-                    if hasattr(p, "text") and p.text
-                ).strip()
-        except (ValueError, AttributeError, IndexError):
-            pass
-        if not raw_text:
+                for i, p in enumerate(parts):
+                    attrs = [a for a in dir(p) if not a.startswith('_')]
+                    has_text = hasattr(p, "text") and bool(p.text)
+                    text_preview = (p.text[:100] if has_text else "") if hasattr(p, "text") else ""
+                    part_details.append(
+                        f"  part[{i}]: attrs={attrs}, has_text={has_text}, "
+                        f"text_preview={text_preview!r}"
+                    )
+                    if has_text:
+                        research_text += p.text
+                research_text = research_text.strip()
+        except Exception as e:
+            part_details.append(f"  ERROR extracting parts: {e}")
+        logger.info(
+            f"Web search research RAW:\n"
+            f"  model={web_search_model}\n"
+            f"  has_candidates={has_candidates}\n"
+            f"  finish_reason={finish_reason}\n"
+            f"  text_len={len(research_text)}\n"
+            + "\n".join(part_details)
+        )
+        # Log the full research text (truncated for log safety)
+        if research_text:
+            logger.info(
+                f"Web search research TEXT ({len(research_text)} chars):\n"
+                f"{research_text[:2000]}"
+            )
+        else:
+            # Try fallback
             try:
-                raw_text = (response.text or "").strip()
-            except (ValueError, AttributeError):
-                pass
-        # Clean markdown fences
-        if raw_text.startswith("```"):
-            lines = raw_text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            raw_text = "\n".join(lines).strip()
+                fallback = (response.text or "").strip()
+                logger.info(f"Web search research FALLBACK text: {fallback[:500]!r}")
+                research_text = fallback
+            except Exception as e2:
+                logger.warning(f"Web search fallback also failed: {e2}")
+    except Exception as e:
+        logger.error(f"Web search research step FAILED: {type(e).__name__}: {e}", exc_info=True)
+        return []
 
-        # Extract JSON array from any surrounding text
-        json_start = raw_text.find("[")
-        json_end = raw_text.rfind("]")
-        if json_start != -1 and json_end != -1 and json_end > json_start:
-            raw_text = raw_text[json_start:json_end + 1]
+    if not research_text:
+        logger.warning(f"Web search returned empty response for: {product_desc[:80]}")
+        return []
 
+    logger.info(f"Research step produced {len(research_text)} chars for: {product_desc[:80]}")
+
+    # =========================================================================
+    # STEP 2: Extract — parse research text into structured JSON
+    # =========================================================================
+    # NOTE: Use .replace() instead of f-string to avoid crashes if the
+    # research text contains { or } characters (common in URLs and JSON).
+    _extract_template = """Extract supplier information from the following research report
+into a JSON array of supplier objects.
+
+For each supplier mentioned, create an object with these fields:
+- name: Company name (required)
+- country: 2-letter ISO country code (e.g. AU, US, GB, NZ) — infer from the report context
+- currency: Trading currency (e.g. AUD, USD, NZD, GBP) — infer from country if not stated
+- website: Website URL (full URL, or empty string if not found)
+- email: Contact email (or empty string)
+- phone: Contact phone (or empty string)
+- price: Numeric price if mentioned (or null)
+- price_currency: Currency of the price (or null)
+- notes: Brief description of what they supply
+
+Rules:
+- Include only suppliers that are clearly identified with a company name.
+- Don't fabricate information — if a field wasn't in the report, use empty string or null.
+- Infer country/currency from context (e.g. a .com.au domain → AU/AUD).
+- The "website" field is important — prefer the full URL if mentioned.
+
+Research report:
+---
+__RESEARCH_TEXT__
+---
+
+Return ONLY the JSON array. No other text.
+Example: [{"name": "Example Co", "country": "AU", "currency": "AUD", "website": "https://example.com", "email": "sales@example.com", "phone": "03 9000 1234", "price": null, "price_currency": null, "notes": "Industrial distributor"}]"""
+
+    extract_prompt = _extract_template.replace(
+        "__RESEARCH_TEXT__", research_text[:8000]
+    )
+
+    try:
+        client = _genai.Client(http_options={"timeout": 60000})
+        response = client.models.generate_content(
+            model=Config.SUPERVISOR_MODEL,
+            contents=extract_prompt,
+            config=_types.GenerateContentConfig(
+                temperature=0.0,
+                max_output_tokens=2048,
+            ),
+        )
+        raw_text = (response.text or "").strip()
+        logger.info(f"Web search extract: {len(raw_text)} chars from {Config.SUPERVISOR_MODEL}")
+    except Exception as e:
+        logger.error(f"Web search extract step failed: {e}")
+        return []
+
+    # Clean markdown fences
+    if raw_text.startswith("```"):
+        lines = raw_text.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        raw_text = "\n".join(lines).strip()
+
+    # Extract JSON array from surrounding text
+    json_start = raw_text.find("[")
+    json_end = raw_text.rfind("]")
+    if json_start != -1 and json_end != -1 and json_end > json_start:
+        raw_text = raw_text[json_start:json_end + 1]
+
+    try:
         suppliers_raw = json.loads(raw_text)
-        if not isinstance(suppliers_raw, list):
-            logger.warning(f"Web search returned non-list: {type(suppliers_raw)}")
-            return []
-
-        # Normalize to the format expected by _add_supplier_sync
-        results = []
-        existing_lower = {n.lower() for n in (existing_suppliers or [])}
-        for s in suppliers_raw:
-            name = (s.get("name") or "").strip()
-            if not name or name.lower() in existing_lower:
-                continue
-            contacts = []
-            contact = {}
-            if s.get("website"):
-                contact["url"] = s["website"]
-            if s.get("email"):
-                contact["email"] = s["email"]
-            if s.get("phone"):
-                contact["phone"] = s["phone"]
-            if contact:
-                contacts.append(contact)
-
-            entry = {
-                "name": name,
-                "country": s.get("country", ""),
-                "currency": s.get("currency", ""),
-                "contacts": contacts,
-                "status": "candidate",
-                "price_type": "web_search",
-                "notes": s.get("notes", ""),
-            }
-            if s.get("price") and s.get("price_currency"):
-                entry["cost_price"] = s["price"]
-                entry["cost_currency"] = s["price_currency"]
-            elif s.get("price"):
-                entry["cost_price"] = s["price"]
-
-            results.append(entry)
-            existing_lower.add(name.lower())
-
-        return results
     except json.JSONDecodeError as e:
         logger.error(f"Web search JSON parse failed: {e}\nRaw: {raw_text[:500]}")
         return []
-    except Exception as e:
-        logger.error(f"Web search failed: {e}")
+
+    if not isinstance(suppliers_raw, list):
+        logger.warning(f"Web search returned non-list: {type(suppliers_raw)}")
         return []
+
+    # =========================================================================
+    # Normalize to the format expected by _add_supplier_sync
+    # =========================================================================
+    results = []
+    existing_lower = {n.lower() for n in (existing_suppliers or [])}
+    for s in suppliers_raw:
+        name = (s.get("name") or "").strip()
+        if not name or name.lower() in existing_lower:
+            continue
+        contacts = []
+        contact = {}
+        if s.get("website"):
+            contact["url"] = s["website"]
+        if s.get("email"):
+            contact["email"] = s["email"]
+        if s.get("phone"):
+            contact["phone"] = s["phone"]
+        if contact:
+            contacts.append(contact)
+
+        entry = {
+            "name": name,
+            "country": s.get("country", ""),
+            "currency": s.get("currency", ""),
+            "contacts": contacts,
+            "status": "candidate",
+            "price_type": "web_search",
+            "notes": s.get("notes", ""),
+        }
+        if s.get("price") and s.get("price_currency"):
+            entry["cost_price"] = s["price"]
+            entry["cost_currency"] = s["price_currency"]
+        elif s.get("price"):
+            entry["cost_price"] = s["price"]
+
+        results.append(entry)
+        existing_lower.add(name.lower())
+
+    logger.info(f"Web search found {len(results)} suppliers for: {product_desc[:80]}")
+    return results
 
 
 def _find_purchase_suppliers_sync(

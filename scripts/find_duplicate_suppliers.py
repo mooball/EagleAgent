@@ -455,7 +455,35 @@ def merge_supplier(session: Session, keep_id: str, remove_id: str, merge_fields:
             item.brand_suppliers = brand_sups
             flag_modified(item, "brand_suppliers")
 
-    # 4. Delete the removed supplier
+    # 4. Reassign email_tracking records from remove -> keep
+    from includes.dashboard.models import EmailTracking, Contact, Transaction
+    email_count = (
+        session.query(EmailTracking)
+        .filter(EmailTracking.supplier_id == remove_uuid)
+        .update({"supplier_id": keep_uuid}, synchronize_session=False)
+    )
+    if email_count:
+        logger.info(f"Reassigned {email_count} email_tracking rows from {remove_id} to {keep_id}")
+
+    # 5. Reassign contact records from remove -> keep
+    contact_count = (
+        session.query(Contact)
+        .filter(Contact.supplier_id == remove_uuid)
+        .update({"supplier_id": keep_uuid}, synchronize_session=False)
+    )
+    if contact_count:
+        logger.info(f"Reassigned {contact_count} contacts from {remove_id} to {keep_id}")
+
+    # 6. Reassign product_suppliers (Transaction) records from remove -> keep
+    txn_count = (
+        session.query(Transaction)
+        .filter(Transaction.supplier_id == remove_uuid)
+        .update({"supplier_id": keep_uuid}, synchronize_session=False)
+    )
+    if txn_count:
+        logger.info(f"Reassigned {txn_count} product_suppliers rows from {remove_id} to {keep_id}")
+
+    # 7. Delete the removed supplier
     session.delete(remove_sup)
 
     return {"status": "ok", "updated_rfq_items": updated_rfq_items}

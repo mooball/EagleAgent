@@ -1022,87 +1022,18 @@ def create_quote_tools(user_id: str) -> list:
 
     @tool
     async def find_previous_suppliers(rfq_id: str) -> str:
-        """Search internal purchase history for suppliers of specific items.
+        """DEPRECATED — use the supplier search gate instead.
 
-        For each specific item on the RFQ that has a part number, searches
-        past purchase transactions to find suppliers who have previously
-        supplied that part. Adds found suppliers directly to the RFQ.
-
-        This searches ONLY the internal database — no web search. It is
-        fast and should always be run before considering a web search.
-
-        Use this after group_items(). If you haven't grouped yet, call
-        group_items first.
+        This tool is no longer available. The supplier search process now
+        goes through the interactive gate which presents 4 search options.
+        Tell the user to say 'find suppliers' to open the supplier search gate,
+        or click the supplier search buttons on the RFQ dashboard.
         """
-        await _notify_agent_working("Searching purchase history...")
-
-        # Check if grouping has been done — enforce workflow order
-        rfq_dict = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
-        if rfq_dict:
-            specific_items = [i for i in rfq_dict.get("items", []) if i.get("match") == "specific"]
-            has_groups = bool(rfq_dict.get("item_groups"))
-            if len(specific_items) >= 2 and not has_groups:
-                return (
-                    f"You must call group_items('{rfq_id}') before finding suppliers. "
-                    f"The RFQ has {len(specific_items)} specific items that haven't "
-                    f"been grouped yet. Group them first, then call this tool."
-                )
-
-        from includes.tools.rfq_crud import _find_purchase_suppliers_sync
-
-        result = await asyncio.to_thread(
-            _find_purchase_suppliers_sync, rfq_id, user_id,
+        return (
+            "This tool has been replaced by the supplier search gate. "
+            "Tell the user to type 'find suppliers' to see the available options, "
+            "or click the 'Find Previous Sales' button on the RFQ dashboard."
         )
-        if isinstance(result, dict) and "error" in result:
-            return result["error"]
-
-        await _notify_rfq_updated()
-
-        total_added = result["added"]
-        by_line = result["by_line"]
-
-        # Check for items still needing web validation
-        rfq_check = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
-        needs_validation = []
-        if rfq_check:
-            needs_validation = [
-                i for i in rfq_check.get("items", [])
-                if i.get("match") == "specific" and not i.get("product_id")
-            ]
-
-        validation_note = ""
-        if needs_validation:
-            validation_note = (
-                f" Also, {len(needs_validation)} item(s) still need web validation "
-                f"(not found in our product database)."
-            )
-
-        if total_added == 0:
-            return (
-                f"No previous suppliers found in our purchase history for {rfq_id}."
-                f"{validation_note}\n\n"
-                f"---\n"
-                f"⛔ MANDATORY STOP: You MUST end your turn NOW. "
-                f"Tell the user no previous suppliers were found. "
-                f"Ask: 'Would you like me to search the web for suppliers"
-                f"{' and validate the unmatched items' if needs_validation else ''}?' "
-                f"DO NOT search the web or call any more tools until the user responds."
-            )
-
-        parts = [f"Found {total_added} previous supplier(s) across {len(by_line)} line(s). These have been added to the RFQ."]
-        for line, names in sorted(by_line.items()):
-            parts.append(f"- Line {line}: {', '.join(names)}")
-        if validation_note:
-            parts.append(validation_note)
-        parts.append(
-            f"\n---\n"
-            f"⛔ MANDATORY STOP: You MUST end your turn NOW. "
-            f"Summarise the suppliers found and ask the user: "
-            f"'Would you like me to search the web for additional suppliers"
-            f"{' and validate the unmatched items' if needs_validation else ''}?' "
-            f"DO NOT search the web or call any more tools until the user responds."
-        )
-        return "\n".join(parts)
 
     @tool
     async def group_items(rfq_id: str) -> str:
@@ -1194,4 +1125,4 @@ def create_quote_tools(user_id: str) -> list:
             return f"RFQ '{rfq_id}' not found."
         return _build_quotation_snapshot(rfq)
 
-    return [manage_rfq, get_rfq, classify_items, validate_items, find_previous_suppliers, group_items, view_rfq_quotation]
+    return [manage_rfq, get_rfq, classify_items, validate_items, group_items, view_rfq_quotation]
