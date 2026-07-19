@@ -94,6 +94,18 @@ FastAPI Backend
 
 ## Phase 1: Backend — Content Detection & Extraction
 
+### 1.0 New setting: `VISION_EXTRACTION_MODEL`
+
+**File:** `config/settings.py`
+
+Add a dedicated model setting for vision-based item extraction, consistent with the existing per-task model overrides (`QUOTE_PIPELINE_MODEL`, `BROWSER_AGENT_MODEL`, etc.):
+
+```python
+VISION_EXTRACTION_MODEL: str = os.getenv("VISION_EXTRACTION_MODEL", "gemini-2.5-flash")
+```
+
+This lets us swap the vision model independently (e.g., to a cheaper model for simple tables, or a more capable model for complex layouts) without touching extraction code.
+
 ### 1.1 New endpoint: `POST /api/rfq/{rfq_number}/extract-items`
 
 **File:** `includes/dashboard/routes/rfqs.py`
@@ -121,6 +133,7 @@ At least one of `html`, `image_base64`, or `plain_text` must be present.
     "Brand": "brand"
   },
   "headers": ["Part #", "Description", "Qty", "Brand"],
+  "fields": ["input_code", "input_description", "quantity", "brand"],
   "items": [
     {"input_code": "DHP486Z", "input_description": "Cordless Drill", "quantity": 5, "brand": "Makita"},
     {"input_code": "DTD154Z", "input_description": "Impact Driver", "quantity": 3, "brand": "Makita"}
@@ -244,10 +257,14 @@ def parse_html_table(html: str) -> dict:
         
         items.append(item)
     
+    # Build ordered fields list parallel to headers for frontend binding
+    fields = [column_mapping.get(h.lower(), "") for h in headers]
+    
     return {
         "content_type": "html_table",
         "column_mapping": {h: column_mapping.get(h.lower(), "") for h in headers},
         "headers": headers,
+        "fields": fields,
         "items": items,
         "item_count": len(items),
         "warnings": warnings,
@@ -263,16 +280,25 @@ def _clean_cell(cell) -> str:
 
 **File:** `includes/tools/rfq_item_import.py`
 
-A single-purpose Gemini call with a focused extraction prompt — no ReAct agent overhead:
+A single-purpose Gemini call with a focused extraction prompt — no ReAct agent overhead.
+
+The model is configurable via `Config.VISION_EXTRACTION_MODEL` (see Phase 1.0 below), defaulting to `gemini-2.5-flash`. This allows swapping to a cheaper/faster model without code changes.
 
 ```python
+MAX_IMAGE_SIZE_MB = 10  # Reject images larger than this
+
 async def extract_items_from_image(image_base64: str, mime_type: str = "image/png") -> dict:
     """Use Gemini Vision to extract table data from a screenshot."""
     from langchain_google_genai import ChatGoogleGenerativeAI
     from config.settings import Config
     
+    # Guard against oversized images
+    estimated_bytes = len(image_base64) * 3 / 4
+    if estimated_bytes > MAX_IMAGE_SIZE_MB * 1024 * 1024:
+        return {"items": [], "warnings": [f"Image exceeds {MAX_IMAGE_SIZE_MB}MB limit. Please use a smaller image."]}
+    
     model = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model=Config.VISION_EXTRACTION_MODEL,
         google_api_key=Config.GOOGLE_API_KEY,
         temperature=0,  # deterministic extraction
     )
@@ -360,9 +386,13 @@ def parse_text_table(plain_text: str, content_type: str) -> dict:
     
     # ... same extraction logic as HTML parser ...
     
+    # Build ordered fields list parallel to headers for frontend binding
+    fields = [column_mapping.get(h, "") for h in headers]
+    
     return {
         "content_type": content_type,
         "headers": headers,
+        "fields": fields,
         "column_mapping": {h: column_mapping.get(h, "") for h in headers},
         "items": items,
         "item_count": len(items),
@@ -391,6 +421,13 @@ async def extract_rfq_items(
     
     if not any([html, image_base64, plain_text]):
         raise HTTPException(400, "At least one of html, image_base64, or plain_text is required.")
+    
+    # Image size guard (before base64 decoding)
+    if image_base64:
+        from includes.tools.rfq_item_import import MAX_IMAGE_SIZE_MB
+        estimated_bytes = len(image_base64) * 3 / 4
+        if estimated_bytes > MAX_IMAGE_SIZE_MB * 1024 * 1024:
+            raise HTTPException(413, f"Image exceeds {MAX_IMAGE_SIZE_MB}MB limit.")
     
     content_type = detect_content_type(html, image_base64, plain_text)
     
@@ -442,6 +479,10 @@ async def bulk_add_rfq_items(
     
     if not items:
         raise HTTPException(400, "items list is required.")
+    
+    MAX_BATCH_SIZE = 200
+    if len(items) > MAX_BATCH_SIZE:
+        raise HTTPException(400, f"Too many items ({len(items)}). Maximum {MAX_BATCH_SIZE} per batch. Split into multiple imports.")
     
     result = await asyncio.to_thread(
         _add_items_sync, rfq_number, {"items": items}, user["email"]
@@ -497,15 +538,25 @@ Add a button in the RFQ detail view (`includes/dashboard/routes/rfqs.py`, the `r
            @dragleave="dragOver = false"
            @drop.prevent="handleDrop($event)">
 
-        <!-- Paste target: contenteditable div captures HTML from clipboard -->
+        <!-- Paste target: contenteditable div captures HTML from clipboard.
+             Note: contenteditable does not support the placeholder attribute natively.
+             We use a CSS :empty:before pseudo-element for the placeholder text. -->
         <div contenteditable="true"
              @paste="handlePaste($event)"
              @input="handleInput($event)"
-             class="min-h-[120px] max-h-[300px] overflow-y-auto text-left
+             class="paste-area min-h-[120px] max-h-[300px] overflow-y-auto text-left
                     border border-gray-200 rounded p-3 mb-3 focus:outline-none
                     focus:border-indigo-400"
-             x-ref="pasteArea"
-             placeholder="Paste table here (Ctrl+V / Cmd+V)..."></div>
+             x-ref="pasteArea"></div>
+
+        <!-- Placeholder style for empty contenteditable -->
+        <style>
+          .paste-area:empty:before {
+            content: 'Paste table here (Ctrl+V / Cmd+V)...';
+            color: #9ca3af;
+            pointer-events: none;
+          }
+        </style>
 
         <div class="text-sm text-gray-400 mb-2">or</div>
 
@@ -548,7 +599,9 @@ Add a button in the RFQ detail view (`includes/dashboard/routes/rfqs.py`, the `r
         </template>
       </div>
 
-      <!-- Editable table -->
+      <!-- Editable table.
+           Uses `fields` array (parallel to `headers`) for x-model binding,
+           avoiding error-prone key lookups through columnMapping in the template. -->
       <div class="overflow-x-auto">
         <table class="w-full text-sm border-collapse">
           <thead>
@@ -558,6 +611,7 @@ Add a button in the RFQ detail view (`includes/dashboard/routes/rfqs.py`, the `r
                 <th class="border px-2 py-1 text-left text-xs text-gray-500"
                     x-text="h"></th>
               </template>
+              <th class="border px-2 py-1 text-left text-xs text-gray-500 w-8"></th>
             </tr>
           </thead>
           <tbody>
@@ -565,14 +619,20 @@ Add a button in the RFQ detail view (`includes/dashboard/routes/rfqs.py`, the `r
               <tr>
                 <td class="border px-2 py-1 text-gray-400 text-xs"
                     x-text="idx + 1"></td>
-                <template x-for="h in headers">
+                <template x-for="(field, colIdx) in fields">
                   <td class="border p-0">
                     <input type="text"
                            class="w-full px-2 py-1 border-0 focus:ring-1 focus:ring-indigo-300
                                   focus:outline-none text-sm"
-                           x-model="item[columnMapping[h.toLowerCase()] || '']">
+                           x-model="item[field]">
                   </td>
                 </template>
+                <!-- Delete row button -->
+                <td class="border px-1 py-1 text-center">
+                  <button @click="previewItems.splice(idx, 1)"
+                          class="text-red-400 hover:text-red-600 text-xs"
+                          title="Remove row">&times;</button>
+                </td>
               </tr>
             </template>
           </tbody>
@@ -614,6 +674,7 @@ Alpine.data('smartItemAdder', (rfqId) => ({
     imageBase64: null,
     previewItems: [],
     headers: [],
+    fields: [],        // ordered field keys parallel to headers — used for x-model binding
     columnMapping: {},
     warnings: [],
 
@@ -698,6 +759,7 @@ Alpine.data('smartItemAdder', (rfqId) => ({
             const data = await resp.json();
             this.previewItems = data.items || [];
             this.headers = data.headers || [];
+            this.fields = data.fields || [];   // ordered field keys parallel to headers
             this.columnMapping = data.column_mapping || {};
             this.warnings = data.warnings || [];
 
@@ -743,6 +805,7 @@ Alpine.data('smartItemAdder', (rfqId) => ({
     resetExtraction() {
         this.previewItems = [];
         this.headers = [];
+        this.fields = [];
         this.columnMapping = {};
         this.warnings = [];
         this.pasteHtml = null;
@@ -798,12 +861,16 @@ def auto_detect_columns(headers: list[str]) -> dict[str, str]:
 
     Returns dict of {header_name: field_name} for matched columns.
     Headers that don't match any pattern are omitted.
+    
+    Uses substring matching to handle real-world messy headers like
+    "Item Description", "QTY REQ'D", "Part Number / SKU", etc.
     """
     mapping = {}
     for h in headers:
         h_lower = h.strip().lower()
         for field, patterns in _COLUMN_PATTERNS.items():
-            if h_lower in patterns:
+            # Substring match: pattern in header OR header in pattern
+            if any(p in h_lower or h_lower in p for p in patterns):
                 mapping[h.strip()] = field
                 break
     return mapping
@@ -854,7 +921,8 @@ def auto_detect_columns(headers: list[str]) -> dict[str, str]:
 
 | File | Change |
 |---|---|
-| `includes/tools/rfq_item_import.py` | **New file** — `detect_content_type()`, `parse_html_table()`, `extract_items_from_image()`, `parse_text_table()`, `auto_detect_columns()`, `_COLUMN_PATTERNS` |
+| `config/settings.py` | Add `VISION_EXTRACTION_MODEL` setting (default `gemini-2.5-flash`) |
+| `includes/tools/rfq_item_import.py` | **New file** — `detect_content_type()`, `parse_html_table()`, `extract_items_from_image()`, `parse_text_table()`, `auto_detect_columns()`, `_COLUMN_PATTERNS`, `MAX_IMAGE_SIZE_MB` |
 | `includes/dashboard/routes/rfqs.py` | Add `POST /api/rfq/{id}/extract-items` and `POST /api/rfq/{id}/items/bulk` endpoints |
 | `includes/tools/rfq_crud.py` | Import `auto_detect_columns` and `_COLUMN_PATTERNS` from `rfq_item_import.py` (remove duplicates from Phase 2 CSV import) |
 | `includes/dashboard/templates/` (or route template) | Add modal HTML, Alpine.js component, HTMX refresh trigger |
@@ -912,5 +980,11 @@ def auto_detect_columns(headers: list[str]) -> dict[str, str]:
 - **LLM only for images** — Vision is the only way to read table data from a screenshot. But we use a dedicated, focused prompt instead of the generic agent prompt.
 - **Contenteditable div for paste capture** — a `<div contenteditable>` intercepts the `paste` event and gives us access to `event.clipboardData.getData('text/html')`. A `<textarea>` cannot do this.
 - **Separate extract + confirm** — extraction and adding are separate API calls. The user must explicitly confirm. This prevents bad data from entering the RFQ.
-- **Editable preview** — every cell is an `<input>`. This is the safety net: if the parser or vision model makes a mistake, the user can fix it before confirming.
+- **Editable preview** — every cell is an `<input>`. This is the safety net: if the parser or vision model makes a mistake, the user can fix it before confirming. Each row has a delete button (`×`) for removing unwanted rows.
+- **Configurable vision model** — the image extraction model is set via `Config.VISION_EXTRACTION_MODEL` (env var override), not hardcoded. This follows the existing per-task model pattern (`QUOTE_PIPELINE_MODEL`, etc.).
+- **`fields` array for clean binding** — the extract response includes a `fields` array ordered parallel to `headers` (e.g., `["input_code", "input_description", "quantity", "brand"]`). The preview table uses `x-model="item[field]"` instead of a fragile `columnMapping` key lookup.
+- **Fuzzy column matching** — `auto_detect_columns()` uses substring matching (`pattern in header OR header in pattern`) instead of exact equality. This handles real-world messy headers like `"Item Description"`, `"QTY REQ'D"`, `"Part Number / SKU"`.
+- **Image size limit** — images over 10MB are rejected before the Gemini API call. Prevents unnecessary cost and timeouts from oversized screenshots.
+- **Batch size limit** — the bulk add endpoint caps at 200 items per request. Prevents accidental massive inserts from a vision model hallucinating hundreds of rows.
+- **CSS placeholder for contenteditable** — since `contenteditable` divs don't support the `placeholder` HTML attribute, we use a `:empty:before` CSS pseudo-element.
 - **Not replacing the chat path** — the chat-based `RFQ_ADD_ITEMS` flow continues to work. This is an additional, optimized path for dashboard users.

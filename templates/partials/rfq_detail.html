@@ -565,16 +565,26 @@
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             Add item
         </button>
+        <button @click="smartAddOpen = true"
+                class="btn bg-indigo-600 text-white hover:bg-indigo-500 hover:text-white border-indigo-600">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-3-3v6m7-3A9 9 0 1111 3a9 9 0 017 5.2"/></svg>
+            Smart Add Items
+        </button>
     </div>
 
     {% else %}
     <div class="space-y-3">
         <p class="text-sm text-gray-500 dark:text-gray-400 italic">No items yet.</p>
-        <div x-show="!addingItem">
+        <div x-show="!addingItem" class="flex gap-2">
             <button @click="addingItem = true"
                     class="btn">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
                 Add item
+            </button>
+            <button @click="smartAddOpen = true"
+                    class="btn bg-indigo-600 text-white hover:bg-indigo-500 hover:text-white border-indigo-600">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-3-3v6m7-3A9 9 0 1111 3a9 9 0 017 5.2"/></svg>
+                Smart Add Items
             </button>
         </div>
         <form x-show="addingItem" x-cloak
@@ -999,4 +1009,7 @@
 
     {# Email Compose Modal - must be inside rfqDetail() x-data scope #}
     {% include "partials/_email_compose_modal.html" %}
+
+    {# Smart Item Adder Modal #}
+    {% include "partials/_smart_item_adder_modal.html" %}
 </div>

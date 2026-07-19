@@ -71,6 +71,10 @@ class Config:
     # Supplier quote pipeline (classify, extract, interpret)
     QUOTE_PIPELINE_MODEL = os.getenv("QUOTE_PIPELINE_MODEL", "")
 
+    # Vision-based item extraction (Smart Item Adder image parsing).
+    # Defaults to empty — falls back to DEFAULT_MODEL (same as chat agent).
+    VISION_EXTRACTION_MODEL = os.getenv("VISION_EXTRACTION_MODEL", "")
+
     # Model temperature (0.0 - 1.0)
     DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
     
