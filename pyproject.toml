@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic~=1.18.4",
     "asyncpg~=0.31.0",
+    "beautifulsoup4~=4.13",
     "boto3~=1.43",
     "chainlit~=2.11.1",
     "email-reply-parser~=0.5",

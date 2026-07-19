@@ -5,7 +5,7 @@ import math
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import Request, Depends
+from fastapi import Request, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
 from includes.dashboard.models import Supplier, Transaction, EmailTracking, Contact
@@ -2263,3 +2263,144 @@ async def api_update_supplier_contact(
             {"status": "error", "message": f"Internal error: {str(e)}"},
             status_code=500,
         )
+
+
+# ---------------------------------------------------------------------------
+# Smart Item Adder — item extraction & bulk add
+# ---------------------------------------------------------------------------
+
+@router.post("/api/rfq/{rfq_number}/extract-items")
+async def extract_rfq_items(
+    rfq_number: str,
+    request: Request,
+    user: dict = Depends(require_user),
+):
+    """Extract items from pasted HTML, image, or text for preview.
+
+    Returns structured items with column mapping for the frontend
+    preview table. Does NOT add items to the RFQ — that requires
+    a separate call to /items/bulk.
+    """
+    from includes.tools.rfq_item_import import (
+        detect_content_type,
+        parse_html_table,
+        parse_text_table,
+        extract_items_from_image,
+        MAX_IMAGE_SIZE_MB,
+    )
+
+    body = await request.json()
+    html = body.get("html")
+    image_base64 = body.get("image_base64")
+    plain_text = body.get("plain_text")
+
+    import logging
+    _log = logging.getLogger(__name__)
+    _log.info(
+        f"extract-items for {rfq_number}: html={bool(html)} ({len(html or '')} chars), "
+        f"image={bool(image_base64)}, text={bool(plain_text)} ({len(plain_text or '')} chars)"
+    )
+
+    if not any([html, image_base64, plain_text]):
+        raise HTTPException(
+            400,
+            "At least one of html, image_base64, or plain_text is required.",
+        )
+
+    # Image size guard (before base64 decoding)
+    if image_base64:
+        estimated_bytes = len(image_base64) * 3 / 4
+        if estimated_bytes > MAX_IMAGE_SIZE_MB * 1024 * 1024:
+            raise HTTPException(
+                413, f"Image exceeds {MAX_IMAGE_SIZE_MB}MB limit."
+            )
+
+    content_type = detect_content_type(html, image_base64, plain_text)
+    _log.info(f"extract-items: detected content_type={content_type}")
+
+    try:
+        if content_type == "html_table":
+            result = parse_html_table(html)
+            # If deterministic parsing fails, try Gemini with cleaned HTML
+            # (preserves column structure better than plain text)
+            if not result["items"] and html:
+                _log.info("HTML parsing produced 0 items — falling back to Gemini HTML extraction")
+                from includes.tools.rfq_item_import import extract_items_from_html
+                result = await extract_items_from_html(html)
+        elif content_type == "image":
+            # Strip data:image/...;base64, prefix if present
+            raw_b64 = image_base64
+            if raw_b64.startswith("data:"):
+                mime_type = raw_b64.split(";")[0].replace("data:", "")
+                raw_b64 = raw_b64.split(",", 1)[1]
+            else:
+                mime_type = "image/png"
+            result = await extract_items_from_image(raw_b64, mime_type)
+        elif content_type in ("csv", "tsv"):
+            result = parse_text_table(plain_text, content_type)
+        else:
+            # Fallback: try all plain text strategies
+            result = parse_text_table(plain_text, "plain_text")
+            if not result["items"]:
+                result = parse_text_table(plain_text, "tsv")
+            if not result["items"]:
+                result = parse_text_table(plain_text, "csv")
+            # If all deterministic parsing fails, try Gemini
+            if not result["items"] and plain_text:
+                _log.info("Text parsing produced 0 items — falling back to Gemini text extraction")
+                from includes.tools.rfq_item_import import extract_items_from_text
+                result = await extract_items_from_text(plain_text)
+    except Exception as e:
+        _log.error(f"extract-items failed: {e}", exc_info=True)
+        return JSONResponse(
+            {"items": [], "headers": [], "fields": [], "item_count": 0,
+             "column_mapping": {}, "content_type": content_type,
+             "warnings": [f"Extraction failed: {e}"]},
+            status_code=200,
+        )
+
+    _log.info(
+        f"extract-items result: item_count={result.get('item_count')}, "
+        f"headers={result.get('headers')}, warnings={result.get('warnings')}"
+    )
+    return result
+
+
+@router.post("/api/rfq/{rfq_number}/items/bulk")
+async def bulk_add_rfq_items(
+    rfq_number: str,
+    request: Request,
+    user: dict = Depends(require_user),
+):
+    """Add multiple items to an RFQ from the preview table.
+
+    Items should come from the /extract-items preview — user has
+    reviewed and confirmed them.
+    """
+    from includes.tools.rfq_crud import _add_items_sync
+    from includes.tools.rfq_item_import import MAX_BATCH_SIZE
+
+    body = await request.json()
+    items = body.get("items", [])
+
+    if not items:
+        raise HTTPException(400, "items list is required.")
+
+    if len(items) > MAX_BATCH_SIZE:
+        raise HTTPException(
+            400,
+            f"Too many items ({len(items)}). "
+            f"Maximum {MAX_BATCH_SIZE} per batch. Split into multiple imports.",
+        )
+
+    result = await asyncio.to_thread(
+        _add_items_sync,
+        rfq_number,
+        {"items": items},
+        user.get("email", user.get("identifier", "dashboard")),
+    )
+
+    if isinstance(result, str):
+        raise HTTPException(400, result)
+
+    return {"status": "ok", "item_count": len(items), "rfq": result}

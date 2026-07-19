@@ -1644,7 +1644,244 @@
                             this.isLoading = false;
                         }
                     }
-                }
+                },
+
+                // ── Smart Item Adder ──
+                smartAddOpen: false,
+                dragOver: false,
+                extracting: false,
+                adding: false,
+                pasteHtml: null,
+                pasteText: null,
+                imageBase64: null,
+                previewItems: [],
+                headers: [],
+                fields: [],        // ordered field keys parallel to headers — used for x-model binding
+                columnMapping: {},
+                warnings: [],
+                extractionError: null,  // shown inline when extraction produces no items
+
+                // Column width presets for the preview table
+                fieldWidth(field) {
+                    var widths = {
+                        'input_description': '',      // flex — takes remaining space
+                        'input_code': 'width: 120px', // ~60% narrower
+                        'brand': 'width: 90px',       // ~50% narrower
+                        'quantity': 'width: 56px',    // compact
+                        'uom': 'width: 56px',         // compact
+                    };
+                    return widths[field] || '';
+                },
+                thWidth(header) {
+                    var h = (header || '').toLowerCase();
+                    if (h.indexOf('description') !== -1 || h.indexOf('item') !== -1) return '';
+                    if (h.indexOf('part') !== -1 || h.indexOf('code') !== -1 || h.indexOf('sku') !== -1) return 'width:120px';
+                    if (h.indexOf('brand') !== -1 || h.indexOf('make') !== -1 || h.indexOf('mfr') !== -1) return 'width:90px';
+                    if (h.indexOf('qty') !== -1 || h.indexOf('quantity') !== -1) return 'width:56px';
+                    if (h.indexOf('uom') !== -1 || h.indexOf('unit') !== -1) return 'width:56px';
+                    return '';
+                },
+
+                get hasContent() {
+                    return this.pasteHtml || this.pasteText || this.imageBase64;
+                },
+
+                // Paste handler — captures HTML tables, images, and plain text.
+                // Content is rendered inline so the user can see what was pasted.
+                handlePaste(event) {
+                    var clipboard = event.clipboardData;
+                    if (!clipboard) return;
+
+                    // Check for image files first (clipboard screenshot)
+                    var files = clipboard.files;
+                    if (files && files.length > 0 && files[0].type.startsWith('image/')) {
+                        event.preventDefault();
+                        this._insertImageIntoArea(files[0]);
+                        return;
+                    }
+
+                    // Capture HTML for server-side parsing
+                    var html = clipboard.getData('text/html');
+                    if (html && html.includes('<table')) {
+                        // Let browser render the table — don't preventDefault.
+                        // The user sees the table in the paste area.
+                        // Capture a snapshot AFTER the browser inserts it.
+                        var self = this;
+                        setTimeout(function() {
+                            self.pasteHtml = self.$refs.pasteArea.innerHTML;
+                            self.pasteText = self.$refs.pasteArea.innerText || '';
+                        }, 50);
+                    }
+                    // For plain text: default browser behavior inserts it — user sees it.
+                    // handleInput will capture the text value.
+                },
+
+                // Capture plain text as the user types or pastes plain text
+                handleInput(event) {
+                    // Only capture after paste HTML handler has had time to run
+                    var self = this;
+                    setTimeout(function() {
+                        self.pasteText = self.$refs.pasteArea.innerText || '';
+                    }, 100);
+                },
+
+                // Drag and drop handler — renders images inline, captures HTML tables
+                handleDrop(event) {
+                    this.dragOver = false;
+                    var files = event.dataTransfer.files;
+                    if (files.length > 0 && files[0].type.startsWith('image/')) {
+                        this._insertImageIntoArea(files[0]);
+                        return;
+                    }
+                    // Let the browser handle HTML/text drops — content appears in the div.
+                    var self = this;
+                    setTimeout(function() {
+                        self.pasteHtml = self.$refs.pasteArea.innerHTML;
+                        self.pasteText = self.$refs.pasteArea.innerText || '';
+                    }, 50);
+                },
+
+                // Insert an image file into the paste area so the user can see it
+                _insertImageIntoArea(file) {
+                    var self = this;
+                    var reader = new FileReader();
+                    reader.onload = function(e) {
+                        self.imageBase64 = e.target.result;
+                        // Show the image inline in the paste area
+                        var area = self.$refs.pasteArea;
+                        area.innerHTML = '';
+                        var img = document.createElement('img');
+                        img.src = e.target.result;
+                        img.style.maxWidth = '100%';
+                        img.style.maxHeight = '250px';
+                        img.style.borderRadius = '4px';
+                        img.alt = file.name || 'Screenshot';
+                        area.appendChild(img);
+                        area.classList.add('has-content');
+                    };
+                    reader.readAsDataURL(file);
+                },
+
+                // Read image as base64 (for backward compat with any external calls)
+                readImageFile(file) {
+                    if (!file.type.startsWith('image/')) {
+                        alert('Please use an image file (PNG, JPG, etc.)');
+                        return;
+                    }
+                    this._insertImageIntoArea(file);
+                },
+
+                // Call extract endpoint
+                extractionError: null,  // shown inline when extraction produces no items
+
+                async extractItems() {
+                    this.extracting = true;
+                    this.warnings = [];
+                    this.extractionError = null;
+
+                    try {
+                        var body = {};
+                        if (this.pasteHtml) body.html = this.pasteHtml;
+                        if (this.imageBase64) body.image_base64 = this.imageBase64;
+                        if (this.pasteText) body.plain_text = this.pasteText;
+
+                        var resp = await fetch('/api/rfq/' + this.rfqId + '/extract-items', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body),
+                        });
+
+                        if (!resp.ok) {
+                            var errText = 'Unknown error';
+                            try {
+                                var errJson = await resp.json();
+                                errText = errJson.detail || errJson.message || errText;
+                            } catch (_) {
+                                // Response wasn't JSON (e.g., HTML error page)
+                                var raw = await resp.text();
+                                errText = raw.substring(0, 200) || 'HTTP ' + resp.status;
+                            }
+                            throw new Error(errText);
+                        }
+
+                        var data = await resp.json();
+                        this.previewItems = data.items || [];
+                        this.headers = data.headers || [];
+                        this.fields = data.fields || [];
+                        this.columnMapping = data.column_mapping || {};
+                        this.warnings = data.warnings || [];
+
+                        if (!this.previewItems.length) {
+                            var reasons = [];
+                            if (data.content_type) reasons.push('Content type: ' + data.content_type);
+                            if (data.warnings && data.warnings.length) {
+                                reasons = reasons.concat(data.warnings);
+                            }
+                            if (data._debug) {
+                                reasons.push('--- Raw Gemini response ---');
+                                reasons.push('Headers: ' + JSON.stringify(data._debug.raw_parsed_json.headers));
+                                reasons.push('First item keys: ' + JSON.stringify(
+                                    data._debug.raw_parsed_json.items && data._debug.raw_parsed_json.items[0]
+                                        ? Object.keys(data._debug.raw_parsed_json.items[0]) : 'N/A'));
+                                reasons.push('Column mapping: ' + JSON.stringify(data._debug.column_mapping));
+                                reasons.push('Header→field: ' + JSON.stringify(data._debug.header_to_field));
+                            }
+                            if (!reasons.length) {
+                                reasons.push('No recognizable table, columns, or items found in the pasted content.');
+                            }
+                            this.extractionError = reasons.join('<br>');
+                        }
+                    } catch (e) {
+                        this.extractionError = 'Server error: ' + e.message;
+                    } finally {
+                        this.extracting = false;
+                    }
+                },
+
+                // Confirm and add items to RFQ
+                async confirmAdd() {
+                    this.adding = true;
+
+                    try {
+                        var resp = await fetch('/api/rfq/' + this.rfqId + '/items/bulk', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ items: this.previewItems }),
+                        });
+
+                        if (!resp.ok) {
+                            var err = await resp.json();
+                            throw new Error(err.detail || 'Failed to add items');
+                        }
+
+                        // Close modal, reset state
+                        this.smartAddOpen = false;
+                        this.resetExtraction();
+
+                        // Reload the RFQ detail page to show new items
+                        htmx.ajax('GET', '/partial/rfqs/' + this.rfqId, { target: '#main-content' });
+                    } catch (e) {
+                        alert('Error adding items: ' + e.message);
+                    } finally {
+                        this.adding = false;
+                    }
+                },
+
+                resetExtraction() {
+                    this.previewItems = [];
+                    this.headers = [];
+                    this.fields = [];
+                    this.columnMapping = {};
+                    this.warnings = [];
+                    this.extractionError = null;
+                    this.pasteHtml = null;
+                    this.pasteText = null;
+                    this.imageBase64 = null;
+                    if (this.$refs.pasteArea) {
+                        this.$refs.pasteArea.innerHTML = '';
+                        this.$refs.pasteArea.classList.remove('has-content');
+                    }
+                },
             };
         }
     </script>
