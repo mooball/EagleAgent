@@ -85,6 +85,7 @@ def create_model(agent_name: str) -> ChatGoogleGenerativeAI:
         model=config.get_agent_model(agent_name),
         temperature=config.DEFAULT_TEMPERATURE,
         max_output_tokens=config.DEFAULT_MAX_TOKENS,
+        frequency_penalty=config.FREQUENCY_PENALTY,
     )
 
 

@@ -31,6 +31,30 @@ def _is_transient_error(exc: Exception) -> bool:
     return any(code in err_str for code in ("429", "503", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded"))
 
 
+def _estimate_tokens(messages: list) -> int:
+    """Estimate token count from messages using character-based approximation.
+
+    Gemini tokenizes at roughly 4 characters per token.  This is intentionally
+    conservative (over-counts) to avoid overflowing the effective context window.
+    """
+    total = 0
+    for msg in messages:
+        content = getattr(msg, "content", "")
+        if isinstance(content, str):
+            total += len(content) // 4
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    total += len(block.get("text", "")) // 4
+                elif isinstance(block, str):
+                    total += len(block) // 4
+        # Account for tool call JSON overhead
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls:
+            total += sum(len(str(tc)) // 4 for tc in tool_calls)
+    return total
+
+
 # Key used by langchain-google-genai to store thought signatures for tool calls
 _THOUGHT_SIGS_KEY = "__gemini_function_call_thought_signatures__"
 
@@ -307,12 +331,15 @@ class BaseSubAgent(ABC):
         if not any(isinstance(m, SystemMessage) for m in enhanced_messages):
             enhanced_messages = [SystemMessage(content=system_prompt)] + enhanced_messages
         
-        # Trim message history to prevent unbounded checkpoint growth
+        # Trim message history to prevent unbounded context that causes
+        # model degeneration (repetition loops).  Uses character-based token
+        # estimation (~4 chars per token) with a configurable ceiling.
+        from config import config as _cfg
         trimmed_messages = trim_messages(
             enhanced_messages,
-            max_tokens=self.max_messages,
+            max_tokens=_cfg.MAX_HISTORY_TOKENS,
             strategy="last",
-            token_counter=len,
+            token_counter=_estimate_tokens,
             include_system=True,
             allow_partial=False
         )
@@ -384,8 +411,10 @@ class BaseSubAgent(ABC):
             response = result["messages"][-1]
 
             # Guard against empty responses (e.g. model produced only thinking
-            # tokens).  Fall back to a direct model call without tools to
-            # force a textual reply.
+            # tokens).  Fall back to a single direct model call to get a
+            # textual reply.  Do NOT retry if the model produced content
+            # (even degenerate/repetitive text) — retrying with the same
+            # context will just reproduce the same failure.
             _resp_content = getattr(response, "content", None)
             _has_text = bool(
                 _resp_content
@@ -402,19 +431,15 @@ class BaseSubAgent(ABC):
                 _finish = getattr(response, "response_metadata", {}).get("finish_reason")
                 logger.warning(
                     f"{self.name} returned empty response (finish_reason={_finish}) "
-                    f"— retrying via ReAct agent"
+                    f"— retrying with direct model call (no tools)"
                 )
-                # Re-run the full ReAct agent. Gemini thinking models
-                # occasionally produce only thinking tokens; a simple retry
-                # usually succeeds.
+                # Single direct model call without tools — avoids re-running
+                # the full ReAct loop with the same context that already failed.
                 try:
-                    result2 = await sub_agent_graph.ainvoke(
-                        {"messages": trimmed_messages}, config=invoke_config
-                    )
-                    response = result2["messages"][-1]
+                    response = await self.model.ainvoke(trimmed_messages)
                     _rc2 = getattr(response, "content", None)
                     logger.info(
-                        f"{self.name} retry response: "
+                        f"{self.name} direct-call retry response: "
                         f"content_type={type(_rc2).__name__} "
                         f"len={len(_rc2) if isinstance(_rc2, (str, list)) else 'N/A'}"
                     )
