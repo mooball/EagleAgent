@@ -1016,6 +1016,8 @@ async def main(message: cl.Message):
                 # text from leaking into the chat.
                 if isinstance(content, list):
                     for part in content:
+                        if isinstance(part, dict) and part.get("type") == "thinking":
+                            continue  # Skip thinking blocks from Gemini 2.5+
                         if isinstance(part, dict) and part.get("type") == "text":
                             chunk_text = part.get("text", "")
                             if chunk_text:
@@ -1024,6 +1026,25 @@ async def main(message: cl.Message):
                             _stream_buffer.append(part)
                 elif isinstance(content, str):
                     _stream_buffer.append(content)
+
+                # Repetition detection: if the buffer is growing large without
+                # a tool call, check for degenerate repetition and abort early.
+                if len(_stream_buffer) > 50:
+                    _buf_tail = "".join(_stream_buffer[-40:])
+                    # Check if a short phrase (5-30 chars) repeats 5+ times
+                    if len(_buf_tail) > 60:
+                        _snippet = _buf_tail[-30:]
+                        _test_window = _buf_tail[:-30]
+                        if _snippet and _test_window.count(_snippet) >= 4:
+                            logger.warning(
+                                f"[repetition-guard] Detected degenerate repetition in stream buffer "
+                                f"(repeated: {repr(_snippet[:40])}). Aborting stream."
+                            )
+                            _stream_buffer.clear()
+                            _stream_buffer.append(
+                                "\n\nSorry, I encountered an issue processing that request. Please try again."
+                            )
+                            break  # Exit the astream_events loop
 
         elif kind == "on_tool_start":
             # A tool call is starting — discard any buffered intermediate text

@@ -238,14 +238,17 @@ class TestAgentCall:
         result = await agent(state)
         assert "messages" in result
 
-    async def test_call_trims_long_history(self, mock_model, mock_store):
-        """Messages beyond max_messages should produce RemoveMessage entries."""
+    async def test_call_trims_long_history(self, mock_model, mock_store, monkeypatch):
+        """Messages beyond MAX_HISTORY_TOKENS should produce RemoveMessage entries."""
+        # Set a very low token budget so short messages get trimmed
+        from config import config
+        monkeypatch.setattr(config, "MAX_HISTORY_TOKENS", 5)
+
         agent = GeneralAgent(model=mock_model, store=mock_store)
-        agent.max_messages = 5
-        # Create 10 messages with IDs
+        # Create 10 messages with IDs — each ~5 tokens
         msgs = []
         for i in range(10):
-            m = HumanMessage(content=f"msg {i}")
+            m = HumanMessage(content=f"message number {i} with some extra text")
             m.id = f"msg-{i}"
             msgs.append(m)
 
