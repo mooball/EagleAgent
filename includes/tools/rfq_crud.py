@@ -581,6 +581,43 @@ def _update_rfq_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
+    """Apply updates to a single RFQ line item in-place.
+
+    Does NOT commit, append history, clear item_groups, or update
+    timestamps. The caller handles rfq-level side effects.
+
+    Returns (changes, line_num, reset_pipeline) where:
+      - changes: list of field names that were modified
+      - line_num: the line number (int)
+      - reset_pipeline: True if identifying fields changed and
+        pipeline_stage should be reset to 'unprocessed'
+    """
+    updatable = [
+        "input_description", "input_code", "part_number", "brand",
+        "product_id", "quantity", "uom", "match", "notes",
+    ]
+    _no_clear = {"product_id", "match"}
+    changes = []
+    for key in updatable:
+        if key in data:
+            new_val = data[key]
+            if key in _no_clear and not new_val and getattr(line_item, key, None):
+                continue
+            setattr(line_item, key, new_val)
+            changes.append(key)
+
+    reset_pipeline = False
+    _identifying = {"input_description", "input_code", "part_number", "brand"}
+    if _identifying & set(data.keys()) and "match" not in data:
+        line_item.match = "unmatched"
+        line_item.product_id = None
+        changes.extend(["match", "product_id"])
+        reset_pipeline = True
+
+    return changes, line_item.line, reset_pipeline
+
+
 def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update a single RFQ line item. Returns full RFQ dict or error string."""
     from includes.dashboard.models import RFQ, RFQItem
@@ -600,38 +637,93 @@ def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         if not line_item:
             return f"Error: line {line_num} not found in {rfq_number}."
 
-        updatable = [
-            "input_description", "input_code", "part_number", "brand",
-            "product_id", "quantity", "uom", "match", "notes",
-        ]
-        _no_clear = {"product_id", "match"}
-        changes = []
-        for key in updatable:
-            if key in data:
-                new_val = data[key]
-                if key in _no_clear and not new_val and getattr(line_item, key, None):
-                    continue
-                setattr(line_item, key, new_val)
-                changes.append(key)
+        changes, _line_num, reset_pipeline = _update_item_core(
+            session, rfq, line_item, data, user_id,
+        )
 
-        # If any identifying field changed and caller didn't explicitly set match,
-        # reset classification (match → unmatched, clear product_id link)
-        _identifying = {"input_description", "input_code", "part_number", "brand"}
-        if _identifying & set(data.keys()) and "match" not in data:
-            line_item.match = "unmatched"
-            line_item.product_id = None
-            changes.extend(["match", "product_id"])
-            # Reset pipeline stage — item needs re-processing
-            if rfq.pipeline_stage not in ("unprocessed",):
-                rfq.pipeline_stage = "unprocessed"
-
-        # Clear item groups — item descriptions/brands may have changed
+        # Rfq-level side effects
         if changes:
             rfq.item_groups = None
+        if reset_pipeline and rfq.pipeline_stage not in ("unprocessed",):
+            rfq.pipeline_stage = "unprocessed"
 
         now = _now_iso()
         history = list(rfq.history or [])
         history.append({"date": now, "user": user_id, "action": f"Updated line {line_num}: {', '.join(changes)}"})
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _update_items_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
+    """Update multiple RFQ line items in one transaction.
+
+    data["items"] is a list of per-item update dicts, each containing a
+    'line' key plus the fields to update.
+
+    Returns full RFQ dict or error string.
+    """
+    from includes.dashboard.models import RFQ, RFQItem
+
+    items_data = data.get("items", [])
+    if not items_data:
+        return "Error: 'items' list is required for update_items_bulk."
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+
+        results = []
+        any_changes = False
+        any_reset = False
+
+        for item_data in items_data:
+            line_num = _get_line(item_data)
+            if line_num is None:
+                results.append(f"Skipped: missing line in {item_data}")
+                continue
+
+            line_item = session.query(RFQItem).filter(
+                RFQItem.rfq_id == rfq.id, RFQItem.line == line_num
+            ).first()
+            if not line_item:
+                results.append(f"Skipped: line {line_num} not found")
+                continue
+
+            changes, ln, reset_pipeline = _update_item_core(
+                session, rfq, line_item, item_data, user_id,
+            )
+            if changes:
+                any_changes = True
+                results.append(f"Line {ln}: {', '.join(changes)}")
+            if reset_pipeline:
+                any_reset = True
+
+        if not any_changes:
+            return f"No changes applied to {rfq_number}. " + "; ".join(results)
+
+        # Rfq-level side effects
+        if any_changes:
+            rfq.item_groups = None
+        if any_reset and rfq.pipeline_stage not in ("unprocessed",):
+            rfq.pipeline_stage = "unprocessed"
+
+        updated_count = sum(1 for r in results if r.startswith("Line "))
+        now = _now_iso()
+        history = list(rfq.history or [])
+        history.append({
+            "date": now, "user": user_id,
+            "action": f"Bulk updated {updated_count} items. " + "; ".join(results),
+        })
         rfq.history = history
         rfq.updated_at = _now_dt()
         session.commit()
@@ -693,10 +785,158 @@ def _delete_item_sync(rfq_number: str, line_num: int, user_id: str) -> dict | st
         session.close()
 
 
+def _add_suppliers_to_line_core(session, rfq, line_item, data):
+    """Process and merge suppliers into a single line item in-place.
+
+    Handles: validation, DB matching, product auto-resolve, pricing
+    enrichment, dedup/merge. Does NOT commit, append history, update
+    timestamps, or auto-progress status.
+
+    Returns (added_names, updated_names, skipped_names, error) where:
+      - added_names: list of newly added supplier names
+      - updated_names: list of existing supplier names that were updated
+      - skipped_names: list of rejected supplier names/strings
+      - error: None on success, or an error string if pre-conditions fail
+        (e.g. no suppliers provided, all names blank). When error is set,
+        all three lists are empty.
+    """
+    from includes.tools.quote_tools import _match_suppliers_to_db, _enrich_supplier_pricing
+
+    suppliers_list = data.get("suppliers", [])
+    if not suppliers_list and data.get("name"):
+        suppliers_list = [data]
+    if not suppliers_list:
+        return [], [], [], "Error: 'name' or 'suppliers' list is required for add_supplier."
+
+    _bad_names = {"unknown", ""}
+    skipped_names = []
+    valid_suppliers = []
+    for sup in suppliers_list:
+        # Normalize: agent sends 'currency', we store as 'cost_currency'
+        if sup.get("currency") and not sup.get("cost_currency"):
+            sup["cost_currency"] = sup["currency"]
+        name = (sup.get("name") or "").strip()
+        has_db_link = bool(sup.get("supplier_id"))
+        if not has_db_link and name.lower() in _bad_names:
+            skipped_names.append(name or "Unknown")
+        else:
+            valid_suppliers.append(sup)
+
+    if skipped_names and not valid_suppliers:
+        msg = (
+            f"REJECTED: All {len(skipped_names)} supplier(s) have blank or unknown names. "
+            f"Please provide actual supplier names."
+        )
+        return [], [], skipped_names, None  # not really an error, just a rejection
+
+    # Split: suppliers with a DB id (no matching needed) vs those that need lookup
+    db_linked = [s for s in valid_suppliers if s.get("supplier_id")]
+    needs_match = [s for s in valid_suppliers if not s.get("supplier_id")]
+
+    if needs_match:
+        _match_suppliers_to_db(
+            needs_match,
+            product_hint=" ".join(filter(None, [
+                line_item.part_number,
+                line_item.brand,
+                line_item.input_description,
+            ])),
+        )
+        valid_suppliers = db_linked + needs_match
+    else:
+        valid_suppliers = db_linked
+
+    # Auto-resolve product_id if the item has a part_number
+    product_id = line_item.product_id
+    if line_item.part_number:
+        from includes.dashboard.models import Product as ProductModel
+
+        if product_id:
+            existing = session.query(ProductModel).filter(
+                ProductModel.id == product_id
+            ).first()
+            if not existing or (existing.part_number or "").strip().lower() != line_item.part_number.strip().lower():
+                logger.warning(
+                    f"[auto-resolve] product_id={product_id} (part={existing.part_number if existing else 'N/A'}) "
+                    f"does not match line part_number={line_item.part_number} — re-resolving"
+                )
+                product_id = None
+                line_item.product_id = None
+
+        if not product_id:
+            prod = session.query(ProductModel).filter(
+                ProductModel.part_number.ilike(line_item.part_number.strip())
+            ).first()
+            if prod:
+                line_item.product_id = prod.id
+                product_id = prod.id
+                logger.info(f"[auto-resolve] Set product_id={prod.id} (part={prod.part_number}) for part_number={line_item.part_number}")
+
+    # Enrich with historical pricing from Transaction table
+    _enrich_supplier_pricing(valid_suppliers, str(product_id) if product_id else None)
+
+    current_suppliers = list(line_item.suppliers or [])
+    existing_by_name = {s["name"].lower(): s for s in current_suppliers}
+
+    added_names = []
+    updated_names = []
+    for sup in valid_suppliers:
+        name = sup.get("name", "Unknown")
+        existing = existing_by_name.get(name.lower())
+        if existing:
+            for key in ["supplier_id", "contacts", "price", "price_type",
+                        "lead_time", "notes", "purchase_ref",
+                        "cost_price", "cost_price_aud", "sale_price",
+                        "cost_currency",
+                        "price_date", "price_doc", "price_doc_type",
+                        "transaction_count",
+                        "quote_status", "quote_cost", "quote_currency", "quote_leadtime"]:
+                val = sup.get(key)
+                if val is not None and val != "" and val != []:
+                    existing[key] = val
+            new_status = sup.get("status", "candidate")
+            if new_status != "candidate" or existing.get("status") in ("candidate", "dropped"):
+                existing["status"] = new_status
+            updated_names.append(name)
+        else:
+            supplier_entry = {
+                "supplier_id": sup.get("supplier_id"),
+                "name": name,
+                "contacts": sup.get("contacts", []),
+                "status": sup.get("status", "candidate"),
+                "price": sup.get("price"),
+                "price_type": sup.get("price_type"),
+                "lead_time": sup.get("lead_time"),
+                "notes": sup.get("notes", ""),
+                "purchase_ref": sup.get("purchase_ref"),
+                "cost_price": sup.get("cost_price"),
+                "cost_price_aud": sup.get("cost_price_aud"),
+                "sale_price": sup.get("sale_price"),
+                "cost_currency": sup.get("cost_currency"),
+                "price_date": sup.get("price_date"),
+                "price_doc": sup.get("price_doc"),
+                "price_doc_type": sup.get("price_doc_type"),
+                "transaction_count": sup.get("transaction_count"),
+                "quote_status": sup.get("quote_status"),
+                "quote_cost": sup.get("quote_cost"),
+                "quote_currency": sup.get("quote_currency"),
+                "quote_leadtime": sup.get("quote_leadtime"),
+            }
+            current_suppliers.append(supplier_entry)
+            existing_by_name[name.lower()] = supplier_entry
+            added_names.append(name)
+
+    # JSONB mutation — assign a new list and flag modified
+    from sqlalchemy.orm.attributes import flag_modified
+    line_item.suppliers = current_suppliers
+    flag_modified(line_item, "suppliers")
+
+    return added_names, updated_names, skipped_names, None
+
+
 def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Add supplier(s) to a line item. Returns full RFQ dict or error string."""
     from includes.dashboard.models import RFQ, RFQItem
-    from includes.tools.quote_tools import _match_suppliers_to_db, _enrich_supplier_pricing
 
     line_num = _get_line(data)
     if line_num is None:
@@ -714,155 +954,21 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         if not line_item:
             return f"Error: line {line_num} not found in {rfq_number}."
 
-        suppliers_list = data.get("suppliers", [])
-        if not suppliers_list and data.get("name"):
-            suppliers_list = [data]
-        if not suppliers_list:
-            return "Error: 'name' or 'suppliers' list is required for add_supplier."
+        added, updated, skipped, error = _add_suppliers_to_line_core(
+            session, rfq, line_item, data,
+        )
+        if error:
+            return error
 
-        def _has_contact_url(sup):
-            """Check that at least one contact dict has a url field."""
-            contacts = sup.get("contacts") or []
-            if not isinstance(contacts, list):
-                return False
-            return any(
-                isinstance(c, dict) and c.get("url")
-                for c in contacts
-            )
-
-        _bad_names = {"unknown", ""}
-        skipped_names = []
-        valid_suppliers = []
-        for sup in suppliers_list:
-            # Normalize: agent sends 'currency', we store as 'cost_currency'
-            if sup.get("currency") and not sup.get("cost_currency"):
-                sup["cost_currency"] = sup["currency"]
-            name = (sup.get("name") or "").strip()
-            has_db_link = bool(sup.get("supplier_id"))
-            if not has_db_link and name.lower() in _bad_names:
-                skipped_names.append(name or "Unknown")
-            else:
-                valid_suppliers.append(sup)
-
-        if skipped_names and not valid_suppliers:
-            return (
-                f"REJECTED: All {len(skipped_names)} supplier(s) have blank or unknown names. "
-                f"Please provide actual supplier names."
-            )
-
-        # Split: suppliers with a DB id (no matching needed) vs those that need lookup
-        db_linked = [s for s in valid_suppliers if s.get("supplier_id")]
-        needs_match = [s for s in valid_suppliers if not s.get("supplier_id")]
-
-        if needs_match:
-            _match_suppliers_to_db(
-                needs_match,
-                product_hint=" ".join(filter(None, [
-                    line_item.part_number,
-                    line_item.brand,
-                    line_item.input_description,
-                ])),
-            )
-            # Recombine: matched suppliers now have supplier_id set
-            valid_suppliers = db_linked + needs_match
-        else:
-            valid_suppliers = db_linked
-
-        # Auto-resolve product_id if the item has a part_number
-        product_id = line_item.product_id
-        if line_item.part_number:
-            from includes.dashboard.models import Product as ProductModel
-            
-            # Validate existing product_id: does it actually match the part_number?
-            if product_id:
-                existing = session.query(ProductModel).filter(
-                    ProductModel.id == product_id
-                ).first()
-                if not existing or (existing.part_number or "").strip().lower() != line_item.part_number.strip().lower():
-                    logger.warning(
-                        f"[auto-resolve] product_id={product_id} (part={existing.part_number if existing else 'N/A'}) "
-                        f"does not match line part_number={line_item.part_number} — re-resolving"
-                    )
-                    product_id = None
-                    line_item.product_id = None
-            
-            # Resolve from part_number if needed
-            if not product_id:
-                prod = session.query(ProductModel).filter(
-                    ProductModel.part_number.ilike(line_item.part_number.strip())
-                ).first()
-                if prod:
-                    line_item.product_id = prod.id
-                    product_id = prod.id
-                    logger.info(f"[auto-resolve] Set product_id={prod.id} (part={prod.part_number}) for part_number={line_item.part_number}")
-
-        # Enrich with historical pricing from Transaction table
-        _enrich_supplier_pricing(valid_suppliers, str(product_id) if product_id else None)
-
-        current_suppliers = list(line_item.suppliers or [])
-        existing_by_name = {s["name"].lower(): s for s in current_suppliers}
-
-        added_names = []
-        updated_names = []
-        for sup in valid_suppliers:
-            name = sup.get("name", "Unknown")
-            existing = existing_by_name.get(name.lower())
-            if existing:
-                for key in ["supplier_id", "contacts", "price", "price_type",
-                            "lead_time", "notes", "purchase_ref",
-                            "cost_price", "cost_price_aud", "sale_price",
-                            "cost_currency",
-                            "price_date", "price_doc", "price_doc_type",
-                            "transaction_count",
-                            "quote_status", "quote_cost", "quote_currency", "quote_leadtime"]:
-                    val = sup.get(key)
-                    if val is not None and val != "" and val != []:
-                        existing[key] = val
-                new_status = sup.get("status", "candidate")
-                if new_status != "candidate" or existing.get("status") in ("candidate", "dropped"):
-                    existing["status"] = new_status
-                updated_names.append(name)
-            else:
-                supplier_entry = {
-                    "supplier_id": sup.get("supplier_id"),
-                    "name": name,
-                    "contacts": sup.get("contacts", []),
-                    "status": sup.get("status", "candidate"),
-                    "price": sup.get("price"),
-                    "price_type": sup.get("price_type"),
-                    "lead_time": sup.get("lead_time"),
-                    "notes": sup.get("notes", ""),
-                    "purchase_ref": sup.get("purchase_ref"),
-                    "cost_price": sup.get("cost_price"),
-                    "cost_price_aud": sup.get("cost_price_aud"),
-                    "sale_price": sup.get("sale_price"),
-                    "cost_currency": sup.get("cost_currency"),
-                    "price_date": sup.get("price_date"),
-                    "price_doc": sup.get("price_doc"),
-                    "price_doc_type": sup.get("price_doc_type"),
-                    "transaction_count": sup.get("transaction_count"),
-                    "quote_status": sup.get("quote_status"),
-                    "quote_cost": sup.get("quote_cost"),
-                    "quote_currency": sup.get("quote_currency"),
-                    "quote_leadtime": sup.get("quote_leadtime"),
-                }
-                current_suppliers.append(supplier_entry)
-                existing_by_name[name.lower()] = supplier_entry
-                added_names.append(name)
-
-        # JSONB mutation — assign a new list and flag modified
-        from sqlalchemy.orm.attributes import flag_modified
-        line_item.suppliers = current_suppliers
-        flag_modified(line_item, "suppliers")
-
+        # Build history action
         action_parts = []
-        if added_names:
-            action_parts.append(f"Added {len(added_names)} supplier(s) to line {line_num}: {', '.join(added_names)}")
-        if updated_names:
-            action_parts.append(f"Updated {len(updated_names)} existing supplier(s) on line {line_num}: {', '.join(updated_names)}")
-        if skipped_names:
+        if added:
+            action_parts.append(f"Added {len(added)} supplier(s) to line {line_num}: {', '.join(added)}")
+        if updated:
+            action_parts.append(f"Updated {len(updated)} existing supplier(s) on line {line_num}: {', '.join(updated)}")
+        if skipped:
             action_parts.append(
-                f"REJECTED {len(skipped_names)} supplier(s) — no contact URL provided: {', '.join(skipped_names)}. "
+                f"REJECTED {len(skipped)} supplier(s) — no contact URL provided: {', '.join(skipped)}. "
                 f"Retry with contacts=[{{\"url\": \"https://...\"}}] for each."
             )
 
@@ -872,8 +978,7 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             "date": now, "user": user_id,
             "action": " | ".join(action_parts) or f"No changes to suppliers on line {line_num}",
         })
-        # Auto-progress: draft → in_progress when suppliers are added
-        if added_names and rfq.status == "draft":
+        if added and rfq.status == "draft":
             rfq.status = "in_progress"
             history.append({"date": now, "user": "system", "action": "Status auto-changed to in_progress (suppliers added)"})
 
@@ -889,6 +994,149 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+def _add_suppliers_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
+    """Add suppliers to multiple RFQ line items in one transaction.
+
+    data["entries"] is a flat list of per-line supplier entries:
+        [{"line": 1, "name": "Acme Corp", ...}, {"line": 3, "name": "WidgetCo", ...}]
+
+    Entries for the same line are grouped together by the backend.
+
+    Returns full RFQ dict or error string. Cap: 200 entries.
+    """
+    from includes.dashboard.models import RFQ, RFQItem
+
+    entries = data.get("entries", [])
+    if not entries:
+        return "Error: 'entries' list is required for add_suppliers_bulk."
+
+    if len(entries) > 200:
+        return f"Error: too many entries ({len(entries)}). Maximum is 200 per call."
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+
+        # Group entries by line number
+        from collections import defaultdict
+        by_line = defaultdict(list)
+        for entry in entries:
+            line_num = _get_line(entry)
+            if line_num is None:
+                continue
+            by_line[line_num].append(entry)
+
+        # Collect results per line (one supplier-processing call per unique line)
+        line_results = {}  # line_num -> (added, updated, skipped, error)
+        for line_num, line_entries in by_line.items():
+            line_item = session.query(RFQItem).filter(
+                RFQItem.rfq_id == rfq.id, RFQItem.line == line_num
+            ).first()
+            if not line_item:
+                line_results[line_num] = ([], [], [f"line {line_num} not found"], None)
+                continue
+            added, updated, skipped, error = _add_suppliers_to_line_core(
+                session, rfq, line_item, {"suppliers": line_entries},
+            )
+            line_results[line_num] = (added, updated, skipped, error)
+
+        # Build summary
+        total_added = 0
+        total_updated = 0
+        result_parts = []
+        for line_num in sorted(line_results):
+            added, updated, skipped, error = line_results[line_num]
+            if error:
+                result_parts.append(f"Line {line_num}: {error}")
+                continue
+            if added:
+                total_added += len(added)
+                result_parts.append(f"Line {line_num} (+{len(added)} suppliers: {', '.join(added)})")
+            if updated:
+                total_updated += len(updated)
+                result_parts.append(f"Line {line_num} (updated {len(updated)}: {', '.join(updated)})")
+            if skipped:
+                result_parts.append(f"Line {line_num} (rejected {len(skipped)}: {', '.join(skipped)})")
+
+        if not result_parts:
+            return f"No suppliers added to {rfq_number}."
+
+        # Auto-progress status if suppliers were added
+        if total_added and rfq.status == "draft":
+            rfq.status = "in_progress"
+
+        now = _now_iso()
+        history = list(rfq.history or [])
+        summary = (
+            f"Bulk added {total_added} supplier(s) across {len(by_line)} lines, "
+            f"updated {total_updated}. "
+        ) + "; ".join(result_parts)
+        history.append({"date": now, "user": user_id, "action": summary})
+        if total_added and rfq.status == "in_progress" and any(
+            h.get("action", "").startswith("Status auto-changed") for h in history[-3:]
+        ):
+            pass  # avoid duplicate auto-progress entries
+        elif total_added and rfq.status == "in_progress":
+            history.append({"date": now, "user": "system", "action": "Status auto-changed to in_progress (suppliers added)"})
+
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _select_quote_core(session, rfq, line_item, data):
+    """Select/deselect a supplier's quote on a single line item in-place.
+
+    Does NOT commit, append history, or update timestamps.
+    Returns (action_desc, selected_name) or (error_str, None) on error.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+    from decimal import Decimal, InvalidOperation
+
+    name = data.get("name")
+    if not name:
+        return "Error: 'name' is required for select_quote.", None
+
+    suppliers = list(line_item.suppliers or [])
+    target = None
+    for s in suppliers:
+        if (s.get("name") or "").lower() == name.lower():
+            target = s
+            break
+    if not target:
+        return f"Error: supplier '{name}' not found on line {line_item.line}.", None
+
+    if target.get("quote_status") == "selected":
+        target["quote_status"] = "quoted"
+        line_item.cost_price = None
+        action = f"Deselected '{name}' on line {line_item.line}"
+    else:
+        for s in suppliers:
+            if s.get("quote_status") == "selected":
+                s["quote_status"] = "quoted"
+        target["quote_status"] = "selected"
+        qc = target.get("quote_cost")
+        if qc is not None:
+            try:
+                line_item.cost_price = Decimal(str(qc))
+            except (InvalidOperation, ValueError):
+                pass
+        action = f"Selected '{name}' on line {line_item.line}"
+
+    line_item.suppliers = suppliers
+    flag_modified(line_item, "suppliers")
+    return action, name
+
+
 def _select_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Mark a supplier's quote as selected on a line item.
 
@@ -896,8 +1144,6 @@ def _select_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     quote_cost to the item's cost_price.
     """
     from includes.dashboard.models import RFQ, RFQItem
-    from sqlalchemy.orm.attributes import flag_modified
-    from decimal import Decimal, InvalidOperation
 
     line_num = _get_line(data)
     name = data.get("name")
@@ -916,41 +1162,69 @@ def _select_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         if not line_item:
             return f"Error: line {line_num} not found in {rfq_number}."
 
-        suppliers = list(line_item.suppliers or [])
-        target = None
-        for s in suppliers:
-            if (s.get("name") or "").lower() == name.lower():
-                target = s
-                break
-        if not target:
-            return f"Error: supplier '{name}' not found on line {line_num}."
+        action_desc, _ = _select_quote_core(session, rfq, line_item, data)
+        if action_desc.startswith("Error:"):
+            return action_desc
 
-        if target.get("quote_status") == "selected":
-            # Toggle off
-            target["quote_status"] = "quoted"
-            line_item.cost_price = None
-        else:
-            # Select this one; deselect any previous
-            for s in suppliers:
-                if s.get("quote_status") == "selected":
-                    s["quote_status"] = "quoted"
-            target["quote_status"] = "selected"
-            # Copy quote_cost to item cost_price
-            qc = target.get("quote_cost")
-            if qc is not None:
-                try:
-                    line_item.cost_price = Decimal(str(qc))
-                except (InvalidOperation, ValueError):
-                    pass
+        now = _now_iso()
+        history = list(rfq.history or [])
+        history.append({"date": now, "user": user_id, "action": action_desc})
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
-        line_item.suppliers = suppliers
-        flag_modified(line_item, "suppliers")
 
+def _select_quotes_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
+    """Select suppliers across multiple RFQ lines in one transaction.
+
+    data["selections"] is a list: [{"line": 1, "name": "Acme Corp"}, ...]
+
+    Returns full RFQ dict or error string.
+    """
+    from includes.dashboard.models import RFQ, RFQItem
+
+    selections = data.get("selections", [])
+    if not selections:
+        return "Error: 'selections' list is required for select_quotes_bulk."
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+
+        results = []
+        for sel in selections:
+            line_num = _get_line(sel)
+            name = sel.get("name")
+            if line_num is None or not name:
+                results.append(f"Skipped: missing line or name in {sel}")
+                continue
+
+            line_item = session.query(RFQItem).filter(
+                RFQItem.rfq_id == rfq.id, RFQItem.line == line_num
+            ).first()
+            if not line_item:
+                results.append(f"Skipped: line {line_num} not found")
+                continue
+
+            action_desc, _ = _select_quote_core(session, rfq, line_item, sel)
+            results.append(action_desc)
+
+        selected_count = sum(1 for r in results if r.startswith("Selected"))
+        deselected_count = sum(1 for r in results if r.startswith("Deselected"))
         now = _now_iso()
         history = list(rfq.history or [])
         history.append({
             "date": now, "user": user_id,
-            "action": f"Selected '{name}' on line {line_num}",
+            "action": f"Bulk select: {selected_count} selected, {deselected_count} deselected. " + "; ".join(results),
         })
         rfq.history = history
         rfq.updated_at = _now_dt()
@@ -1013,9 +1287,48 @@ def _set_supplier_meta_sync(rfq_number: str, data: dict, user_id: str) -> dict |
         session.close()
 
 
+def _update_supplier_core(session, rfq, line_item, data):
+    """Update fields on a supplier within a line item in-place.
+
+    Does NOT commit, append history, or update timestamps.
+    Returns (changes, supplier_name) where changes is a list of field names
+    that were modified; or (None, error_str) on error.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    name = data.get("name")
+    if not name:
+        return None, "Error: 'name' is required for update_supplier."
+
+    current_suppliers = list(line_item.suppliers or [])
+    supplier = next((s for s in current_suppliers if s["name"] == name), None)
+    if not supplier:
+        return None, f"Error: supplier '{name}' not found on line {line_item.line}."
+
+    # Normalize: agent sends 'currency', we store as 'cost_currency'
+    if "currency" in data and "cost_currency" not in data:
+        data["cost_currency"] = data["currency"]
+
+    updatable = [
+        "status", "price", "price_type", "cost_currency",
+        "lead_time", "notes", "contacts", "purchase_ref",
+        "quote_status", "quote_cost", "quote_currency", "quote_leadtime",
+    ]
+    changes = []
+    for key in updatable:
+        if key in data:
+            supplier[key] = data[key]
+            changes.append(key)
+
+    line_item.suppliers = current_suppliers
+    flag_modified(line_item, "suppliers")
+    return changes, name
+
+
 def _update_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update a supplier on a line item. Returns full RFQ dict or error string."""
     from includes.dashboard.models import RFQ, RFQItem
+
     line_num = _get_line(data)
     name = data.get("name")
     if line_num is None or not name:
@@ -1033,31 +1346,75 @@ def _update_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | s
         if not line_item:
             return f"Error: line {line_num} not found in {rfq_number}."
 
-        current_suppliers = list(line_item.suppliers or [])
-        supplier = next((s for s in current_suppliers if s["name"] == name), None)
-        if not supplier:
-            return f"Error: supplier '{name}' not found on line {line_num}."
-
-        # Normalize: agent sends 'currency', we store as 'cost_currency'
-        if "currency" in data and "cost_currency" not in data:
-            data["cost_currency"] = data["currency"]
-
-        updatable = ["status", "price", "price_type", "cost_currency", "lead_time", "notes", "contacts", "purchase_ref", "quote_status", "quote_cost", "quote_currency", "quote_leadtime"]
-        changes = []
-        for key in updatable:
-            if key in data:
-                supplier[key] = data[key]
-                changes.append(key)
-
-        from sqlalchemy.orm.attributes import flag_modified
-        line_item.suppliers = current_suppliers
-        flag_modified(line_item, "suppliers")
+        changes, supplier_name = _update_supplier_core(session, rfq, line_item, data)
+        if changes is None:
+            return supplier_name  # error string
 
         now = _now_iso()
         history = list(rfq.history or [])
         history.append({
             "date": now, "user": user_id,
-            "action": f"Updated supplier '{name}' on line {line_num}: {', '.join(changes)}",
+            "action": f"Updated supplier '{supplier_name}' on line {line_num}: {', '.join(changes)}",
+        })
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _update_quotes_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
+    """Update quotation fields across multiple RFQ lines in one transaction.
+
+    data["quotes"] is a list: [{"line": 1, "name": "Acme Corp",
+    "quote_cost": 45.50, "quote_status": "quoted", ...}, ...]
+
+    Returns full RFQ dict or error string.
+    """
+    from includes.dashboard.models import RFQ, RFQItem
+
+    quotes = data.get("quotes", [])
+    if not quotes:
+        return "Error: 'quotes' list is required for update_quotes_bulk."
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+
+        results = []
+        for q in quotes:
+            line_num = _get_line(q)
+            name = q.get("name")
+            if line_num is None or not name:
+                results.append(f"Skipped: missing line or name in {q}")
+                continue
+
+            line_item = session.query(RFQItem).filter(
+                RFQItem.rfq_id == rfq.id, RFQItem.line == line_num
+            ).first()
+            if not line_item:
+                results.append(f"Skipped: line {line_num} not found")
+                continue
+
+            changes, sname = _update_supplier_core(session, rfq, line_item, q)
+            if changes is None:
+                results.append(f"Line {line_num}: {sname}")
+            else:
+                results.append(f"Line {line_num} '{sname}': {', '.join(changes)}")
+
+        updated_count = sum(1 for r in results if "': " in r)
+        now = _now_iso()
+        history = list(rfq.history or [])
+        history.append({
+            "date": now, "user": user_id,
+            "action": f"Bulk updated {updated_count} quotes. " + "; ".join(results),
         })
         rfq.history = history
         rfq.updated_at = _now_dt()
@@ -1295,14 +1652,23 @@ def _classify_rfq_items_sync(
             match = "generic"
 
         if match:
-            _update_item_sync(rfq_number, {"line": line, "match": match}, user_id)
             classified[match].append(line)
             if match == "specific":
                 to_validate.append(item)
         else:
             unclassifiable.append(item)
 
+    # Bulk-update classification matches (was N individual _update_item_sync calls)
+    class_updates = [
+        {"line": line, "match": match_cat}
+        for match_cat, lines in classified.items()
+        for line in lines
+    ]
+    if class_updates:
+        _update_items_bulk_sync(rfq_number, {"items": class_updates}, user_id)
+
     if search_db and to_validate:
+        db_updates = []
         for item in to_validate:
             line = item["line"]
             part_number = item.get("part_number", "")
@@ -1312,17 +1678,19 @@ def _classify_rfq_items_sync(
             except Exception:
                 product = None
             if product:
-                _update_item_sync(
-                    rfq_number,
-                    {"line": line, "part_number": product["part_number"],
-                     "brand": product["brand"],
-                     "product_id": product["id"], "match": "specific"},
-                    user_id,
-                )
+                db_updates.append({
+                    "line": line,
+                    "part_number": product["part_number"],
+                    "brand": product["brand"],
+                    "product_id": product["id"],
+                    "match": "specific",
+                })
                 db_matches.append((
                     line, product["part_number"],
                     product["brand"], product["id"],
                 ))
+        if db_updates:
+            _update_items_bulk_sync(rfq_number, {"items": db_updates}, user_id)
 
     return {
         "classified": classified,

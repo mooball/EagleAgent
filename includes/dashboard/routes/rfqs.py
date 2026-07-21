@@ -2338,6 +2338,12 @@ async def extract_rfq_items(
             result = await extract_items_from_image(raw_b64, mime_type)
         elif content_type in ("csv", "tsv"):
             result = parse_text_table(plain_text, content_type)
+            # If deterministic parsing fails (unmapped columns), fall through
+            # to LLM — same behaviour as the HTML table path.
+            if not result["items"] and plain_text:
+                _log.info("CSV/TSV parsing produced 0 items — falling back to Gemini text extraction")
+                from includes.tools.rfq_item_import import extract_items_from_text
+                result = await extract_items_from_text(plain_text)
         else:
             # Fallback: try all plain text strategies
             result = parse_text_table(plain_text, "plain_text")

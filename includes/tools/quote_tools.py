@@ -24,6 +24,11 @@ from includes.tools.rfq_crud import (  # noqa: F401
     _update_item_groups_sync,
     _find_brand_suppliers_sync, _cross_apply_suppliers_sync,
     _select_quote_sync, _decline_quote_sync, _set_supplier_meta_sync,
+    # Bulk operations
+    _update_item_core, _update_items_bulk_sync,
+    _add_suppliers_to_line_core, _add_suppliers_bulk_sync,
+    _select_quote_core, _select_quotes_bulk_sync,
+    _update_supplier_core, _update_quotes_bulk_sync,
 )
 from includes.tools.rfq_render import (  # noqa: F401
     _render_rfq_summary, _render_rfq_list, _render_rfq_brief_summary,
@@ -697,7 +702,8 @@ def create_quote_tools(user_id: str) -> list:
           add_items     — Add multiple line items to an existing RFQ. data keys:
                           items (required, list of dicts with input_description,
                           input_code, part_number, brand, quantity, uom).
-                          Use this instead of create when the RFQ already exists.
+                          ⚠️ ALWAYS pass ALL items in ONE call — never call
+                          this once per item.
           add_supplier  — Add supplier candidate(s) to a line item. data keys:
                           line (required), EITHER name (required) for a single
                           supplier with optional supplier_id, contacts, status,
@@ -721,6 +727,14 @@ def create_quote_tools(user_id: str) -> list:
                           Australian dollar prices.
                           purchase_ref: optional dict {doc_number, date,
                           order_count} linking to the latest purchase record.
+                          💡 For multiple lines, use add_suppliers_bulk instead.
+          update_item   — Update an RFQ line item. data keys: line (required, int),
+                          plus any of: input_description, input_code, part_number,
+                          brand, product_id, quantity, uom, match, notes.
+                          Item match values: unmatched, specific, branded,
+                          generic, discrepancy (problem found — part number
+                          mismatch or cannot be verified).
+                          💡 For multiple items, use update_items_bulk instead.
           update_supplier — Update a supplier on a line item. data keys:
                           line (required), name (required), plus any of: status,
                           price, price_type, currency, lead_time, notes,
@@ -731,11 +745,13 @@ def create_quote_tools(user_id: str) -> list:
                           quote_cost (float), quote_status (unquoted/quoted/
                           declined/selected), quote_currency (3-letter ISO),
                           quote_leadtime (e.g. '2 weeks').
+                          💡 For multiple quotes, use update_quotes_bulk instead.
           select_quote  — Mark a supplier as selected on a line item. Auto-
                           deselects any previous selection and copies the
                           quote_cost to the item's cost_price. Toggles off
                           if already selected. data keys: line (required),
                           name (required).
+                          💡 For multiple lines, use select_quotes_bulk instead.
           decline_quote — Mark a supplier as declined and clear their price.
                           data keys: line (required), name (required).
           set_supplier_meta — Set RFQ-level supplier metadata. data keys:
@@ -750,9 +766,33 @@ def create_quote_tools(user_id: str) -> list:
           add_note      — Append a note. data keys: note (required)
           link_external — Set external IDs. data keys: netsuite_opportunity
                           and/or hubspot_deal
-          group_items  — Set or update sourcing groups. data keys:
+          group_items   — Set or update sourcing groups. data keys:
                           item_groups (required, the grouping result object
                           with {groups: [...], ungrouped: [...]})
+
+          ═══════════════ Bulk Operations (use instead of per-line calls) ═══════
+          add_suppliers_bulk — Add suppliers to multiple lines at once. data
+                          keys: entries (required, list of dicts with line,
+                          name, and optional supplier fields same as
+                          add_supplier). Grouped by line internally.
+                          ⚠️ Max 200 entries per call.
+                          Example: {"entries": [{"line": 1, "name": "Acme"},
+                          {"line": 3, "name": "WidgetCo", "price": 45.50}]}
+          update_items_bulk — Update fields on multiple line items. data keys:
+                          items (required, list of dicts with line plus any
+                          updatable fields from update_item).
+                          Example: {"items": [{"line": 1, "quantity": 10},
+                          {"line": 2, "brand": "Makita"}]}
+          update_quotes_bulk — Update quotation fields across multiple lines.
+                          data keys: quotes (required, list of dicts with line,
+                          name, plus any updatable quote fields).
+                          Example: {"quotes": [{"line": 1, "name": "Acme",
+                          "quote_cost": 45.50, "quote_status": "quoted"}]}
+          select_quotes_bulk — Select suppliers across multiple lines. data
+                          keys: selections (required, list of dicts with line
+                          and name). Same semantics as select_quote per entry.
+                          Example: {"selections": [{"line": 1, "name": "Acme"},
+                          {"line": 2, "name": "Acme"}]}
 
         Args:
             action: The mutation to perform (see above).
@@ -798,6 +838,11 @@ def create_quote_tools(user_id: str) -> list:
             "select_quote": lambda: asyncio.to_thread(_select_quote_sync, rfq_id, data, user_id),
             "decline_quote": lambda: asyncio.to_thread(_decline_quote_sync, rfq_id, data, user_id),
             "set_supplier_meta": lambda: asyncio.to_thread(_set_supplier_meta_sync, rfq_id, data, user_id),
+            # Bulk operations
+            "add_suppliers_bulk": lambda: asyncio.to_thread(_add_suppliers_bulk_sync, rfq_id, data, user_id),
+            "update_items_bulk": lambda: asyncio.to_thread(_update_items_bulk_sync, rfq_id, data, user_id),
+            "update_quotes_bulk": lambda: asyncio.to_thread(_update_quotes_bulk_sync, rfq_id, data, user_id),
+            "select_quotes_bulk": lambda: asyncio.to_thread(_select_quotes_bulk_sync, rfq_id, data, user_id),
         }
 
         handler = _ACTION_MAP.get(action)
@@ -806,7 +851,8 @@ def create_quote_tools(user_id: str) -> list:
                 f"Error: unknown action '{action}'. Valid actions: create, "
                 "update, update_item, delete_item, add_items, add_supplier, update_supplier, "
                 "clear_suppliers, assign, update_status, add_note, link_external, "
-                "group_items, update_quote, select_quote, decline_quote, set_supplier_meta."
+                "group_items, update_quote, select_quote, decline_quote, set_supplier_meta, "
+                "add_suppliers_bulk, update_items_bulk, update_quotes_bulk, select_quotes_bulk."
             )
 
         if action != "create" and not rfq_id:
