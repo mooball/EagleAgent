@@ -38,7 +38,7 @@ _STANDARD_COLUMNS = [
 # Maps internal RFQItem field names → list of common header aliases (lowercase).
 _COLUMN_PATTERNS: dict[str, list[str]] = {
     "input_description": [
-        "description", "item", "name", "product", "desc",
+        "description", "item", "product", "desc",
         "part name", "item description", "line item",
     ],
     "input_code": [
@@ -66,8 +66,9 @@ _COLUMN_PATTERNS: dict[str, list[str]] = {
 def auto_detect_columns(headers: list[str]) -> dict[str, str]:
     """Map column header names to RFQ item fields.
 
-    Uses fuzzy substring matching to handle real-world messy headers like
-    "Item Description", "QTY REQ'D", "Part Number / SKU", etc.
+    Uses STRICT exact matching (after normalisation) — no substring or fuzzy
+    matching.  Only headers that match a known pattern exactly are mapped.
+
     Normalises separators (underscores, slashes → spaces) so
     "Part Number" matches "part_number" and "Qty Req'd" matches "qty req'd".
 
@@ -75,8 +76,8 @@ def auto_detect_columns(headers: list[str]) -> dict[str, str]:
     Headers that don't match any pattern are omitted.
     """
     def _norm(s: str) -> str:
-        """Normalise a string for fuzzy matching: lowercase, replace
-        non-alphanumeric separators with spaces, collapse whitespace."""
+        """Normalise a string: lowercase, replace non-alphanumeric separators
+        with spaces, collapse whitespace."""
         return re.sub(r'\s+', ' ', re.sub(r'[^a-z0-9\s]', ' ', s.lower())).strip()
 
     mapping = {}
@@ -84,21 +85,26 @@ def auto_detect_columns(headers: list[str]) -> dict[str, str]:
         h_norm = _norm(h)
         if not h_norm:
             continue
-        best_field = None
-        best_score = 0
         for field, patterns in _COLUMN_PATTERNS.items():
             for p in patterns:
                 p_norm = _norm(p)
-                if p_norm in h_norm or h_norm in p_norm:
-                    # Score: longer match = more specific (avoids "part" matching
-                    # both "part name" and "part number" indiscriminately)
-                    score = len(p_norm)
-                    if score > best_score:
-                        best_score = score
-                        best_field = field
-        if best_field:
-            mapping[h.strip()] = best_field
+                if p_norm == h_norm:
+                    mapping[h.strip()] = field
+                    break
+            if h.strip() in mapping:
+                break  # already matched, skip remaining fields
     return mapping
+
+
+def _all_columns_mapped(headers: list[str], column_mapping: dict[str, str]) -> bool:
+    """Return True only if EVERY header has a known field mapping.
+
+    Used as a strict gate: if any column is unrecognised, we fall through
+    to LLM analysis rather than guessing.
+    """
+    if not headers:
+        return False
+    return all(h.strip().lower() in column_mapping for h in headers if h.strip())
 
 
 def _sanitize_field_name(header: str, index: int) -> str:
@@ -273,6 +279,14 @@ def parse_html_table(html: str) -> dict:
         f"mapping={column_mapping}"
     )
 
+    # Strict gate: if any column is unrecognised, bail out so the
+    # endpoint falls through to LLM analysis (which handles column mapping).
+    if not _all_columns_mapped(headers, column_mapping):
+        unmapped = [h for h in headers if h.strip().lower() not in column_mapping]
+        return {"items": [], "headers": headers, "fields": [],
+                "column_mapping": {}, "item_count": 0,
+                "warnings": [f"Columns not recognised: {unmapped}. Falling through to LLM analysis."]}
+
     # Extract items
     items = []
     warnings = []
@@ -367,6 +381,14 @@ def parse_text_table(plain_text: str, content_type: str) -> dict:
     headers_raw = [h.strip() for h in rows[0]]
     headers_lower = [h.lower() for h in headers_raw]
     column_mapping = auto_detect_columns(headers_lower)
+
+    # Strict gate: if ANY column is unrecognised, return 0 items so the
+    # endpoint falls through to LLM analysis.
+    if not _all_columns_mapped(headers_raw, column_mapping):
+        unmapped = [h for h in headers_raw if h.strip().lower() not in column_mapping]
+        return {"items": [], "headers": headers_raw, "fields": [],
+                "column_mapping": {}, "item_count": 0,
+                "warnings": [f"Columns not recognised: {unmapped}. Falling through to LLM analysis."]}
 
     # Check if first row looks like a header (contains known column names)
     has_header = any(column_mapping.values())

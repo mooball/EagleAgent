@@ -1,5 +1,45 @@
 # Plan: Smart Item Adder — Dashboard Modal for RFQ Item Import
 
+## Implementation Status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| **1.0** | `VISION_EXTRACTION_MODEL` setting | ✅ Done |
+| **1.1** | `POST /api/rfq/{id}/extract-items` endpoint | ✅ Done |
+| **1.2** | Content type detection (`detect_content_type`) | ✅ Done |
+| **1.3** | HTML table parser (BeautifulSoup, no LLM) | ✅ Done |
+| **1.4** | Image extraction (Gemini Vision) | ✅ Done |
+| **1.5** | Plain text / CSV / TSV parser | ✅ Done |
+| **1.6** | Main extraction endpoint handler | ✅ Done (includes LLM fallbacks for HTML & text) |
+| **2.1** | `POST /api/rfq/{id}/items/bulk` endpoint | ✅ Done |
+| **3.1** | Dashboard button placement | ✅ Done (both with-items and no-items states) |
+| **3.2** | Alpine.js modal component (HTML template) | ✅ Done (`_smart_item_adder_modal.html`) |
+| **3.3** | Alpine.js component data & methods | ✅ Done (inline in `base.html` within `rfqDetail()`) |
+| **3.4** | HTMX integration (refresh after add) | ✅ Done (`htmx.ajax` reloads RFQ detail) |
+| **4.1** | Shared `_COLUMN_PATTERNS` & `auto_detect_columns()` | ✅ Done (`rfq_item_import.py` is the single source) |
+| **5.1** | HTML table parsing tests | ✅ Done |
+| **5.2** | Image extraction tests (mocked) | ✅ Done (oversized rejection + column mapping) |
+| **5.3** | Text/CSV/TSV parsing tests | ✅ Done |
+| **5.4** | Content detection tests | ✅ Done |
+| **5.5** | Endpoint integration tests | ❌ Not implemented |
+
+### Summary
+
+**All core functionality is implemented.** The only gap is Phase 5.5 — endpoint-level integration tests (`test_extract_items_html`, `test_extract_items_image`, `test_extract_items_no_content`, `test_bulk_add_items`) that exercise the FastAPI routes with a test client.
+
+### Notable implementation additions beyond the plan
+
+- **LLM fallback for HTML** — when BeautifulSoup parsing yields 0 items, falls back to Gemini with a cleaned HTML table (`extract_items_from_html`).
+- **LLM fallback for plain text** — when CSV/TSV parsing yields 0 items, falls back to Gemini with a dedicated text extraction prompt (`extract_items_from_text`).
+- **Standard column normalization** — `_normalize_to_standard_columns()` forces the preview table to always show the same 5 columns (Description, Part Number, Brand, Qty, UOM) regardless of source.
+- **Dark mode support** — modal template has full dark mode styling.
+- **Inline content rendering** — paste area shows the pasted content (tables rendered as HTML, images displayed inline) rather than just a text indicator.
+- **Column width presets** — `fieldWidth()` and `thWidth()` methods for better preview table layout.
+- **Extraction error display** — `extractionError` shown inline with debug info when no items extracted.
+- **Alpine component NOT registered as a separate `Alpine.data()`** — methods are inlined directly within the existing `rfqDetail()` component in `base.html`, avoiding the timing issues noted in the plan (Phase 3.3 proposed a separate registration).
+
+---
+
 ## TL;DR
 
 Add a "Smart Add Items" button to the RFQ dashboard that opens a modal with a paste/drop area capable of capturing HTML tables, images, or plain text. Content is parsed server-side — HTML tables via BeautifulSoup (no LLM), images via a dedicated Gemini vision call, and plain text via CSV/TSV parsing. The user reviews an editable preview table before confirming. This replaces the error-prone "screenshot → chat → agent extraction" flow with a deterministic, user-validated pipeline.

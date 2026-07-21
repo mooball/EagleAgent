@@ -1683,7 +1683,7 @@
                 },
 
                 get hasContent() {
-                    return this.pasteHtml || this.pasteText || this.imageBase64;
+                    return !!(this.pasteHtml || this.pasteText || this.imageBase64);
                 },
 
                 // Paste handler — captures HTML tables, images, and plain text.
@@ -1725,13 +1725,20 @@
                     }, 100);
                 },
 
-                // Drag and drop handler — renders images inline, captures HTML tables
+                // Drag and drop handler — renders images inline, reads text files, captures HTML tables
                 handleDrop(event) {
                     this.dragOver = false;
                     var files = event.dataTransfer.files;
-                    if (files.length > 0 && files[0].type.startsWith('image/')) {
-                        this._insertImageIntoArea(files[0]);
-                        return;
+                    if (files.length > 0) {
+                        var file = files[0];
+                        if (file.type.startsWith('image/')) {
+                            this._insertImageIntoArea(file);
+                            return;
+                        }
+                        if (this._isTextFile(file)) {
+                            this._readTextFile(file);
+                            return;
+                        }
                     }
                     // Let the browser handle HTML/text drops — content appears in the div.
                     var self = this;
@@ -1760,6 +1767,54 @@
                         area.classList.add('has-content');
                     };
                     reader.readAsDataURL(file);
+                },
+
+                // Check if a file is a supported text format (.txt, .csv)
+                _isTextFile(file) {
+                    var name = (file.name || '').toLowerCase();
+                    return name.endsWith('.txt') || name.endsWith('.csv');
+                },
+
+                // Read a text file and populate pasteText + show preview in paste area
+                _readTextFile(file) {
+                    var self = this;
+                    var reader = new FileReader();
+                    reader.onload = function(e) {
+                        self.pasteText = e.target.result;
+                        self.pasteHtml = null;
+                        self.imageBase64 = null;
+                        // Show a preview of the file content in the paste area
+                        var area = self.$refs.pasteArea;
+                        area.innerHTML = '';
+                        var pre = document.createElement('pre');
+                        pre.style.whiteSpace = 'pre-wrap';
+                        pre.style.fontFamily = 'monospace';
+                        pre.style.fontSize = '12px';
+                        pre.style.margin = '0';
+                        pre.style.maxHeight = '250px';
+                        pre.style.overflowY = 'auto';
+                        // Show first 2000 chars as preview
+                        pre.textContent = e.target.result.substring(0, 2000);
+                        if (e.target.result.length > 2000) {
+                            pre.textContent += '\n\n... (truncated preview)';
+                        }
+                        area.appendChild(pre);
+                        area.classList.add('has-content');
+                    };
+                    reader.readAsText(file);
+                },
+
+                // File upload button handler — routes to image or text reader
+                handleFileUpload(event) {
+                    var file = event.target.files[0];
+                    if (!file) return;
+                    if (file.type.startsWith('image/')) {
+                        this._insertImageIntoArea(file);
+                    } else if (this._isTextFile(file)) {
+                        this._readTextFile(file);
+                    }
+                    // Reset the input so the same file can be re-selected
+                    event.target.value = '';
                 },
 
                 // Read image as base64 (for backward compat with any external calls)

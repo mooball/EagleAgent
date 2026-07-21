@@ -248,16 +248,23 @@ class TestAutoDetectColumns:
 
     def test_normalises_separators_for_fuzzy_match(self):
         """Underscores, slashes, and other separators are normalised.
-        'Part Number' (space) should match 'part_number' (underscore) pattern."""
-        mapping = auto_detect_columns(["Part Number", "Qty Req'd", "Item Desc"])
+        'Part Number' (space) should match 'part_number' (underscore) pattern.
+        With strict exact matching, only headers that exactly equal a known
+        pattern (after normalisation) are mapped."""
+        mapping = auto_detect_columns(["Part Number", "Qty Req'd", "Item"])
         assert mapping["Part Number"] == "input_code"
         assert mapping["Qty Req'd"] == "quantity"
-        # 'item desc' contains 'desc' which is a pattern for input_description
-        # Actually 'desc' isn't in the patterns... 'description' is. Let me check:
-        # "description" normalised = "description". "item desc" normalised = "item desc".
-        # "description" in "item desc" → False. "item desc" in "description" → False.
-        # Hmm, but 'item' IS a pattern: "item" in "item desc" → True
-        assert mapping["Item Desc"] == "input_description"
+        # "Item" exact-matches the "item" pattern
+        assert mapping["Item"] == "input_description"
+
+    def test_strict_no_fuzzy_matching(self):
+        """Headers that don't exactly match a known pattern are NOT mapped.
+        This prevents false positives like 'Vendor Name' matching 'name'."""
+        mapping = auto_detect_columns(["Item Desc", "Vendor Name", "Department", "Part Num"])
+        assert "Item Desc" not in mapping
+        assert "Vendor Name" not in mapping
+        assert "Department" not in mapping
+        assert "Part Num" not in mapping  # not exact — should be "Part No" or "Part Number"
 
     def test_part_number_aliases(self):
         mapping = auto_detect_columns(["Part #", "MPN", "SKU", "stock code"])
@@ -280,6 +287,29 @@ class TestAutoDetectColumns:
         assert mapping["notes"] == "notes"
         assert mapping["comment"] == "notes"
         assert mapping["remarks"] == "notes"
+
+    def test_department_does_not_match_part(self):
+        """'Department' contains 'part' as substring — must NOT match input_code."""
+        mapping = auto_detect_columns(["Department", "Part No", "Description"])
+        # Department should not match anything (no word-boundary match for "part")
+        assert "Department" not in mapping
+        # Part No should still match
+        assert mapping["Part No"] == "input_code"
+        assert mapping["Description"] == "input_description"
+
+    def test_vendor_name_does_not_match_name(self):
+        """'Vendor Name' contains 'name' — must NOT match input_description
+        because no generic 'name' pattern exists (only 'part name')."""
+        mapping = auto_detect_columns(["Vendor Name", "Description"])
+        assert "Vendor Name" not in mapping
+        assert mapping["Description"] == "input_description"
+
+    def test_purchase_price_does_not_match(self):
+        """'Purchase Price' contains no RFQ field pattern — must remain unmapped."""
+        mapping = auto_detect_columns(["Purchase Price", "Sell Price", "QTY"])
+        assert "Purchase Price" not in mapping
+        assert "Sell Price" not in mapping
+        assert mapping["QTY"] == "quantity"
 
 
 # ============================================================================
