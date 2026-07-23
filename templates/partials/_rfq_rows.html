@@ -23,7 +23,7 @@
         {% endif %}
     </td>
     <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400 {{ age_class }}">{{ items | length }}</td>
-    {% if mine != '1' %}<td class="px-4 py-3 text-gray-500 dark:text-gray-400 {{ age_class }}">{{ rfq.assigned_to or '—' }}</td>{% endif %}
+    {% if show_rep_col %}<td class="px-4 py-3 text-gray-500 dark:text-gray-400 {{ age_class }}">{{ rfq.assigned_to or '—' }}</td>{% endif %}
     <td class="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap {{ age_class }}">{{ rfq.created_display or rfq.created_date or '' }}</td>
     <td class="px-4 py-3 text-right text-gray-600 dark:text-gray-400 whitespace-nowrap {{ age_class }}">{{ rfq.supplier_count or 0 }}/{{ rfq.quoted_count or 0 }}</td>
     <td class="px-4 py-1 w-8">
@@ -41,7 +41,7 @@
 {% endfor %}
 {% if has_more %}
 <tr id="rfq-sentinel"
-    hx-get="/partial/rfqs/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}{% if mine %}&mine={{ mine }}{% endif %}{% if status %}&status={{ status }}{% endif %}"
+    hx-get="/partial/rfqs/rows?page={{ next_page }}{% if q %}&q={{ q }}{% endif %}{% if mine %}&mine={{ mine }}{% endif %}{% if status %}&status={{ status }}{% endif %}{% if sort %}&sort={{ sort }}{% endif %}{% if order %}&order={{ order }}{% endif %}"
     hx-trigger="intersect"
     hx-target="this"
     hx-swap="outerHTML">

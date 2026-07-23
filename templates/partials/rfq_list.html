@@ -1,4 +1,4 @@
-{% from "components.html" import page_header, search_form, table_wrapper, th, row_count, empty_state %}
+{% from "components.html" import page_header, search_form, table_wrapper, th, th_sortable, row_count, empty_state %}
 <div data-dashboard-context='{"view": "rfq_list", "entity": "rfq"}'>
     {% call page_header("Requests for Quote") %}
         <button type="button"
@@ -11,41 +11,45 @@
     {% endcall %}
 
     <div class="flex items-center gap-3 mb-3 text-xs">
-        <!-- Owner toggle group -->
-        <span class="inline-flex rounded-full shadow-sm">
-            <a hx-get="/partial/rfqs?mine=1&status={{ status or 'open' }}{% if q %}&q={{ q }}{% endif %}"
-               hx-target="#main-content" hx-push-url="/rfqs?mine=1&status={{ status or 'open' }}{% if q %}&q={{ q }}{% endif %}"
-               class="px-2.5 py-1 rounded-l-full cursor-pointer transition-colors border border-r-0
-                      {% if mine == '1' %}bg-blue-600 text-white border-blue-600{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
-                My RFQs
-            </a>
-            <a hx-get="/partial/rfqs?mine=0&status={{ status or 'open' }}{% if q %}&q={{ q }}{% endif %}"
-               hx-target="#main-content" hx-push-url="/rfqs?mine=0&status={{ status or 'open' }}{% if q %}&q={{ q }}{% endif %}"
-               class="px-2.5 py-1 rounded-r-full cursor-pointer transition-colors border
-                      {% if mine != '1' %}bg-blue-600 text-white border-blue-600{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
-                Everyone's RFQs
-            </a>
-        </span>
+        <!-- Owner dropdown -->
+        {% set selected_owner = mine or '1' %}
+        {% set show_rep_col = (selected_owner == '0' or selected_owner == 'all' or selected_owner == '') %}
+        <select class="px-2.5 py-1 rounded-lg text-xs border border-gray-300 dark:border-gray-600
+                       bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300
+                       focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                hx-get="/partial/rfqs"
+                hx-target="#main-content"
+                hx-push-url="true"
+                hx-include="[name='status-filter'], [name='q']"
+                name="mine"
+                hx-trigger="change">
+            <option value="1" {% if selected_owner == '1' %}selected{% endif %}>My RFQs</option>
+            <option value="all" {% if selected_owner in ('0', 'all', '') %}selected{% endif %}>Everyone's RFQs</option>
+            <option disabled>──────────</option>
+            {% for u in all_users %}
+            <option value="{{ u.email }}" {% if selected_owner == u.email %}selected{% endif %}>{{ u.name }}</option>
+            {% endfor %}
+        </select>
 
         <!-- Separator -->
         <span class="text-gray-400 dark:text-gray-500 select-none mx-1">—</span>
 
         <!-- Status toggle group -->
         <span class="inline-flex rounded-full shadow-sm">
-            <a hx-get="/partial/rfqs?mine={{ mine or '1' }}&status=open{% if q %}&q={{ q }}{% endif %}"
-               hx-target="#main-content" hx-push-url="/rfqs?mine={{ mine or '1' }}&status=open{% if q %}&q={{ q }}{% endif %}"
+            <a hx-get="/partial/rfqs?mine={{ selected_owner }}&status=open{% if q %}&q={{ q }}{% endif %}"
+               hx-target="#main-content" hx-push-url="/rfqs?mine={{ selected_owner }}&status=open{% if q %}&q={{ q }}{% endif %}"
                class="px-2.5 py-1 rounded-l-full cursor-pointer transition-colors border border-r-0
                       {% if status == 'open' or not status %}bg-blue-600 text-white border-blue-600{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
                 Open
             </a>
-            <a hx-get="/partial/rfqs?mine={{ mine or '1' }}&status=quoted{% if q %}&q={{ q }}{% endif %}"
-               hx-target="#main-content" hx-push-url="/rfqs?mine={{ mine or '1' }}&status=quoted{% if q %}&q={{ q }}{% endif %}"
+            <a hx-get="/partial/rfqs?mine={{ selected_owner }}&status=quoted{% if q %}&q={{ q }}{% endif %}"
+               hx-target="#main-content" hx-push-url="/rfqs?mine={{ selected_owner }}&status=quoted{% if q %}&q={{ q }}{% endif %}"
                class="px-2.5 py-1 cursor-pointer transition-colors border border-r-0
                       {% if status == 'quoted' %}bg-blue-600 text-white border-blue-600{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
                 Quoted
             </a>
-            <a hx-get="/partial/rfqs?mine={{ mine or '1' }}&status=all{% if q %}&q={{ q }}{% endif %}"
-               hx-target="#main-content" hx-push-url="/rfqs?mine={{ mine or '1' }}&status=all{% if q %}&q={{ q }}{% endif %}"
+            <a hx-get="/partial/rfqs?mine={{ selected_owner }}&status=all{% if q %}&q={{ q }}{% endif %}"
+               hx-target="#main-content" hx-push-url="/rfqs?mine={{ selected_owner }}&status=all{% if q %}&q={{ q }}{% endif %}"
                class="px-2.5 py-1 rounded-r-full cursor-pointer transition-colors border
                       {% if status == 'all' %}bg-blue-600 text-white border-blue-600{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
                 All
@@ -57,12 +61,12 @@
     {% call table_wrapper() %}
         <thead class="border-b border-gray-200 dark:border-gray-700 sticky top-[72px] z-10">
             <tr>
-                {{ th("RFQ") }}
-                {{ th("Customer") }}
+                {{ th_sortable("RFQ", "rfq_number", sort, order, selected_owner, status, q) }}
+                {{ th_sortable("Customer", "customer", sort, order, selected_owner, status, q) }}
                 {{ th("Title") }}
                 {{ th("Status") }}
                 {{ th("Items", align="right") }}
-                {% if mine != '1' %}{{ th("Sales Rep") }}{% endif %}
+                {% if show_rep_col %}{{ th("Sales Rep") }}{% endif %}
                 {{ th("Created (Age)") }}
                 {{ th("Suppliers/Quoted", align="right") }}
                 <th class="px-4 py-3 bg-gray-50 dark:bg-gray-800 w-8"></th>
