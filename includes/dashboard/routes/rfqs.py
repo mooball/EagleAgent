@@ -7,8 +7,10 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Request, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from sqlalchemy import func as sa_func
 
 from includes.dashboard.models import Supplier, Transaction, EmailTracking, Contact
+from includes.tools.product_tools import normalize_part_number
 from . import _helpers
 from ._helpers import router, templates, require_user, _render
 from .api import _lookup_rfq_thread_id
@@ -540,12 +542,15 @@ def _render_rfq_detail_partial_response(request: Request, user: dict, rfq: dict,
 # ---------------------------------------------------------------------------
 # Fetch helper
 # ---------------------------------------------------------------------------
-async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: str = "", status: str = "open"):
-    """Fetch RFQs from SQL with optional text search and pagination.
+async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: str = "", status: str = "open",
+                      sort: str = "rfq_number", order: str = "desc"):
+    """Fetch RFQs from SQL with optional text search, sorting, and pagination.
     
     Args:
         status: 'open' (draft + in_progress), 'quoted' (issued_quote), 'all' (no filter),
                 or a specific status value.
+        sort: 'rfq_number' or 'customer'
+        order: 'asc' or 'desc'
     """
     from includes.tools.quote_tools import _list_rfqs_sync, _rfq_to_dict
 
@@ -554,8 +559,12 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
         session = _helpers.get_session()
         try:
             query = session.query(RFQ)
+            # mine=1 → current user; mine=all/0/empty → everyone;
+            # any other value → filter by that specific email
             if mine == "1" and user_email:
                 query = query.filter(RFQ.assigned_to.ilike(user_email))
+            elif mine and mine not in ("0", "all"):
+                query = query.filter(RFQ.assigned_to.ilike(mine))
             if status == "open":
                 query = query.filter(RFQ.status.in_(["draft", "in_progress"]))
             elif status == "quoted":
@@ -592,6 +601,13 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
                 filtered.append(r)
         rfqs = filtered
 
+    # Sort (in Python — data is already in memory)
+    if sort == "customer":
+        rfqs.sort(key=lambda r: (r.get("customer") or "").lower(), reverse=(order == "desc"))
+    else:
+        # Default: rfq_number
+        rfqs.sort(key=lambda r: str(r.get("id", "")), reverse=(order == "desc"))
+
     total = len(rfqs)
     total_pages = max(1, math.ceil(total / RFQ_PAGE_SIZE))
     page = max(1, min(page, total_pages))
@@ -607,9 +623,12 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
 # ---------------------------------------------------------------------------
 @router.get("/rfqs")
 async def rfq_list(request: Request, user: dict = Depends(require_user),
-                   q: str = "", page: int = 1, mine: str = "1", status: str = "open"):
+                   q: str = "", page: int = 1, mine: str = "1", status: str = "open",
+                   sort: str = "rfq_number", order: str = "desc"):
+    user_email = user.get("email", "")
     rfqs, total, has_more, next_page = await _fetch_rfqs(
-        q, page, mine=mine, user_email=user.get("email", ""), status=status)
+        q, page, mine=mine, user_email=user_email, status=status,
+        sort=sort, order=order)
 
     ctx = {
         "rfqs": rfqs,
@@ -621,6 +640,10 @@ async def rfq_list(request: Request, user: dict = Depends(require_user),
         "active_nav": "rfqs",
         "mine": mine,
         "status": status,
+        "sort": sort,
+        "order": order,
+        "all_users": _get_all_user_emails(),
+        "current_user_email": user_email,
     }
     return _render(request, "rfqs.html", "partials/rfq_list.html", ctx, user)
 
@@ -775,9 +798,12 @@ async def rfq_detail_tab(request: Request, rfq_id: str, tab: str,
 
 @router.get("/partial/rfqs")
 async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
-                           q: str = "", page: int = 1, mine: str = "1", status: str = "open"):
+                           q: str = "", page: int = 1, mine: str = "1", status: str = "open",
+                           sort: str = "rfq_number", order: str = "desc"):
+    user_email = user.get("email", "")
     rfqs, total, has_more, next_page = await _fetch_rfqs(
-        q, page, mine=mine, user_email=user.get("email", ""), status=status)
+        q, page, mine=mine, user_email=user_email, status=status,
+        sort=sort, order=order)
 
     return templates.TemplateResponse(request, "partials/rfq_list.html", {
         "user": user,
@@ -789,15 +815,22 @@ async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
         "next_page": next_page,
         "mine": mine,
         "status": status,
+        "sort": sort,
+        "order": order,
+        "all_users": _get_all_user_emails(),
+        "current_user_email": user_email,
     })
 
 
 @router.get("/partial/rfqs/rows")
 async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
-                           q: str = "", page: int = 1, mine: str = "1", status: str = "open"):
+                           q: str = "", page: int = 1, mine: str = "1", status: str = "open",
+                           sort: str = "rfq_number", order: str = "desc"):
     """Return just the RFQ card rows + sentinel for infinite scroll."""
+    user_email = user.get("email", "")
     rfqs, total, has_more, next_page = await _fetch_rfqs(
-        q, page, mine=mine, user_email=user.get("email", ""), status=status)
+        q, page, mine=mine, user_email=user_email, status=status,
+        sort=sort, order=order)
 
     return templates.TemplateResponse(request, "partials/_rfq_rows.html", {
         "rfqs": rfqs,
@@ -806,6 +839,9 @@ async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
         "next_page": next_page,
         "mine": mine,
         "status": status,
+        "sort": sort,
+        "order": order,
+        "show_rep_col": (mine in ("0", "all", "")),
     })
 
 
@@ -855,8 +891,9 @@ async def partial_rfq_price_history(
             # Fallback: if no rows by product_id and part_number is provided,
             # look up the correct product_id from the part_number and retry
             if not rows and part_number:
+                norm_pn = normalize_part_number(part_number)
                 prod = session.query(ProductModel).filter(
-                    ProductModel.part_number.ilike(part_number.strip())
+                    sa_func.regexp_replace(ProductModel.part_number, '[^a-zA-Z0-9]', '', 'g').ilike(norm_pn)
                 ).first()
                 if prod and prod.id != pid:
                     rows = (

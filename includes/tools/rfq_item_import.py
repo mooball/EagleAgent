@@ -26,8 +26,8 @@ MAX_BATCH_SIZE = 200      # Max items per bulk add request
 # Standard RFQ column definition — the preview table ALWAYS shows these columns
 # in this exact order. The LLM's job is to map source data into these fields.
 _STANDARD_COLUMNS = [
-    ("Description", "input_description"),
     ("Part Number", "input_code"),
+    ("Description", "input_description"),
     ("Brand", "brand"),
     ("Qty", "quantity"),
     ("UOM", "uom"),
