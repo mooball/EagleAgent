@@ -7,8 +7,10 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Request, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from sqlalchemy import func as sa_func
 
 from includes.dashboard.models import Supplier, Transaction, EmailTracking, Contact
+from includes.tools.product_tools import normalize_part_number
 from . import _helpers
 from ._helpers import router, templates, require_user, _render
 from .api import _lookup_rfq_thread_id
@@ -855,8 +857,9 @@ async def partial_rfq_price_history(
             # Fallback: if no rows by product_id and part_number is provided,
             # look up the correct product_id from the part_number and retry
             if not rows and part_number:
+                norm_pn = normalize_part_number(part_number)
                 prod = session.query(ProductModel).filter(
-                    ProductModel.part_number.ilike(part_number.strip())
+                    sa_func.regexp_replace(ProductModel.part_number, '[^a-zA-Z0-9]', '', 'g').ilike(norm_pn)
                 ).first()
                 if prod and prod.id != pid:
                     rows = (

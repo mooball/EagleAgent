@@ -6,9 +6,10 @@ and running vector similarity searches using pgvector and Gemini.
 """
 
 import logging
+import re
 from typing import Optional
 from langchain_core.tools import tool
-from sqlalchemy import create_engine, or_, text
+from sqlalchemy import create_engine, or_, text, func
 from sqlalchemy.orm import sessionmaker, aliased
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import asyncio
@@ -17,6 +18,26 @@ from config.settings import Config
 from includes.dashboard.models import Product, Brand, Supplier, SupplierBrand, Transaction
 
 logger = logging.getLogger(__name__)
+
+# Regex for normalizing part numbers — strips all non-alphanumeric chars.
+# "C50LR-BR24-16" → "C50LRBR2416", "ABC/123.456" → "ABC123456"
+_NORMALIZE_RE = re.compile(r'[^a-zA-Z0-9]')
+
+
+def normalize_part_number(pn: str | None) -> str:
+    """Strip separators for comparison. Returns empty string on None/empty."""
+    if not pn:
+        return ''
+    return _NORMALIZE_RE.sub('', pn)
+
+
+def _norm_expr(column):
+    """SQLAlchemy expression for normalized part number comparison.
+    
+    Returns regexp_replace(column, '[^a-zA-Z0-9]', '', 'g') for use in
+    WHERE clauses. Matches the functional index idx_products_part_number_norm.
+    """
+    return func.regexp_replace(column, '[^a-zA-Z0-9]', '', 'g')
 
 def get_engine():
     db_url = Config.DATABASE_URL
@@ -57,9 +78,10 @@ def _do_product_search(part_number: Optional[str] = None,
     try:
         base_query = session.query(Product)
         
-        # Exact or partial match for part_number
+        # Exact or partial match for part_number (normalized — ignores dashes/slashes/etc.)
         if part_number:
-            base_query = base_query.filter(Product.part_number.ilike(f"%{part_number}%"))
+            norm_pn = normalize_part_number(part_number)
+            base_query = base_query.filter(_norm_expr(Product.part_number).ilike(f"%{norm_pn}%"))
             
         # Exact or partial match for brand
         if brand:
@@ -516,9 +538,10 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
     """Executes the per-part purchase history search synchronously."""
     session = get_session()
     try:
-        # Find matching products by part number
+        # Find matching products by part number (normalized comparison)
+        norm_pn = normalize_part_number(part_number)
         products = session.query(Product).filter(
-            Product.part_number.ilike(f"%{part_number}%")
+            _norm_expr(Product.part_number).ilike(f"%{norm_pn}%")
         ).all()
 
         if not products:
@@ -664,7 +687,8 @@ def _do_search_purchase_history(
         filter_desc = []
 
         if part_number:
-            query = query.filter(Product.part_number.ilike(f"%{part_number}%"))
+            norm_pn = normalize_part_number(part_number)
+            query = query.filter(_norm_expr(Product.part_number).ilike(f"%{norm_pn}%"))
             filter_desc.append(f"part number matching '{part_number}'")
 
         if supplier:
@@ -801,10 +825,11 @@ def _find_product_by_code(part_number: str, brand: str = None) -> Optional[dict]
     """Find a product by part_number OR supplier_code. Returns dict or None."""
     session = get_session()
     try:
+        norm_pn = normalize_part_number(part_number)
         query = session.query(Product).filter(
             or_(
-                Product.part_number.ilike(part_number),
-                Product.supplier_code.ilike(part_number),
+                _norm_expr(Product.part_number).ilike(norm_pn),
+                _norm_expr(Product.supplier_code).ilike(norm_pn),
             )
         )
         if brand:
@@ -833,8 +858,9 @@ def _find_purchase_history_for_part(part_number: str, limit: int = 20) -> list[d
 
     session = get_session()
     try:
+        norm_pn = normalize_part_number(part_number)
         products = session.query(Product).filter(
-            Product.part_number.ilike(part_number)
+            _norm_expr(Product.part_number).ilike(norm_pn)
         ).all()
         if not products:
             return []

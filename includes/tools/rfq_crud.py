@@ -9,6 +9,8 @@ import logging
 
 from typing import Any
 
+from includes.tools.product_tools import normalize_part_number
+
 logger = logging.getLogger(__name__)
 
 # Common aliases LLMs use for the "line" parameter
@@ -473,7 +475,7 @@ def _add_items_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                 line=idx,
                 input_description=raw.get("input_description", ""),
                 input_code=raw.get("input_code", ""),
-                part_number=raw.get("part_number"),
+                part_number=raw.get("part_number") or raw.get("input_code") or None,
                 brand=raw.get("brand"),
                 product_id=raw.get("product_id"),
                 quantity=raw.get("quantity"),
@@ -855,7 +857,7 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
             existing = session.query(ProductModel).filter(
                 ProductModel.id == product_id
             ).first()
-            if not existing or (existing.part_number or "").strip().lower() != line_item.part_number.strip().lower():
+            if not existing or normalize_part_number(existing.part_number or "") != normalize_part_number(line_item.part_number or ""):
                 logger.warning(
                     f"[auto-resolve] product_id={product_id} (part={existing.part_number if existing else 'N/A'}) "
                     f"does not match line part_number={line_item.part_number} — re-resolving"
@@ -864,8 +866,10 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
                 line_item.product_id = None
 
         if not product_id:
+            from sqlalchemy import func as sa_func
+            norm_pn = normalize_part_number(line_item.part_number or "")
             prod = session.query(ProductModel).filter(
-                ProductModel.part_number.ilike(line_item.part_number.strip())
+                sa_func.regexp_replace(ProductModel.part_number, '[^a-zA-Z0-9]', '', 'g').ilike(norm_pn)
             ).first()
             if prod:
                 line_item.product_id = prod.id
