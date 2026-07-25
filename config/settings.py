@@ -160,6 +160,21 @@ class Config:
     NETSUITE_SYNC_INTERVAL = int(os.getenv("NETSUITE_SYNC_INTERVAL", "300"))
     
     
+    # ==================== Maintenance / Pruning ====================
+    
+    # Enable background maintenance loop (checkpoint + attachment pruning).
+    MAINTENANCE_ENABLED = os.getenv("MAINTENANCE_ENABLED", "true").lower() == "true"
+    
+    # Maintenance interval in seconds (default 24 hours)
+    MAINTENANCE_INTERVAL = int(os.getenv("MAINTENANCE_INTERVAL", "86400"))
+    
+    # Delete LangGraph checkpoints for threads older than this many days
+    CHECKPOINT_RETENTION_DAYS = int(os.getenv("CHECKPOINT_RETENTION_DAYS", "90"))
+    
+    # Delete orphaned file attachments (not referenced by any thread) older than this many days
+    ATTACHMENT_RETENTION_DAYS = int(os.getenv("ATTACHMENT_RETENTION_DAYS", "90"))
+    
+    
     # ==================== Development Settings ====================
     
     # Enable debug mode

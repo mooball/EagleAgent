@@ -97,10 +97,9 @@ def llm_call_with_retry(
                 config=_types.GenerateContentConfig(temperature=temperature),
             )
             if attempt > 0:
-                print(
+                logger.info(
                     f"[email-pipeline] {pipeline}/{step}: succeeded on "
-                    f"attempt {attempt + 1} (model={model})",
-                    flush=True,
+                    f"attempt {attempt + 1} (model={model})"
                 )
             return response
         except Exception as e:
@@ -115,11 +114,6 @@ def llm_call_with_retry(
             if not is_transient:
                 raise  # permanent error — don't retry
             last_error = e
-            print(
-                f"[email-pipeline] {pipeline}/{step}: attempt {attempt + 1} "
-                f"failed (model={model}): {e}",
-                flush=True,
-            )
             logger.warning(
                 f"[email-pipeline] {pipeline}/{step}: attempt {attempt + 1} "
                 f"failed (model={model}): {e}"
@@ -248,7 +242,7 @@ def triage_image(
     cached = check_image_signature(image_bytes)
     if cached is not None:
         if cached == "signature":
-            print(f"[email-pipeline] Skipping known signature: {filename}", flush=True)
+            logger.debug(f"[email-pipeline] Skipping known signature: {filename}")
         return cached
 
     # 2. Classify unknown image
@@ -257,7 +251,7 @@ def triage_image(
     # 3. Cache for future
     store_image_signature(image_bytes, classification, filename, source_email_id)
     if classification == "signature":
-        print(f"[email-pipeline] New signature detected & cached: {filename}", flush=True)
+        logger.debug(f"[email-pipeline] New signature detected & cached: {filename}")
     return classification
 
 

@@ -11,8 +11,6 @@ class TestStorageIntegration:
     def test_local_storage_client_init(self, temp_storage_dir):
         client = LocalStorageClient(base_dir=temp_storage_dir)
         assert client.base_dir == temp_storage_dir
-
-    @pytest.mark.asyncio
     async def test_local_storage_client_upload_and_read(self, temp_storage_dir):
         client = LocalStorageClient(base_dir=temp_storage_dir)
         file_path = os.path.join(temp_storage_dir, "test_file.txt")

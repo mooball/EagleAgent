@@ -9,6 +9,8 @@ import logging
 
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from includes.tools.product_tools import normalize_part_number
 
 logger = logging.getLogger(__name__)
@@ -323,7 +325,7 @@ def _sort_rfq_suppliers_sync(rfq_number: str) -> dict | None:
             session.commit()
             session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -406,7 +408,7 @@ def _create_rfq_sync(data: dict, user_id: str) -> dict:
         result = _rfq_to_dict(rfq)
         logger.info(f"Created {new_number} for {customer} with {len(raw_items)} items")
         return result
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -443,7 +445,7 @@ def _update_item_groups_sync(rfq_number: str, groups_data: dict, user_id: str) -
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -501,7 +503,7 @@ def _add_items_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         result = _rfq_to_dict(rfq)
         logger.info(f"Added {len(raw_items)} items to {rfq_number}")
         return result
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -576,7 +578,7 @@ def _update_rfq_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -657,7 +659,7 @@ def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -731,7 +733,7 @@ def _update_items_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict |
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -780,7 +782,7 @@ def _delete_item_sync(rfq_number: str, line_num: int, user_id: str) -> dict | st
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -991,7 +993,7 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -1090,7 +1092,7 @@ def _add_suppliers_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict 
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -1178,7 +1180,7 @@ def _select_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -1235,7 +1237,7 @@ def _select_quotes_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict 
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -1284,7 +1286,7 @@ def _set_supplier_meta_sync(rfq_number: str, data: dict, user_id: str) -> dict |
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -1365,7 +1367,7 @@ def _update_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | s
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -1425,7 +1427,7 @@ def _update_quotes_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict 
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -1472,7 +1474,7 @@ def _clear_suppliers_sync(rfq_number: str, data: dict, user_id: str) -> dict | s
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -1499,7 +1501,7 @@ def _assign_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -1527,7 +1529,7 @@ def _update_status_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -1555,7 +1557,7 @@ def _add_note_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -1598,7 +1600,7 @@ def _link_external_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
         session.commit()
         session.refresh(rfq)
         return _rfq_to_dict(rfq)
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -1679,7 +1681,7 @@ def _classify_rfq_items_sync(
             brand = item.get("brand", "")
             try:
                 product = _find_product_by_code(part_number, brand or None)
-            except Exception:
+            except (KeyError, ValueError, LookupError):
                 product = None
             if product:
                 db_updates.append({
@@ -1925,7 +1927,7 @@ Return ONLY a valid JSON array, no other text."""
                             if v.get("correct_part_number") and v["correct_part_number"] != item.part_number:
                                 item.notes += f" (Correct PN: {v['correct_part_number']})"
             session.commit()
-        except Exception as e:
+        except SQLAlchemyError as e:
             logger.warning(f"Failed to update discrepancy status: {e}")
             session.rollback()
         finally:
@@ -2243,7 +2245,7 @@ def _find_purchase_suppliers_sync(
                         },
                     })
                     existing_names.add(row["name"].lower())
-        except Exception:
+        except (SQLAlchemyError, KeyError, ValueError):
             pass
 
         if suppliers:
@@ -2297,7 +2299,7 @@ def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
             # Look up brand-linked suppliers
             try:
                 brand_sups = _find_brand_suppliers_with_tier(brand)
-            except Exception:
+            except (SQLAlchemyError, KeyError, ValueError):
                 logger.warning(
                     f"Brand supplier lookup failed for line {line} brand={brand}",
                     exc_info=True,
@@ -2353,7 +2355,7 @@ def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
                 )
                 total_added += len(top_suppliers)
                 by_line[line] = [s["name"] for s in top_suppliers]
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
@@ -2470,7 +2472,7 @@ def _cross_apply_suppliers_sync(rfq_number: str, user_id: str) -> dict:
                 })
 
         return {"added": total_added, "details": details}
-    except Exception:
+    except SQLAlchemyError:
         session.rollback()
         raise
     finally:
