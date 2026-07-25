@@ -517,8 +517,8 @@ This has grown significantly (was ~20 at last review) due to the expanded RFQ wo
 - [x] ~~**1 flaky test** (`test_graph_wiring.py`) — passes alone, fails in suite.~~ ✅ Fixed — monkeypatch `create_model` factory instead of class-level binding, reset `globals_initialized`.
 - [x] ~~**157 broad `except Exception:` handlers** — `rfq_crud.py` (32) refactored to specific types (26 replaced, 6 LLM handlers kept broad).~~ Remaining: `rfqs.py` (21), `rfq_actions.py` (16), others. Total reduced from 157 to ~131.
 - [x] ~~**18 `print()` statements** in `supplier_quote_pipeline.py` and `email_pipeline.py`~~ ✅ All 18 removed/replaced with `logging`.
-- [ ] **SuiteQL string interpolation** in `includes/netsuite/queries.py` — `contacts_for_ids()` uses f-string for IN clause. Low risk (internal IDs only) but should be parameterized for defense-in-depth.
-- [ ] **No checkpoint/attachment pruning** — LangGraph checkpoints and `data/attachments/` grow indefinitely. Add periodic cleanup job.
+- [x] ~~**SuiteQL string interpolation** in `includes/netsuite/queries.py`~~ ✅ Fixed — IDs validated as numeric, no longer quote-wrapped.
+- [x] ~~**No checkpoint/attachment pruning**~~ ✅ Added maintenance loop (24h interval, 90-day retention, configurable).
 - [ ] **Gmail credentials cache has no TTL** — stale credentials never refresh until restart.
 - [ ] **N+1 queries in RFQ detail view** — `includes/dashboard/routes/rfqs.py` runs 20-50+ queries per page load for supplier contacts. Refactor to JOINs.
 - [ ] **2,455 lines of RFQ pipeline code with zero tests** — `supplier_quote_pipeline.py` (875), `rfq_actions.py` (1,177), `email_pipeline.py` (403) are the highest-risk untested modules.
@@ -571,9 +571,9 @@ This has grown significantly (was ~20 at last review) due to the expanded RFQ wo
 7. [x] ~~**MEDIUM**: Fix flaky `test_graph_wiring.py` — isolate `setup_globals()` state~~ ✅ Done
 8. [x] ~~**MEDIUM**: Refactor `except Exception:` in `rfq_crud.py` to use specific exception types~~ ✅ Done — 26 handlers replaced (22 SQLAlchemyError, 4 specific tuples), 6 LLM handlers intentionally kept broad
 9. [x] ~~**MEDIUM**: Replace `print()` with `logging` in pipeline modules~~ ✅ Done — 14 removed from supplier_quote_pipeline.py (all had logger companions), 4 replaced in email_pipeline.py
-10. [ ] **MEDIUM**: Add checkpoint/attachment pruning background job
+10. [x] ~~**MEDIUM**: Add checkpoint/attachment pruning background job~~ ✅ Done — maintenance loop with configurable retention
 11. [x] ~~**MEDIUM**: Bump `pgvector/pgvector:0.9.2-pg17` in `docker-compose.yml`~~ ✅ Done — local dev only, no impact on Railway
 12. [x] ~~**LOW**: Remove BrowserAgent dead code from `graph.py`~~ ✅ Done — removed import and instantiation (agent module + tests preserved)
-13. [ ] **LOW**: Parameterize SuiteQL `contacts_for_ids()` query
+13. [x] ~~**LOW**: Parameterize SuiteQL `contacts_for_ids()` query~~ ✅ Done — numeric validation, no quote wrapping
 14. [ ] **LOW**: Remove redundant `@pytest.mark.asyncio` decorators
 15. [ ] **LOW**: Refactor N+1 queries in RFQ detail view
