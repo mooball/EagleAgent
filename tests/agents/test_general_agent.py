@@ -117,8 +117,6 @@ class TestGetToolsSync:
 # ============================================================================
 # Async tools (get_tools_async) — MCP + role filtering
 # ============================================================================
-
-@pytest.mark.asyncio
 class TestGetToolsAsync:
 
     async def test_includes_profile_tools(self, agent):
@@ -177,8 +175,6 @@ class TestGetToolsAsync:
 # ============================================================================
 # System prompt
 # ============================================================================
-
-@pytest.mark.asyncio
 class TestSystemPrompt:
 
     def test_sync_prompt_returns_string(self, agent):
@@ -212,8 +208,6 @@ class TestSystemPrompt:
 # ============================================================================
 # Agent execution (__call__)
 # ============================================================================
-
-@pytest.mark.asyncio
 class TestAgentCall:
 
     async def test_basic_call_returns_messages(self, agent, mock_model):

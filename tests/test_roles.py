@@ -57,9 +57,6 @@ class TestPromptsRoles:
         pref_name_index = sections.index("- Preferred name: Tom (use this to address the user)")
         # Role should have priority and appear before preferred name in the context
         assert role_index < pref_name_index
-
-
-@pytest.mark.asyncio
 class TestAppRoles:
     """Test role-based tool filtering in GeneralAgent.get_tools_async()."""
 

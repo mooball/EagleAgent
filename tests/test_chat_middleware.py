@@ -8,7 +8,6 @@ from includes.chat.middleware import OAuthErrorRedirectMiddleware, GeminiRetryNo
 
 
 class TestOAuthErrorRedirectMiddleware:
-    @pytest.mark.asyncio
     async def test_passes_through_non_http(self):
         """WebSocket requests should pass through unchanged."""
         app = AsyncMock()
@@ -21,8 +20,6 @@ class TestOAuthErrorRedirectMiddleware:
         await middleware(scope, receive, send)
 
         app.assert_awaited_once_with(scope, receive, send)
-
-    @pytest.mark.asyncio
     async def test_passes_through_non_oauth_path(self):
         """Non-OAuth HTTP paths should pass through."""
         app = AsyncMock()
@@ -35,8 +32,6 @@ class TestOAuthErrorRedirectMiddleware:
         await middleware(scope, receive, send)
 
         app.assert_awaited_once_with(scope, receive, send)
-
-    @pytest.mark.asyncio
     async def test_passes_through_non_callback_oauth(self):
         """OAuth paths without /callback suffix should pass through."""
         app = AsyncMock()
@@ -49,8 +44,6 @@ class TestOAuthErrorRedirectMiddleware:
         await middleware(scope, receive, send)
 
         app.assert_awaited_once_with(scope, receive, send)
-
-    @pytest.mark.asyncio
     async def test_redirects_401_on_callback(self):
         """401 on an OAuth callback path should redirect to /login."""
         app = AsyncMock()
@@ -77,8 +70,6 @@ class TestOAuthErrorRedirectMiddleware:
         assert start_msg["type"] == "http.response.start"
         assert start_msg["status"] == 302
         assert any(b"location" in header for header in start_msg["headers"])
-
-    @pytest.mark.asyncio
     async def test_passes_through_200_on_callback(self):
         """200 on an OAuth callback should pass through normally."""
         sent_messages = []

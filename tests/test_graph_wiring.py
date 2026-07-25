@@ -48,9 +48,6 @@ class StubChatModel(BaseChatModel):
                 return RouteDecision(next_agent="FINISH")
 
         return _StructuredStub()
-
-
-@pytest.mark.asyncio
 async def test_langgraph_wiring_with_stub(monkeypatch):
     """Graph should run end-to-end using a stubbed model.
 

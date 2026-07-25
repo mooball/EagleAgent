@@ -575,5 +575,5 @@ This has grown significantly (was ~20 at last review) due to the expanded RFQ wo
 11. [x] ~~**MEDIUM**: Bump `pgvector/pgvector:0.9.2-pg17` in `docker-compose.yml`~~ ✅ Done — local dev only, no impact on Railway
 12. [x] ~~**LOW**: Remove BrowserAgent dead code from `graph.py`~~ ✅ Done — removed import and instantiation (agent module + tests preserved)
 13. [x] ~~**LOW**: Parameterize SuiteQL `contacts_for_ids()` query~~ ✅ Done — numeric validation, no quote wrapping
-14. [ ] **LOW**: Remove redundant `@pytest.mark.asyncio` decorators
+14. [x] ~~**LOW**: Remove redundant `@pytest.mark.asyncio` decorators~~ ✅ Done — 84 removed across 15 files
 15. [ ] **LOW**: Refactor N+1 queries in RFQ detail view

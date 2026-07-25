@@ -15,43 +15,28 @@ def mock_model():
 @pytest.fixture
 def supervisor(mock_model):
     return Supervisor(model=mock_model)
-
-
-@pytest.mark.asyncio
 async def test_supervisor_empty_messages(supervisor):
     state = {"messages": []}
     result = await supervisor(state)
     assert result == {"next_agent": "GeneralAgent"}
-
-
-@pytest.mark.asyncio
 async def test_supervisor_ai_message(supervisor, mock_model):
     """AI messages go through LLM router for agent-to-agent delegation."""
     state = {"messages": [AIMessage(content="Hello")]}
     mock_model.with_structured_output.return_value.ainvoke.return_value = RouteDecision(next_agent="FINISH")
     result = await supervisor(state)
     assert result["next_agent"] == "FINISH"
-
-
-@pytest.mark.asyncio
 async def test_supervisor_web_search(supervisor):
     """User asking for web research → ResearchAgent."""
     with patch("includes.intent_classifier.classify_intent", new_callable=AsyncMock, return_value="WEB_RESEARCH"):
         state = {"messages": [HumanMessage(content="Can you search Google for Python tutorials?")]}
         result = await supervisor(state)
         assert result["next_agent"] == "ResearchAgent"
-
-
-@pytest.mark.asyncio
 async def test_supervisor_general_chat(supervisor):
     """General chat → GeneralAgent."""
     with patch("includes.intent_classifier.classify_intent", new_callable=AsyncMock, return_value="GENERAL"):
         state = {"messages": [HumanMessage(content="What is my name?")]}
         result = await supervisor(state)
         assert result["next_agent"] == "GeneralAgent"
-
-
-@pytest.mark.asyncio
 async def test_supervisor_uncertain(supervisor):
     """Unclear intent → FINISH with clarifying message."""
     with patch("includes.intent_classifier.classify_intent", new_callable=AsyncMock, return_value="UNCERTAIN"):
@@ -59,9 +44,6 @@ async def test_supervisor_uncertain(supervisor):
         result = await supervisor(state)
         assert result["next_agent"] == "FINISH"
         assert "messages" in result
-
-
-@pytest.mark.asyncio
 async def test_supervisor_db_query(supervisor):
     """Database query without RFQ context → ProcurementAgent with DB_QUERY intent."""
     with patch("includes.intent_classifier.classify_intent", new_callable=AsyncMock, return_value="DB_QUERY"):
@@ -69,25 +51,16 @@ async def test_supervisor_db_query(supervisor):
         result = await supervisor(state)
         assert result["next_agent"] == "ProcurementAgent"
         assert result.get("intent") == "DB_QUERY"
-
-
-@pytest.mark.asyncio
 async def test_supervisor_db_query_purchase_history(supervisor):
     with patch("includes.intent_classifier.classify_intent", new_callable=AsyncMock, return_value="DB_QUERY"):
         state = {"messages": [HumanMessage(content="Do you have purchase history records?")]}
         result = await supervisor(state)
         assert result["next_agent"] == "ProcurementAgent"
-
-
-@pytest.mark.asyncio
 async def test_supervisor_db_query_purchase_orders(supervisor):
     with patch("includes.intent_classifier.classify_intent", new_callable=AsyncMock, return_value="DB_QUERY"):
         state = {"messages": [HumanMessage(content="How many purchase orders do we have?")]}
         result = await supervisor(state)
         assert result["next_agent"] == "ProcurementAgent"
-
-
-@pytest.mark.asyncio
 async def test_supervisor_intent_routes_to_procurement(supervisor):
     """When intent_context contains short procurement keywords, route directly to ProcurementAgent."""
     state = {
@@ -96,9 +69,6 @@ async def test_supervisor_intent_routes_to_procurement(supervisor):
     }
     result = await supervisor(state)
     assert result["next_agent"] == "ProcurementAgent"
-
-
-@pytest.mark.asyncio
 async def test_supervisor_intent_preserved_for_agent(supervisor):
     """Intent context should be preserved in state so the sub-agent can use it."""
     state = {
@@ -107,9 +77,6 @@ async def test_supervisor_intent_preserved_for_agent(supervisor):
     }
     result = await supervisor(state)
     assert result["next_agent"] == "ProcurementAgent"
-
-
-@pytest.mark.asyncio
 async def test_supervisor_non_procurement_intent_falls_through(supervisor):
     """Intent context without procurement tool names → GENERAL."""
     with patch("includes.intent_classifier.classify_intent", new_callable=AsyncMock, return_value="GENERAL"):
@@ -119,9 +86,6 @@ async def test_supervisor_non_procurement_intent_falls_through(supervisor):
         }
         result = await supervisor(state)
         assert result["next_agent"] == "GeneralAgent"
-
-
-@pytest.mark.asyncio
 async def test_supervisor_db_query_bearing_components(supervisor):
     """Non-RFQ product query → ProcurementAgent with DB_QUERY intent."""
     with patch("includes.intent_classifier.classify_intent", new_callable=AsyncMock, return_value="DB_QUERY"):
