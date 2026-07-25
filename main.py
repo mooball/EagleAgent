@@ -107,6 +107,96 @@ def _run_netsuite_sync():
 
 
 # ---------------------------------------------------------------------------
+# Background maintenance loop (checkpoint & attachment pruning)
+# ---------------------------------------------------------------------------
+async def _maintenance_loop():
+    """Periodically prune old checkpoints and orphaned attachments."""
+    await asyncio.sleep(120)  # let app fully start
+    while True:
+        try:
+            await asyncio.to_thread(_run_maintenance)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Maintenance loop error: {e}")
+        await asyncio.sleep(config.MAINTENANCE_INTERVAL)
+
+
+def _run_maintenance():
+    """Run one maintenance cycle (called in thread pool)."""
+    import datetime
+    import os
+    import shutil
+    from includes.dashboard.database import get_session
+    from sqlalchemy import text
+
+    retention_days = config.CHECKPOINT_RETENTION_DAYS
+    attachment_days = config.ATTACHMENT_RETENTION_DAYS
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=retention_days)
+
+    session = get_session()
+    try:
+        # --- Prune old LangGraph checkpoints ---
+        # Find threads with no activity since cutoff (based on Chainlit threads table)
+        # Chainlit stores "createdAt" as varchar, so cast to timestamptz for comparison
+        stale_threads = session.execute(
+            text("""
+                SELECT id FROM threads
+                WHERE "createdAt"::timestamptz < :cutoff
+                AND id NOT IN (
+                    SELECT DISTINCT "threadId" FROM steps
+                    WHERE "createdAt"::timestamptz >= :cutoff
+                )
+            """),
+            {"cutoff": cutoff},
+        ).fetchall()
+
+        pruned_threads = 0
+        for (tid,) in stale_threads:
+            session.execute(text("DELETE FROM checkpoint_writes WHERE thread_id = :tid"), {"tid": tid})
+            session.execute(text("DELETE FROM checkpoint_blobs WHERE thread_id = :tid"), {"tid": tid})
+            session.execute(text("DELETE FROM checkpoints WHERE thread_id = :tid"), {"tid": tid})
+            pruned_threads += 1
+
+        if pruned_threads:
+            session.commit()
+            logger.info(f"Maintenance: pruned checkpoints for {pruned_threads} stale threads (>{retention_days}d)")
+
+        # --- Prune orphaned attachments ---
+        attachments_dir = os.path.join(config.DATA_DIR, "attachments")
+        if os.path.isdir(attachments_dir):
+            att_cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=attachment_days)
+            removed_files = 0
+            for root, dirs, files in os.walk(attachments_dir, topdown=False):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    try:
+                        mtime = datetime.datetime.fromtimestamp(
+                            os.path.getmtime(fpath), tz=datetime.timezone.utc
+                        )
+                        if mtime < att_cutoff:
+                            os.remove(fpath)
+                            removed_files += 1
+                    except OSError:
+                        pass
+                # Remove empty directories (but not the root attachments dir)
+                if root != attachments_dir and not os.listdir(root):
+                    try:
+                        os.rmdir(root)
+                    except OSError:
+                        pass
+
+            if removed_files:
+                logger.info(f"Maintenance: removed {removed_files} old attachment files (>{attachment_days}d)")
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Maintenance cycle failed: {e}")
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
 # Lifespan — initialise shared async resources (pg pool, store, agents, etc.)
 # so that dashboard routes can access the store before any chat session starts.
 # ---------------------------------------------------------------------------
@@ -128,6 +218,15 @@ async def lifespan(app: FastAPI):
         netsuite_task = asyncio.create_task(_netsuite_sync_loop())
         logger.info(f"NetSuite entity sync enabled (every {config.NETSUITE_SYNC_INTERVAL}s)")
 
+    maintenance_task = None
+    if config.MAINTENANCE_ENABLED:
+        maintenance_task = asyncio.create_task(_maintenance_loop())
+        logger.info(
+            f"Maintenance loop enabled (every {config.MAINTENANCE_INTERVAL}s, "
+            f"checkpoint retention {config.CHECKPOINT_RETENTION_DAYS}d, "
+            f"attachment retention {config.ATTACHMENT_RETENTION_DAYS}d)"
+        )
+
     yield
 
     # Cancel background tasks on shutdown
@@ -135,6 +234,8 @@ async def lifespan(app: FastAPI):
         gmail_task.cancel()
     if netsuite_task:
         netsuite_task.cancel()
+    if maintenance_task:
+        maintenance_task.cancel()
     logger.info("FastAPI shutting down")
 
 
