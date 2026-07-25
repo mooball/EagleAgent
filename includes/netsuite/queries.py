@@ -230,7 +230,12 @@ def contacts_for_ids(contact_ids: list[str]) -> str:
     if not contact_ids:
         return ""
     
-    id_list = ", ".join(f"'{cid}'" for cid in contact_ids)
+    # Validate IDs are numeric to prevent injection (SuiteQL has no bind params)
+    safe_ids = [cid for cid in contact_ids if str(cid).isdigit()]
+    if not safe_ids:
+        return ""
+    
+    id_list = ", ".join(safe_ids)
     
     return (
         "SELECT c.id, c.firstname, c.lastname, c.email, c.phone, "

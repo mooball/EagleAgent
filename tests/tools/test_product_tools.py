@@ -85,8 +85,6 @@ class TestProductSearch:
         # Assert embeddings model was called
         mock_embeddings.embed_query.assert_called_once_with("Something ambiguous")
         assert "Part Number: V-1" in result
-
-@pytest.mark.asyncio
 async def test_async_search_products_tool(mock_session):
     # Just test that the async wrapper works
     mock_query = mock_session.query.return_value
@@ -261,9 +259,6 @@ class TestPurchaseHistorySearch:
 
         assert "N/A" in result
         assert "NullSupplier" in result
-
-
-@pytest.mark.asyncio
 async def test_async_part_purchase_history_tool(mock_session):
     mock_session.query.return_value.filter.return_value.all.return_value = []
 
@@ -343,9 +338,6 @@ class TestSearchPurchaseHistory:
         assert "Acme Supplies" in result
         assert "$180.00" in result
         assert "$236.68" in result
-
-
-@pytest.mark.asyncio
 async def test_async_search_purchase_history_tool(mock_session):
     # No-filter call: mock the count and stats
     (mock_session.query.return_value

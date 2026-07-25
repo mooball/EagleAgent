@@ -21,8 +21,6 @@ class TestBrowserTools:
         assert browser is not None
         assert browser.name == "browser"
         assert "browser automation" in browser.description.lower()
-    
-    @pytest.mark.asyncio
     @patch('asyncio.create_subprocess_exec')
     async def test_browser_open_command(self, mock_create):
         """Test browser open command execution."""
@@ -43,8 +41,6 @@ class TestBrowserTools:
         
         # Verify result
         assert "example.com" in result.lower() or "navigated" in result.lower()
-    
-    @pytest.mark.asyncio
     @patch('asyncio.create_subprocess_exec')
     async def test_browser_snapshot_command(self, mock_create):
         """Test browser snapshot --json command."""
@@ -65,8 +61,6 @@ class TestBrowserTools:
         
         # Verify JSON output returned
         assert "@e1" in result
-    
-    @pytest.mark.asyncio
     @patch('asyncio.create_subprocess_exec')
     async def test_browser_error_handling(self, mock_create):
         """Test browser tool error handling."""
@@ -81,8 +75,6 @@ class TestBrowserTools:
         # Verify error is returned
         assert "error" in result.lower()
         assert "element not found" in result.lower()
-    
-    @pytest.mark.asyncio
     @patch('asyncio.create_subprocess_exec')
     async def test_browser_timeout_handling(self, mock_create):
         """Test browser tool timeout handling."""
@@ -98,9 +90,6 @@ class TestBrowserTools:
         # Verify timeout error is returned
         assert "error" in result.lower()
         assert "timed out" in result.lower()
-
-
-@pytest.mark.asyncio
 class TestBrowserAgent:
     """Test BrowserAgent class."""
     
@@ -135,8 +124,6 @@ class TestBrowserAgent:
         assert "browser automation" in prompt.lower() or "web browsing" in prompt.lower()
         assert "snapshot" in prompt.lower()
         assert "open" in prompt.lower()
-    
-    @pytest.mark.asyncio
     async def test_agent_call(self):
         """Test browser agent execution."""
         # Mock the model response
@@ -159,8 +146,6 @@ class TestBrowserAgent:
         
         # Verify model was called
         self.mock_model.ainvoke.assert_called_once()
-    
-    @pytest.mark.asyncio
     async def test_agent_cleanup(self):
         """Test browser agent cleanup."""
         # Should not raise any errors
@@ -168,7 +153,6 @@ class TestBrowserAgent:
 
 
 @pytest.mark.integration
-@pytest.mark.asyncio
 class TestBrowserAgentIntegration:
     """Integration tests for browser agent (requires agent-browser installed)."""
     

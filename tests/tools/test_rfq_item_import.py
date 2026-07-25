@@ -379,7 +379,6 @@ class TestConstants:
 # ============================================================================
 
 class TestExtractItemsFromImage:
-    @pytest.mark.asyncio
     async def test_rejects_oversized_image(self):
         """Image over MAX_IMAGE_SIZE_MB should be rejected before API call."""
         from includes.tools.rfq_item_import import extract_items_from_image

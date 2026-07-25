@@ -67,12 +67,9 @@ async def runner():
 # ============================================================================
 
 class TestLifecycle:
-    @pytest.mark.asyncio
     async def test_start_creates_reaper(self, runner):
         assert runner._reaper_task is not None
         assert not runner._reaper_task.done()
-
-    @pytest.mark.asyncio
     async def test_shutdown_cancels_reaper(self):
         r = JobRunner()
         await r.start()
@@ -86,7 +83,6 @@ class TestLifecycle:
 # ============================================================================
 
 class TestRunScript:
-    @pytest.mark.asyncio
     async def test_successful_run(self, runner):
         job = await runner.run_script("_test_echo")
         assert job.status == "running"
@@ -102,8 +98,6 @@ class TestRunScript:
         assert updated.status == "completed"
         assert updated.exit_code == 0
         assert any("hello world" in line for line in updated.output)
-
-    @pytest.mark.asyncio
     async def test_failed_script(self, runner):
         job = await runner.run_script("_test_fail")
         await job._process.wait()
@@ -113,13 +107,9 @@ class TestRunScript:
         assert updated.status == "failed"
         assert updated.exit_code == 2
         assert any("oops" in line for line in updated.output)
-
-    @pytest.mark.asyncio
     async def test_unknown_script_raises(self, runner):
         with pytest.raises(ValueError, match="Unknown script"):
             await runner.run_script("nonexistent_script_xyz")
-
-    @pytest.mark.asyncio
     async def test_duplicate_run_rejected(self, runner):
         job = await runner.run_script("_test_sleep")
         try:
@@ -127,8 +117,6 @@ class TestRunScript:
                 await runner.run_script("_test_sleep")
         finally:
             await runner.cancel(job.id)
-
-    @pytest.mark.asyncio
     async def test_thread_id_stored(self, runner):
         job = await runner.run_script("_test_echo", thread_id="thread-123")
         assert job.thread_id == "thread-123"
@@ -140,7 +128,6 @@ class TestRunScript:
 # ============================================================================
 
 class TestOutputCapture:
-    @pytest.mark.asyncio
     async def test_output_captured(self, runner):
         job = await runner.run_script("_test_echo")
         await job._process.wait()
@@ -155,19 +142,14 @@ class TestOutputCapture:
 # ============================================================================
 
 class TestCancel:
-    @pytest.mark.asyncio
     async def test_cancel_running_job(self, runner):
         job = await runner.run_script("_test_sleep")
         result = await runner.cancel(job.id)
         assert result.status == "cancelled"
         assert result.finished_at is not None
-
-    @pytest.mark.asyncio
     async def test_cancel_unknown_job_raises(self, runner):
         with pytest.raises(ValueError, match="Unknown job"):
             await runner.cancel("does-not-exist")
-
-    @pytest.mark.asyncio
     async def test_cancel_finished_job_raises(self, runner):
         job = await runner.run_script("_test_echo")
         await job._process.wait()
@@ -181,17 +163,12 @@ class TestCancel:
 # ============================================================================
 
 class TestQuery:
-    @pytest.mark.asyncio
     async def test_get_job(self, runner):
         job = await runner.run_script("_test_echo")
         assert runner.get_job(job.id) is job
         await job._process.wait()
-
-    @pytest.mark.asyncio
     async def test_get_job_not_found(self, runner):
         assert runner.get_job("nonexistent") is None
-
-    @pytest.mark.asyncio
     async def test_list_jobs(self, runner):
         job = await runner.run_script("_test_echo")
         jobs = runner.list_jobs()

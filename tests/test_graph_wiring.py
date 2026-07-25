@@ -48,9 +48,6 @@ class StubChatModel(BaseChatModel):
                 return RouteDecision(next_agent="FINISH")
 
         return _StructuredStub()
-
-
-@pytest.mark.asyncio
 async def test_langgraph_wiring_with_stub(monkeypatch):
     """Graph should run end-to-end using a stubbed model.
 
@@ -63,13 +60,20 @@ async def test_langgraph_wiring_with_stub(monkeypatch):
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    # Patch the ChatGoogleGenerativeAI symbol *before* importing app,
-    # so app.model is constructed using the stub instead of the real class.
-    import langchain_google_genai
+    # Patch the model factory so that *all* agents are built with the stub,
+    # regardless of which modules have already imported ChatGoogleGenerativeAI.
+    import includes.graph as _graph_module
 
     monkeypatch.setattr(
-        langchain_google_genai, "ChatGoogleGenerativeAI", StubChatModel, raising=True
+        _graph_module, "create_model", lambda agent_name: StubChatModel()
     )
+
+    # Reset graph module state so setup_globals() rebuilds with the stub,
+    # even if a previous test already initialized with the real model.
+    monkeypatch.setattr(_graph_module, "globals_initialized", False)
+    monkeypatch.setattr(_graph_module, "graph", None)
+    monkeypatch.setattr(_graph_module, "research_graph", None)
+    monkeypatch.setattr(_graph_module, "internal_graph", None)
 
     # Import after patching so that app.graph and app.model use the stub.
     import app  # noqa: WPS433  (import inside function is intentional for test)

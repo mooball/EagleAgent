@@ -199,6 +199,8 @@ def _render_rfq_list(rfqs: list[dict]) -> str:
     lines.append("")
     lines.append(f"**{len(rfqs)} RFQs total**")
 
+    return "\n".join(lines)
+
 
 def _render_rfq_brief_summary(rfq: dict) -> str:
     """Render a concise one-line stats summary — no full item or supplier tables.

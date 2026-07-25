@@ -111,13 +111,9 @@ class TestIsHelpRequest:
 
 class TestDispatchAction:
     """Test the action dispatcher including role checks."""
-
-    @pytest.mark.asyncio
     async def test_dispatch_unknown_action_raises(self):
         with pytest.raises(ValueError, match="Unknown action"):
             await dispatch_action("does_not_exist")
-
-    @pytest.mark.asyncio
     @patch("includes.chat.actions.config")
     async def test_dispatch_admin_action_denied_for_staff(self, mock_config):
         mock_config.get_admin_emails.return_value = ["admin@example.com"]
@@ -163,8 +159,6 @@ class TestActionTools:
         assert "list_available_actions" in names
         assert "start_new_conversation" in names
         assert "delete_all_user_data" in names
-
-    @pytest.mark.asyncio
     @patch("includes.chat.actions.config")
     async def test_list_available_actions_tool(self, mock_config):
         mock_config.get_admin_emails.return_value = []

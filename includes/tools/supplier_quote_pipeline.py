@@ -70,16 +70,13 @@ def _save_pipeline_result(email_tracking_id: int, result: dict) -> None:
     try:
         tracking = _get_email_tracking(session, email_tracking_id)
         if not tracking:
-            print(f"[quote-pipeline] #{email_tracking_id}: cannot save result — email not found", flush=True)
             logger.warning(f"[quote-pipeline] #{email_tracking_id}: cannot save result — email not found")
             return
         tracking.supplier_pipeline_result = result
         session.commit()
-        print(f"[quote-pipeline] #{email_tracking_id}: result saved ({result.get('classification', '?')})", flush=True)
         logger.info(f"[quote-pipeline] #{email_tracking_id}: result saved ({result.get('classification', '?')})")
     except Exception as e:
         session.rollback()
-        print(f"[quote-pipeline] #{email_tracking_id}: failed to save result — {e}", flush=True)
         logger.warning(f"[quote-pipeline] #{email_tracking_id}: failed to save result — {e}")
     finally:
         session.close()
@@ -242,10 +239,8 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
                 candidates = getattr(response, 'candidates', None)
                 if candidates and candidates[0].finish_reason:
                     reason = candidates[0].finish_reason
-                    print(f"[quote-pipeline] #{email_tracking_id}: LLM empty response — finish_reason={reason} (model={classify_model})", flush=True)
                     logger.warning(f"LLM classify empty for #{email_tracking_id}: finish_reason={reason} (model={classify_model})")
                 else:
-                    print(f"[quote-pipeline] #{email_tracking_id}: LLM empty response — no candidates", flush=True)
                     logger.warning(f"LLM classify empty for #{email_tracking_id}: no candidates returned")
                 raise ValueError("LLM returned empty response")
             raw = response.text.strip()
@@ -255,7 +250,6 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
             try:
                 parsed = json.loads(raw)
             except json.JSONDecodeError:
-                print(f"[quote-pipeline] #{email_tracking_id}: LLM bad JSON — {raw[:200]}", flush=True)
                 logger.warning(f"LLM classify bad JSON for #{email_tracking_id}: {raw[:200]}")
                 raise
             result["classification"] = parsed.get("classification", "needs_review")
@@ -263,7 +257,6 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
             result["quote_attachments"] = parsed.get("quote_attachments", [])
         except Exception as e:
             # Fallback to heuristic if LLM fails
-            print(f"[quote-pipeline] #{email_tracking_id}: LLM classify FAILED — {e}", flush=True)
             logger.warning(f"LLM classify failed for email {email_tracking_id}, using heuristic: {e}")
             result.update(_classify_heuristic_fallback(tracking))
 
@@ -634,27 +627,22 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
 
     def _run():
         try:
-            print(f"[quote-pipeline] #{email_tracking_id}: thread started", flush=True)
             logger.info(f"[quote-pipeline] #{email_tracking_id}: thread started")
             session = _get_session()
             try:
                 tracking = _get_email_tracking(session, email_tracking_id)
                 if not tracking:
-                    print(f"[quote-pipeline] #{email_tracking_id}: email not found in DB", flush=True)
                     logger.warning(f"[quote-pipeline] #{email_tracking_id}: email not found in DB")
                     return
                 # Must be received, linked to RFQ, and have a supplier
                 if tracking.direction != "received":
-                    print(f"[quote-pipeline] #{email_tracking_id}: skipped (direction={tracking.direction})", flush=True)
                     logger.info(f"[quote-pipeline] #{email_tracking_id}: skipped (direction={tracking.direction})")
                     return
                 rfq_id = tracking.rfq_token or tracking.rfq_id
                 if not rfq_id:
-                    print(f"[quote-pipeline] #{email_tracking_id}: no RFQ link", flush=True)
                     logger.warning(f"[quote-pipeline] #{email_tracking_id}: no RFQ link")
                     return
                 if not tracking.supplier_id:
-                    print(f"[quote-pipeline] #{email_tracking_id}: no supplier link (rfq_token={tracking.rfq_token})", flush=True)
                     logger.warning(f"[quote-pipeline] #{email_tracking_id}: no supplier link (rfq_token={tracking.rfq_token})")
                     return
             finally:
@@ -673,7 +661,6 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                     "quote_attachments": classification.get("quote_attachments", []),
                     "processed_at": _now_iso(),
                 })
-                print(f"[quote-pipeline] #{email_tracking_id}: classified as {classification['classification']}: {classification['reason']}", flush=True)
                 logger.info(
                     f"[quote-pipeline] #{email_tracking_id}: classified as "
                     f"{classification['classification']}: {classification['reason']}"
@@ -763,7 +750,6 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                 f"to {rfq_id} from {supplier_name}"
             )
         except Exception as e:
-            print(f"[quote-pipeline] #{email_tracking_id}: CRASHED — {e}", flush=True)
             logger.error(f"[quote-pipeline] #{email_tracking_id}: failed — {e}", exc_info=True)
 
     threading.Thread(target=_run, daemon=True, name=f"quote-pipeline-{email_tracking_id}").start()

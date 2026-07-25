@@ -76,7 +76,6 @@ class TestCreateJobTools:
 # ============================================================================
 
 class TestRunScript:
-    @pytest.mark.asyncio
     async def test_run_script_sends_confirmation(self):
         """run_script should send a confirmation message, not start the job."""
         import includes.tools.job_tools as mod
@@ -104,8 +103,6 @@ class TestRunScript:
         runner.run_script.assert_not_called()
         # A confirmation message should have been sent
         mock_msg.send.assert_awaited_once()
-
-    @pytest.mark.asyncio
     async def test_run_script_unknown_script(self):
         import includes.tools.job_tools as mod
         runner = MagicMock(spec=JobRunner)
@@ -129,7 +126,6 @@ class TestRunScript:
 # ============================================================================
 
 class TestListScripts:
-    @pytest.mark.asyncio
     async def test_list_scripts_shows_registry(self):
         runner = MagicMock(spec=JobRunner)
         tools, _ = _create_tools(runner)
@@ -144,7 +140,6 @@ class TestListScripts:
 # ============================================================================
 
 class TestListJobs:
-    @pytest.mark.asyncio
     async def test_list_jobs_empty(self):
         runner = MagicMock(spec=JobRunner)
         runner.list_jobs.return_value = []
@@ -152,8 +147,6 @@ class TestListJobs:
         list_tool = next(t for t in tools if t.name == "list_jobs")
         result = await list_tool.ainvoke({})
         assert "No jobs" in result
-
-    @pytest.mark.asyncio
     async def test_list_jobs_with_data(self):
         runner = MagicMock(spec=JobRunner)
         finished = datetime.now(timezone.utc)
@@ -171,7 +164,6 @@ class TestListJobs:
 # ============================================================================
 
 class TestGetJobStatus:
-    @pytest.mark.asyncio
     async def test_get_status_by_job_id(self):
         runner = MagicMock(spec=JobRunner)
         job = _make_job(output=["line 1", "line 2", "line 3"])
@@ -182,8 +174,6 @@ class TestGetJobStatus:
         assert "running" in result
         assert "9999" in result
         assert "line 3" in result
-
-    @pytest.mark.asyncio
     async def test_get_status_not_found(self):
         runner = MagicMock(spec=JobRunner)
         runner.get_job.return_value = None
@@ -192,8 +182,6 @@ class TestGetJobStatus:
         status_tool = next(t for t in tools if t.name == "get_job_status")
         result = await status_tool.ainvoke({"job_id": "nonexistent"})
         assert "No job found" in result
-
-    @pytest.mark.asyncio
     async def test_get_status_partial_id(self):
         runner = MagicMock(spec=JobRunner)
         job = _make_job(job_id="abcd1234-full-uuid")
@@ -203,8 +191,6 @@ class TestGetJobStatus:
         status_tool = next(t for t in tools if t.name == "get_job_status")
         result = await status_tool.ainvoke({"job_id": "abcd1234"})
         assert "running" in result
-
-    @pytest.mark.asyncio
     async def test_get_status_by_script_name(self):
         """Agent can look up a job by script name when it doesn't have the job ID."""
         runner = MagicMock(spec=JobRunner)
@@ -216,8 +202,6 @@ class TestGetJobStatus:
         result = await status_tool.ainvoke({"script_name": "update_supplier_embeddings"})
         assert "running" in result
         assert "update_supplier_embeddings" in result
-
-    @pytest.mark.asyncio
     async def test_get_status_no_args(self):
         """If neither job_id nor script_name is given, prompt the user."""
         runner = MagicMock(spec=JobRunner)
@@ -232,7 +216,6 @@ class TestGetJobStatus:
 # ============================================================================
 
 class TestCancelJob:
-    @pytest.mark.asyncio
     async def test_cancel_success(self):
         runner = MagicMock(spec=JobRunner)
         job = _make_job()
@@ -243,8 +226,6 @@ class TestCancelJob:
         result = await cancel_tool.ainvoke({"job_id": job.id})
         assert "Cancelled" in result
         runner.cancel.assert_awaited_once()
-
-    @pytest.mark.asyncio
     async def test_cancel_not_found(self):
         runner = MagicMock(spec=JobRunner)
         runner.get_job.return_value = None
@@ -284,7 +265,6 @@ class TestScriptAwareness:
 # ============================================================================
 
 class TestSignalHandling:
-    @pytest.mark.asyncio
     async def test_start_creates_reaper_task(self):
         """JobRunner.start() should create a background reaper task."""
         runner = JobRunner()
@@ -296,8 +276,6 @@ class TestSignalHandling:
             assert not runner._reaper_task.done()
         finally:
             await runner.shutdown()
-
-    @pytest.mark.asyncio
     async def test_shutdown_cancels_reaper(self):
         """shutdown() should cancel the reaper task."""
         runner = JobRunner()
