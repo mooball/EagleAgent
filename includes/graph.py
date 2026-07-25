@@ -21,7 +21,7 @@ from psycopg_pool import AsyncConnectionPool
 from config import config
 from includes.mcp_config import load_mcp_config
 from includes.agents import (
-    BrowserAgent, GeneralAgent, ProcurementAgent, Supervisor,
+    GeneralAgent, ProcurementAgent, Supervisor,
 )
 from includes.job_runner import JobRunner
 
@@ -130,7 +130,6 @@ async def setup_globals():
         mcp_client = None
 
     # Initialize agents
-    browser_agent = BrowserAgent(model=create_model("BrowserAgent"), store=store)
     procurement_agent = ProcurementAgent(model=create_model("ProcurementAgent"), store=store)
     general_agent = GeneralAgent(
         model=create_model("GeneralAgent"), store=store,
