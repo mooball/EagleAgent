@@ -497,12 +497,12 @@ This has grown significantly (was ~20 at last review) due to the expanded RFQ wo
 | Add GMAIL_SYNC_ENABLED/INTERVAL to .env.example | ✅ Done |
 | Remove committed tailwindcss binary | ✅ Done |
 | Fix 5 failing tests | ✅ Done — all 10 new failures also fixed |
-| Remove `@pytest.mark.asyncio` from sync tests | ❌ Not done |
-| Evaluate langchain 1.3.x / langgraph 1.2.x upgrade | ❌ Not done |
-| Bump pgvector to 0.9.2 | ❌ Not done |
-| Add attachment/checkpoint cleanup | ❌ Not done |
+| Remove `@pytest.mark.asyncio` from sync tests | ✅ Done — 84 removed |
+| Evaluate langchain 1.3.x / langgraph 1.2.x upgrade | ✅ Done — upgraded |
+| Bump pgvector to 0.9.2 | ✅ Done |
+| Add attachment/checkpoint cleanup | ✅ Done — maintenance loop |
 | Add Gmail credentials cache TTL | ❌ Not done |
-| Refine broad `except Exception:` handlers | ❌ Worsened (20 → 157) |
+| Refine broad `except Exception:` handlers | ✅ Partially — rfq_crud.py refactored (26 of 32) |
 | Migrate `create_react_agent` → `create_agent` | ❌ Deferred (not drop-in) |
 | Extract `app.py` message handler | ❌ Not done |
 
@@ -511,7 +511,7 @@ This has grown significantly (was ~20 at last review) due to the expanded RFQ wo
 ### Critical Issues (must fix before next release)
 - [x] ~~**40 CVEs in 14 packages** — Pillow 12.2.0 has 15 CVEs~~ **Pillow bumped to ~=12.3.0** — 15 CVEs resolved. ~~MCP 1.26.0 (3 CVEs)~~ **MCP bumped to ~=1.28.1** — 3 CVEs resolved. Remaining: transitive deps.
 - [x] ~~**10 failing tests in `test_quote_tools.py`**~~ **All 10 tests fixed** — assertions updated for brief summary format. Production bug in `_render_rfq_list()` also fixed.
-- [ ] **Node.js 20 EOL in 3 months** (October 2026) — ✅ **Upgraded to Node.js 22 LTS** in Dockerfile.
+- [x] ~~**Node.js 20 EOL in 3 months** (October 2026)~~ ✅ **Upgraded to Node.js 22 LTS** in Dockerfile.
 
 ### Warnings (should fix soon)
 - [x] ~~**1 flaky test** (`test_graph_wiring.py`) — passes alone, fails in suite.~~ ✅ Fixed — monkeypatch `create_model` factory instead of class-level binding, reset `globals_initialized`.
@@ -520,15 +520,15 @@ This has grown significantly (was ~20 at last review) due to the expanded RFQ wo
 - [x] ~~**SuiteQL string interpolation** in `includes/netsuite/queries.py`~~ ✅ Fixed — IDs validated as numeric, no longer quote-wrapped.
 - [x] ~~**No checkpoint/attachment pruning**~~ ✅ Added maintenance loop (24h interval, 90-day retention, configurable).
 - [ ] **Gmail credentials cache has no TTL** — stale credentials never refresh until restart.
-- [ ] **N+1 queries in RFQ detail view** — `includes/dashboard/routes/rfqs.py` runs 20-50+ queries per page load for supplier contacts. Refactor to JOINs.
-- [ ] **2,455 lines of RFQ pipeline code with zero tests** — `supplier_quote_pipeline.py` (875), `rfq_actions.py` (1,177), `email_pipeline.py` (403) are the highest-risk untested modules.
+- [ ] **N+1 queries in RFQ detail view** — `includes/dashboard/routes/rfqs.py` runs 20-50+ queries per page load for supplier contacts. Refactor to JOINs. (deferred — acceptable at current scale)
+- [x] ~~**2,455 lines of RFQ pipeline code with zero tests**~~ ✅ All three now have dedicated test files (77 tests total).
 - [x] ~~**langchain 1.2.18 → 1.3.9** and **langgraph 1.1.10 → 1.2.5**~~ ✅ Upgraded to langchain 1.3.14, langgraph 1.2.9, langsmith 0.10.10.
-- [ ] **pgvector 0.8.0 → 0.9.2** in `docker-compose.yml` — performance improvements available.
+- [x] ~~**pgvector 0.8.0 → 0.9.2**~~ ✅ Bumped in `docker-compose.yml` (local dev only).
 
 ### Suggestions (nice to have)
-- [ ] Remove BrowserAgent initialization from `setup_globals()` if not being used in production.
+- [x] ~~Remove BrowserAgent initialization from `setup_globals()`~~ ✅ Done.
 - [ ] Fix RouteDecision type mismatch between `supervisor.py` and `graph.py`.
-- [ ] Remove redundant `@pytest.mark.asyncio` decorators (~25 across test files).
+- [x] ~~Remove redundant `@pytest.mark.asyncio` decorators~~ ✅ Done — 84 removed across 15 files.
 - [ ] Bump Tailwind CSS from v3.4.17 to v3.4.18 in Dockerfile.
 - [ ] Extract `app.py` message handler (~400 lines) to `includes/chat/message_handler.py`.
 - [ ] Write tests for `research_agent.py` and `sysadmin_agent.py`.
@@ -558,7 +558,7 @@ This has grown significantly (was ~20 at last review) due to the expanded RFQ wo
 | Tests | 511 | 715 | +204 |
 | Dependencies | 33 | 33 | 0 |
 | CVEs found | 8 (fixed) | 40 (28 fixed) | ⚠️ 12 remaining (transitive) |
-| Broad exception handlers | ~20 | 157 | ⚠️ |
+| Broad exception handlers | ~20 | 157 → ~131 | ⚠️ Partially fixed |
 | Docs | 14 | 19 | +5 |
 
 ### Action Items (priority order)
