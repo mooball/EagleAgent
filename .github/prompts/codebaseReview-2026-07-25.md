@@ -327,18 +327,18 @@ Source modules with no dedicated test file:
 | `includes/agents/research_agent.py` | **Medium** | No |
 | `includes/agents/sysadmin_agent.py` | **Medium** | No |
 | `includes/chat/data_layer.py` | **Medium** | No |
-| `includes/chat/rfq_actions.py` | **Medium** | Yes — grew to 1,177 lines |
+| `includes/chat/rfq_actions.py` | **Medium** | Yes — **now has tests** |
 | `includes/chat/job_progress.py` | **Low** | No |
 | `includes/chat/supplier_search_gate.py` | **Low** | **NEW** — 139 lines, no tests |
-| `includes/email_pipeline.py` | **Medium** | **NEW** — 403 lines, no tests |
-| `includes/tools/supplier_quote_pipeline.py` | **Medium** | **NEW** — 875 lines, no tests |
+| `includes/email_pipeline.py` | **Medium** | No — **now has tests** |
+| `includes/tools/supplier_quote_pipeline.py` | **Medium** | No — **now has tests** |
 | `includes/tools/supplier_search_tools.py` | **Medium** | **NEW** — 507 lines, no tests |
 | `includes/netsuite/queries.py` | **Medium** | No |
 | `includes/netsuite/sync_utils.py` | **Medium** | No |
 | `includes/prompts/intents.py` | **Low** | No |
 | `config/scripts.py` | **Low** | No — now has `test_scripts.py` ✅ |
 
-**Highest-risk gaps**: `supplier_quote_pipeline.py` (875 lines, processes inbound email quotes via LLM), `email_pipeline.py` (403 lines, image/PDF classification), and `rfq_actions.py` (1,177 lines, all RFQ callbacks). These three files total 2,455 lines with zero dedicated tests.
+**Highest-risk gaps**: ~~`supplier_quote_pipeline.py` (875 lines, processes inbound email quotes via LLM), `email_pipeline.py` (403 lines, image/PDF classification), and `rfq_actions.py` (1,177 lines, all RFQ callbacks). These three files total 2,455 lines with zero dedicated tests.~~ ✅ All three now have dedicated test files (77 tests total).
 
 ### ✅ Task 23: Audit test quality
 
@@ -567,7 +567,7 @@ This has grown significantly (was ~20 at last review) due to the expanded RFQ wo
 3. [x] ~~**HIGH**: Upgrade `mcp~=1.28.1`~~ ✅ Done — 3 CVEs resolved (added as direct dependency)
 4. [x] ~~**HIGH**: Upgrade `langchain~=1.3.9` and resolve transitive CVEs~~ ✅ Done — langchain 1.3.14, langgraph 1.2.9, langsmith 0.10.10 (5 CVEs resolved)
 5. [x] ~~**HIGH**: Plan Node.js 20 → 22 migration (EOL October 2026)~~ ✅ Done — Dockerfile updated to Node.js 22.x LTS
-6. [ ] **MEDIUM**: Write tests for `supplier_quote_pipeline.py`, `email_pipeline.py`, `rfq_actions.py`
+6. [x] ~~**MEDIUM**: Write tests for `supplier_quote_pipeline.py`, `email_pipeline.py`, `rfq_actions.py`~~ ✅ Done — 77 new tests across 3 files
 7. [ ] **MEDIUM**: Fix flaky `test_graph_wiring.py` — isolate `setup_globals()` state
 8. [ ] **MEDIUM**: Refactor `except Exception:` in `rfq_crud.py` to use specific exception types
 9. [ ] **MEDIUM**: Replace `print()` with `logging` in pipeline modules
