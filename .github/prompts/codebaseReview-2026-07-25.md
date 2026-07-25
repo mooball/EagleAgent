@@ -572,7 +572,7 @@ This has grown significantly (was ~20 at last review) due to the expanded RFQ wo
 8. [x] ~~**MEDIUM**: Refactor `except Exception:` in `rfq_crud.py` to use specific exception types~~ ✅ Done — 26 handlers replaced (22 SQLAlchemyError, 4 specific tuples), 6 LLM handlers intentionally kept broad
 9. [x] ~~**MEDIUM**: Replace `print()` with `logging` in pipeline modules~~ ✅ Done — 14 removed from supplier_quote_pipeline.py (all had logger companions), 4 replaced in email_pipeline.py
 10. [ ] **MEDIUM**: Add checkpoint/attachment pruning background job
-11. [ ] **MEDIUM**: Bump `pgvector/pgvector:0.9.2-pg17` in `docker-compose.yml`
+11. [x] ~~**MEDIUM**: Bump `pgvector/pgvector:0.9.2-pg17` in `docker-compose.yml`~~ ✅ Done — local dev only, no impact on Railway
 12. [ ] **LOW**: Remove BrowserAgent dead code from `graph.py`
 13. [ ] **LOW**: Parameterize SuiteQL `contacts_for_ids()` query
 14. [ ] **LOW**: Remove redundant `@pytest.mark.asyncio` decorators
