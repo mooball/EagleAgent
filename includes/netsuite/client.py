@@ -14,7 +14,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from config.settings import Config
-from .auth import NetSuiteAuth
+from .auth import NetSuiteAuth, get_shared_auth
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class NetSuiteClient:
     """HTTP client for the NetSuite REST API."""
 
     def __init__(self, auth: NetSuiteAuth | None = None):
-        self._auth = auth or NetSuiteAuth()
+        self._auth = auth or get_shared_auth()
         account_id = self._auth.account_id
         self._base_url = f"https://{account_id}.suitetalk.api.netsuite.com/services/rest"
         self._session = requests.Session()

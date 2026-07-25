@@ -7,6 +7,7 @@ Tokens are cached in memory and auto-refreshed 5 minutes before expiry.
 
 import base64
 import logging
+import threading
 import time
 
 import jwt
@@ -97,3 +98,20 @@ class NetSuiteAuth:
         self._access_token = data["access_token"]
         self._expires_at = now + data.get("expires_in", 3600)
         logger.info("NetSuite token acquired (expires in %ss)", data.get("expires_in"))
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton — shared across all NetSuiteClient instances
+# ---------------------------------------------------------------------------
+_shared_auth: NetSuiteAuth | None = None
+_shared_auth_lock = threading.Lock()
+
+
+def get_shared_auth() -> NetSuiteAuth:
+    """Return a process-wide NetSuiteAuth singleton (thread-safe)."""
+    global _shared_auth
+    if _shared_auth is None:
+        with _shared_auth_lock:
+            if _shared_auth is None:
+                _shared_auth = NetSuiteAuth()
+    return _shared_auth
