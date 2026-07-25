@@ -18,8 +18,8 @@ RUN apt-get update && apt-get install -y \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 20.x LTS for MCP servers (npx) and agent-browser
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+# Install Node.js 22.x LTS for MCP servers (npx) and agent-browser
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
     npm install -g agent-browser@0.16.3 && \
     npx -y playwright install-deps && \
