@@ -54,7 +54,7 @@ function fetchBackend(path, payload) {
     throw new Error('Authentication failed. Contact admin.');
   }
   if (code === 403) {
-    throw new Error('Access denied — only eagle-exports.com.au users.');
+    throw new Error('Access denied — only eagle-exports.com users.');
   }
   if (code >= 400) {
     throw new Error(
