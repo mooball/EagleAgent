@@ -14,6 +14,7 @@ dependencies = [
     "fastapi~=0.136.1",
     "fastapi-sso~=0.17",
     "google-api-python-client~=2.100",
+    "google-auth>=2.0",
     "google-genai~=1.68",
     "greenlet~=3.5.0",
     "html2text~=2025.4",

@@ -51,6 +51,10 @@ class Config:
         "mooball.net,eagle-exports.com"
     )
     
+    # Gmail Add-on — OAuth Client ID for OIDC token audience verification
+    # (optional; domain restriction via hd claim is sufficient for Phase 1)
+    GOOGLE_ADDON_CLIENT_ID = os.getenv("GOOGLE_ADDON_CLIENT_ID", "")
+    
     
     # ==================== Model Configuration ====================
     # Set the Gemini Embeddings model string.
