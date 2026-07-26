@@ -8,7 +8,7 @@
 
 // The backend URL is the base of the EagleAgent deployment.
 // In a future version this could be fetched from script properties.
-const BACKEND_URL = 'https://eagle-agent.mooball.net';
+const BACKEND_URL = 'https://agent.eaglexp.com.au';
 
 // ============================================================
 // Helper: Authenticated fetch to backend
@@ -101,6 +101,11 @@ function onHomepage(e) {
 // access token for reading message metadata.
 
 function onGmailMessageOpen(e) {
+  // Guard: if running from editor (no event), return a fallback card
+  if (!e || !e.gmail) {
+    return [buildEditorFallbackCard()];
+  }
+
   // Activate temporary Gmail scopes for reading message metadata
   var accessToken = e.gmail.accessToken;
   GmailApp.setCurrentMessageAccessToken(accessToken);
@@ -269,6 +274,29 @@ function buildErrorCard(message) {
             .setText(message)
             .setStartIcon(
               CardService.newIconImage().setIcon(CardService.Icon.INVITE)
+            )
+        )
+    )
+    .build();
+}
+
+// ============================================================
+// UI: Fallback card for editor / no-Gmail-context
+// ============================================================
+
+function buildEditorFallbackCard() {
+  return CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader().setTitle('Eagle Agent')
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText(
+              'This add-on works inside Gmail. <b>Open an email</b> ' +
+              'in Gmail to see linked customers, suppliers, RFQs, ' +
+              'and opportunities.'
             )
         )
     )
