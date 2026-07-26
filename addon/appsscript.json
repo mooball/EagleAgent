@@ -15,7 +15,7 @@
   "addOns": {
     "common": {
       "name": "Eagle Agent",
-      "logoUrl": "https://eagle-agent.mooball.net/static/avatars/eagle-icon.png",
+      "logoUrl": "https://agent.eaglexp.com.au/public/avatars/EagleAgent.png",
       "layoutProperties": {
         "primaryColor": "#1a73e8"
       },
