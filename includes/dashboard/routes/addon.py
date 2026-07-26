@@ -30,7 +30,7 @@ router = APIRouter(prefix="/api/addon", tags=["addon"])
 # Cache a single transport instance for token verification
 _google_request = google_requests.Request()
 
-ALLOWED_DOMAIN = "eagle-exports.com.au"
+ALLOWED_DOMAIN = "eagle-exports.com"
 
 
 # ── Auth dependency ────────────────────────────────────────────────────────
