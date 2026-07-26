@@ -9,6 +9,9 @@
     "openid",
     "email"
   ],
+  "urlFetchWhitelist": [
+    "https://agent.eaglexp.com.au/"
+  ],
   "addOns": {
     "common": {
       "name": "Eagle Agent",
