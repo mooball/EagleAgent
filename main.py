@@ -438,6 +438,14 @@ app.include_router(dashboard_router)
 
 
 # ---------------------------------------------------------------------------
+# Gmail Add-on API routes (OIDC-authenticated, domain-restricted)
+# ---------------------------------------------------------------------------
+from includes.dashboard.routes.addon import router as addon_router
+
+app.include_router(addon_router)
+
+
+# ---------------------------------------------------------------------------
 # Dashboard context API (called by embedded.js in the Chainlit iframe)
 # ---------------------------------------------------------------------------
 from includes.dashboard.context import set_context as _set_dashboard_context
