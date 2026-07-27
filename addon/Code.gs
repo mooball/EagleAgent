@@ -624,8 +624,11 @@ function onChooseEntityType(e) {
   var searchInput = CardService.newTextInput()
     .setFieldName('searchQuery')
     .setTitle('Search ' + label + 's')
-    .setHint('Type at least 2 characters...')
-    .setOnChangeAction(
+    .setHint('Type a name and press Search');
+
+  var searchButton = CardService.newTextButton()
+    .setText('Search')
+    .setOnClickAction(
       CardService.newAction()
         .setFunctionName('onSearchEntity')
         .setParameters({
@@ -645,13 +648,14 @@ function onChooseEntityType(e) {
     .addSection(
       CardService.newCardSection()
         .addWidget(searchInput)
+        .addWidget(searchButton)
     )
     .addSection(
       CardService.newCardSection()
         .setHeader('Results')
         .addWidget(
           CardService.newTextParagraph()
-            .setText('<i>Type to search...</i>')
+            .setText('<i>Type a name and press Search.</i>')
         )
     )
     .build();
@@ -690,8 +694,12 @@ function onSearchEntity(e) {
                 (linkType === 'customer' ? 'Customer' : 'Supplier') +
                 's'
               )
-              .setHint('Type at least 2 characters...')
-              .setOnChangeAction(
+              .setHint('Type at least 2 characters')
+          )
+          .addWidget(
+            CardService.newTextButton()
+              .setText('Search')
+              .setOnClickAction(
                 CardService.newAction()
                   .setFunctionName('onSearchEntity')
                   .setParameters({
@@ -709,7 +717,7 @@ function onSearchEntity(e) {
           .setHeader('Results')
           .addWidget(
             CardService.newTextParagraph()
-              .setText('<i>Type at least 2 characters to search...</i>')
+              .setText('<i>Type at least 2 characters and press Search.</i>')
           )
       )
       .build();
@@ -752,7 +760,11 @@ function onSearchEntity(e) {
           .setFieldName('searchQuery')
           .setTitle('Search ' + label + 's')
           .setValue(query)
-          .setOnChangeAction(
+      )
+      .addWidget(
+        CardService.newTextButton()
+          .setText('Search')
+          .setOnClickAction(
             CardService.newAction()
               .setFunctionName('onSearchEntity')
               .setParameters({
@@ -869,8 +881,11 @@ function onLinkRfq(e) {
   var searchInput = CardService.newTextInput()
     .setFieldName('searchQuery')
     .setTitle('Search RFQs')
-    .setHint('RFQ number, OP number, or customer name...')
-    .setOnChangeAction(
+    .setHint('RFQ number, OP number, or customer name');
+
+  var searchButton = CardService.newTextButton()
+    .setText('Search')
+    .setOnClickAction(
       CardService.newAction()
         .setFunctionName('onSearchRfq')
         .setParameters({
@@ -888,13 +903,14 @@ function onLinkRfq(e) {
     .addSection(
       CardService.newCardSection()
         .addWidget(searchInput)
+        .addWidget(searchButton)
     )
     .addSection(
       CardService.newCardSection()
         .setHeader('Results')
         .addWidget(
           CardService.newTextParagraph()
-            .setText('<i>Type to search by RFQ number, OP number, or customer...</i>')
+            .setText('<i>Type a query and press Search.</i>')
         )
     )
     .build();
@@ -955,12 +971,18 @@ function onSearchRfq(e) {
           .setFieldName('searchQuery')
           .setTitle('Search RFQs')
           .setValue(query)
-          .setOnChangeAction(
+      )
+      .addWidget(
+        CardService.newTextButton()
+          .setText('Search')
+          .setOnClickAction(
             CardService.newAction()
               .setFunctionName('onSearchRfq')
               .setParameters({
                 messageId: e.parameters.messageId,
-                threadId: e.parameters.threadId
+                threadId: e.parameters.threadId,
+                sender: sender,
+                subject: subject
               })
           )
       );
@@ -1041,7 +1063,11 @@ function buildRfqSearchCard(message, query, messageId, threadId, sender, subject
             .setFieldName('searchQuery')
             .setTitle('Search RFQs')
             .setValue(query || '')
-            .setOnChangeAction(
+        )
+        .addWidget(
+          CardService.newTextButton()
+            .setText('Search')
+            .setOnClickAction(
               CardService.newAction()
                 .setFunctionName('onSearchRfq')
                 .setParameters({
