@@ -11,6 +11,42 @@
 const BACKEND_URL = 'https://agent.eaglexp.com.au';
 
 // ============================================================
+// Domain blacklist — emails from these domains show a simplified
+// card with no link actions to avoid false matches.
+// ============================================================
+var DOMAIN_BLACKLIST = [
+  'google.com',
+  'accounts.google.com',
+  'eagle-exports.com.au',
+  'eaglexp.com',
+  'eaglexp.com.au',
+  'eagle-exports.com'
+];
+
+/**
+ * Extract the domain from a Gmail sender string.
+ * Handles formats: "Name" <email@domain.com> or plain email@domain.com
+ */
+function extractDomain(sender) {
+  var match = sender.match(/<([^>]+)>/) || [null, sender];
+  var addr = match[1].trim().toLowerCase();
+  var parts = addr.split('@');
+  return parts.length === 2 ? parts[1] : '';
+}
+
+/**
+ * Check if the sender's domain is in the blacklist.
+ */
+function isBlacklisted(sender) {
+  var domain = extractDomain(sender);
+  if (!domain) return false;
+  for (var i = 0; i < DOMAIN_BLACKLIST.length; i++) {
+    if (domain === DOMAIN_BLACKLIST[i]) return true;
+  }
+  return false;
+}
+
+// ============================================================
 // Helper: Authenticated fetch to backend
 // ============================================================
 
@@ -116,6 +152,11 @@ function onGmailMessageOpen(e) {
   var sender = message.getFrom();
   var threadId = message.getThread().getId();
 
+  // Skip backend call for blacklisted domains (Google services, internal)
+  if (isBlacklisted(sender)) {
+    return [buildNoActionsCard(subject, sender)];
+  }
+
   // Call backend for entity linking context
   var context;
   try {
@@ -205,23 +246,25 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
 
   builder.addSection(statusSection);
 
-  // ---- Actions section (Phase 2 — placeholder buttons) ----
+  // ---- Actions section ----
   var actionsSection = CardService.newCardSection().setHeader('Actions');
 
-  actionsSection.addWidget(
-    CardService.newTextButton()
-      .setText('Link to Customer/Supplier')
-      .setOnClickAction(
-        CardService.newAction()
-          .setFunctionName('onLinkEntity')
-          .setParameters({
-            messageId: messageId,
-            threadId: threadId,
-            subject: subject,
-            sender: sender
-          })
-      )
-  );
+  // Only show "Link to Customer/Supplier" if neither is already linked
+  if (!context.customer && !context.supplier) {
+    actionsSection.addWidget(
+      CardService.newTextButton()
+        .setText('Link to Customer / Supplier')
+        .setOnClickAction(
+          CardService.newAction()
+            .setFunctionName('onLinkEntity')
+            .setParameters({
+              messageId: messageId,
+              threadId: threadId,
+              sender: sender
+            })
+        )
+    );
+  }
 
   actionsSection.addWidget(
     CardService.newTextButton()
@@ -304,32 +347,317 @@ function buildEditorFallbackCard() {
 }
 
 // ============================================================
-// Action stubs (to be implemented in Phase 2)
+// UI: No-actions card (for blacklisted / service domains)
 // ============================================================
 
+function buildNoActionsCard(subject, sender) {
+  var domain = extractDomain(sender);
+  return CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle('Eagle Agent')
+        .setSubtitle(
+          subject.length > 60 ? subject.substring(0, 57) + '...' : subject
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText(
+              '<i>This email is from <b>' + domain + '</b> — a service ' +
+              'or internal domain. No linking actions are needed.</i>'
+            )
+        )
+    )
+    .build();
+}
+
+// ============================================================
+// Phase 2: Link to Customer / Supplier — multi-step flow
+// ============================================================
+
+/**
+ * Step 1: User clicks "Link to Customer / Supplier" on the context card.
+ * Push a card asking them to choose Customer or Supplier.
+ */
 function onLinkEntity(e) {
-  return CardService.newActionResponseBuilder()
-    .setNotification(
-      CardService.newNotification()
-        .setText('Coming soon \u2014 Link to Customer/Supplier')
+  var card = CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle('Link to Customer or Supplier?')
+        .setSubtitle('Choose the entity type')
     )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextButton()
+            .setText('Customer')
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName('onChooseEntityType')
+                .setParameters({
+                  messageId: e.parameters.messageId,
+                  threadId: e.parameters.threadId,
+                  sender: e.parameters.sender,
+                  linkType: 'customer'
+                })
+            )
+        )
+        .addWidget(
+          CardService.newTextButton()
+            .setText('Supplier')
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName('onChooseEntityType')
+                .setParameters({
+                  messageId: e.parameters.messageId,
+                  threadId: e.parameters.threadId,
+                  sender: e.parameters.sender,
+                  linkType: 'supplier'
+                })
+            )
+        )
+    )
+    .build();
+
+  var nav = CardService.newNavigation().pushCard(card);
+  return CardService.newActionResponseBuilder()
+    .setNavigation(nav)
     .build();
 }
 
-function onLinkRfq(e) {
-  return CardService.newActionResponseBuilder()
-    .setNotification(
-      CardService.newNotification()
-        .setText('Coming soon \u2014 Link to RFQ')
+/**
+ * Step 2: User chose Customer or Supplier. Push a search card with a text input.
+ */
+function onChooseEntityType(e) {
+  var linkType = e.parameters.linkType;
+  var label = linkType === 'customer' ? 'Customer' : 'Supplier';
+
+  var searchInput = CardService.newTextInput()
+    .setFieldName('searchQuery')
+    .setTitle('Search ' + label + 's')
+    .setHint('Type at least 2 characters...')
+    .setOnChangeAction(
+      CardService.newAction()
+        .setFunctionName('onSearchEntity')
+        .setParameters({
+          messageId: e.parameters.messageId,
+          threadId: e.parameters.threadId,
+          linkType: linkType
+        })
+    );
+
+  var card = CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle('Link to ' + label)
     )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(searchInput)
+    )
+    .addSection(
+      CardService.newCardSection()
+        .setHeader('Results')
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText('<i>Type to search...</i>')
+        )
+    )
+    .build();
+
+  var nav = CardService.newNavigation().pushCard(card);
+  return CardService.newActionResponseBuilder()
+    .setNavigation(nav)
     .build();
 }
 
-function onCreateRfq(e) {
+/**
+ * Step 3: User typed in the search box. Call the backend and rebuild the
+ * results section of the current card.
+ */
+function onSearchEntity(e) {
+  var query = e.formInput.searchQuery || '';
+  var linkType = e.parameters.linkType;
+
+  if (query.length < 2) {
+    // Not enough characters — show prompt
+    var emptyCard = CardService.newCardBuilder()
+      .setHeader(
+        CardService.newCardHeader().setTitle(
+          'Link to ' + (linkType === 'customer' ? 'Customer' : 'Supplier')
+        )
+      )
+      .addSection(
+        CardService.newCardSection()
+          .addWidget(
+            CardService.newTextInput()
+              .setFieldName('searchQuery')
+              .setTitle(
+                'Search ' +
+                (linkType === 'customer' ? 'Customer' : 'Supplier') +
+                's'
+              )
+              .setHint('Type at least 2 characters...')
+              .setOnChangeAction(
+                CardService.newAction()
+                  .setFunctionName('onSearchEntity')
+                  .setParameters({
+                    messageId: e.parameters.messageId,
+                    threadId: e.parameters.threadId,
+                    linkType: linkType
+                  })
+              )
+          )
+      )
+      .addSection(
+        CardService.newCardSection()
+          .setHeader('Results')
+          .addWidget(
+            CardService.newTextParagraph()
+              .setText('<i>Type at least 2 characters to search...</i>')
+          )
+      )
+      .build();
+
+    var nav = CardService.newNavigation().updateCard(emptyCard);
+    return CardService.newActionResponseBuilder()
+      .setNavigation(nav)
+      .build();
+  }
+
+  // Call backend search
+  var url = BACKEND_URL + '/api/addon/search?type=' +
+            encodeURIComponent(linkType) + '&q=' + encodeURIComponent(query);
+  var idToken = ScriptApp.getIdentityToken();
+
+  try {
+    var response = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + idToken },
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      throw new Error('Search failed: ' + response.getContentText());
+    }
+
+    var data = JSON.parse(response.getContentText());
+    var results = data.results || [];
+
+    // Build results card
+    var label = linkType === 'customer' ? 'Customer' : 'Supplier';
+    var resultsCard = CardService.newCardBuilder()
+      .setHeader(
+        CardService.newCardHeader().setTitle('Link to ' + label)
+      );
+
+    var inputSection = CardService.newCardSection()
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName('searchQuery')
+          .setTitle('Search ' + label + 's')
+          .setValue(query)
+          .setOnChangeAction(
+            CardService.newAction()
+              .setFunctionName('onSearchEntity')
+              .setParameters({
+                messageId: e.parameters.messageId,
+                threadId: e.parameters.threadId,
+                linkType: linkType
+              })
+          )
+      );
+    resultsCard.addSection(inputSection);
+
+    var resultSection = CardService.newCardSection().setHeader('Results');
+
+    if (results.length === 0) {
+      resultSection.addWidget(
+        CardService.newTextParagraph()
+          .setText('<i>No ' + label + 's found matching "' + query + '".</i>')
+      );
+    } else {
+      for (var i = 0; i < results.length; i++) {
+        var entity = results[i];
+        resultSection.addWidget(
+          CardService.newDecoratedText()
+            .setText(entity.name)
+            .setWrapText(true)
+            .setButton(
+              CardService.newTextButton()
+                .setText('Link')
+                .setOnClickAction(
+                  CardService.newAction()
+                    .setFunctionName('onSelectEntity')
+                    .setParameters({
+                      messageId: e.parameters.messageId,
+                      threadId: e.parameters.threadId,
+                      linkType: linkType,
+                      entityId: entity.id,
+                      entityName: entity.name
+                    })
+                )
+            )
+        );
+      }
+    }
+
+    resultsCard.addSection(resultSection);
+
+    var nav = CardService.newNavigation().updateCard(resultsCard.build());
+    return CardService.newActionResponseBuilder()
+      .setNavigation(nav)
+      .build();
+
+  } catch (err) {
+    var errCard = CardService.newCardBuilder()
+      .setHeader(CardService.newCardHeader().setTitle('Search Error'))
+      .addSection(
+        CardService.newCardSection()
+          .addWidget(
+            CardService.newTextParagraph()
+              .setText('<font color="#d93025">' + err.message + '</font>')
+          )
+      )
+      .build();
+
+    var nav = CardService.newNavigation().updateCard(errCard);
+    return CardService.newActionResponseBuilder()
+      .setNavigation(nav)
+      .build();
+  }
+}
+
+/**
+ * Step 4: User selected an entity. Call backend to link, show success, pop back.
+ */
+function onSelectEntity(e) {
+  var result;
+  try {
+    result = fetchBackend('/api/addon/link-email', {
+      gmail_message_id: e.parameters.messageId,
+      gmail_thread_id: e.parameters.threadId,
+      link_type: e.parameters.linkType,
+      entity_id: e.parameters.entityId
+    });
+  } catch (err) {
+    return CardService.newActionResponseBuilder()
+      .setNotification(
+        CardService.newNotification().setText('Error: ' + err.message)
+      )
+      .build();
+  }
+
+  // Pop back to the context card, which will now show the linked entity
+  var nav = CardService.newNavigation().popToRoot();
   return CardService.newActionResponseBuilder()
+    .setNavigation(nav)
     .setNotification(
-      CardService.newNotification()
-        .setText('Coming soon \u2014 Create RFQ')
+      CardService.newNotification().setText(
+        'Linked to ' + result.entity_name
+      )
     )
     .build();
 }

@@ -99,6 +99,13 @@ class ContextResponse(BaseModel):
     email_tracked: bool = False
 
 
+class LinkEmailRequest(BaseModel):
+    gmail_message_id: str
+    gmail_thread_id: str
+    link_type: str  # "customer" or "supplier"
+    entity_id: str  # UUID of the customer or supplier
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────
 
 @router.post("/context", response_model=ContextResponse)
@@ -198,5 +205,179 @@ def get_email_context(body: ContextRequest, user: AddonUser):
                 pass
 
         return result
+    finally:
+        session.close()
+
+
+# ── Search endpoint ────────────────────────────────────────────────────────
+
+@router.get("/search")
+def search_entities(type: str, q: str, user: AddonUser):
+    """Search customers or suppliers by name for the email linking UI.
+
+    Args:
+        type: "customer" or "supplier"
+        q: Search query (minimum 2 characters)
+    """
+    from fastapi.responses import JSONResponse
+    from includes.dashboard.database import get_session
+    from sqlalchemy import text
+
+    if not q or len(q) < 2:
+        return JSONResponse({"results": []})
+
+    session = get_session()
+    try:
+        if type == "supplier":
+            rows = session.execute(
+                text(
+                    "SELECT id, name FROM suppliers "
+                    "WHERE LOWER(name) LIKE :q ORDER BY name LIMIT 10"
+                ),
+                {"q": f"%{q.lower()}%"},
+            ).mappings().all()
+            return JSONResponse({
+                "results": [{"id": str(r["id"]), "name": r["name"]} for r in rows],
+            })
+        elif type == "customer":
+            rows = session.execute(
+                text(
+                    "SELECT id, companyname FROM customers "
+                    "WHERE LOWER(companyname) LIKE :q AND isinactive = false "
+                    "ORDER BY companyname LIMIT 10"
+                ),
+                {"q": f"%{q.lower()}%"},
+            ).mappings().all()
+            return JSONResponse({
+                "results": [
+                    {"id": str(r["id"]), "name": r["companyname"]}
+                    for r in rows
+                ],
+            })
+        else:
+            return JSONResponse(
+                {"results": [], "error": "type must be 'customer' or 'supplier'"},
+                status_code=400,
+            )
+    finally:
+        session.close()
+
+
+# ── Link-email endpoint ────────────────────────────────────────────────────
+
+@router.post("/link-email")
+def link_email(body: LinkEmailRequest, user: AddonUser):
+    """Link a Gmail message (and its thread) to a customer or supplier.
+
+    Looks up the EmailTracking record by gmail_message_id (fallback to
+    thread), then updates the link for all messages in the same thread.
+    """
+    from fastapi.responses import JSONResponse
+    from includes.dashboard.database import get_session
+    from includes.dashboard.models import Customer, EmailTracking, Supplier
+    from sqlalchemy import text
+    from uuid import UUID
+
+    session = get_session()
+    try:
+        # Find the tracking record
+        tracking = (
+            session.query(EmailTracking)
+            .filter(EmailTracking.gmail_message_id == body.gmail_message_id)
+            .first()
+        )
+        if not tracking:
+            tracking = (
+                session.query(EmailTracking)
+                .filter(EmailTracking.gmail_thread_id == body.gmail_thread_id)
+                .order_by(EmailTracking.id.desc())
+                .first()
+            )
+
+        if not tracking:
+            return JSONResponse(
+                {"status": "error", "message": "Email not found in tracking"},
+                status_code=404,
+            )
+
+        tid = tracking.gmail_thread_id or ""
+
+        if body.link_type == "customer":
+            try:
+                customer_id = UUID(body.entity_id)
+            except ValueError:
+                return JSONResponse(
+                    {"status": "error", "message": "Invalid entity ID"},
+                    status_code=400,
+                )
+
+            customer = session.query(Customer).get(customer_id)
+            if not customer:
+                return JSONResponse(
+                    {"status": "error", "message": "Customer not found"},
+                    status_code=404,
+                )
+
+            # Update all messages in the thread
+            session.execute(
+                text(
+                    "UPDATE email_tracking "
+                    "SET customer_id = :cid, match_type = 'manual' "
+                    "WHERE gmail_thread_id = :tid OR id = :eid"
+                ),
+                {"cid": str(customer_id), "tid": tid, "eid": tracking.id},
+            )
+            session.commit()
+            return JSONResponse({
+                "status": "ok",
+                "message": f"Linked to {customer.companyname}",
+                "entity_name": customer.companyname,
+            })
+
+        elif body.link_type == "supplier":
+            try:
+                supplier_id = UUID(body.entity_id)
+            except ValueError:
+                return JSONResponse(
+                    {"status": "error", "message": "Invalid entity ID"},
+                    status_code=400,
+                )
+
+            supplier = session.query(Supplier).get(supplier_id)
+            if not supplier:
+                return JSONResponse(
+                    {"status": "error", "message": "Supplier not found"},
+                    status_code=404,
+                )
+
+            # Update all messages in the thread
+            session.execute(
+                text(
+                    "UPDATE email_tracking "
+                    "SET supplier_id = :sid, match_type = 'manual' "
+                    "WHERE gmail_thread_id = :tid OR id = :eid"
+                ),
+                {"sid": str(supplier_id), "tid": tid, "eid": tracking.id},
+            )
+            session.commit()
+            return JSONResponse({
+                "status": "ok",
+                "message": f"Linked to {supplier.name}",
+                "entity_name": supplier.name,
+            })
+
+        else:
+            return JSONResponse(
+                {"status": "error", "message": "link_type must be 'customer' or 'supplier'"},
+                status_code=400,
+            )
+
+    except Exception as exc:
+        session.rollback()
+        logger.exception("Error linking email")
+        return JSONResponse(
+            {"status": "error", "message": str(exc)},
+            status_code=500,
+        )
     finally:
         session.close()
