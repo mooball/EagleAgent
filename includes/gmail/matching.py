@@ -217,6 +217,56 @@ def find_sender_match(
     return None
 
 
+def save_sender_domain(
+    session: Session,
+    sender_email: str,
+    entity_type: str,
+    entity_id,
+) -> str:
+    """Save the sender's domain to an entity for future matching.
+
+    - Supplier: Append domain to alt_domains (JSONB) if not present.
+    - Customer: Set email field if currently empty.
+    - Generic domains (gmail, yahoo, etc.) are skipped.
+
+    Returns a human-readable message describing what was done.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    if not sender_email or "@" not in sender_email:
+        return "(no email to extract domain from)"
+
+    domain = sender_email.rsplit("@", 1)[1].lower().strip()
+
+    if domain in _GENERIC_DOMAINS:
+        return f"(skipped generic domain {domain})"
+
+    if entity_type == "supplier":
+        supplier = session.query(Supplier).get(entity_id)
+        if not supplier:
+            return "(supplier not found)"
+        alt_domains = list(supplier.alt_domains or [])
+        if domain not in alt_domains:
+            alt_domains.append(domain)
+            supplier.alt_domains = alt_domains
+            flag_modified(supplier, "alt_domains")
+            logger.info("Saved domain %r to supplier %s", domain, supplier.name)
+            return f"Domain '{domain}' saved to {supplier.name}."
+        return f"Domain '{domain}' already registered for {supplier.name}."
+
+    elif entity_type == "customer":
+        customer = session.query(Customer).get(entity_id)
+        if not customer:
+            return "(customer not found)"
+        if not customer.email:
+            customer.email = sender_email.lower().strip()
+            logger.info("Saved email %r to customer %s", sender_email, customer.companyname)
+            return f"Email '{sender_email}' saved to {customer.companyname}."
+        return f"(customer already has email {customer.email}; domain not saved)"
+
+    return ""
+
+
 def match_by_id(session: Session, gmail_thread_id: str, gmail_message_id: str | None) -> Optional[EmailTracking]:
     """Tier 1: Check if thread/message already exists in email_tracking."""
     filters = [EmailTracking.gmail_thread_id == gmail_thread_id]

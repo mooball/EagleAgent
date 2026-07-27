@@ -104,7 +104,8 @@ class LinkEmailRequest(BaseModel):
     gmail_thread_id: str
     link_type: str  # "customer" or "supplier"
     entity_id: str  # UUID of the customer or supplier
-    sender: str | None = None  # optional — used to auto-save domain
+    sender: str | None = None  # optional — sender email for domain save
+    save_domain: bool = True  # auto-save domain to entity for future matching
 
 
 class MatchRequest(BaseModel):
@@ -362,8 +363,10 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
                 {"cid": str(customer_id), "tid": tid, "eid": tracking.id},
             )
 
-            # Auto-save sender domain to customer if sender provided
-            _save_sender_domain(session, body.sender, "customer", customer)
+            # Auto-save sender domain if requested
+            if body.save_domain and body.sender:
+                from includes.gmail.matching import save_sender_domain
+                save_sender_domain(session, body.sender, "customer", customer_id)
 
             session.commit()
             return JSONResponse({
@@ -398,8 +401,10 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
                 {"sid": str(supplier_id), "tid": tid, "eid": tracking.id},
             )
 
-            # Auto-save sender domain to supplier alt_domains if sender provided
-            _save_sender_domain(session, body.sender, "supplier", supplier)
+            # Auto-save sender domain if requested
+            if body.save_domain and body.sender:
+                from includes.gmail.matching import save_sender_domain
+                save_sender_domain(session, body.sender, "supplier", supplier_id)
 
             session.commit()
             return JSONResponse({
@@ -423,36 +428,3 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
         )
     finally:
         session.close()
-
-
-# ── Helpers ─────────────────────────────────────────────────────────────────
-
-def _save_sender_domain(session, sender: str | None, entity_type: str, entity):
-    """Auto-save the sender's domain to the entity for future matching.
-
-    - Supplier: Append domain to alt_domains (JSONB) if not already present.
-    - Customer: Set email field if currently empty.
-    """
-    if not sender or "@" not in sender:
-        return
-
-    domain = sender.rsplit("@", 1)[1].lower().strip()
-
-    # Skip generic email domains
-    from includes.gmail.matching import _GENERIC_DOMAINS
-    if domain in _GENERIC_DOMAINS:
-        return
-
-    from sqlalchemy.orm.attributes import flag_modified
-
-    if entity_type == "supplier":
-        alt_domains = list(entity.alt_domains or [])
-        if domain not in alt_domains:
-            alt_domains.append(domain)
-            entity.alt_domains = alt_domains
-            flag_modified(entity, "alt_domains")
-            logger.info("Saved domain %r to supplier %s", domain, entity.name)
-    elif entity_type == "customer":
-        if not entity.email:
-            entity.email = sender.lower().strip()
-            logger.info("Saved email %r to customer %s", sender, entity.companyname)
