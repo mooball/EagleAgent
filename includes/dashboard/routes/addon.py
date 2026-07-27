@@ -294,14 +294,14 @@ def search_entities(type: str, q: str, user: AddonUser):
             rows = session.execute(
                 text(
                     "SELECT r.id, r.rfq_number, r.status, r.customer, "
-                    "r.created_date, o.netsuite_id AS op_number "
+                    "r.created_date, o.opportunity_number AS op_number "
                     "FROM rfqs r "
                     "LEFT JOIN customers c ON r.customer_id = c.id "
                     "LEFT JOIN opportunities o ON r.opportunity_id = o.id "
                     "WHERE "
                     "  LOWER(r.rfq_number) LIKE :q "
                     "  OR LOWER(r.customer) LIKE :q "
-                    "  OR (o.netsuite_id IS NOT NULL AND LOWER('OP' || o.netsuite_id) LIKE :q) "
+                    "  OR (o.opportunity_number IS NOT NULL AND LOWER(o.opportunity_number) LIKE :q) "
                     "ORDER BY r.created_date DESC "
                     "LIMIT 10"
                 ),
