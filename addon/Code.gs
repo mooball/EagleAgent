@@ -102,6 +102,38 @@ function fetchBackend(path, payload) {
 }
 
 // ============================================================
+// Helper: Refresh context card and pop to root
+// ============================================================
+
+/**
+ * After a successful link action, re-fetch context from the backend
+ * and replace the root card so the user sees updated linked entities.
+ */
+function refreshAndReturn(messageId, threadId, subject, sender, successMessage) {
+  try {
+    var context = fetchBackend('/api/addon/context', {
+      gmail_message_id: messageId,
+      gmail_thread_id: threadId,
+      subject: subject || '',
+      sender: sender || ''
+    });
+    var freshCard = buildContextCard(context, messageId, threadId, subject || '', sender || '');
+    var nav = CardService.newNavigation().popToRoot().updateCard(freshCard);
+    return CardService.newActionResponseBuilder()
+      .setNavigation(nav)
+      .setNotification(CardService.newNotification().setText(successMessage))
+      .build();
+  } catch (err) {
+    // Refresh failed — pop to (stale) root with success notification
+    var nav = CardService.newNavigation().popToRoot();
+    return CardService.newActionResponseBuilder()
+      .setNavigation(nav)
+      .setNotification(CardService.newNotification().setText(successMessage))
+      .build();
+  }
+}
+
+// ============================================================
 // Trigger: Homepage (no message context)
 // ============================================================
 // Called when the user opens the add-on from the Gmail sidebar
@@ -260,7 +292,8 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
             .setParameters({
               messageId: messageId,
               threadId: threadId,
-              sender: sender
+              sender: sender,
+              subject: subject
             })
         )
     );
@@ -277,7 +310,8 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
             .setParameters({
               messageId: messageId,
               threadId: threadId,
-              subject: subject
+              subject: subject,
+              sender: sender
             })
         )
     );
@@ -390,6 +424,7 @@ function buildNoActionsCard(subject, sender) {
  */
 function onLinkEntity(e) {
   var sender = e.parameters.sender;
+  var subject = e.parameters.subject;
 
   // Call the match endpoint
   var matchUrl = BACKEND_URL + '/api/addon/match';
@@ -412,7 +447,8 @@ function onLinkEntity(e) {
           data.entity,
           e.parameters.messageId,
           e.parameters.threadId,
-          sender
+          sender,
+          subject
         );
         var nav = CardService.newNavigation().pushCard(matchCard);
         return CardService.newActionResponseBuilder()
@@ -425,13 +461,13 @@ function onLinkEntity(e) {
   }
 
   // No match — show type chooser
-  return showTypeChooser(e.parameters.messageId, e.parameters.threadId, sender);
+  return showTypeChooser(e.parameters.messageId, e.parameters.threadId, sender, subject);
 }
 
 /**
  * Build the "we found a match" suggestion card.
  */
-function buildMatchSuggestionCard(entity, messageId, threadId, sender) {
+function buildMatchSuggestionCard(entity, messageId, threadId, sender, subject) {
   var label = entity.type === 'customer' ? 'Customer' : 'Supplier';
   var via = entity.match_type === 'exact'
     ? 'exact email match'
@@ -464,7 +500,8 @@ function buildMatchSuggestionCard(entity, messageId, threadId, sender) {
                   linkType: entity.type,
                   entityId: entity.id,
                   entityName: entity.name,
-                  sender: sender
+                  sender: sender,
+                  subject: subject
                 })
             )
         )
@@ -477,7 +514,8 @@ function buildMatchSuggestionCard(entity, messageId, threadId, sender) {
                 .setParameters({
                   messageId: messageId,
                   threadId: threadId,
-                  sender: sender
+                  sender: sender,
+                  subject: subject
                 })
             )
         )
@@ -498,7 +536,8 @@ function onConfirmLink(e) {
       gmail_thread_id: e.parameters.threadId,
       link_type: e.parameters.linkType,
       entity_id: e.parameters.entityId,
-      sender: e.parameters.sender
+      sender: e.parameters.sender,
+      save_domain: true
     });
   } catch (err) {
     return CardService.newActionResponseBuilder()
@@ -508,28 +547,26 @@ function onConfirmLink(e) {
       .build();
   }
 
-  var nav = CardService.newNavigation().popToRoot();
-  return CardService.newActionResponseBuilder()
-    .setNavigation(nav)
-    .setNotification(
-      CardService.newNotification().setText(
-        'Linked to ' + result.entity_name
-      )
-    )
-    .build();
+  return refreshAndReturn(
+    e.parameters.messageId,
+    e.parameters.threadId,
+    e.parameters.subject,
+    e.parameters.sender,
+    'Linked to ' + result.entity_name
+  );
 }
 
 /**
  * User clicked "No, search manually" — show the type chooser.
  */
 function onManualLink(e) {
-  return showTypeChooser(e.parameters.messageId, e.parameters.threadId, e.parameters.sender);
+  return showTypeChooser(e.parameters.messageId, e.parameters.threadId, e.parameters.sender, e.parameters.subject);
 }
 
 /**
  * Show the type chooser card (Customer or Supplier).
  */
-function showTypeChooser(messageId, threadId, sender) {
+function showTypeChooser(messageId, threadId, sender, subject) {
   var card = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
@@ -548,6 +585,7 @@ function showTypeChooser(messageId, threadId, sender) {
                   messageId: messageId,
                   threadId: threadId,
                   sender: sender,
+                  subject: subject,
                   linkType: 'customer'
                 })
             )
@@ -562,6 +600,7 @@ function showTypeChooser(messageId, threadId, sender) {
                   messageId: messageId,
                   threadId: threadId,
                   sender: sender,
+                  subject: subject,
                   linkType: 'supplier'
                 })
             )
@@ -593,7 +632,8 @@ function onChooseEntityType(e) {
           messageId: e.parameters.messageId,
           threadId: e.parameters.threadId,
           linkType: linkType,
-          sender: e.parameters.sender
+          sender: e.parameters.sender,
+          subject: e.parameters.subject
         })
     );
 
@@ -630,6 +670,7 @@ function onSearchEntity(e) {
   var query = e.formInput.searchQuery || '';
   var linkType = e.parameters.linkType;
   var sender = e.parameters.sender || '';
+  var subject = e.parameters.subject || '';
 
   if (query.length < 2) {
     // Not enough characters — show prompt
@@ -657,7 +698,8 @@ function onSearchEntity(e) {
                     messageId: e.parameters.messageId,
                     threadId: e.parameters.threadId,
                     linkType: linkType,
-                    sender: sender
+                    sender: sender,
+                    subject: subject
                   })
               )
           )
@@ -717,7 +759,8 @@ function onSearchEntity(e) {
                 messageId: e.parameters.messageId,
                 threadId: e.parameters.threadId,
                 linkType: linkType,
-                sender: sender
+                sender: sender,
+                subject: subject
               })
           )
       );
@@ -749,7 +792,8 @@ function onSearchEntity(e) {
                       linkType: linkType,
                       entityId: entity.id,
                       entityName: entity.name,
-                      sender: sender
+                      sender: sender,
+                      subject: subject
                     })
                 )
             )
@@ -794,7 +838,8 @@ function onSelectEntity(e) {
       gmail_thread_id: e.parameters.threadId,
       link_type: e.parameters.linkType,
       entity_id: e.parameters.entityId,
-      sender: e.parameters.sender || ''
+      sender: e.parameters.sender || '',
+      save_domain: true
     });
   } catch (err) {
     return CardService.newActionResponseBuilder()
@@ -804,16 +849,13 @@ function onSelectEntity(e) {
       .build();
   }
 
-  // Pop back to the context card, which will now show the linked entity
-  var nav = CardService.newNavigation().popToRoot();
-  return CardService.newActionResponseBuilder()
-    .setNavigation(nav)
-    .setNotification(
-      CardService.newNotification().setText(
-        'Linked to ' + result.entity_name
-      )
-    )
-    .build();
+  return refreshAndReturn(
+    e.parameters.messageId,
+    e.parameters.threadId,
+    e.parameters.subject,
+    e.parameters.sender,
+    'Linked to ' + result.entity_name
+  );
 }
 
 // ============================================================
@@ -833,7 +875,9 @@ function onLinkRfq(e) {
         .setFunctionName('onSearchRfq')
         .setParameters({
           messageId: e.parameters.messageId,
-          threadId: e.parameters.threadId
+          threadId: e.parameters.threadId,
+          sender: e.parameters.sender,
+          subject: e.parameters.subject
         })
     );
 
@@ -866,13 +910,17 @@ function onLinkRfq(e) {
  */
 function onSearchRfq(e) {
   var query = e.formInput.searchQuery || '';
+  var sender = e.parameters.sender || '';
+  var subject = e.parameters.subject || '';
 
   if (query.length < 2) {
     var emptyCard = buildRfqSearchCard(
       '<i>Type at least 2 characters to search...</i>',
       query,
       e.parameters.messageId,
-      e.parameters.threadId
+      e.parameters.threadId,
+      sender,
+      subject
     );
     var nav = CardService.newNavigation().updateCard(emptyCard);
     return CardService.newActionResponseBuilder()
@@ -983,7 +1031,7 @@ function onSearchRfq(e) {
 /**
  * Build a simple RFQ search card (used for empty/minimal state).
  */
-function buildRfqSearchCard(message, query, messageId, threadId) {
+function buildRfqSearchCard(message, query, messageId, threadId, sender, subject) {
   var card = CardService.newCardBuilder()
     .setHeader(CardService.newCardHeader().setTitle('Link to RFQ'))
     .addSection(
@@ -998,7 +1046,9 @@ function buildRfqSearchCard(message, query, messageId, threadId) {
                 .setFunctionName('onSearchRfq')
                 .setParameters({
                   messageId: messageId,
-                  threadId: threadId
+                  threadId: threadId,
+                  sender: sender || '',
+                  subject: subject || ''
                 })
             )
         )
@@ -1035,13 +1085,11 @@ function onSelectRfq(e) {
       .build();
   }
 
-  var nav = CardService.newNavigation().popToRoot();
-  return CardService.newActionResponseBuilder()
-    .setNavigation(nav)
-    .setNotification(
-      CardService.newNotification().setText(
-        'Linked to ' + result.entity_name
-      )
-    )
-    .build();
+  return refreshAndReturn(
+    e.parameters.messageId,
+    e.parameters.threadId,
+    e.parameters.subject,
+    e.parameters.sender,
+    'Linked to ' + result.entity_name
+  );
 }

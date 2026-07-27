@@ -123,6 +123,12 @@ _GENERIC_DOMAINS = frozenset({
     'protonmail.com', 'proton.me', 'mail.com', 'zoho.com',
 })
 
+# Internal company domains — never save these as entity domains
+_INTERNAL_DOMAINS = frozenset({
+    'eagle-exports.com', 'eagle-exports.com.au',
+    'eaglexp.com', 'eaglexp.com.au',
+})
+
 
 def find_sender_match(
     session: Session,
@@ -238,8 +244,8 @@ def save_sender_domain(
 
     domain = sender_email.rsplit("@", 1)[1].lower().strip()
 
-    if domain in _GENERIC_DOMAINS:
-        return f"(skipped generic domain {domain})"
+    if domain in _GENERIC_DOMAINS or domain in _INTERNAL_DOMAINS:
+        return f"(skipped domain {domain})"
 
     if entity_type == "supplier":
         supplier = session.query(Supplier).get(entity_id)

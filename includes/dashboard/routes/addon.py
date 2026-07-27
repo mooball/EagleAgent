@@ -320,7 +320,7 @@ def search_entities(type: str, q: str, user: AddonUser):
             })
         else:
             return JSONResponse(
-                {"results": [], "error": "type must be 'customer' or 'supplier'"},
+                {"results": [], "error": "type must be 'customer', 'supplier', or 'rfq'"},
                 status_code=400,
             )
     finally:
