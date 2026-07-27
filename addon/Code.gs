@@ -280,20 +280,23 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
       )
   );
 
-  actionsSection.addWidget(
-    CardService.newTextButton()
-      .setText('Create New RFQ')
-      .setOnClickAction(
-        CardService.newAction()
-          .setFunctionName('onCreateRfq')
-          .setParameters({
-            messageId: messageId,
-            threadId: threadId,
-            subject: subject,
-            sender: sender
-          })
-      )
-  );
+  // Only show "Create New RFQ" if a customer is already linked
+  if (context.customer) {
+    actionsSection.addWidget(
+      CardService.newTextButton()
+        .setText('Create New RFQ')
+        .setOnClickAction(
+          CardService.newAction()
+            .setFunctionName('onCreateRfq')
+            .setParameters({
+              messageId: messageId,
+              threadId: threadId,
+              subject: subject,
+              sender: sender
+            })
+        )
+    );
+  }
 
   builder.addSection(actionsSection);
 
@@ -374,14 +377,156 @@ function buildNoActionsCard(subject, sender) {
 }
 
 // ============================================================
-// Phase 2: Link to Customer / Supplier — multi-step flow
+// Phase 2: Link to Customer / Supplier — match-first flow
 // ============================================================
 
 /**
- * Step 1: User clicks "Link to Customer / Supplier" on the context card.
- * Push a card asking them to choose Customer or Supplier.
+ * Step 1: User clicks "Link to Customer / Supplier".
+ * Call the match endpoint first.  If a match is found, show a
+ * suggestion card.  Otherwise, fall through to the type chooser.
  */
 function onLinkEntity(e) {
+  var sender = e.parameters.sender;
+
+  // Call the match endpoint
+  var matchUrl = BACKEND_URL + '/api/addon/match';
+  var idToken = ScriptApp.getIdentityToken();
+
+  try {
+    var response = UrlFetchApp.fetch(matchUrl, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { Authorization: 'Bearer ' + idToken },
+      payload: JSON.stringify({ sender: sender }),
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() === 200) {
+      var data = JSON.parse(response.getContentText());
+      if (data.matched && data.entity) {
+        // Found — show suggestion card
+        var matchCard = buildMatchSuggestionCard(
+          data.entity,
+          e.parameters.messageId,
+          e.parameters.threadId,
+          sender
+        );
+        var nav = CardService.newNavigation().pushCard(matchCard);
+        return CardService.newActionResponseBuilder()
+          .setNavigation(nav)
+          .build();
+      }
+    }
+  } catch (err) {
+    // Match failed — fall through to manual type chooser
+  }
+
+  // No match — show type chooser
+  return showTypeChooser(e.parameters.messageId, e.parameters.threadId, sender);
+}
+
+/**
+ * Build the "we found a match" suggestion card.
+ */
+function buildMatchSuggestionCard(entity, messageId, threadId, sender) {
+  var label = entity.type === 'customer' ? 'Customer' : 'Supplier';
+  var via = entity.match_type === 'exact'
+    ? 'exact email match'
+    : 'domain match';
+
+  var card = CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle(entity.name)
+        .setSubtitle(label + ' — ' + via)
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText(
+              'We matched this sender to <b>' + entity.name +
+              '</b> (' + label.toLowerCase() + '), based on ' + via + '.'
+            )
+        )
+        .addWidget(
+          CardService.newTextButton()
+            .setText('Confirm — Link to ' + entity.name)
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName('onConfirmLink')
+                .setParameters({
+                  messageId: messageId,
+                  threadId: threadId,
+                  linkType: entity.type,
+                  entityId: entity.id,
+                  entityName: entity.name,
+                  sender: sender
+                })
+            )
+        )
+        .addWidget(
+          CardService.newTextButton()
+            .setText('No, search manually')
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName('onManualLink')
+                .setParameters({
+                  messageId: messageId,
+                  threadId: threadId,
+                  sender: sender
+                })
+            )
+        )
+    )
+    .build();
+
+  return card;
+}
+
+/**
+ * User clicked "Confirm Link" — call the link-email endpoint.
+ */
+function onConfirmLink(e) {
+  var result;
+  try {
+    result = fetchBackend('/api/addon/link-email', {
+      gmail_message_id: e.parameters.messageId,
+      gmail_thread_id: e.parameters.threadId,
+      link_type: e.parameters.linkType,
+      entity_id: e.parameters.entityId,
+      sender: e.parameters.sender
+    });
+  } catch (err) {
+    return CardService.newActionResponseBuilder()
+      .setNotification(
+        CardService.newNotification().setText('Error: ' + err.message)
+      )
+      .build();
+  }
+
+  var nav = CardService.newNavigation().popToRoot();
+  return CardService.newActionResponseBuilder()
+    .setNavigation(nav)
+    .setNotification(
+      CardService.newNotification().setText(
+        'Linked to ' + result.entity_name
+      )
+    )
+    .build();
+}
+
+/**
+ * User clicked "No, search manually" — show the type chooser.
+ */
+function onManualLink(e) {
+  return showTypeChooser(e.parameters.messageId, e.parameters.threadId, e.parameters.sender);
+}
+
+/**
+ * Show the type chooser card (Customer or Supplier).
+ */
+function showTypeChooser(messageId, threadId, sender) {
   var card = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
@@ -397,9 +542,9 @@ function onLinkEntity(e) {
               CardService.newAction()
                 .setFunctionName('onChooseEntityType')
                 .setParameters({
-                  messageId: e.parameters.messageId,
-                  threadId: e.parameters.threadId,
-                  sender: e.parameters.sender,
+                  messageId: messageId,
+                  threadId: threadId,
+                  sender: sender,
                   linkType: 'customer'
                 })
             )
@@ -411,9 +556,9 @@ function onLinkEntity(e) {
               CardService.newAction()
                 .setFunctionName('onChooseEntityType')
                 .setParameters({
-                  messageId: e.parameters.messageId,
-                  threadId: e.parameters.threadId,
-                  sender: e.parameters.sender,
+                  messageId: messageId,
+                  threadId: threadId,
+                  sender: sender,
                   linkType: 'supplier'
                 })
             )
@@ -428,7 +573,7 @@ function onLinkEntity(e) {
 }
 
 /**
- * Step 2: User chose Customer or Supplier. Push a search card with a text input.
+ * Step 2: User chose Customer or Supplier. Push a search card.
  */
 function onChooseEntityType(e) {
   var linkType = e.parameters.linkType;
@@ -444,7 +589,8 @@ function onChooseEntityType(e) {
         .setParameters({
           messageId: e.parameters.messageId,
           threadId: e.parameters.threadId,
-          linkType: linkType
+          linkType: linkType,
+          sender: e.parameters.sender
         })
     );
 
@@ -480,6 +626,7 @@ function onChooseEntityType(e) {
 function onSearchEntity(e) {
   var query = e.formInput.searchQuery || '';
   var linkType = e.parameters.linkType;
+  var sender = e.parameters.sender || '';
 
   if (query.length < 2) {
     // Not enough characters — show prompt
@@ -506,7 +653,8 @@ function onSearchEntity(e) {
                   .setParameters({
                     messageId: e.parameters.messageId,
                     threadId: e.parameters.threadId,
-                    linkType: linkType
+                    linkType: linkType,
+                    sender: sender
                   })
               )
           )
@@ -565,7 +713,8 @@ function onSearchEntity(e) {
               .setParameters({
                 messageId: e.parameters.messageId,
                 threadId: e.parameters.threadId,
-                linkType: linkType
+                linkType: linkType,
+                sender: sender
               })
           )
       );
@@ -596,7 +745,8 @@ function onSearchEntity(e) {
                       threadId: e.parameters.threadId,
                       linkType: linkType,
                       entityId: entity.id,
-                      entityName: entity.name
+                      entityName: entity.name,
+                      sender: sender
                     })
                 )
             )
@@ -640,7 +790,8 @@ function onSelectEntity(e) {
       gmail_message_id: e.parameters.messageId,
       gmail_thread_id: e.parameters.threadId,
       link_type: e.parameters.linkType,
-      entity_id: e.parameters.entityId
+      entity_id: e.parameters.entityId,
+      sender: e.parameters.sender || ''
     });
   } catch (err) {
     return CardService.newActionResponseBuilder()

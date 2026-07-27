@@ -124,6 +124,99 @@ _GENERIC_DOMAINS = frozenset({
 })
 
 
+def find_sender_match(
+    session: Session,
+    sender_email: str,
+    domain_index: dict[str, list[dict]] | None = None,
+) -> dict | None:
+    """Look up a sender email against known contacts, customers, and domains.
+
+    Uses the same exact-match → domain-fallback strategy as the automated
+    Gmail sync pipeline.  Returns a single definitive match or None.
+
+    Returns:
+        {
+            "type": "customer" | "supplier",
+            "id": UUID,
+            "name": str,
+            "match_type": "exact" | "domain",
+        }
+        or None if no match.
+    """
+    if not sender_email:
+        return None
+
+    email_lower = sender_email.lower().strip()
+
+    # Step 1: Exact match on contact email or customer email
+    contact = (
+        session.query(Contact)
+        .filter(
+            func.lower(Contact.email) == email_lower,
+            Contact.isinactive == False,
+        )
+        .first()
+    )
+    if contact and (contact.supplier_id or contact.customer_id):
+        if contact.supplier_id:
+            supplier = session.query(Supplier).get(contact.supplier_id)
+            return {
+                "type": "supplier",
+                "id": contact.supplier_id,
+                "name": supplier.name if supplier else "Supplier",
+                "match_type": "exact",
+            }
+        else:
+            customer = session.query(Customer).get(contact.customer_id)
+            return {
+                "type": "customer",
+                "id": contact.customer_id,
+                "name": customer.companyname if customer else "Customer",
+                "match_type": "exact",
+            }
+
+    customer = (
+        session.query(Customer)
+        .filter(
+            func.lower(Customer.email) == email_lower,
+            Customer.isinactive == False,
+        )
+        .first()
+    )
+    if customer:
+        return {
+            "type": "customer",
+            "id": customer.id,
+            "name": customer.companyname,
+            "match_type": "exact",
+        }
+
+    # Step 2: Domain fallback
+    domain = extract_domain(sender_email)
+    if domain and domain not in _GENERIC_DOMAINS:
+        if domain_index is None:
+            domain_index = build_domain_index(session)
+        entries = domain_index.get(domain.lower())
+        if entries:
+            entry = entries[0]  # first match only — no ambiguity
+            # Resolve name if not already in the index
+            name = entry.get("name")
+            if not name and entry["type"] == "supplier":
+                supplier = session.query(Supplier).get(entry["id"])
+                name = supplier.name if supplier else "Supplier"
+            elif not name and entry["type"] == "customer":
+                customer = session.query(Customer).get(entry["id"])
+                name = customer.companyname if customer else "Customer"
+            return {
+                "type": entry["type"],
+                "id": entry["id"],
+                "name": name or entry["type"].capitalize(),
+                "match_type": "domain",
+            }
+
+    return None
+
+
 def match_by_id(session: Session, gmail_thread_id: str, gmail_message_id: str | None) -> Optional[EmailTracking]:
     """Tier 1: Check if thread/message already exists in email_tracking."""
     filters = [EmailTracking.gmail_thread_id == gmail_thread_id]
