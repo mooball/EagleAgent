@@ -645,6 +645,10 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                 if not tracking.supplier_id:
                     logger.warning(f"[quote-pipeline] #{email_tracking_id}: no supplier link (rfq_token={tracking.rfq_token})")
                     return
+                # Skip if already processed
+                if tracking.supplier_pipeline_result:
+                    logger.info(f"[quote-pipeline] #{email_tracking_id}: already processed, skipping")
+                    return
             finally:
                 session.close()
 
