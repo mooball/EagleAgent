@@ -301,7 +301,7 @@ def search_entities(type: str, q: str, user: AddonUser):
                     "WHERE "
                     "  LOWER(r.rfq_number) LIKE :q "
                     "  OR LOWER(r.customer) LIKE :q "
-                    "  OR (o.opportunity_number IS NOT NULL AND LOWER('OP' || o.opportunity_number) LIKE :q) "
+                    "  OR (o.opportunity_number IS NOT NULL AND LOWER(o.opportunity_number) LIKE :q) "
                     "ORDER BY r.created_date DESC "
                     "LIMIT 10"
                 ),

@@ -1000,7 +1000,7 @@ function onSearchRfq(e) {
         var rfq = results[i];
         var line = rfq.rfq_number + ' — ' + rfq.customer;
         if (rfq.opportunity_id) {
-          line += ' (OP' + rfq.opportunity_id + ')';
+          line += ' (' + rfq.opportunity_id + ')';
         }
         resultSection.addWidget(
           CardService.newDecoratedText()
