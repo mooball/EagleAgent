@@ -505,9 +505,9 @@ def _maybe_trigger_quote_pipeline(session, gmail_thread_id: str):
     if not gmail_thread_id:
         return
 
-    # Find the first received email in the thread linked to both
-    # supplier and RFQ
-    candidate = (
+    # Find all received emails in the thread linked to both
+    # supplier and RFQ — the pipeline handles non-quote emails gracefully.
+    candidates = (
         session.query(EmailTracking)
         .filter(
             EmailTracking.gmail_thread_id == gmail_thread_id,
@@ -518,11 +518,10 @@ def _maybe_trigger_quote_pipeline(session, gmail_thread_id: str):
                 | EmailTracking.rfq_id.isnot(None)
             ),
         )
-        .order_by(EmailTracking.id.asc())
-        .first()
+        .all()
     )
 
-    if candidate:
+    for candidate in candidates:
         from includes.tools.supplier_quote_pipeline import trigger_supplier_quote_pipeline
         trigger_supplier_quote_pipeline(candidate.id, user_id="addon")
         logger.info(
