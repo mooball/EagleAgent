@@ -436,6 +436,11 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
                 save_sender_domain(session, body.sender, "supplier", supplier_id)
 
             session.commit()
+
+            # Trigger quote pipeline if any received email in thread
+            # has an rfq_token — now linked to both supplier + RFQ
+            _maybe_trigger_quote_pipeline(session, tid)
+
             return JSONResponse({
                 "status": "ok",
                 "message": f"Linked to {supplier.name}",
@@ -460,6 +465,11 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
                 {"token": rfq_token, "tid": tid, "eid": tracking.id},
             )
             session.commit()
+
+            # Trigger quote pipeline if any received email in thread
+            # has a supplier_id — now linked to both RFQ + supplier
+            _maybe_trigger_quote_pipeline(session, tid)
+
             return JSONResponse({
                 "status": "ok",
                 "message": f"Linked to {rfq_token}",
@@ -481,3 +491,42 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
         )
     finally:
         session.close()
+
+
+def _maybe_trigger_quote_pipeline(session, gmail_thread_id: str):
+    """Trigger the supplier quote pipeline if the thread has received emails
+    linked to both a supplier and an RFQ.
+
+    Finds the first received email in the thread that meets the criteria
+    and queues it for quotation analysis.
+    """
+    from includes.dashboard.models import EmailTracking
+
+    if not gmail_thread_id:
+        return
+
+    # Find the first received email in the thread linked to both
+    # supplier and RFQ
+    candidate = (
+        session.query(EmailTracking)
+        .filter(
+            EmailTracking.gmail_thread_id == gmail_thread_id,
+            EmailTracking.direction == "received",
+            EmailTracking.supplier_id.isnot(None),
+            (
+                EmailTracking.rfq_token.isnot(None)
+                | EmailTracking.rfq_id.isnot(None)
+            ),
+        )
+        .order_by(EmailTracking.id.asc())
+        .first()
+    )
+
+    if candidate:
+        from includes.tools.supplier_quote_pipeline import trigger_supplier_quote_pipeline
+        trigger_supplier_quote_pipeline(candidate.id, user_id="addon")
+        logger.info(
+            "Triggered quote pipeline for email #%d (thread %s) via Gmail add-on",
+            candidate.id,
+            gmail_thread_id,
+        )
