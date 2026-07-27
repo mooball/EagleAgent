@@ -313,7 +313,7 @@ def search_entities(type: str, q: str, user: AddonUser):
                         "rfq_number": r["rfq_number"],
                         "status": r["status"] or "draft",
                         "customer": r["customer"],
-                        "opportunity_id": r["opportunity_id"],
+                        "opportunity_id": str(r["opportunity_id"]) if r["opportunity_id"] else None,
                     }
                     for r in rows
                 ],
