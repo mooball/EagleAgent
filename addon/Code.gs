@@ -266,19 +266,22 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
     );
   }
 
-  actionsSection.addWidget(
-    CardService.newTextButton()
-      .setText('Link to RFQ')
-      .setOnClickAction(
-        CardService.newAction()
-          .setFunctionName('onLinkRfq')
-          .setParameters({
-            messageId: messageId,
-            threadId: threadId,
-            subject: subject
-          })
-      )
-  );
+  // Only show "Link to RFQ" if not already linked
+  if (!context.rfq) {
+    actionsSection.addWidget(
+      CardService.newTextButton()
+        .setText('Link to RFQ')
+        .setOnClickAction(
+          CardService.newAction()
+            .setFunctionName('onLinkRfq')
+            .setParameters({
+              messageId: messageId,
+              threadId: threadId,
+              subject: subject
+            })
+        )
+    );
+  }
 
   // Only show "Create New RFQ" if a customer is already linked
   if (context.customer) {
@@ -802,6 +805,236 @@ function onSelectEntity(e) {
   }
 
   // Pop back to the context card, which will now show the linked entity
+  var nav = CardService.newNavigation().popToRoot();
+  return CardService.newActionResponseBuilder()
+    .setNavigation(nav)
+    .setNotification(
+      CardService.newNotification().setText(
+        'Linked to ' + result.entity_name
+      )
+    )
+    .build();
+}
+
+// ============================================================
+// Phase 2: Link to RFQ — search + select flow
+// ============================================================
+
+/**
+ * User clicked "Link to RFQ". Push a search card.
+ */
+function onLinkRfq(e) {
+  var searchInput = CardService.newTextInput()
+    .setFieldName('searchQuery')
+    .setTitle('Search RFQs')
+    .setHint('RFQ number, OP number, or customer name...')
+    .setOnChangeAction(
+      CardService.newAction()
+        .setFunctionName('onSearchRfq')
+        .setParameters({
+          messageId: e.parameters.messageId,
+          threadId: e.parameters.threadId
+        })
+    );
+
+  var card = CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader().setTitle('Link to RFQ')
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(searchInput)
+    )
+    .addSection(
+      CardService.newCardSection()
+        .setHeader('Results')
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText('<i>Type to search by RFQ number, OP number, or customer...</i>')
+        )
+    )
+    .build();
+
+  var nav = CardService.newNavigation().pushCard(card);
+  return CardService.newActionResponseBuilder()
+    .setNavigation(nav)
+    .build();
+}
+
+/**
+ * User typed in the RFQ search box. Call the search endpoint and rebuild.
+ */
+function onSearchRfq(e) {
+  var query = e.formInput.searchQuery || '';
+
+  if (query.length < 2) {
+    var emptyCard = buildRfqSearchCard(
+      '<i>Type at least 2 characters to search...</i>',
+      query,
+      e.parameters.messageId,
+      e.parameters.threadId
+    );
+    var nav = CardService.newNavigation().updateCard(emptyCard);
+    return CardService.newActionResponseBuilder()
+      .setNavigation(nav)
+      .build();
+  }
+
+  var url = BACKEND_URL + '/api/addon/search?type=rfq&q=' +
+            encodeURIComponent(query);
+  var idToken = ScriptApp.getIdentityToken();
+
+  try {
+    var response = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + idToken },
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      throw new Error('Search failed: ' + response.getContentText());
+    }
+
+    var data = JSON.parse(response.getContentText());
+    var results = data.results || [];
+
+    var resultsCard = CardService.newCardBuilder()
+      .setHeader(CardService.newCardHeader().setTitle('Link to RFQ'));
+
+    var inputSection = CardService.newCardSection()
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName('searchQuery')
+          .setTitle('Search RFQs')
+          .setValue(query)
+          .setOnChangeAction(
+            CardService.newAction()
+              .setFunctionName('onSearchRfq')
+              .setParameters({
+                messageId: e.parameters.messageId,
+                threadId: e.parameters.threadId
+              })
+          )
+      );
+    resultsCard.addSection(inputSection);
+
+    var resultSection = CardService.newCardSection().setHeader('Results');
+
+    if (results.length === 0) {
+      resultSection.addWidget(
+        CardService.newTextParagraph()
+          .setText('<i>No RFQs found matching "' + query + '".</i>')
+      );
+    } else {
+      for (var i = 0; i < results.length; i++) {
+        var rfq = results[i];
+        var line = rfq.rfq_number + ' — ' + rfq.customer;
+        if (rfq.opportunity_id) {
+          line += ' (OP' + rfq.opportunity_id + ')';
+        }
+        resultSection.addWidget(
+          CardService.newDecoratedText()
+            .setText(line)
+            .setBottomLabel(rfq.status)
+            .setWrapText(true)
+            .setButton(
+              CardService.newTextButton()
+                .setText('Link')
+                .setOnClickAction(
+                  CardService.newAction()
+                    .setFunctionName('onSelectRfq')
+                    .setParameters({
+                      messageId: e.parameters.messageId,
+                      threadId: e.parameters.threadId,
+                      rfqToken: rfq.rfq_number
+                    })
+                )
+            )
+        );
+      }
+    }
+
+    resultsCard.addSection(resultSection);
+
+    var nav = CardService.newNavigation().updateCard(resultsCard.build());
+    return CardService.newActionResponseBuilder()
+      .setNavigation(nav)
+      .build();
+
+  } catch (err) {
+    var errCard = CardService.newCardBuilder()
+      .setHeader(CardService.newCardHeader().setTitle('Search Error'))
+      .addSection(
+        CardService.newCardSection()
+          .addWidget(
+            CardService.newTextParagraph()
+              .setText('<font color="#d93025">' + err.message + '</font>')
+          )
+      )
+      .build();
+
+    var nav = CardService.newNavigation().updateCard(errCard);
+    return CardService.newActionResponseBuilder()
+      .setNavigation(nav)
+      .build();
+  }
+}
+
+/**
+ * Build a simple RFQ search card (used for empty/minimal state).
+ */
+function buildRfqSearchCard(message, query, messageId, threadId) {
+  var card = CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Link to RFQ'))
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextInput()
+            .setFieldName('searchQuery')
+            .setTitle('Search RFQs')
+            .setValue(query || '')
+            .setOnChangeAction(
+              CardService.newAction()
+                .setFunctionName('onSearchRfq')
+                .setParameters({
+                  messageId: messageId,
+                  threadId: threadId
+                })
+            )
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .setHeader('Results')
+        .addWidget(
+          CardService.newTextParagraph().setText(message)
+        )
+    )
+    .build();
+
+  return card;
+}
+
+/**
+ * User selected an RFQ from the search results. Link the email.
+ */
+function onSelectRfq(e) {
+  var result;
+  try {
+    result = fetchBackend('/api/addon/link-email', {
+      gmail_message_id: e.parameters.messageId,
+      gmail_thread_id: e.parameters.threadId,
+      link_type: 'rfq',
+      rfq_token: e.parameters.rfqToken
+    });
+  } catch (err) {
+    return CardService.newActionResponseBuilder()
+      .setNotification(
+        CardService.newNotification().setText('Error: ' + err.message)
+      )
+      .build();
+  }
+
   var nav = CardService.newNavigation().popToRoot();
   return CardService.newActionResponseBuilder()
     .setNavigation(nav)
