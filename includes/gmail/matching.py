@@ -123,6 +123,155 @@ _GENERIC_DOMAINS = frozenset({
     'protonmail.com', 'proton.me', 'mail.com', 'zoho.com',
 })
 
+# Internal company domains — never save these as entity domains
+_INTERNAL_DOMAINS = frozenset({
+    'eagle-exports.com', 'eagle-exports.com.au',
+    'eaglexp.com', 'eaglexp.com.au',
+})
+
+
+def find_sender_match(
+    session: Session,
+    sender_email: str,
+    domain_index: dict[str, list[dict]] | None = None,
+) -> dict | None:
+    """Look up a sender email against known contacts, customers, and domains.
+
+    Uses the same exact-match → domain-fallback strategy as the automated
+    Gmail sync pipeline.  Returns a single definitive match or None.
+
+    Returns:
+        {
+            "type": "customer" | "supplier",
+            "id": UUID,
+            "name": str,
+            "match_type": "exact" | "domain",
+        }
+        or None if no match.
+    """
+    if not sender_email:
+        return None
+
+    email_lower = sender_email.lower().strip()
+
+    # Step 1: Exact match on contact email or customer email
+    contact = (
+        session.query(Contact)
+        .filter(
+            func.lower(Contact.email) == email_lower,
+            Contact.isinactive == False,
+        )
+        .first()
+    )
+    if contact and (contact.supplier_id or contact.customer_id):
+        if contact.supplier_id:
+            supplier = session.query(Supplier).get(contact.supplier_id)
+            return {
+                "type": "supplier",
+                "id": contact.supplier_id,
+                "name": supplier.name if supplier else "Supplier",
+                "match_type": "exact",
+            }
+        else:
+            customer = session.query(Customer).get(contact.customer_id)
+            return {
+                "type": "customer",
+                "id": contact.customer_id,
+                "name": customer.companyname if customer else "Customer",
+                "match_type": "exact",
+            }
+
+    customer = (
+        session.query(Customer)
+        .filter(
+            func.lower(Customer.email) == email_lower,
+            Customer.isinactive == False,
+        )
+        .first()
+    )
+    if customer:
+        return {
+            "type": "customer",
+            "id": customer.id,
+            "name": customer.companyname,
+            "match_type": "exact",
+        }
+
+    # Step 2: Domain fallback
+    domain = extract_domain(sender_email)
+    if domain and domain not in _GENERIC_DOMAINS:
+        if domain_index is None:
+            domain_index = build_domain_index(session)
+        entries = domain_index.get(domain.lower())
+        if entries:
+            entry = entries[0]  # first match only — no ambiguity
+            # Resolve name if not already in the index
+            name = entry.get("name")
+            if not name and entry["type"] == "supplier":
+                supplier = session.query(Supplier).get(entry["id"])
+                name = supplier.name if supplier else "Supplier"
+            elif not name and entry["type"] == "customer":
+                customer = session.query(Customer).get(entry["id"])
+                name = customer.companyname if customer else "Customer"
+            return {
+                "type": entry["type"],
+                "id": entry["id"],
+                "name": name or entry["type"].capitalize(),
+                "match_type": "domain",
+            }
+
+    return None
+
+
+def save_sender_domain(
+    session: Session,
+    sender_email: str,
+    entity_type: str,
+    entity_id,
+) -> str:
+    """Save the sender's domain to an entity for future matching.
+
+    - Supplier: Append domain to alt_domains (JSONB) if not present.
+    - Customer: Set email field if currently empty.
+    - Generic domains (gmail, yahoo, etc.) are skipped.
+
+    Returns a human-readable message describing what was done.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    if not sender_email or "@" not in sender_email:
+        return "(no email to extract domain from)"
+
+    domain = sender_email.rsplit("@", 1)[1].lower().strip()
+
+    if domain in _GENERIC_DOMAINS or domain in _INTERNAL_DOMAINS:
+        return f"(skipped domain {domain})"
+
+    if entity_type == "supplier":
+        supplier = session.query(Supplier).get(entity_id)
+        if not supplier:
+            return "(supplier not found)"
+        alt_domains = list(supplier.alt_domains or [])
+        if domain not in alt_domains:
+            alt_domains.append(domain)
+            supplier.alt_domains = alt_domains
+            flag_modified(supplier, "alt_domains")
+            logger.info("Saved domain %r to supplier %s", domain, supplier.name)
+            return f"Domain '{domain}' saved to {supplier.name}."
+        return f"Domain '{domain}' already registered for {supplier.name}."
+
+    elif entity_type == "customer":
+        customer = session.query(Customer).get(entity_id)
+        if not customer:
+            return "(customer not found)"
+        if not customer.email:
+            customer.email = sender_email.lower().strip()
+            logger.info("Saved email %r to customer %s", sender_email, customer.companyname)
+            return f"Email '{sender_email}' saved to {customer.companyname}."
+        return f"(customer already has email {customer.email}; domain not saved)"
+
+    return ""
+
 
 def match_by_id(session: Session, gmail_thread_id: str, gmail_message_id: str | None) -> Optional[EmailTracking]:
     """Tier 1: Check if thread/message already exists in email_tracking."""

@@ -696,6 +696,81 @@ For domain-internal add-ons:
 
 ---
 
+## Implementation Log (Updated 2026-07-27)
+
+### ✅ Phase 1 — COMPLETE
+
+**What was built:**
+- `addon/` directory with full `clasp` workflow
+- `addon/appsscript.json` — manifest with `openid`, `gmail.addons.execute`, `gmail.addons.current.message.*`, `script.external_request` scopes
+- `addon/Code.gs` — `onHomepage()`, `onGmailMessageOpen()`, `buildContextCard()`, `buildErrorCard()`, `buildEditorFallbackCard()`, `buildNoActionsCard()`, `fetchBackend()` helper
+- `includes/dashboard/routes/addon.py` — `POST /api/addon/context`, `POST /api/addon/link-email`, `GET /api/addon/search`, `POST /api/addon/match`
+- `includes/gmail/matching.py` — new shared functions: `find_sender_match()`, `save_sender_domain()`
+- `includes/tools/supplier_quote_pipeline.py` — deduplication guard added
+- `main.py` — registered addon router
+- `config/settings.py` — `GOOGLE_ADDON_CLIENT_ID` setting
+
+**Deviations from original plan:**
+1. **Domain corrected**: `eagle-exports.com.au` → `eagle-exports.com` (Google Workspace domain is `.com`, not `.com.au`)
+2. **Logo URL**: Uses `EagleAgent.png` at the production URL (`agent.eaglexp.com.au/public/avatars/EagleAgent.png`), not a non-existent `eagle-icon.png` on `mooball.net`
+3. **Backend URL**: `agent.eaglexp.com.au` instead of `eagle-agent.mooball.net`
+4. **Added `gmail.addons.execute` scope**: Required for action buttons to modify the add-on card UI
+5. **Added `urlFetchWhitelist`**: Required by Google Workspace add-on policy
+6. **OIDC verification simplified**: No audience (`aud`) check — relies on `hd` domain claim only
+7. **Add-on named "Eagle Agent"** instead of "Eagle Procurement"
+
+**Clasp project:**
+- Script ID: `1EVIKvVdsNS4qXq7UbODESpuKDk39q_q71i1Dhtm-vKEIumaLqOa43cnt`
+- GCP project number: `308081329519`
+
+### ✅ Phase 2 — COMPLETE (Link + Search flows)
+
+**Link to Customer/Supplier flow (match-first):**
+1. `onLinkEntity` → `POST /api/addon/match` (shared `find_sender_match()` from `matching.py`)
+2. Match found → suggestion card with "Confirm Link" / "Search manually"
+3. No match → type chooser (Customer/Supplier) → live search → select → `POST /api/addon/link-email`
+4. Domain auto-saved to entity on link (via shared `save_sender_domain()`)
+
+**Link to RFQ flow:**
+1. `onLinkRfq` → search card (searches RFQ number, OP number, customer name)
+2. Live search via `GET /api/addon/search?type=rfq` (ordered by `created_date DESC`)
+3. Select → `POST /api/addon/link-email` with `link_type='rfq'`
+
+**Button visibility rules:**
+| Button | Visible when |
+|---|---|
+| Link to Customer/Supplier | No customer AND no supplier linked |
+| Link to RFQ | No RFQ linked |
+| Create RFQ | Customer IS linked |
+
+**Shared code refactoring:**
+- `find_sender_match()` in `matching.py` — used by both automated sync pipeline and add-on
+- `save_sender_domain()` in `matching.py` — used by admin dashboard (`_save_email_domain()`) and add-on (`link-email` with `save_domain=true`)
+- `_maybe_trigger_quote_pipeline()` in `addon.py` — triggers supplier quote pipeline on ALL received emails in thread after linking
+
+**Pipeline integration:**
+- `supplier_quote_pipeline` triggered when linking completes the RFQ+supplier pair on received emails
+- Deduplication guard: `trigger_supplier_quote_pipeline` checks `supplier_pipeline_result` before processing
+- Runs on ALL received emails in the thread (not just the first one)
+
+### 🔜 Phase 2 remaining — Create RFQ from Email
+
+**Not yet implemented:**
+- `onCreateRfq` → create new RFQ from email, linked to customer
+- Backend endpoint `POST /api/addon/create-rfq`
+
+### 🔜 Phase 3 — Polish & Rollout
+
+**Not yet implemented:**
+- "Open in Dashboard" buttons
+- Supplier quote status on context card
+- Ad-hoc pipeline trigger button
+- Cache context lookups in `CacheService`
+- Admin Console install for target users
+- Error: retry on 5xx, graceful timeout card
+
+---
+
 ## File Changes Summary (Phase 1)
 
 | File | Action | Description |

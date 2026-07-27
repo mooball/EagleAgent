@@ -915,8 +915,8 @@ async def api_run_email_pipeline(email_id: int, request: Request,
 
 
 def _save_email_domain(session, tracking: "EmailTracking", entity_type: str, entity_id: str) -> str:
-    """Extract the external email domain and save it to the entity's alt_domains for future matching."""
-    from includes.dashboard.models import Supplier, Customer
+    """Extract the external email domain and save it to the entity for future matching."""
+    from includes.gmail.matching import save_sender_domain
 
     # Determine the external email address
     if tracking.direction == "received":
@@ -927,38 +927,4 @@ def _save_email_domain(session, tracking: "EmailTracking", entity_type: str, ent
     if not external_email or "eagle-exports" in external_email:
         return ""
 
-    domain = external_email.split("@")[-1].lower() if "@" in external_email else None
-    if not domain:
-        return ""
-
-    # Skip generic providers
-    generic = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "live.com",
-               "icloud.com", "aol.com", "protonmail.com", "zoho.com", "mail.com",
-               "ymail.com", "fastmail.com", "me.com", "msn.com", "googlemail.com",
-               "bigpond.com"}
-    if domain in generic:
-        return f"(skipped generic domain {domain})"
-
-    if entity_type == "supplier":
-        supplier = session.query(Supplier).filter(Supplier.id == entity_id).first()
-        if supplier:
-            existing = supplier.alt_domains or []
-            if domain not in existing:
-                supplier.alt_domains = existing + [domain]
-                return f"Domain '{domain}' saved to {supplier.name}."
-            else:
-                return f"Domain '{domain}' already registered."
-    elif entity_type == "customer":
-        # Customers don't have alt_domains, store domain in email field if empty
-        customer = session.query(Customer).filter(Customer.id == entity_id).first()
-        if customer:
-            if not customer.email:
-                customer.email = external_email
-                return f"Email '{external_email}' saved to {customer.companyname}."
-            elif domain in (customer.email or ""):
-                return f"Domain already registered via {customer.email}."
-            else:
-                # Add as a contact instead
-                return f"(customer already has email {customer.email}; domain not saved)"
-
-    return ""
+    return save_sender_domain(session, external_email, entity_type, entity_id)
