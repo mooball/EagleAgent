@@ -753,7 +753,81 @@ For domain-internal add-ons:
 - Deduplication guard: `trigger_supplier_quote_pipeline` checks `supplier_pipeline_result` before processing
 - Runs on ALL received emails in the thread (not just the first one)
 
-### 🔜 Phase 2 remaining — Create RFQ from Email
+### � Phase 2 fix — Outgoing Email & Draft Linking (Domain Logic Rework)
+
+**Problem**: The current blacklist check only looks at the `From` (sender). If the sender is internal (eagle-exports.com etc.), the add-on immediately shows a "no actions" card. This blocks linking for:
+- **Outgoing emails**: A sales rep sends TO a supplier — the sender is internal, but the `To` address is the relevant external party.
+- **Draft emails**: A rep is composing an email to a supplier/customer and wants to link it before sending.
+
+**Revised logic**:
+
+The add-on should determine the "relevant contact" (the external party) based on email direction:
+
+| Scenario | Sender | To | Relevant contact | Action |
+|----------|--------|-----|-----------------|--------|
+| Received from external | external@supplier.com | (internal) | sender | Show context + link actions |
+| Sent to external | internal@eagle-exports.com | external@supplier.com | first non-blacklisted To | Show context + link actions |
+| Internal-to-internal | internal@eagle-exports.com | internal@eagle-exports.com | — | Show "no actions" card |
+| Google service email | noreply@google.com | (internal) | — | Show "no actions" card |
+| Draft to external | internal@eagle-exports.com | external@supplier.com | first non-blacklisted To | Show context + link actions |
+| Draft (no recipient yet) | internal@eagle-exports.com | (empty) | — | Show "no actions" card (or minimal card) |
+
+**Implementation plan (Code.gs)**:
+
+1. Rename `isBlacklisted(sender)` → new function `getRelevantContact(message)` that returns `{address, direction}` or `null`:
+   ```javascript
+   function getRelevantContact(message) {
+     var sender = message.getFrom();
+     var senderDomain = extractDomain(sender);
+     
+     // If sender is external (not internal/blacklisted) → relevant contact is sender
+     if (!isDomainBlocked(senderDomain)) {
+       return { address: sender, direction: 'received' };
+     }
+     
+     // Sender is internal — check To recipients for an external address
+     var to = message.getTo();  // comma-separated string
+     if (to) {
+       var recipients = to.split(',');
+       for (var i = 0; i < recipients.length; i++) {
+         var recipDomain = extractDomain(recipients[i].trim());
+         if (recipDomain && !isDomainBlocked(recipDomain)) {
+           return { address: recipients[i].trim(), direction: 'sent' };
+         }
+       }
+     }
+     
+     // All parties are internal/blacklisted → no relevant contact
+     return null;
+   }
+   ```
+
+2. Rename `DOMAIN_BLACKLIST` → `BLOCKED_DOMAINS` (clearer name) — keep same list.
+
+3. Update `onGmailMessageOpen()`:
+   ```javascript
+   var contact = getRelevantContact(message);
+   if (!contact) {
+     return [buildNoActionsCard(subject, sender)];
+   }
+   // Pass contact.address as the "sender" param to backend (it's really "relevant contact")
+   // Also pass direction so backend knows context
+   ```
+
+4. Pass `contact.address` (instead of raw sender) to backend `/api/addon/context` and through action parameters so linking/matching uses the external party's address.
+
+5. **Draft support**: `message.getTo()` works on drafts. If draft has no `To` yet, `getRelevantContact` returns `null` → show a minimal "Add a recipient to enable linking" card.
+
+6. Update `buildNoActionsCard()` text to say "All parties on this email are internal — no linking needed" (instead of current text referencing "sender").
+
+**Backend changes**: None needed. The backend already receives a `sender` param and does matching on it. We just pass the correct external address from the front-end.
+
+**Files to change:**
+| File | Change |
+|------|--------|
+| `addon/Code.gs` | Replace `isBlacklisted()` with `getRelevantContact()`, update `onGmailMessageOpen()`, update action parameter threading |
+
+### �🔜 Phase 2 remaining — Create RFQ from Email
 
 **Not yet implemented:**
 - `onCreateRfq` → create new RFQ from email, linked to customer

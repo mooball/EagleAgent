@@ -10,11 +10,34 @@
 // In a future version this could be fetched from script properties.
 const BACKEND_URL = 'https://agent.eaglexp.com.au';
 
+// Context cache TTL in seconds (5 minutes).
+// Caching is controlled by a script property — set DEPLOYMENT_MODE = "production"
+// in Script Properties to enable.  Test/staging deployments skip the cache.
+var CONTEXT_CACHE_TTL = 300;
+
+/**
+ * Check if context caching is currently enabled.
+ *
+ * Production deployments set a Script Property:
+ *   PropertiesService → Script Properties → DEPLOYMENT_MODE = "production"
+ *
+ * Test/staging (head) deployments leave this unset → cache is skipped.
+ */
+function isCacheEnabled() {
+  try {
+    var mode = PropertiesService.getScriptProperties().getProperty('DEPLOYMENT_MODE');
+    return mode === 'production';
+  } catch (e) {
+    // PropertiesService may not be ready (e.g. panel reopen race)
+    return false;
+  }
+}
+
 // ============================================================
-// Domain blacklist — emails from these domains show a simplified
-// card with no link actions to avoid false matches.
+// Blocked domains — emails where ALL parties are on these domains
+// get a simplified card with no link actions.
 // ============================================================
-var DOMAIN_BLACKLIST = [
+var BLOCKED_DOMAINS = [
   'google.com',
   'accounts.google.com',
   'eagle-exports.com.au',
@@ -24,7 +47,7 @@ var DOMAIN_BLACKLIST = [
 ];
 
 /**
- * Extract the domain from a Gmail sender string.
+ * Extract the domain from a Gmail address string.
  * Handles formats: "Name" <email@domain.com> or plain email@domain.com
  */
 function extractDomain(sender) {
@@ -35,15 +58,65 @@ function extractDomain(sender) {
 }
 
 /**
- * Check if the sender's domain is in the blacklist.
+ * Check if a domain is in the blocked list.
  */
-function isBlacklisted(sender) {
-  var domain = extractDomain(sender);
-  if (!domain) return false;
-  for (var i = 0; i < DOMAIN_BLACKLIST.length; i++) {
-    if (domain === DOMAIN_BLACKLIST[i]) return true;
+function isDomainBlocked(domain) {
+  if (!domain) return true;
+  for (var i = 0; i < BLOCKED_DOMAINS.length; i++) {
+    if (domain === BLOCKED_DOMAINS[i]) return true;
   }
   return false;
+}
+
+/**
+ * Determine the relevant external contact for an email message.
+ *
+ * For received emails (sender is external) → the sender is the contact.
+ * For sent/draft emails (sender is internal) → the first external To
+ * recipient is the contact.
+ *
+ * Returns { address: string, direction: 'received'|'sent' } or null if
+ * all parties are blocked/internal.
+ */
+function getRelevantContact(message) {
+  var sender = message.getFrom();
+  var senderDomain = extractDomain(sender);
+
+  // If sender is external → relevant contact is the sender
+  if (!isDomainBlocked(senderDomain)) {
+    return { address: sender, direction: 'received' };
+  }
+
+  // Sender is internal — check To recipients for an external address
+  var to = message.getTo();
+  if (to) {
+    var recipients = to.split(',');
+    for (var i = 0; i < recipients.length; i++) {
+      var recip = recipients[i].trim();
+      var recipDomain = extractDomain(recip);
+      if (recipDomain && !isDomainBlocked(recipDomain)) {
+        return { address: recip, direction: 'sent' };
+      }
+    }
+  }
+
+  // All parties are blocked/internal
+  return null;
+}
+
+/**
+ * Return a human-readable label for pipeline classification codes.
+ */
+function pipelineClassificationLabel(classification) {
+  var labels = {
+    'quote_response': 'Quote Response',
+    'clarification_required': 'Clarification Required',
+    'declined': 'Declined',
+    'acknowledgement': 'Acknowledgement',
+    'not_quote': 'Not a Quote',
+    'needs_review': 'Needs Review',
+  };
+  return labels[classification] || classification;
 }
 
 // ============================================================
@@ -143,7 +216,6 @@ function onHomepage(e) {
   var card = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
-        .setTitle('Eagle Agent')
         .setSubtitle('Open an email to see context')
     )
     .addSection(
@@ -174,35 +246,43 @@ function onGmailMessageOpen(e) {
     return [buildEditorFallbackCard()];
   }
 
-  // Activate temporary Gmail scopes for reading message metadata
-  var accessToken = e.gmail.accessToken;
-  GmailApp.setCurrentMessageAccessToken(accessToken);
-
-  var messageId = e.gmail.messageId;
-  var message = GmailApp.getMessageById(messageId);
-  var subject = message.getSubject();
-  var sender = message.getFrom();
-  var threadId = message.getThread().getId();
-
-  // Skip backend call for blacklisted domains (Google services, internal)
-  if (isBlacklisted(sender)) {
-    return [buildNoActionsCard(subject, sender)];
-  }
-
-  // Call backend for entity linking context
-  var context;
   try {
-    context = fetchBackend('/api/addon/context', {
-      gmail_message_id: messageId,
-      gmail_thread_id: threadId,
-      subject: subject,
-      sender: sender
-    });
-  } catch (err) {
-    return [buildErrorCard(err.message)];
-  }
+    // Activate temporary Gmail scopes for reading message metadata
+    var accessToken = e.gmail.accessToken;
+    GmailApp.setCurrentMessageAccessToken(accessToken);
 
-  return [buildContextCard(context, messageId, threadId, subject, sender)];
+    var messageId = e.gmail.messageId;
+    var message = GmailApp.getMessageById(messageId);
+    var subject = message.getSubject();
+    var sender = message.getFrom();
+    var threadId = message.getThread().getId();
+
+    // Determine the relevant external contact
+    var contact = getRelevantContact(message);
+    if (!contact) {
+      return [buildNoActionsCard(subject)];
+    }
+
+    // Use the external contact address for backend matching
+    var contactAddress = contact.address;
+
+    // Call backend for entity linking context
+    var context;
+    try {
+      context = fetchBackend('/api/addon/context', {
+        gmail_message_id: messageId,
+        gmail_thread_id: threadId,
+        subject: subject,
+        sender: contactAddress
+      });
+    } catch (err) {
+      return [buildErrorCard(err.message)];
+    }
+
+    return [buildContextCard(context, messageId, threadId, subject, contactAddress)];
+  } catch (e) {
+    return [buildErrorCard('Unexpected error: ' + (e.message || e))];
+  }
 }
 
 // ============================================================
@@ -213,9 +293,23 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
   var builder = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
-        .setTitle('Eagle Agent')
         .setSubtitle(subject.length > 60 ? subject.substring(0, 57) + '...' : subject)
     );
+
+  // ---- Pipeline status (supplier quote classification) ----
+  if (context.pipeline_status) {
+    var label = pipelineClassificationLabel(context.pipeline_status.classification);
+    builder.addSection(
+      CardService.newCardSection()
+        .setHeader('Email Classification')
+        .addWidget(
+          CardService.newDecoratedText()
+            .setText(label)
+            .setBottomLabel(context.pipeline_status.reason || '')
+            .setWrapText(true)
+        )
+    );
+  }
 
   // ---- Status section: linked entities ----
   var statusSection = CardService.newCardSection().setHeader('Linked Entities');
@@ -251,6 +345,14 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
           CardService.newIconImage().setIcon(CardService.Icon.DESCRIPTION)
         )
     );
+    statusSection.addWidget(
+      CardService.newTextButton()
+        .setText('View in Dashboard')
+        .setOpenLink(
+          CardService.newOpenLink()
+            .setUrl(BACKEND_URL + '/rfqs/' + context.rfq.rfq_number)
+        )
+    );
   }
 
   if (context.opportunity) {
@@ -280,6 +382,7 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
 
   // ---- Actions section ----
   var actionsSection = CardService.newCardSection().setHeader('Actions');
+  var hasActions = false;
 
   // Only show "Link to Customer/Supplier" if neither is already linked
   if (!context.customer && !context.supplier) {
@@ -297,6 +400,7 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
             })
         )
     );
+    hasActions = true;
   }
 
   // Only show "Link to RFQ" if not already linked
@@ -315,6 +419,7 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
             })
         )
     );
+    hasActions = true;
   }
 
   // Only show "Create New RFQ" if a customer is already linked
@@ -333,9 +438,34 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
             })
         )
     );
+    hasActions = true;
   }
 
-  builder.addSection(actionsSection);
+  // Show "Manage Links" if any entity is already linked
+  if (context.customer || context.supplier || context.rfq) {
+    actionsSection.addWidget(
+      CardService.newTextButton()
+        .setText('Manage Links')
+        .setOnClickAction(
+          CardService.newAction()
+            .setFunctionName('onManageLinks')
+            .setParameters({
+              messageId: messageId,
+              threadId: threadId,
+              sender: sender,
+              subject: subject,
+              customer: context.customer ? JSON.stringify(context.customer) : '',
+              supplier: context.supplier ? JSON.stringify(context.supplier) : '',
+              rfq: context.rfq ? JSON.stringify(context.rfq) : ''
+            })
+        )
+    );
+    hasActions = true;
+  }
+
+  if (hasActions) {
+    builder.addSection(actionsSection);
+  }
 
   return builder.build();
 }
@@ -347,7 +477,7 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
 function buildErrorCard(message) {
   return CardService.newCardBuilder()
     .setHeader(
-      CardService.newCardHeader().setTitle('Eagle Agent')
+      CardService.newCardHeader().setTitle('Error')
     )
     .addSection(
       CardService.newCardSection()
@@ -369,9 +499,7 @@ function buildErrorCard(message) {
 
 function buildEditorFallbackCard() {
   return CardService.newCardBuilder()
-    .setHeader(
-      CardService.newCardHeader().setTitle('Eagle Agent')
-    )
+    .setHeader(CardService.newCardHeader())
     .addSection(
       CardService.newCardSection()
         .addWidget(
@@ -390,12 +518,10 @@ function buildEditorFallbackCard() {
 // UI: No-actions card (for blacklisted / service domains)
 // ============================================================
 
-function buildNoActionsCard(subject, sender) {
-  var domain = extractDomain(sender);
+function buildNoActionsCard(subject) {
   return CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
-        .setTitle('Eagle Agent')
         .setSubtitle(
           subject.length > 60 ? subject.substring(0, 57) + '...' : subject
         )
@@ -405,8 +531,8 @@ function buildNoActionsCard(subject, sender) {
         .addWidget(
           CardService.newTextParagraph()
             .setText(
-              '<i>This email is from <b>' + domain + '</b> — a service ' +
-              'or internal domain. No linking actions are needed.</i>'
+              '<i>All parties on this email are internal or service ' +
+              'domains. No linking actions are needed.</i>'
             )
         )
     )
@@ -1016,7 +1142,9 @@ function onSearchRfq(e) {
                     .setParameters({
                       messageId: e.parameters.messageId,
                       threadId: e.parameters.threadId,
-                      rfqToken: rfq.rfq_number
+                      rfqToken: rfq.rfq_number,
+                      sender: sender,
+                      subject: subject
                     })
                 )
             )
@@ -1118,4 +1246,160 @@ function onSelectRfq(e) {
     e.parameters.sender,
     'Linked to ' + result.entity_name
   );
+}
+
+// ============================================================
+// Phase 2: Unlink from entity
+// ============================================================
+
+/**
+ * User clicked "Unlink" on a linked entity.  Call the unlink endpoint
+ * and refresh the context card.
+ */
+function onUnlinkEntity(e) {
+  var result;
+  try {
+    result = fetchBackend('/api/addon/unlink', {
+      gmail_message_id: e.parameters.messageId,
+      gmail_thread_id: e.parameters.threadId,
+      link_type: e.parameters.linkType
+    });
+  } catch (err) {
+    return CardService.newActionResponseBuilder()
+      .setNotification(
+        CardService.newNotification().setText('Error: ' + err.message)
+      )
+      .build();
+  }
+
+  return refreshAndReturn(
+    e.parameters.messageId,
+    e.parameters.threadId,
+    e.parameters.subject,
+    e.parameters.sender,
+    result.message || 'Unlinked'
+  );
+}
+
+// ============================================================
+// Phase 2: Manage Links card
+// ============================================================
+
+/**
+ * User clicked "Manage Links" — show a card listing all linked
+ * entities with unlink buttons.  Two-click unlink flow keeps
+ * the main UI clean.
+ */
+function onManageLinks(e) {
+  var customer = e.parameters.customer ? JSON.parse(e.parameters.customer) : null;
+  var supplier = e.parameters.supplier ? JSON.parse(e.parameters.supplier) : null;
+  var rfq = e.parameters.rfq ? JSON.parse(e.parameters.rfq) : null;
+
+  var card = buildUnlinkCard(
+    e.parameters.messageId,
+    e.parameters.threadId,
+    e.parameters.sender,
+    e.parameters.subject,
+    customer,
+    supplier,
+    rfq
+  );
+
+  var nav = CardService.newNavigation().pushCard(card);
+  return CardService.newActionResponseBuilder()
+    .setNavigation(nav)
+    .build();
+}
+
+/**
+ * Build a card showing current links with per-entity unlink buttons.
+ */
+function buildUnlinkCard(messageId, threadId, sender, subject, customer, supplier, rfq) {
+  var builder = CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader().setTitle('Manage Links')
+    );
+
+  var section = CardService.newCardSection();
+
+  if (customer) {
+    section.addWidget(
+      CardService.newDecoratedText()
+        .setTopLabel('Customer')
+        .setText(customer.name)
+        .setStartIcon(
+          CardService.newIconImage().setIcon(CardService.Icon.PERSON)
+        )
+        .setButton(
+          CardService.newTextButton()
+            .setText('Unlink')
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName('onUnlinkEntity')
+                .setParameters({
+                  messageId: messageId,
+                  threadId: threadId,
+                  linkType: 'customer',
+                  sender: sender,
+                  subject: subject
+                })
+            )
+        )
+    );
+  }
+
+  if (supplier) {
+    section.addWidget(
+      CardService.newDecoratedText()
+        .setTopLabel('Supplier')
+        .setText(supplier.name)
+        .setStartIcon(
+          CardService.newIconImage().setIcon(CardService.Icon.STAR)
+        )
+        .setButton(
+          CardService.newTextButton()
+            .setText('Unlink')
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName('onUnlinkEntity')
+                .setParameters({
+                  messageId: messageId,
+                  threadId: threadId,
+                  linkType: 'supplier',
+                  sender: sender,
+                  subject: subject
+                })
+            )
+        )
+    );
+  }
+
+  if (rfq) {
+    section.addWidget(
+      CardService.newDecoratedText()
+        .setTopLabel('RFQ')
+        .setText(rfq.rfq_number + ' \u2014 ' + (rfq.status || 'draft'))
+        .setStartIcon(
+          CardService.newIconImage().setIcon(CardService.Icon.DESCRIPTION)
+        )
+        .setButton(
+          CardService.newTextButton()
+            .setText('Unlink')
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName('onUnlinkEntity')
+                .setParameters({
+                  messageId: messageId,
+                  threadId: threadId,
+                  linkType: 'rfq',
+                  sender: sender,
+                  subject: subject
+                })
+            )
+        )
+    );
+  }
+
+  builder.addSection(section);
+  return builder.build();
 }
