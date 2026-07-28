@@ -10,6 +10,28 @@
 // In a future version this could be fetched from script properties.
 const BACKEND_URL = 'https://agent.eaglexp.com.au';
 
+// Context cache TTL in seconds (5 minutes).
+// Caching is controlled by a script property — set DEPLOYMENT_MODE = "production"
+// in Script Properties to enable.  Test/staging deployments skip the cache.
+var CONTEXT_CACHE_TTL = 300;
+
+/**
+ * Check if context caching is currently enabled.
+ *
+ * Production deployments set a Script Property:
+ *   PropertiesService → Script Properties → DEPLOYMENT_MODE = "production"
+ *
+ * Test/staging (head) deployments leave this unset → cache is skipped.
+ */
+function isCacheEnabled() {
+  try {
+    var mode = PropertiesService.getScriptProperties().getProperty('DEPLOYMENT_MODE');
+    return mode === 'production';
+  } catch (e) {
+    return false;
+  }
+}
+
 // ============================================================
 // Blocked domains — emails where ALL parties are on these domains
 // get a simplified card with no link actions.
@@ -160,6 +182,13 @@ function fetchBackend(path, payload) {
  * and replace the root card so the user sees updated linked entities.
  */
 function refreshAndReturn(messageId, threadId, subject, sender, successMessage) {
+  // Clear cached context — linking changes the result
+  if (isCacheEnabled() && messageId) {
+    try {
+      CacheService.getUserCache().remove('ctx:' + messageId);
+    } catch (e) {}
+  }
+
   try {
     var context = fetchBackend('/api/addon/context', {
       gmail_message_id: messageId,
@@ -243,6 +272,16 @@ function onGmailMessageOpen(e) {
   // Use the external contact address for backend matching
   var contactAddress = contact.address;
 
+  // Check cache first (production only — skipped in test/staging)
+  var cacheKey = 'ctx:' + messageId;
+  if (isCacheEnabled()) {
+    var cache = CacheService.getUserCache();
+    var cached = cache.get(cacheKey);
+    if (cached) {
+      return [buildContextCard(JSON.parse(cached), messageId, threadId, subject, contactAddress)];
+    }
+  }
+
   // Call backend for entity linking context
   var context;
   try {
@@ -254,6 +293,11 @@ function onGmailMessageOpen(e) {
     });
   } catch (err) {
     return [buildErrorCard(err.message)];
+  }
+
+  // Populate cache (production only)
+  if (isCacheEnabled()) {
+    cache.put(cacheKey, JSON.stringify(context), CONTEXT_CACHE_TTL);
   }
 
   return [buildContextCard(context, messageId, threadId, subject, contactAddress)];
