@@ -11,10 +11,10 @@
 const BACKEND_URL = 'https://agent.eaglexp.com.au';
 
 // ============================================================
-// Domain blacklist — emails from these domains show a simplified
-// card with no link actions to avoid false matches.
+// Blocked domains — emails where ALL parties are on these domains
+// get a simplified card with no link actions.
 // ============================================================
-var DOMAIN_BLACKLIST = [
+var BLOCKED_DOMAINS = [
   'google.com',
   'accounts.google.com',
   'eagle-exports.com.au',
@@ -24,7 +24,7 @@ var DOMAIN_BLACKLIST = [
 ];
 
 /**
- * Extract the domain from a Gmail sender string.
+ * Extract the domain from a Gmail address string.
  * Handles formats: "Name" <email@domain.com> or plain email@domain.com
  */
 function extractDomain(sender) {
@@ -35,15 +35,50 @@ function extractDomain(sender) {
 }
 
 /**
- * Check if the sender's domain is in the blacklist.
+ * Check if a domain is in the blocked list.
  */
-function isBlacklisted(sender) {
-  var domain = extractDomain(sender);
-  if (!domain) return false;
-  for (var i = 0; i < DOMAIN_BLACKLIST.length; i++) {
-    if (domain === DOMAIN_BLACKLIST[i]) return true;
+function isDomainBlocked(domain) {
+  if (!domain) return true;
+  for (var i = 0; i < BLOCKED_DOMAINS.length; i++) {
+    if (domain === BLOCKED_DOMAINS[i]) return true;
   }
   return false;
+}
+
+/**
+ * Determine the relevant external contact for an email message.
+ *
+ * For received emails (sender is external) → the sender is the contact.
+ * For sent/draft emails (sender is internal) → the first external To
+ * recipient is the contact.
+ *
+ * Returns { address: string, direction: 'received'|'sent' } or null if
+ * all parties are blocked/internal.
+ */
+function getRelevantContact(message) {
+  var sender = message.getFrom();
+  var senderDomain = extractDomain(sender);
+
+  // If sender is external → relevant contact is the sender
+  if (!isDomainBlocked(senderDomain)) {
+    return { address: sender, direction: 'received' };
+  }
+
+  // Sender is internal — check To recipients for an external address
+  var to = message.getTo();
+  if (to) {
+    var recipients = to.split(',');
+    for (var i = 0; i < recipients.length; i++) {
+      var recip = recipients[i].trim();
+      var recipDomain = extractDomain(recip);
+      if (recipDomain && !isDomainBlocked(recipDomain)) {
+        return { address: recip, direction: 'sent' };
+      }
+    }
+  }
+
+  // All parties are blocked/internal
+  return null;
 }
 
 // ============================================================
@@ -184,10 +219,14 @@ function onGmailMessageOpen(e) {
   var sender = message.getFrom();
   var threadId = message.getThread().getId();
 
-  // Skip backend call for blacklisted domains (Google services, internal)
-  if (isBlacklisted(sender)) {
-    return [buildNoActionsCard(subject, sender)];
+  // Determine the relevant external contact (sender for received, To for sent/draft)
+  var contact = getRelevantContact(message);
+  if (!contact) {
+    return [buildNoActionsCard(subject)];
   }
+
+  // Use the external contact address for backend matching
+  var contactAddress = contact.address;
 
   // Call backend for entity linking context
   var context;
@@ -196,13 +235,13 @@ function onGmailMessageOpen(e) {
       gmail_message_id: messageId,
       gmail_thread_id: threadId,
       subject: subject,
-      sender: sender
+      sender: contactAddress
     });
   } catch (err) {
     return [buildErrorCard(err.message)];
   }
 
-  return [buildContextCard(context, messageId, threadId, subject, sender)];
+  return [buildContextCard(context, messageId, threadId, subject, contactAddress)];
 }
 
 // ============================================================
@@ -390,8 +429,7 @@ function buildEditorFallbackCard() {
 // UI: No-actions card (for blacklisted / service domains)
 // ============================================================
 
-function buildNoActionsCard(subject, sender) {
-  var domain = extractDomain(sender);
+function buildNoActionsCard(subject) {
   return CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
@@ -405,8 +443,8 @@ function buildNoActionsCard(subject, sender) {
         .addWidget(
           CardService.newTextParagraph()
             .setText(
-              '<i>This email is from <b>' + domain + '</b> — a service ' +
-              'or internal domain. No linking actions are needed.</i>'
+              '<i>All parties on this email are internal or service ' +
+              'domains. No linking actions are needed.</i>'
             )
         )
     )
