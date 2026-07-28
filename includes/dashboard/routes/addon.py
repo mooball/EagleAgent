@@ -240,9 +240,15 @@ def get_email_context(body: ContextRequest, user: AddonUser):
                     .first()
                 )
                 if opp:
+                    op_number = opp.opportunity_number
+                    op_title = opp.title
+                    if op_number and op_title:
+                        display = f"{op_number} \u2014 {op_title}"
+                    else:
+                        display = op_title or op_number or f"OP{opp.netsuite_id}"
                     result.opportunity = {
                         "id": str(opp.id),
-                        "title": opp.title or f"OP{opp.opportunity_number or opp.netsuite_id}",
+                        "title": display,
                     }
             except Exception:
                 pass
@@ -258,9 +264,15 @@ def get_email_context(body: ContextRequest, user: AddonUser):
                 if rfq_orm and rfq_orm.opportunity_id:
                     opp = session.query(Opportunity).get(rfq_orm.opportunity_id)
                     if opp:
+                        op_number = opp.opportunity_number
+                        op_title = opp.title
+                        if op_number and op_title:
+                            display = f"{op_number} \u2014 {op_title}"
+                        else:
+                            display = op_title or op_number or f"OP{opp.netsuite_id}"
                         result.opportunity = {
                             "id": str(opp.id),
-                            "title": opp.title or f"OP{opp.opportunity_number or opp.netsuite_id}",
+                            "title": display,
                         }
             except Exception:
                 pass
