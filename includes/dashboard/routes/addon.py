@@ -115,6 +115,12 @@ class MatchRequest(BaseModel):
     sender: str
 
 
+class UnlinkEmailRequest(BaseModel):
+    gmail_message_id: str
+    gmail_thread_id: str
+    link_type: str  # "customer" | "supplier" | "rfq"
+
+
 class MatchResponse(BaseModel):
     matched: bool
     entity: dict | None = None  # {type, id, name, match_type} or None
@@ -496,6 +502,101 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
     except Exception as exc:
         session.rollback()
         logger.exception("Error linking email")
+        return JSONResponse(
+            {"status": "error", "message": str(exc)},
+            status_code=500,
+        )
+    finally:
+        session.close()
+
+
+# ── Unlink-email endpoint ──────────────────────────────────────────────────
+
+@router.post("/unlink")
+def unlink_email(body: UnlinkEmailRequest, user: AddonUser):
+    """Unlink a Gmail message (and its thread) from a customer, supplier, or RFQ.
+
+    Clears the relevant field for all messages in the same thread.
+    """
+    from fastapi.responses import JSONResponse
+    from includes.dashboard.database import get_session
+    from includes.dashboard.models import EmailTracking
+    from sqlalchemy import text
+
+    session = get_session()
+    try:
+        tracking = (
+            session.query(EmailTracking)
+            .filter(EmailTracking.gmail_message_id == body.gmail_message_id)
+            .first()
+        )
+        if not tracking:
+            tracking = (
+                session.query(EmailTracking)
+                .filter(EmailTracking.gmail_thread_id == body.gmail_thread_id)
+                .order_by(EmailTracking.id.desc())
+                .first()
+            )
+
+        if not tracking:
+            return JSONResponse(
+                {"status": "error", "message": "Email not found in tracking"},
+                status_code=404,
+            )
+
+        tid = tracking.gmail_thread_id or ""
+
+        if body.link_type == "customer":
+            session.execute(
+                text(
+                    "UPDATE email_tracking SET customer_id = NULL "
+                    "WHERE gmail_thread_id = :tid"
+                ),
+                {"tid": tid},
+            )
+            session.commit()
+            return JSONResponse({
+                "status": "ok",
+                "message": "Unlinked from customer",
+            })
+
+        elif body.link_type == "supplier":
+            session.execute(
+                text(
+                    "UPDATE email_tracking SET supplier_id = NULL "
+                    "WHERE gmail_thread_id = :tid"
+                ),
+                {"tid": tid},
+            )
+            session.commit()
+            return JSONResponse({
+                "status": "ok",
+                "message": "Unlinked from supplier",
+            })
+
+        elif body.link_type == "rfq":
+            session.execute(
+                text(
+                    "UPDATE email_tracking SET rfq_token = NULL "
+                    "WHERE gmail_thread_id = :tid"
+                ),
+                {"tid": tid},
+            )
+            session.commit()
+            return JSONResponse({
+                "status": "ok",
+                "message": "Unlinked from RFQ",
+            })
+
+        else:
+            return JSONResponse(
+                {"status": "error", "message": "link_type must be 'customer', 'supplier', or 'rfq'"},
+                status_code=400,
+            )
+
+    except Exception as exc:
+        session.rollback()
+        logger.exception("Error unlinking email")
         return JSONResponse(
             {"status": "error", "message": str(exc)},
             status_code=500,

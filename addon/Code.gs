@@ -222,7 +222,6 @@ function onHomepage(e) {
   var card = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
-        .setTitle('Eagle Agent')
         .setSubtitle('Open an email to see context')
     )
     .addSection(
@@ -311,7 +310,6 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
   var builder = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
-        .setTitle('Eagle Agent')
         .setSubtitle(subject.length > 60 ? subject.substring(0, 57) + '...' : subject)
     );
 
@@ -401,6 +399,7 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
 
   // ---- Actions section ----
   var actionsSection = CardService.newCardSection().setHeader('Actions');
+  var hasActions = false;
 
   // Only show "Link to Customer/Supplier" if neither is already linked
   if (!context.customer && !context.supplier) {
@@ -418,6 +417,7 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
             })
         )
     );
+    hasActions = true;
   }
 
   // Only show "Link to RFQ" if not already linked
@@ -436,6 +436,7 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
             })
         )
     );
+    hasActions = true;
   }
 
   // Only show "Create New RFQ" if a customer is already linked
@@ -454,9 +455,34 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
             })
         )
     );
+    hasActions = true;
   }
 
-  builder.addSection(actionsSection);
+  // Show "Manage Links" if any entity is already linked
+  if (context.customer || context.supplier || context.rfq) {
+    actionsSection.addWidget(
+      CardService.newTextButton()
+        .setText('Manage Links')
+        .setOnClickAction(
+          CardService.newAction()
+            .setFunctionName('onManageLinks')
+            .setParameters({
+              messageId: messageId,
+              threadId: threadId,
+              sender: sender,
+              subject: subject,
+              customer: context.customer ? JSON.stringify(context.customer) : '',
+              supplier: context.supplier ? JSON.stringify(context.supplier) : '',
+              rfq: context.rfq ? JSON.stringify(context.rfq) : ''
+            })
+        )
+    );
+    hasActions = true;
+  }
+
+  if (hasActions) {
+    builder.addSection(actionsSection);
+  }
 
   return builder.build();
 }
@@ -467,9 +493,7 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
 
 function buildErrorCard(message) {
   return CardService.newCardBuilder()
-    .setHeader(
-      CardService.newCardHeader().setTitle('Eagle Agent')
-    )
+    .setHeader(CardService.newCardHeader())
     .addSection(
       CardService.newCardSection()
         .addWidget(
@@ -490,9 +514,7 @@ function buildErrorCard(message) {
 
 function buildEditorFallbackCard() {
   return CardService.newCardBuilder()
-    .setHeader(
-      CardService.newCardHeader().setTitle('Eagle Agent')
-    )
+    .setHeader(CardService.newCardHeader())
     .addSection(
       CardService.newCardSection()
         .addWidget(
@@ -515,7 +537,6 @@ function buildNoActionsCard(subject) {
   return CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
-        .setTitle('Eagle Agent')
         .setSubtitle(
           subject.length > 60 ? subject.substring(0, 57) + '...' : subject
         )
@@ -1136,7 +1157,9 @@ function onSearchRfq(e) {
                     .setParameters({
                       messageId: e.parameters.messageId,
                       threadId: e.parameters.threadId,
-                      rfqToken: rfq.rfq_number
+                      rfqToken: rfq.rfq_number,
+                      sender: sender,
+                      subject: subject
                     })
                 )
             )
@@ -1238,4 +1261,160 @@ function onSelectRfq(e) {
     e.parameters.sender,
     'Linked to ' + result.entity_name
   );
+}
+
+// ============================================================
+// Phase 2: Unlink from entity
+// ============================================================
+
+/**
+ * User clicked "Unlink" on a linked entity.  Call the unlink endpoint
+ * and refresh the context card.
+ */
+function onUnlinkEntity(e) {
+  var result;
+  try {
+    result = fetchBackend('/api/addon/unlink', {
+      gmail_message_id: e.parameters.messageId,
+      gmail_thread_id: e.parameters.threadId,
+      link_type: e.parameters.linkType
+    });
+  } catch (err) {
+    return CardService.newActionResponseBuilder()
+      .setNotification(
+        CardService.newNotification().setText('Error: ' + err.message)
+      )
+      .build();
+  }
+
+  return refreshAndReturn(
+    e.parameters.messageId,
+    e.parameters.threadId,
+    e.parameters.subject,
+    e.parameters.sender,
+    result.message || 'Unlinked'
+  );
+}
+
+// ============================================================
+// Phase 2: Manage Links card
+// ============================================================
+
+/**
+ * User clicked "Manage Links" — show a card listing all linked
+ * entities with unlink buttons.  Two-click unlink flow keeps
+ * the main UI clean.
+ */
+function onManageLinks(e) {
+  var customer = e.parameters.customer ? JSON.parse(e.parameters.customer) : null;
+  var supplier = e.parameters.supplier ? JSON.parse(e.parameters.supplier) : null;
+  var rfq = e.parameters.rfq ? JSON.parse(e.parameters.rfq) : null;
+
+  var card = buildUnlinkCard(
+    e.parameters.messageId,
+    e.parameters.threadId,
+    e.parameters.sender,
+    e.parameters.subject,
+    customer,
+    supplier,
+    rfq
+  );
+
+  var nav = CardService.newNavigation().pushCard(card);
+  return CardService.newActionResponseBuilder()
+    .setNavigation(nav)
+    .build();
+}
+
+/**
+ * Build a card showing current links with per-entity unlink buttons.
+ */
+function buildUnlinkCard(messageId, threadId, sender, subject, customer, supplier, rfq) {
+  var builder = CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader().setTitle('Manage Links')
+    );
+
+  var section = CardService.newCardSection();
+
+  if (customer) {
+    section.addWidget(
+      CardService.newDecoratedText()
+        .setTopLabel('Customer')
+        .setText(customer.name)
+        .setStartIcon(
+          CardService.newIconImage().setIcon(CardService.Icon.PERSON)
+        )
+        .setButton(
+          CardService.newTextButton()
+            .setText('Unlink')
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName('onUnlinkEntity')
+                .setParameters({
+                  messageId: messageId,
+                  threadId: threadId,
+                  linkType: 'customer',
+                  sender: sender,
+                  subject: subject
+                })
+            )
+        )
+    );
+  }
+
+  if (supplier) {
+    section.addWidget(
+      CardService.newDecoratedText()
+        .setTopLabel('Supplier')
+        .setText(supplier.name)
+        .setStartIcon(
+          CardService.newIconImage().setIcon(CardService.Icon.STAR)
+        )
+        .setButton(
+          CardService.newTextButton()
+            .setText('Unlink')
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName('onUnlinkEntity')
+                .setParameters({
+                  messageId: messageId,
+                  threadId: threadId,
+                  linkType: 'supplier',
+                  sender: sender,
+                  subject: subject
+                })
+            )
+        )
+    );
+  }
+
+  if (rfq) {
+    section.addWidget(
+      CardService.newDecoratedText()
+        .setTopLabel('RFQ')
+        .setText(rfq.rfq_number + ' \u2014 ' + (rfq.status || 'draft'))
+        .setStartIcon(
+          CardService.newIconImage().setIcon(CardService.Icon.DESCRIPTION)
+        )
+        .setButton(
+          CardService.newTextButton()
+            .setText('Unlink')
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName('onUnlinkEntity')
+                .setParameters({
+                  messageId: messageId,
+                  threadId: threadId,
+                  linkType: 'rfq',
+                  sender: sender,
+                  subject: subject
+                })
+            )
+        )
+    );
+  }
+
+  builder.addSection(section);
+  return builder.build();
 }
