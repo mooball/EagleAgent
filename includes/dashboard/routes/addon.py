@@ -97,6 +97,7 @@ class ContextResponse(BaseModel):
     rfq: dict | None = None
     opportunity: dict | None = None
     email_tracked: bool = False
+    pipeline_status: dict | None = None  # {classification, reason} from supplier quote pipeline
 
 
 class LinkEmailRequest(BaseModel):
@@ -239,6 +240,15 @@ def get_email_context(body: ContextRequest, user: AddonUser):
                     }
             except Exception:
                 pass
+
+        # Pipeline classification (supplier quote pipeline result)
+        if tracking.supplier_pipeline_result:
+            pr = tracking.supplier_pipeline_result
+            if isinstance(pr, dict) and pr.get("classification"):
+                result.pipeline_status = {
+                    "classification": pr["classification"],
+                    "reason": pr.get("reason", ""),
+                }
 
         return result
     finally:

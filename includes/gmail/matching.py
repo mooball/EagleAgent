@@ -36,6 +36,26 @@ def extract_domain(email: str) -> Optional[str]:
     return email.rsplit('@', 1)[1].lower().strip()
 
 
+def _extract_email_addr(raw: str) -> str:
+    """Extract a plain email address from Gmail format strings.
+
+    Gmail returns sender/recipient in formats like:
+        "Name" <email@domain.com>
+        email@domain.com
+        Name <email@domain.com>  (no quotes)
+
+    Returns the bare email address stripped of whitespace.
+    """
+    if not raw:
+        return ""
+    raw = raw.strip()
+    # Match 'Name <email>' or '"Name" <email>' pattern
+    match = re.match(r'(?:"[^"]*"|[^<]*)\s*<([^>]+)>', raw)
+    if match:
+        return match.group(1).strip()
+    return raw
+
+
 def extract_domain_from_url(url: str) -> Optional[str]:
     """Extract root domain from a URL (strips scheme, path, www prefix)."""
     if not url:
@@ -152,7 +172,8 @@ def find_sender_match(
     if not sender_email:
         return None
 
-    email_lower = sender_email.lower().strip()
+    # Parse Gmail format: "Name" <email@domain.com> → email@domain.com
+    email_lower = _extract_email_addr(sender_email).lower()
 
     # Step 1: Exact match on contact email or customer email
     contact = (
@@ -239,6 +260,8 @@ def save_sender_domain(
     """
     from sqlalchemy.orm.attributes import flag_modified
 
+    # Parse Gmail format: "Name" <email@domain.com> → email@domain.com
+    sender_email = _extract_email_addr(sender_email)
     if not sender_email or "@" not in sender_email:
         return "(no email to extract domain from)"
 

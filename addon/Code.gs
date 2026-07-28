@@ -81,6 +81,21 @@ function getRelevantContact(message) {
   return null;
 }
 
+/**
+ * Return a human-readable label for pipeline classification codes.
+ */
+function pipelineClassificationLabel(classification) {
+  var labels = {
+    'quote_response': 'Quote Response',
+    'clarification_required': 'Clarification Required',
+    'declined': 'Declined',
+    'acknowledgement': 'Acknowledgement',
+    'not_quote': 'Not a Quote',
+    'needs_review': 'Needs Review',
+  };
+  return labels[classification] || classification;
+}
+
 // ============================================================
 // Helper: Authenticated fetch to backend
 // ============================================================
@@ -256,6 +271,21 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
         .setSubtitle(subject.length > 60 ? subject.substring(0, 57) + '...' : subject)
     );
 
+  // ---- Pipeline status (supplier quote classification) ----
+  if (context.pipeline_status) {
+    var label = pipelineClassificationLabel(context.pipeline_status.classification);
+    builder.addSection(
+      CardService.newCardSection()
+        .setHeader('Email Classification')
+        .addWidget(
+          CardService.newDecoratedText()
+            .setText(label)
+            .setBottomLabel(context.pipeline_status.reason || '')
+            .setWrapText(true)
+        )
+    );
+  }
+
   // ---- Status section: linked entities ----
   var statusSection = CardService.newCardSection().setHeader('Linked Entities');
 
@@ -288,6 +318,14 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
         .setText(context.rfq.rfq_number + ' \u2014 ' + context.rfq.status)
         .setStartIcon(
           CardService.newIconImage().setIcon(CardService.Icon.DESCRIPTION)
+        )
+    );
+    statusSection.addWidget(
+      CardService.newTextButton()
+        .setText('View in Dashboard')
+        .setOpenLink(
+          CardService.newOpenLink()
+            .setUrl(BACKEND_URL + '/rfqs/' + context.rfq.rfq_number)
         )
     );
   }
