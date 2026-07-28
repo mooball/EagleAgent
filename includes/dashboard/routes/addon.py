@@ -242,8 +242,26 @@ def get_email_context(body: ContextRequest, user: AddonUser):
                 if opp:
                     result.opportunity = {
                         "id": str(opp.id),
-                        "title": opp.title or f"OP{opp.netsuite_id}",
+                        "title": opp.title or f"OP{opp.opportunity_number or opp.netsuite_id}",
                     }
+            except Exception:
+                pass
+
+        # Opportunity inherited from linked RFQ (RFQ linked to Opp in dashboard)
+        if not result.opportunity and tracking.rfq_token and result.rfq:
+            try:
+                rfq_orm = (
+                    session.query(RFQ)
+                    .filter(RFQ.rfq_number == tracking.rfq_token)
+                    .first()
+                )
+                if rfq_orm and rfq_orm.opportunity_id:
+                    opp = session.query(Opportunity).get(rfq_orm.opportunity_id)
+                    if opp:
+                        result.opportunity = {
+                            "id": str(opp.id),
+                            "title": opp.title or f"OP{opp.opportunity_number or opp.netsuite_id}",
+                        }
             except Exception:
                 pass
 

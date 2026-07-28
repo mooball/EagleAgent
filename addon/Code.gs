@@ -28,6 +28,7 @@ function isCacheEnabled() {
     var mode = PropertiesService.getScriptProperties().getProperty('DEPLOYMENT_MODE');
     return mode === 'production';
   } catch (e) {
+    // PropertiesService may not be ready (e.g. panel reopen race)
     return false;
   }
 }
@@ -182,13 +183,6 @@ function fetchBackend(path, payload) {
  * and replace the root card so the user sees updated linked entities.
  */
 function refreshAndReturn(messageId, threadId, subject, sender, successMessage) {
-  // Clear cached context — linking changes the result
-  if (isCacheEnabled() && messageId) {
-    try {
-      CacheService.getUserCache().remove('ctx:' + messageId);
-    } catch (e) {}
-  }
-
   try {
     var context = fetchBackend('/api/addon/context', {
       gmail_message_id: messageId,
@@ -252,54 +246,43 @@ function onGmailMessageOpen(e) {
     return [buildEditorFallbackCard()];
   }
 
-  // Activate temporary Gmail scopes for reading message metadata
-  var accessToken = e.gmail.accessToken;
-  GmailApp.setCurrentMessageAccessToken(accessToken);
-
-  var messageId = e.gmail.messageId;
-  var message = GmailApp.getMessageById(messageId);
-  var subject = message.getSubject();
-  var sender = message.getFrom();
-  var threadId = message.getThread().getId();
-
-  // Determine the relevant external contact (sender for received, To for sent/draft)
-  var contact = getRelevantContact(message);
-  if (!contact) {
-    return [buildNoActionsCard(subject)];
-  }
-
-  // Use the external contact address for backend matching
-  var contactAddress = contact.address;
-
-  // Check cache first (production only — skipped in test/staging)
-  var cacheKey = 'ctx:' + messageId;
-  if (isCacheEnabled()) {
-    var cache = CacheService.getUserCache();
-    var cached = cache.get(cacheKey);
-    if (cached) {
-      return [buildContextCard(JSON.parse(cached), messageId, threadId, subject, contactAddress)];
-    }
-  }
-
-  // Call backend for entity linking context
-  var context;
   try {
-    context = fetchBackend('/api/addon/context', {
-      gmail_message_id: messageId,
-      gmail_thread_id: threadId,
-      subject: subject,
-      sender: contactAddress
-    });
-  } catch (err) {
-    return [buildErrorCard(err.message)];
-  }
+    // Activate temporary Gmail scopes for reading message metadata
+    var accessToken = e.gmail.accessToken;
+    GmailApp.setCurrentMessageAccessToken(accessToken);
 
-  // Populate cache (production only)
-  if (isCacheEnabled()) {
-    cache.put(cacheKey, JSON.stringify(context), CONTEXT_CACHE_TTL);
-  }
+    var messageId = e.gmail.messageId;
+    var message = GmailApp.getMessageById(messageId);
+    var subject = message.getSubject();
+    var sender = message.getFrom();
+    var threadId = message.getThread().getId();
 
-  return [buildContextCard(context, messageId, threadId, subject, contactAddress)];
+    // Determine the relevant external contact
+    var contact = getRelevantContact(message);
+    if (!contact) {
+      return [buildNoActionsCard(subject)];
+    }
+
+    // Use the external contact address for backend matching
+    var contactAddress = contact.address;
+
+    // Call backend for entity linking context
+    var context;
+    try {
+      context = fetchBackend('/api/addon/context', {
+        gmail_message_id: messageId,
+        gmail_thread_id: threadId,
+        subject: subject,
+        sender: contactAddress
+      });
+    } catch (err) {
+      return [buildErrorCard(err.message)];
+    }
+
+    return [buildContextCard(context, messageId, threadId, subject, contactAddress)];
+  } catch (e) {
+    return [buildErrorCard('Unexpected error: ' + (e.message || e))];
+  }
 }
 
 // ============================================================
@@ -493,7 +476,9 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
 
 function buildErrorCard(message) {
   return CardService.newCardBuilder()
-    .setHeader(CardService.newCardHeader())
+    .setHeader(
+      CardService.newCardHeader().setTitle('Error')
+    )
     .addSection(
       CardService.newCardSection()
         .addWidget(
