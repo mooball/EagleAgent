@@ -311,41 +311,42 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
     );
   }
 
-  // ---- Status section: linked entities ----
-  var statusSection = CardService.newCardSection().setHeader('Linked Entities');
+  // ---- Linked entity sections (one per type) ----
 
   if (context.customer) {
-    statusSection.addWidget(
+    var custSection = CardService.newCardSection().setHeader('Customer');
+    custSection.addWidget(
       CardService.newDecoratedText()
-        .setTopLabel('Customer')
         .setText(context.customer.name)
         .setStartIcon(
           CardService.newIconImage().setIcon(CardService.Icon.PERSON)
         )
     );
+    builder.addSection(custSection);
   }
 
   if (context.supplier) {
-    statusSection.addWidget(
+    var suppSection = CardService.newCardSection().setHeader('Supplier');
+    suppSection.addWidget(
       CardService.newDecoratedText()
-        .setTopLabel('Supplier')
         .setText(context.supplier.name)
         .setStartIcon(
           CardService.newIconImage().setIcon(CardService.Icon.STAR)
         )
     );
+    builder.addSection(suppSection);
   }
 
   if (context.rfq) {
-    statusSection.addWidget(
+    var rfqSection = CardService.newCardSection().setHeader('RFQ');
+    rfqSection.addWidget(
       CardService.newDecoratedText()
-        .setTopLabel('RFQ')
         .setText(context.rfq.rfq_number + ' \u2014 ' + context.rfq.status)
         .setStartIcon(
           CardService.newIconImage().setIcon(CardService.Icon.DESCRIPTION)
         )
     );
-    statusSection.addWidget(
+    rfqSection.addWidget(
       CardService.newTextButton()
         .setText('View in Dashboard')
         .setOpenLink(
@@ -353,17 +354,19 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
             .setUrl(BACKEND_URL + '/rfqs/' + context.rfq.rfq_number)
         )
     );
+    builder.addSection(rfqSection);
   }
 
   if (context.opportunity) {
-    statusSection.addWidget(
+    var oppSection = CardService.newCardSection().setHeader('Opportunity');
+    oppSection.addWidget(
       CardService.newDecoratedText()
-        .setTopLabel('Opportunity')
         .setText(context.opportunity.title)
         .setStartIcon(
           CardService.newIconImage().setIcon(CardService.Icon.BOOKMARK)
         )
     );
+    builder.addSection(oppSection);
   }
 
   if (
@@ -372,13 +375,13 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
     !context.rfq &&
     !context.opportunity
   ) {
-    statusSection.addWidget(
+    var emptySection = CardService.newCardSection();
+    emptySection.addWidget(
       CardService.newTextParagraph()
         .setText('<i>No linked entities found for this email.</i>')
     );
+    builder.addSection(emptySection);
   }
-
-  builder.addSection(statusSection);
 
   // ---- Actions section ----
   var actionsSection = CardService.newCardSection().setHeader('Actions');
