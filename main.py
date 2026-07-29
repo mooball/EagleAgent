@@ -262,6 +262,21 @@ app.mount(
 
 
 # ---------------------------------------------------------------------------
+# Graceful handler for Chainlit session expiry
+# ---------------------------------------------------------------------------
+@app.exception_handler(ValueError)
+async def chainlit_session_handler(request: Request, exc: ValueError):
+    """Catch Chainlit 'Session not found' errors when a WebSocket session
+    expires between tasks.  Returns a friendly message instead of a 500."""
+    if "Session not found" in str(exc):
+        return JSONResponse(
+            status_code=440,
+            content={"detail": "Session expired. Please refresh the page."},
+        )
+    raise exc
+
+
+# ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
 def get_current_user(request: Request) -> dict | None:
