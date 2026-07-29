@@ -172,6 +172,7 @@ def _rfq_to_dict(rfq) -> dict:
     quoted_count = sum(1 for s in supplier_list if s["quote_status"] == "quoted")
     return {
         "id": rfq.rfq_number,
+        "rfq_number": rfq.rfq_number,
         "customer": rfq.customer,
         "customer_id": str(rfq.customer_id) if rfq.customer_id else None,
         "customer_contact": rfq.customer_contact,

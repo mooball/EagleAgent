@@ -183,6 +183,13 @@ function fetchBackend(path, payload) {
  * and replace the root card so the user sees updated linked entities.
  */
 function refreshAndReturn(messageId, threadId, subject, sender, successMessage) {
+  // Clear cached context — linking changes the result
+  if (isCacheEnabled() && messageId) {
+    try {
+      CacheService.getUserCache().remove('ctx:' + messageId);
+    } catch (e) {}
+  }
+
   try {
     var context = fetchBackend('/api/addon/context', {
       gmail_message_id: messageId,
@@ -266,6 +273,16 @@ function onGmailMessageOpen(e) {
     // Use the external contact address for backend matching
     var contactAddress = contact.address;
 
+    // Check cache first (production only — skipped when DEPLOYMENT_MODE not set)
+    var cacheKey = 'ctx:' + messageId;
+    if (isCacheEnabled()) {
+      var cache = CacheService.getUserCache();
+      var cached = cache.get(cacheKey);
+      if (cached) {
+        return [buildContextCard(JSON.parse(cached), messageId, threadId, subject, contactAddress)];
+      }
+    }
+
     // Call backend for entity linking context
     var context;
     try {
@@ -279,9 +296,14 @@ function onGmailMessageOpen(e) {
       return [buildErrorCard(err.message)];
     }
 
+    // Populate cache (production only)
+    if (isCacheEnabled()) {
+      cache.put(cacheKey, JSON.stringify(context), CONTEXT_CACHE_TTL);
+    }
+
     return [buildContextCard(context, messageId, threadId, subject, contactAddress)];
   } catch (e) {
-    return [buildErrorCard('Unexpected error: ' + (e.message || e))];
+    return [buildErrorCard(e.message || String(e), e.stack || '')];
   }
 }
 
@@ -477,7 +499,7 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
 // UI: Error card
 // ============================================================
 
-function buildErrorCard(message) {
+function buildErrorCard(message, stack) {
   return CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader().setTitle('Error')
@@ -485,15 +507,23 @@ function buildErrorCard(message) {
     .addSection(
       CardService.newCardSection()
         .addWidget(
-          CardService.newDecoratedText()
-            .setTopLabel('Error')
-            .setText(message)
-            .setStartIcon(
-              CardService.newIconImage().setIcon(CardService.Icon.INVITE)
-            )
+          CardService.newTextParagraph()
+            .setText('<b>Error:</b><br><br>' + _escapeHtml(message))
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .setHeader('Details')
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText('<font size="-2" color="#999"><pre>' + _escapeHtml(stack || message) + '</pre></font>')
         )
     )
     .build();
+}
+
+function _escapeHtml(str) {
+  return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // ============================================================
