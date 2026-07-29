@@ -281,7 +281,7 @@ function onGmailMessageOpen(e) {
 
     return [buildContextCard(context, messageId, threadId, subject, contactAddress)];
   } catch (e) {
-    return [buildErrorCard('Unexpected error: ' + (e.message || e))];
+    return [buildErrorCard(e.message || String(e), e.stack || '')];
   }
 }
 
@@ -477,7 +477,7 @@ function buildContextCard(context, messageId, threadId, subject, sender) {
 // UI: Error card
 // ============================================================
 
-function buildErrorCard(message) {
+function buildErrorCard(message, stack) {
   return CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader().setTitle('Error')
@@ -485,15 +485,24 @@ function buildErrorCard(message) {
     .addSection(
       CardService.newCardSection()
         .addWidget(
-          CardService.newDecoratedText()
-            .setTopLabel('Error')
-            .setText(message)
-            .setStartIcon(
-              CardService.newIconImage().setIcon(CardService.Icon.INVITE)
-            )
+          CardService.newTextParagraph()
+            .setText('<b>Error:</b><br><br>' + _escapeHtml(message))
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .setHeader('Details')
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText('<font size="-2" color="#999"><pre>' + _escapeHtml(stack || message) + '</pre></font>')
         )
     )
     .build();
+}
+
+function _escapeHtml(str) {
+  return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 }
 
 // ============================================================
