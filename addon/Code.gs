@@ -1034,6 +1034,33 @@ function onSelectEntity(e) {
 // ============================================================
 
 /**
+ * User clicked "Create New RFQ". Trigger the RFQ creation pipeline.
+ */
+function onCreateRfq(e) {
+  var result;
+  try {
+    result = fetchBackend('/api/addon/create-rfq', {
+      gmail_message_id: e.parameters.messageId,
+      gmail_thread_id: e.parameters.threadId
+    });
+  } catch (err) {
+    return CardService.newActionResponseBuilder()
+      .setNotification(
+        CardService.newNotification().setText('Error: ' + err.message)
+      )
+      .build();
+  }
+
+  return CardService.newActionResponseBuilder()
+    .setNotification(
+      CardService.newNotification().setText(
+        result.message || 'RFQ creation started. Refresh the card to see the new RFQ.'
+      )
+    )
+    .build();
+}
+
+/**
  * User clicked "Link to RFQ". Push a search card.
  */
 function onLinkRfq(e) {

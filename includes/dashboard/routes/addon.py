@@ -126,6 +126,11 @@ class MatchResponse(BaseModel):
     entity: dict | None = None  # {type, id, name, match_type} or None
 
 
+class CreateRfqRequest(BaseModel):
+    gmail_message_id: str
+    gmail_thread_id: str
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────
 
 @router.post("/match", response_model=MatchResponse)
@@ -627,6 +632,87 @@ def unlink_email(body: UnlinkEmailRequest, user: AddonUser):
     except Exception as exc:
         session.rollback()
         logger.exception("Error unlinking email")
+        return JSONResponse(
+            {"status": "error", "message": str(exc)},
+            status_code=500,
+        )
+    finally:
+        session.close()
+
+
+@router.post("/create-rfq")
+def create_rfq(body: CreateRfqRequest, user: AddonUser):
+    """Create an RFQ from a Gmail email thread.
+
+    Finds the EmailTracking record, triggers the RFQ creation pipeline
+    in a background thread, and returns immediately.
+    """
+    from fastapi.responses import JSONResponse
+    from includes.dashboard.database import get_session
+    from includes.dashboard.models import EmailTracking
+
+    session = get_session()
+    try:
+        tracking = (
+            session.query(EmailTracking)
+            .filter(EmailTracking.gmail_message_id == body.gmail_message_id)
+            .first()
+        )
+        if not tracking:
+            tracking = (
+                session.query(EmailTracking)
+                .filter(EmailTracking.gmail_thread_id == body.gmail_thread_id)
+                .order_by(EmailTracking.id.desc())
+                .first()
+            )
+
+        if not tracking:
+            return JSONResponse(
+                {"status": "error", "message": "Email not found in tracking"},
+                status_code=404,
+            )
+
+        # Guard: must be linked to a customer
+        if not tracking.customer_id:
+            return JSONResponse(
+                {"status": "error", "message": "No customer linked. Link a customer first."},
+                status_code=400,
+            )
+
+        # Guard: must not already be linked to an RFQ
+        if tracking.rfq_token or tracking.rfq_id:
+            return JSONResponse(
+                {"status": "error",
+                 "message": f"Already linked to RFQ {tracking.rfq_token or tracking.rfq_id}"},
+                status_code=400,
+            )
+
+        # Guard: idempotency — already processing or completed
+        if tracking.rfq_creation_result:
+            existing = tracking.rfq_creation_result
+            if existing.get("status") == "error":
+                return JSONResponse(
+                    {"status": "error",
+                     "message": f"Previous attempt failed: {existing.get('error', 'unknown')}"},
+                    status_code=400,
+                )
+            return JSONResponse({
+                "status": "ok",
+                "message": f"RFQ already created: {existing.get('rfq_number', 'unknown')}",
+            })
+
+        user_ident = user.get("email", user.get("identifier", "addon"))
+        from includes.tools.rfq_creation_pipeline import trigger_rfq_creation_pipeline
+        trigger_rfq_creation_pipeline(tracking.id, user_id=user_ident)
+
+        return JSONResponse({
+            "status": "processing",
+            "message": "RFQ creation started. Refresh the card to see the new RFQ.",
+        })
+
+    except Exception as exc:
+        session.rollback()
+        logger.exception("Error creating RFQ from add-on")
         return JSONResponse(
             {"status": "error", "message": str(exc)},
             status_code=500,
