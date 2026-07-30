@@ -444,10 +444,12 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
                 {"cid": str(customer_id), "tid": tid, "eid": tracking.id},
             )
 
-            # Auto-save sender domain if requested
+            # Auto-save sender domain if requested (skip internal domains)
             if body.save_domain and body.sender:
-                from includes.gmail.matching import save_sender_domain
-                save_sender_domain(session, body.sender, "customer", customer_id)
+                from includes.gmail.matching import save_sender_domain, _INTERNAL_DOMAINS, _GENERIC_DOMAINS
+                sender_domain = body.sender.split("@")[-1].lower() if "@" in body.sender else ""
+                if sender_domain and sender_domain not in _INTERNAL_DOMAINS and sender_domain not in _GENERIC_DOMAINS:
+                    save_sender_domain(session, body.sender, "customer", customer_id)
 
             session.commit()
             return JSONResponse({
@@ -482,10 +484,12 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
                 {"sid": str(supplier_id), "tid": tid, "eid": tracking.id},
             )
 
-            # Auto-save sender domain if requested
+            # Auto-save sender domain if requested (skip internal domains)
             if body.save_domain and body.sender:
-                from includes.gmail.matching import save_sender_domain
-                save_sender_domain(session, body.sender, "supplier", supplier_id)
+                from includes.gmail.matching import save_sender_domain, _INTERNAL_DOMAINS, _GENERIC_DOMAINS
+                sender_domain = body.sender.split("@")[-1].lower() if "@" in body.sender else ""
+                if sender_domain and sender_domain not in _INTERNAL_DOMAINS and sender_domain not in _GENERIC_DOMAINS:
+                    save_sender_domain(session, body.sender, "supplier", supplier_id)
 
             session.commit()
 

@@ -74,6 +74,8 @@ class Config:
     SUPERVISOR_MODEL = os.getenv("SUPERVISOR_MODEL", "gemini-2.0-flash")
     # Supplier quote pipeline (classify, extract, interpret)
     QUOTE_PIPELINE_MODEL = os.getenv("QUOTE_PIPELINE_MODEL", "")
+    # RFQ creation pipeline (extract items from customer request emails)
+    RFQ_CREATION_PIPELINE_MODEL = os.getenv("RFQ_CREATION_PIPELINE_MODEL", "")
 
     # Vision-based item extraction (Smart Item Adder image parsing).
     # Defaults to empty — falls back to DEFAULT_MODEL (same as chat agent).
