@@ -253,7 +253,8 @@ class RFQ(Base):
     assigned_to = Column(String, nullable=True)
     thread_id = Column(String, nullable=True)
     status = Column(String, nullable=False, default='draft')  # draft/in_progress/issued_quote/closed_won/closed_lost — mirrors NetSuite Opportunity A/B/C/D
-    notes = Column(Text, nullable=True)
+    title = Column(String, nullable=True)       # RFQ title/description (was 'notes')
+    notes = Column(Text, nullable=True)         # Customer requirements, delivery dates, general context
     history = Column(JSONB, nullable=True)                    # [{date, user, action}, ...]
     item_groups = Column(JSONB, nullable=True)                # {groups: [...], ungrouped: [...]}
     

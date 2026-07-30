@@ -189,7 +189,8 @@ def _rfq_to_dict(rfq) -> dict:
         "assigned_to": rfq.assigned_to,
         "thread_id": rfq.thread_id,
         "status": rfq.status or "draft",
-        "notes": rfq.notes or "",
+        "title": rfq.title or "",
+        "notes": rfq.notes or "",         # customer requirements, delivery dates, context
         "history": rfq.history or [],
         "item_groups": rfq.item_groups,
         "pipeline_stage": getattr(rfq, "pipeline_stage", "unprocessed") or "unprocessed",
@@ -367,7 +368,7 @@ def _create_rfq_sync(data: dict, user_id: str) -> dict:
             assigned_to=data.get("assigned_to", user_id),
             thread_id=data.get("thread_id"),
             status="draft",
-            notes=data.get("notes", ""),
+            title=data.get("title", ""),
             history=[{"date": now, "user": user_id, "action": history_action}],
             updated_at=_now_dt(),
         )
@@ -537,8 +538,8 @@ def _update_rfq_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             return f"Error: RFQ '{rfq_number}' not found."
 
         updatable = [
-            "customer", "customer_id", "customer_contact", "reference", "notes",
-            "netsuite_opportunity", "opportunity_id", "hubspot_deal", "assigned_to",
+            "customer", "customer_id", "customer_contact", "reference", "title",
+            "notes", "netsuite_opportunity", "opportunity_id", "hubspot_deal", "assigned_to",
         ]
         changes = []
         for key in updatable:

@@ -8,6 +8,45 @@
 
 ---
 
+## Pre-Step: Rename `notes` → `title` + Add New `notes` Field
+
+The RFQ model currently uses `notes` as the title/description field (displayed as "Title" in the UI). We need to fix this naming before adding a real notes field.
+
+**Migration**:
+```python
+# alembic/versions/xxxx_rename_rfq_notes_to_title.py
+
+def upgrade():
+    # Rename existing 'notes' column to 'title' (contains RFQ title/description)
+    op.alter_column('rfqs', 'notes', new_column_name='title', type_=sa.String, nullable=True)
+    # Add new 'notes' column for customer requirements/delivery notes
+    op.add_column('rfqs', sa.Column('notes', sa.Text, nullable=True))
+
+def downgrade():
+    op.drop_column('rfqs', 'notes')
+    op.alter_column('rfqs', 'title', new_column_name='notes', type_=sa.Text, nullable=True)
+```
+
+**Model change** (`includes/dashboard/models.py` — RFQ class):
+```python
+title = Column(String, nullable=True)       # RFQ title/description (was 'notes')
+notes = Column(Text, nullable=True)         # Customer requirements, delivery dates, general context
+```
+
+**Code references to update** (rfq.notes → rfq.title):
+| File | Change |
+|---|---|
+| `includes/tools/rfq_crud.py` | `_rfq_to_dict`: `"notes"` → `"title"`; `_create_rfq_sync`: `notes=` → `title=`; `_update_rfq_sync` updatable list; `_add_note_sync` appends to `rfq.notes` (keep as-is — this now writes to the new notes field correctly) |
+| `includes/tools/rfq_render.py` | `rfq.get("notes")` → `rfq.get("title")` for the title display |
+| `includes/dashboard/routes/rfqs.py` | updatable list, search/sort references |
+| `templates/partials/rfq_detail.html` | `rfq.notes` → `rfq.title` in display + form; add new notes display/edit section |
+| `templates/partials/_rfq_rows.html` | `rfq.notes` → `rfq.title` in list column |
+| `tests/tools/test_quote_tools.py` | `rfq.notes` assertions → `rfq.notes` (these test `add_note` which correctly targets the new notes field) |
+
+**Note on `_add_note_sync`**: This function appends text to `rfq.notes`. After the rename, it naturally writes to the *new* `notes` field (customer requirements) which is the correct behaviour — it was always intended for adding contextual notes, not modifying the title.
+
+---
+
 ## Architecture Overview
 
 ```
@@ -25,32 +64,35 @@ User clicks "Create RFQ" (add-on or dashboard)
    │  └─ rfq_creation_result NOT already set (idempotency)
    │  NOTE: direction NOT checked — manual trigger means user decided this IS a quote request
    │
-   ├─ STAGE 2: Extract line items (two-pass)
-   │  Pass 1 — Deterministic (free, no LLM):
-   │  ├─ Try raw email HTML body → parse_html_table()
-   │  └─ Try CSV/XLSX attachments → parse_text_table()
-   │  Pass 2 — LLM fallback (only if Pass 1 = 0 items):
-   │  ├─ Build content bundle via _extract_email_content_sync()
-   │  └─ extract_items_from_text(content_bundle) — Gemini LLM
-   │  Final: _normalize_to_standard_columns() → 5 standard fields:
-   │      {input_description, input_code, brand, quantity, uom}
-   │
-   ├─ STAGE 3: Create RFQ
+   ├─ STAGE 2: Create RFQ & link to email (immediate)
    │  ├─ _create_rfq_sync(data, user_id) — auto-generates rfq_number
    │  ├─ Set customer from tracking.customer_id
    │  ├─ Set assigned_to from tracking.user_email
    │  ├─ Set reference from email subject
-   │  ├─ Call _add_items_sync(rfq_number, data, user_id) — bulk-insert items (if any)
-   │  └─ Update email_tracking: set rfq_token → new RFQ number
+   │  ├─ Update email_tracking: set rfq_token → new RFQ number
+   │  └─ User can now navigate between Gmail and RFQ immediately
    │  NOTE: RFQ.thread_id is for Chainlit — NOT set to gmail_thread_id
-   │  NOTE: If zero items extracted, RFQ created as empty draft
+   │  NOTE: RFQ created as empty draft — items added in next stage
+   │
+   ├─ STAGE 3: Extract line items + notes (LLM evaluation)
+   │  ├─ Build content bundle via _extract_email_content_sync()
+   │  │   (email body + PDF/image attachments + spreadsheets)
+   │  ├─ Send to Gemini LLM with extraction prompt
+   │  │   Returns: items[], warnings[], title, customer_notes
+   │  │   Flags emails with no extractable items (general enquiry)
+   │  ├─ _normalize_to_standard_columns() → 5 standard fields:
+   │  │   {input_description, input_code, brand, quantity, uom}
+   │  ├─ _add_items_sync(rfq_number, items) — bulk-insert into existing RFQ
+   │  └─ Update RFQ title + notes from LLM extraction
    │
    └─ STAGE 4: Save result
       └─ EmailTracking.rfq_creation_result ← JSONB idempotency guard
          {
            "rfq_number": "RFQ-2026-0123",
            "items_extracted": 5,
-           "extraction_method": "direct_parse",
+           "extraction_method": "gemini_llm",
+           "title": "Komatsu PC200 engine parts",
+           "customer_notes": "Required by 15 Aug. Genuine OEM only.",
            "customer": "Acme Corp",
            "raw_items": [...],
            "status": "complete",
@@ -94,8 +136,8 @@ if save_domain and sender_domain not in BLACKLISTED_DOMAINS:
 
 | File | Purpose |
 |---|---|
-| `includes/tools/rfq_creation_pipeline.py` | Main pipeline: guard checks, orchestrate stages, save result |
-| `config/prompts/rfq_creation_extract.md` | (Optional) Prompt for LLM-guided extraction if needed |
+| `includes/tools/rfq_creation_pipeline.py` | Main pipeline: guard checks, LLM item extraction, RFQ creation, result saving |
+| `config/prompts/rfq_creation_extract.md` | Prompt for LLM extraction — structured output with items, missing items, confidence |
 
 ## Edited Files
 
@@ -105,7 +147,7 @@ if save_domain and sender_domain not in BLACKLISTED_DOMAINS:
 | `alembic/versions/` | Migration for new JSONB column |
 | `includes/dashboard/routes/addon.py` | Add `POST /api/addon/create-rfq` endpoint; add blacklist guard to `POST /link-email` domain save |
 | `addon/Code.gs` | Implement `onCreateRfq` — calls endpoint, shows notification; show button only when `customer_id` present |
-| `config/settings.py` | Optional: `RFQ_CREATION_MODEL` env var |
+| `config/settings.py` | Add `RFQ_CREATION_PIPELINE_MODEL` env var (documents the pipeline, falls back to DEFAULT_MODEL) |
 
 ---
 
@@ -113,10 +155,50 @@ if save_domain and sender_domain not in BLACKLISTED_DOMAINS:
 
 | Source Module | What We Reuse |
 |---|---|
-| `supplier_quote_pipeline.py` | `_extract_email_content_sync()` — builds content bundle (Pass 2 fallback only); handles PDF/OCR, image triage, spreadsheet parsing |
-| `email_pipeline.py` | `triage_image()`, `classify_image_content()`, `llm_call_with_retry()` — image signature caching, Gemini LLM infrastructure |
-| `rfq_item_import.py` | `parse_html_table()`, `parse_text_table()`, `extract_items_from_text()`, `extract_items_from_image()`, `_normalize_to_standard_columns()` — Smart Item Adder parsing functions |
+| `supplier_quote_pipeline.py` | `_extract_email_content_sync()` — builds content bundle (email body + attachments); handles PDF/OCR, image triage, spreadsheet parsing |
+| `email_pipeline.py` | `get_pipeline_model()`, `llm_call_with_retry()` — model resolution + retry/fallback infrastructure |
+| `rfq_item_import.py` | `_normalize_to_standard_columns()` — normalizes extracted items to 5 standard fields |
 | `rfq_crud.py` | `_create_rfq_sync(data, user_id)` — create RFQ record (auto-generates rfq_number), `_add_items_sync(rfq_number, data, user_id)` — bulk insert items |
+
+---
+
+## LLM Model Configuration
+
+Uses the same `get_pipeline_model()` resolution pattern as the supplier quote pipeline (`email_pipeline.py`).
+
+**Pipeline name**: `RFQ_CREATION`
+
+**Steps**:
+| Step | Purpose | Env Var (step-specific) | Fallback |
+|---|---|---|---|
+| `extract` | Extract line items from content bundle | `RFQ_CREATION_EXTRACT_MODEL` | `RFQ_CREATION_PIPELINE_MODEL` → `DEFAULT_MODEL` |
+
+**Resolution order** (same as QUOTE pipeline):
+1. `RFQ_CREATION_EXTRACT_MODEL` — step-specific override
+2. `RFQ_CREATION_PIPELINE_MODEL` — pipeline-level override
+3. `Config.DEFAULT_MODEL` — global default
+
+**Shared with QUOTE pipeline**: The content bundle building step (`_extract_email_content_sync`) internally uses `QUOTE` pipeline models for vision/PDF extraction. This means PDF OCR, image triage, and spreadsheet parsing use `QUOTE_EXTRACT_MODEL` / `QUOTE_PIPELINE_MODEL` — they are shared because it's the same operation regardless of whether we're processing an inbound supplier quote or an inbound customer request.
+
+**Usage in code**:
+```python
+from includes.email_pipeline import get_pipeline_model, llm_call_with_retry
+
+# Item extraction uses RFQ_CREATION pipeline
+response = llm_call_with_retry(
+    pipeline="RFQ_CREATION",
+    step="extract",
+    contents=extraction_prompt,
+    temperature=0.1,
+    timeout=120000,
+)
+```
+
+**settings.py addition**:
+```python
+# RFQ creation pipeline (extract items from customer request emails)
+RFQ_CREATION_PIPELINE_MODEL = os.getenv("RFQ_CREATION_PIPELINE_MODEL", "")
+```
 
 ---
 
@@ -145,69 +227,9 @@ if tracking.rfq_creation_result:
     return
 ```
 
-### Stage 1: (Merged into Stage 2 — Pass 2)
+### Stage 2: Create RFQ & Link to Email (Immediate)
 
-Content bundle building via `_extract_email_content_sync()` is now called only as a fallback in Stage 2's Pass 2, if deterministic parsing produces 0 items. This avoids the cost of PDF/image processing when the email body already contains a parseable HTML table or CSV attachment.
-
-### Stage 2: Extract Line Items (Two-Pass Approach)
-
-The two-pass approach optimizes for cost: deterministic parsing first (free), LLM fallback only if needed.
-
-**Pass 1: Direct parsing (zero LLM cost)**
-
-Before building the expensive content bundle, try parsing the raw email body and attachments directly:
-
-```python
-from includes.tools.rfq_item_import import (
-    parse_html_table,
-    parse_text_table,
-    extract_items_from_text,
-    _normalize_to_standard_columns,
-)
-
-items = []
-
-# 1. Try raw email body HTML (if it contains <table> tags)
-email_html = _get_email_body_html(session, email_tracking_id)
-if email_html and '<table' in email_html.lower():
-    result = parse_html_table(email_html)
-    if result and result.get("items"):
-        items = _normalize_to_standard_columns(result["items"])["items"]
-
-# 2. Try CSV/XLSX attachments directly (no OCR needed)
-if not items:
-    for attachment in _get_attachments(session, email_tracking_id):
-        if attachment["mime_type"] in ("text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"):
-            result = parse_text_table(attachment["content"], "csv")
-            if result and result.get("items"):
-                items.extend(_normalize_to_standard_columns(result["items"])["items"])
-```
-
-**Pass 2: Content bundle + LLM (only if Pass 1 = 0 items)**
-
-If deterministic parsing found nothing, fall back to the expensive path:
-
-```python
-if not items:
-    # Build content bundle (involves Gemini for PDFs/images)
-    from includes.tools.supplier_quote_pipeline import _extract_email_content_sync
-    content_bundle = _extract_email_content_sync(email_tracking_id)
-
-    # Pass entire bundle to LLM for extraction
-    result = extract_items_from_text(content_bundle)
-    if result and result.get("items"):
-        items = _normalize_to_standard_columns(result["items"])["items"]
-
-# Record which method succeeded
-extraction_method = "direct_parse" if items else "gemini_llm"
-
-# Deduplicate by (description + part_number)
-items = _deduplicate_items(items)
-```
-
-**Key design principle from Smart Item Adder**: prefer deterministic parsers (BeautifulSoup, csv.reader) over Gemini LLM. Only call the LLM when deterministic parsers produce 0 items.
-
-### Stage 3: Create RFQ
+The RFQ is created and linked to the email thread **before** item extraction begins. This ensures the user can navigate between Gmail and the RFQ dashboard immediately — even if item extraction is slow or fails entirely.
 
 ```python
 from includes.tools.rfq_crud import _create_rfq_sync, _add_items_sync
@@ -227,15 +249,7 @@ rfq = _create_rfq_sync(
 )
 rfq_number = rfq["rfq_number"]
 
-# Bulk-insert items (if any were extracted)
-if items:
-    _add_items_sync(
-        rfq_number=rfq_number,
-        data={"items": items},
-        user_id=user_id,
-    )
-
-# Link entire email thread to the new RFQ
+# Link entire email thread to the new RFQ immediately
 session.execute(
     text(
         "UPDATE email_tracking SET rfq_token = :token, match_type = 'manual' "
@@ -244,6 +258,9 @@ session.execute(
     {"token": rfq_number, "tid": tracking.gmail_thread_id},
 )
 session.commit()
+
+# At this point the user can refresh the addon and see the linked RFQ,
+# navigate to the RFQ detail page, etc. — even before items are extracted.
 ```
 
 **Notes:**
@@ -251,7 +268,89 @@ session.commit()
 - `assigned_to` uses `tracking.user_email` (the mailbox owner), not the add-on user — so if Alice helps Bob, the RFQ is assigned to Bob
 - The RFQ model's `thread_id` field is for Chainlit chat threads, NOT Gmail threads — do NOT set it here
 - `customer_id` is resolved internally by `_create_rfq_sync` from the customer name lookup
-- If zero items extracted, the RFQ is created as an empty draft — user can add items manually later
+- RFQ is created as an empty draft — items are added in Stage 3
+
+### Stage 3: Extract Line Items (LLM Evaluation)
+
+All extraction goes through the LLM. Deterministic HTML table / CSV parsing was considered but rejected — it produces false positives (many emails have tables that aren't item lists) and misses items in freeform text, PDFs, and images.
+
+```python
+from includes.tools.supplier_quote_pipeline import _extract_email_content_sync
+from includes.tools.rfq_item_import import _normalize_to_standard_columns
+from includes.email_pipeline import llm_call_with_retry
+
+# Build content bundle (email body + PDF/image attachments + spreadsheets)
+# NOTE: internally uses QUOTE pipeline models for vision/PDF processing
+content_bundle = _extract_email_content_sync(email_tracking_id)
+
+# LLM extraction — uses RFQ_CREATION pipeline model settings
+extraction_prompt = _build_extraction_prompt(content_bundle)
+response = llm_call_with_retry(
+    pipeline="RFQ_CREATION",
+    step="extract",
+    contents=extraction_prompt,
+    temperature=0.1,
+    timeout=120000,
+)
+result = _parse_extraction_response(response.text)
+# Returns:
+# {
+#   "items": [{input_description, input_code, brand, quantity, uom, confidence}, ...],
+#   "warnings": ["Customer references previous order — items not extractable", ...],
+#   "has_items": true/false,
+#   "title": "Komatsu PC200 engine parts",  # concise RFQ title derived from content
+#   "customer_notes": "Required by 15 Aug. All parts must be genuine Komatsu OEM."
+# }
+
+items = []
+if result.get("has_items") and result.get("items"):
+    items = _normalize_to_standard_columns(result["items"])["items"]
+
+extraction_method = "gemini_llm"
+
+# Deduplicate by (description + part_number)
+items = _deduplicate_items(items)
+```
+
+**LLM prompt requirements** (`config/prompts/rfq_creation_extract.md`):
+- Extract all line items with 5 standard fields: `input_description`, `input_code`, `brand`, `quantity`, `uom`
+- Report confidence per item (`high` / `medium` / `low`)
+- Report `warnings[]` — only for genuinely problematic items (e.g. quantity missing entirely, ambiguous reference like "same as last order"). Missing part codes or brands are NOT warnings — many items are adequately described by description alone (e.g. "M16 bolts")
+- Set `has_items: false` if the email is a general enquiry with no extractable items
+- Extract `title` — a concise description of what the RFQ is about (e.g. "Komatsu PC200 engine parts", "Hydraulic fittings and hoses", "Caterpillar undercarriage components"). Derived from the overall theme of the requested items, not a copy of the email subject.
+- Extract `customer_notes` — any customer requirements, delivery dates, conditions, or context that applies to the whole request. Examples:
+  - "Required by 15 August 2026"
+  - "All parts must be genuine OEM, no aftermarket"
+  - "Delivery to Port Moresby warehouse"
+  - "Budget approval pending — quote only, no order yet"
+  - Combine multiple relevant notes into one block of text
+  - Set to empty string if no relevant requirements found
+- Handle edge cases:
+  - Items in plain text ("we need 50x M12 bolts and 100x washers")
+  - Items in PDF / image attachments (already in content bundle)
+  - Partial references ("same items as last order" → flag as needs-review)
+  - Multiple formats in one email (table + freeform text + attachment)
+
+After extraction, items and notes are saved to the RFQ created in Stage 2:
+
+```python
+# Bulk-insert items into the already-created RFQ (if any were extracted)
+if items:
+    _add_items_sync(
+        rfq_number=rfq_number,
+        data={"items": items},
+        user_id=user_id,
+    )
+
+# Update RFQ title and notes from LLM extraction
+updates = {}
+if result.get("title"):
+    updates["title"] = result["title"]
+if result.get("customer_notes"):
+    updates["notes"] = result["customer_notes"]
+if updates:
+    _update_rfq_sync(rfq_number, updates, user_id)
+```
 
 ### Stage 4: Save Result
 
@@ -261,8 +360,11 @@ result = {
     "items_extracted": len(items),
     "customer": customer.companyname,
     "status": "complete",
-    "extraction_method": extraction_method,  # "direct_parse" or "gemini_llm"
-    "raw_items": items,                      # store for debugging
+    "extraction_method": "gemini_llm",
+    "title": result.get("title", ""),           # LLM-derived RFQ title
+    "customer_notes": result.get("customer_notes", ""),  # requirements/delivery/context
+    "raw_items": items,                          # store for debugging
+    "warnings": result.get("warnings", []),      # LLM flags (e.g. unextractable references)
     "actions": [f"Created RFQ with {len(items)} items"],
     "processed_at": _now_iso(),
 }
@@ -370,20 +472,19 @@ rfq_creation_result = Column(JSONB, nullable=True)
 
 ## Implementation Order
 
-1. **Migration + model** — add `rfq_creation_result` column
-2. **Pipeline file** — `includes/tools/rfq_creation_pipeline.py` with guard checks, two-pass item extraction (deterministic → LLM fallback), RFQ creation, result saving
-3. **API endpoint** — `POST /api/addon/create-rfq` in `addon.py`
-4. **Apps Script** — `onCreateRfq` implementation
-5. **Tests** — unit tests for guard checks, integration test for full pipeline
+1. **Rename `notes` → `title` + add new `notes` field** — migration, model update, update all code/template references
+2. **Migration + model** — add `rfq_creation_result` column to EmailTracking
+3. **Pipeline file** — `includes/tools/rfq_creation_pipeline.py` with guard checks, RFQ creation, LLM item extraction, notes extraction, result saving
+4. **API endpoint** — `POST /api/addon/create-rfq` in `addon.py`
+5. **Apps Script** — `onCreateRfq` implementation
+6. **Tests** — unit tests for guard checks, integration test for full pipeline
 
 ---
 
 ## Deferred to Future
 
 - **Stage 0: Automated classification** — LLM triage to determine if an email is a new quote request (mirrors `_classify_supplier_email_sync()`). Currently manual (user clicks the button).
-- **LLM-suggested subject override** — if the email subject is "Re: Quick question", the LLM could suggest a better RFQ subject.
-- **Extract deadlines from email** — populate RFQ deadline field from content.
-- **Extract reference numbers** — PO numbers, tender references from content.
+- **LLM-suggested subject override** — if the email subject is "Re: Quick question", the LLM could suggest a better RFQ title. (Partially addressed: LLM now extracts a `title` from content, but email subject is still used as `reference`.)
 - **Multi-attachment quote requests** — if a customer sends a cover email + attached spreadsheet with items, handle both.
 - **Support for multiple customers on one RFQ** — current assumption is one customer per RFQ (matching existing model).
 
