@@ -353,7 +353,6 @@ def _extract_rfq_items_sync(email_tracking_id: int) -> tuple[list, Optional[dict
     and llm_result is the full parsed LLM response dict.
     """
     from includes.tools.supplier_quote_pipeline import _extract_email_content_sync
-    from includes.tools.rfq_item_import import _normalize_to_standard_columns
 
     # Build content bundle (email body + PDF/image attachments + spreadsheets)
     # NOTE: internally uses QUOTE pipeline models for vision/PDF processing
@@ -392,11 +391,12 @@ def _extract_rfq_items_sync(email_tracking_id: int) -> tuple[list, Optional[dict
         logger.warning(f"[rfq-creation] #{email_tracking_id}: LLM returned invalid JSON: {raw_text[:300]}")
         return [], None
 
-    # Normalize items to standard 5-field format
+    # Items are already in standard 5-field format from the LLM prompt
+    # ({input_description, input_code, brand, quantity, uom, confidence}).
+    # No _normalize_to_standard_columns() needed — that's for CSV/table import.
     items = []
     if llm_result.get("has_items") and llm_result.get("items"):
-        normalized = _normalize_to_standard_columns(llm_result["items"])
-        items = normalized.get("items", [])
+        items = [item for item in llm_result["items"] if item.get("input_description")]
 
     # Deduplicate
     items = _deduplicate_items(items)

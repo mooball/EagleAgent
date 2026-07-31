@@ -45,7 +45,8 @@ window._emailData = {
         hasSupplier: {{ 'true' if e.supplier_name else 'false' }},
         rfqToken: {{ (e.rfq_token or e.rfq_id or '') | tojson }},
         customerName: {{ (e.customer_name or '') | tojson }},
-        supplierName: {{ (e.supplier_name or '') | tojson }}
+        supplierName: {{ (e.supplier_name or '') | tojson }},
+        gmailThreadId: {{ (e.gmail_thread_id or '') | tojson }}
     },
     {% endfor %}
 };
@@ -73,6 +74,10 @@ window._emailData = {
             linking: false,
             linkMsg: '',
             linkError: false,
+            canCreateRfq: false,
+            creatingRfq: false,
+            createRfqMsg: '',
+            createRfqError: false,
 
             openEmail(id) {
                 const data = window._emailData[id];
@@ -95,6 +100,10 @@ window._emailData = {
                 this.supplierResults = [];
                 this.linkMsg = '';
                 this.linkError = false;
+                this.canCreateRfq = data.direction === 'received' && data.hasCustomer && !data.hasRfq;
+                this.creatingRfq = false;
+                this.createRfqMsg = '';
+                this.createRfqError = false;
                 this.show = true;
 
                 if (data.messageId) {
@@ -168,6 +177,33 @@ window._emailData = {
                 } finally {
                     this.linking = false;
                 }
+            },
+
+            async createRfq() {
+                this.creatingRfq = true;
+                this.createRfqMsg = '';
+                this.createRfqError = false;
+                try {
+                    const resp = await fetch('/api/admin/create-rfq', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ email_id: this.email.id })
+                    });
+                    const data = await resp.json();
+                    if (data.status === 'ok' || data.status === 'processing') {
+                        this.createRfqMsg = data.message || 'RFQ creation started';
+                        this.canCreateRfq = false;
+                        this.needsRfq = false;
+                    } else {
+                        this.createRfqMsg = data.message || 'Failed to create RFQ';
+                        this.createRfqError = true;
+                    }
+                } catch (e) {
+                    this.createRfqMsg = 'Request failed';
+                    this.createRfqError = true;
+                } finally {
+                    this.creatingRfq = false;
+                }
             }
         }));
     }
@@ -199,6 +235,27 @@ window._emailData = {
 
     <!-- Email Detail Modal -->
     {% set extraFooter %}
+            <!-- Footer: Create RFQ button (received email, customer linked, no RFQ yet) -->
+            <div x-show="canCreateRfq" x-cloak
+                 class="shrink-0 border-t border-gray-200 dark:border-gray-700 px-5 py-3 bg-blue-50 dark:bg-blue-900/20 rounded-b-lg">
+                <div class="flex items-center gap-3">
+                    <button @click="createRfq()" :disabled="creatingRfq"
+                            class="text-xs px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 font-medium">
+                        <span x-show="!creatingRfq">+ Create new RFQ</span>
+                        <span x-show="creatingRfq" class="flex items-center gap-1">
+                            <svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                            Creating...
+                        </span>
+                    </button>
+                    <span class="text-[11px] text-gray-500 dark:text-gray-400">
+                        Extracts items from this email and creates a new RFQ
+                    </span>
+                </div>
+                <p x-show="createRfqMsg" class="mt-2 text-xs"
+                   :class="createRfqError ? 'text-red-600' : 'text-green-600'"
+                   x-text="createRfqMsg"></p>
+            </div>
+
             <!-- Footer: Linking controls -->
             <div x-show="needsRfq || needsCustomer || needsSupplier" x-cloak
                  class="shrink-0 border-t border-gray-200 dark:border-gray-700 px-5 py-3 bg-gray-50 dark:bg-gray-800/50 rounded-b-lg">

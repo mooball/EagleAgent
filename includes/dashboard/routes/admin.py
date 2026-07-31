@@ -782,6 +782,60 @@ async def api_search_entities(request: Request, type: str, q: str, user: dict = 
         session.close()
 
 
+@router.post("/api/admin/create-rfq")
+async def api_create_rfq(request: Request, user: dict = Depends(_helpers.require_user)):
+    """Create an RFQ from an email in the dashboard (same pipeline as Gmail add-on)."""
+    from includes.dashboard.models import EmailTracking
+
+    body = await request.json()
+    email_id = body.get("email_id")
+    if not email_id:
+        return JSONResponse({"status": "error", "message": "Missing email_id"}, status_code=400)
+
+    session = _helpers.get_session()
+    try:
+        tracking = session.query(EmailTracking).filter(EmailTracking.id == email_id).first()
+        if not tracking:
+            return JSONResponse({"status": "error", "message": "Email not found"}, status_code=404)
+
+        if not tracking.customer_id:
+            return JSONResponse({"status": "error", "message": "No customer linked. Link a customer first."}, status_code=400)
+
+        if tracking.rfq_token or tracking.rfq_id:
+            return JSONResponse({
+                "status": "error",
+                "message": f"Already linked to RFQ {tracking.rfq_token or tracking.rfq_id}"
+            }, status_code=400)
+
+        if tracking.rfq_creation_result:
+            existing = tracking.rfq_creation_result
+            if existing.get("status") == "error":
+                return JSONResponse({
+                    "status": "error",
+                    "message": f"Previous attempt failed: {existing.get('error', 'unknown')}"
+                }, status_code=400)
+            return JSONResponse({
+                "status": "ok",
+                "message": f"RFQ already created: {existing.get('rfq_number', 'unknown')}",
+            })
+
+        user_ident = user.get("email", user.get("identifier", "dashboard"))
+        from includes.tools.rfq_creation_pipeline import trigger_rfq_creation_pipeline
+        trigger_rfq_creation_pipeline(tracking.id, user_id=user_ident)
+
+        return JSONResponse({
+            "status": "processing",
+            "message": "RFQ creation started. Refresh the page to see the new RFQ.",
+        })
+
+    except Exception as exc:
+        session.rollback()
+        logger.exception("Error creating RFQ from dashboard")
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
+    finally:
+        session.close()
+
+
 @router.post("/api/admin/link-email")
 async def api_link_email(request: Request, user: dict = Depends(_helpers.require_user)):
     """Link an email to an RFQ, customer, or supplier. Optionally save domain for future matching."""
