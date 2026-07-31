@@ -482,6 +482,29 @@ async def admin_duplicates_delete(request: Request, user: dict = require_admin) 
 _EMAIL_PAGE_SIZE = 50
 
 
+def _is_email_all_internal(sender_email: str | None, recipient_email: str | None, user_email: str | None) -> bool:
+    """Return True if ALL parties on an email are internal or generic domains."""
+    from includes.gmail.matching import _INTERNAL_DOMAINS, _GENERIC_DOMAINS
+    all_internal = _INTERNAL_DOMAINS | _GENERIC_DOMAINS
+    addresses: list[str] = []
+    if sender_email:
+        addresses.append(sender_email.strip())
+    if recipient_email:
+        for addr in recipient_email.split(","):
+            a = addr.strip()
+            if a:
+                addresses.append(a)
+    if user_email:
+        addresses.append(user_email.strip())
+    if not addresses:
+        return False
+    for addr in addresses:
+        domain = addr.split("@")[-1].lower() if "@" in addr else ""
+        if domain and domain not in all_internal:
+            return False
+    return True
+
+
 def _query_email_logs(session, q: str = "", user_filter: str = "", page: int = 1):
     """Query email_tracking with optional filters. Returns (emails, total, has_more, next_page)."""
     from datetime import datetime, timezone
@@ -569,6 +592,9 @@ def _query_email_logs(session, q: str = "", user_filter: str = "", page: int = 1
             e["display_time"] = ts[:16].replace("T", " ") if len(ts) >= 16 else ts
         else:
             e["display_time"] = "—"
+        e["is_internal"] = _is_email_all_internal(
+            e.get("sender_email"), e.get("recipient_email"), e.get("user_email")
+        )
         emails.append(e)
 
     return emails, total, page < total_pages, page + 1
