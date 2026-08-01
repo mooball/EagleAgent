@@ -1079,6 +1079,46 @@ async def partial_rfq_delete_item(request: Request, rfq_id: str, line: int,
     return _render_rfq_detail_partial_response(request, user, rfq)
 
 
+@router.post("/partial/rfqs/{rfq_id}/bulk-update-items")
+async def partial_rfq_bulk_update_items(request: Request, rfq_id: str,
+                                        user: dict = Depends(require_user)):
+    """Bulk update multiple RFQ line items in one request (spreadsheet edit mode)."""
+    body = await request.json()
+    items_data = body.get("items", [])
+    if not items_data:
+        return JSONResponse({"status": "error", "message": "No items provided."}, status_code=400)
+
+    # Sanitise each item
+    updatable = ["input_description", "part_number", "brand", "quantity", "uom"]
+    clean_items = []
+    for raw in items_data:
+        try:
+            line_num = int(raw.get("line", 0))
+        except (TypeError, ValueError):
+            continue
+        item = {"line": line_num}
+        for key in updatable:
+            val = raw.get(key)
+            if val is not None:
+                val = str(val).strip() if val else ""
+                if key == "quantity":
+                    try:
+                        val = int(val) if val else None
+                    except ValueError:
+                        val = None
+                item[key] = val if val else None
+        clean_items.append(item)
+
+    from includes.tools.rfq_crud import _update_items_bulk_sync
+    user_ident = user.get("identifier", "dashboard")
+    result = await asyncio.to_thread(_update_items_bulk_sync, rfq_id, {"items": clean_items}, user_ident)
+    if isinstance(result, str):
+        return JSONResponse({"status": "error", "message": result}, status_code=400)
+    rfq = result
+    _enrich_rfq_supplier_contacts(rfq)
+    return _render_rfq_detail_partial_response(request, user, rfq)
+
+
 @router.post("/partial/rfqs/{rfq_id}/add-item")
 async def partial_rfq_add_item(request: Request, rfq_id: str,
                                user: dict = Depends(require_user)):
