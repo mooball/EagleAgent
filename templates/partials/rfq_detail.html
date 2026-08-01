@@ -411,7 +411,8 @@
     {% if items %}
     <!-- Summary bar -->
     <div class="flex items-center justify-between mb-3">
-        <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+        <div x-show="!editAllMode" class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+
             <span class="font-medium">{{ total_items }} items</span>
             {% if unmatched or discrepancy %}
             <span>·</span>
@@ -470,6 +471,11 @@
             </button>
             {% endif %}
         </div>
+        <div x-show="editAllMode" x-cloak class="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            <span class="font-medium">Editing all items</span>
+            <span class="text-xs text-gray-400" x-show="editAllDirtyCount > 0" x-text="editAllDirtyCount + ' changed'"></span>
+        </div>
         <div class="flex items-center gap-1">
             {% set pstage = rfq.get('pipeline_stage', 'unprocessed') %}
             {% if pstage != 'unprocessed' %}
@@ -486,8 +492,15 @@
             </span>
             {% endif %}
             <button @click="allExpanded ? collapseAll() : expandAll()"
+                    x-show="!editAllMode"
                     class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700">
                 <span x-text="allExpanded ? 'Collapse all' : 'Expand all'"></span>
+            </button>
+            <button @click="enterEditAll()"
+                    x-show="!editAllMode"
+                    class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-1">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                Edit All
             </button>
         </div>
     </div>
@@ -496,6 +509,93 @@
     {% set has_groups = item_groups and item_groups.get('groups') %}
 
     <div id="rfq-items-container">
+
+    <!-- ============ SPREADSHEET EDIT MODE ============ -->
+    <div x-show="editAllMode" x-cloak>
+        <div class="bg-white dark:bg-gray-800 rounded-lg border border-amber-300 dark:border-amber-600 overflow-visible">
+            <table class="w-full text-sm" style="border-collapse: collapse;">
+                <colgroup>
+                    <col style="width: 40px;">
+                    <col style="width: 140px;">
+                    <col>
+                    <col style="width: 140px;">
+                    <col style="width: 70px;">
+                    <col style="width: 70px;">
+                </colgroup>
+                <thead class="bg-amber-50 dark:bg-amber-900/30">
+                    <tr>
+                        <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">#</th>
+                        <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Part Number</th>
+                        <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Description</th>
+                        <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Brand</th>
+                        <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Qty</th>
+                        <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db;">UoM</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="(item, idx) in editAllItems" :key="item.line">
+                        <tr style="border-bottom: 1px solid #e5e7eb;">
+                            <td class="px-2 py-2 text-center font-mono text-xs text-gray-400" style="border-right: 1px solid #e5e7eb;" x-text="item.line"></td>
+                            <td :style="'padding: 0; border-right: 1px solid #e5e7eb;' + (isEditAllDirty(item.line, 'part_number') ? ' background: #fefce8;' : '')">
+                                <input type="text" x-model="item.part_number"
+                                       style="width: 100%; padding: 8px; font-size: 0.875rem; border: none; background: transparent; outline: none; font-family: ui-monospace, monospace;"
+                                       @focus="$el.style.backgroundColor='#eff6ff'" @blur="$el.style.backgroundColor='transparent'"
+                                       @input="updateDirtyCount()"
+                                       @keydown.escape="cancelEditAll()">
+                            </td>
+                            <td :style="'padding: 0; border-right: 1px solid #e5e7eb;' + (isEditAllDirty(item.line, 'input_description') ? ' background: #fefce8;' : '')">
+                                <input type="text" x-model="item.input_description"
+                                       style="width: 100%; padding: 8px; font-size: 0.875rem; border: none; background: transparent; outline: none;"
+                                       @focus="$el.style.backgroundColor='#eff6ff'" @blur="$el.style.backgroundColor='transparent'"
+                                       @input="updateDirtyCount()"
+                                       @keydown.escape="cancelEditAll()">
+                            </td>
+                            <td :style="'padding: 0; border-right: 1px solid #e5e7eb;' + (isEditAllDirty(item.line, 'brand') ? ' background: #fefce8;' : '')">
+                                <input type="text" x-model="item.brand"
+                                       style="width: 100%; padding: 8px; font-size: 0.875rem; border: none; background: transparent; outline: none;"
+                                       @focus="$el.style.backgroundColor='#eff6ff'" @blur="$el.style.backgroundColor='transparent'"
+                                       @input="updateDirtyCount()"
+                                       @keydown.escape="cancelEditAll()">
+                            </td>
+                            <td :style="'padding: 0; border-right: 1px solid #e5e7eb;' + (isEditAllDirty(item.line, 'quantity') ? ' background: #fefce8;' : '')">
+                                <input type="text" x-model="item.quantity"
+                                       style="width: 100%; padding: 8px; font-size: 0.875rem; border: none; background: transparent; outline: none; text-align: center;"
+                                       @focus="$el.style.backgroundColor='#eff6ff'" @blur="$el.style.backgroundColor='transparent'"
+                                       @input="updateDirtyCount()"
+                                       @keydown.escape="cancelEditAll()">
+                            </td>
+                            <td :style="'padding: 0;' + (isEditAllDirty(item.line, 'uom') ? ' background: #fefce8;' : '')">
+                                <input type="text" x-model="item.uom"
+                                       style="width: 100%; padding: 8px; font-size: 0.875rem; border: none; background: transparent; outline: none; text-align: center;"
+                                       placeholder="ea"
+                                       @focus="$el.style.backgroundColor='#eff6ff'" @blur="$el.style.backgroundColor='transparent'"
+                                       @input="updateDirtyCount()"
+                                       @keydown.escape="cancelEditAll()">
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+        <div class="flex items-center gap-2 mt-3">
+            <button @click="saveEditAll()" :disabled="editAllSaving"
+                    class="px-3 py-1.5 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+                <span x-show="!editAllSaving">Save All</span>
+                <span x-show="editAllSaving" class="flex items-center gap-1">
+                    <svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                    Saving...
+                </span>
+            </button>
+            <button @click="cancelEditAll()"
+                    class="px-3 py-1.5 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700">
+                Cancel
+            </button>
+            <span x-show="editAllMsg" class="text-xs" :class="editAllError ? 'text-red-600' : 'text-green-600'" x-text="editAllMsg"></span>
+        </div>
+    </div>
+
+    <!-- ============ NORMAL VIEW ============ -->
+    <div x-show="!editAllMode">
     {# View mode: set grouped_view = true to enable per-group tables when groups exist #}
     {% set grouped_view = false %}
 
@@ -547,7 +647,8 @@
     {% include "partials/_rfq_items_table.html" %}
     {% endif %}
 
-    </div>
+    </div> {# /normal view #}
+    </div> {# /rfq-items-container #}
 
     <!-- Action buttons -->
     <div class="flex gap-2 mt-4">

@@ -712,6 +712,13 @@
                 editingItem: null,
                 addingItem: false,
                 agentBusy: false,
+                editAllMode: false,
+                editAllItems: [],
+                editAllOriginals: {},
+                editAllSaving: false,
+                editAllMsg: '',
+                editAllError: false,
+                editAllDirtyCount: 0,
                 copySupplierModal: { open: false, sourceLine: null, supplierName: '', items: [] },
                 brandSuppliersModal: { open: false, line: null, brand: '', suppliers: [] },
                 rfqId: '',
@@ -792,6 +799,95 @@
                 checkAllExpanded() {
                     var keys = Object.keys(this.expanded);
                     this.allExpanded = keys.length > 0 && keys.every(k => this.expanded[k]);
+                },
+                enterEditAll() {
+                    // Build editable copies and store originals for dirty tracking
+                    var items = [];
+                    var originals = {};
+                    this._allLines.forEach(l => {
+                        var src = this._items[l];
+                        if (src) {
+                            var row = {
+                                line: src.line,
+                                part_number: src.part_number || '',
+                                input_description: src.input_description || '',
+                                brand: src.brand || '',
+                                quantity: src.quantity != null ? String(src.quantity) : '',
+                                uom: src.uom || ''
+                            };
+                            items.push(row);
+                            originals[src.line] = {
+                                part_number: row.part_number,
+                                input_description: row.input_description,
+                                brand: row.brand,
+                                quantity: row.quantity,
+                                uom: row.uom
+                            };
+                        }
+                    });
+                    this.editAllItems = items;
+                    this.editAllOriginals = originals;
+                    this.editAllMode = true;
+                    this.editAllSaving = false;
+                    this.editAllMsg = '';
+                    this.editAllError = false;
+                    this.editAllDirtyCount = 0;
+                },
+                isEditAllDirty(line, field) {
+                    var orig = this.editAllOriginals[line];
+                    if (!orig) return false;
+                    var item = this.editAllItems.find(i => i.line === line);
+                    if (!item) return false;
+                    return (item[field] || '') !== (orig[field] || '');
+                },
+                updateDirtyCount() {
+                    var count = 0;
+                    var self = this;
+                    this.editAllItems.forEach(item => {
+                        var orig = self.editAllOriginals[item.line];
+                        if (!orig) return;
+                        var fields = ['part_number', 'input_description', 'brand', 'quantity', 'uom'];
+                        for (var i = 0; i < fields.length; i++) {
+                            if ((item[fields[i]] || '') !== (orig[fields[i]] || '')) { count++; break; }
+                        }
+                    });
+                    this.editAllDirtyCount = count;
+                },
+                cancelEditAll() {
+                    this.editAllMode = false;
+                    this.editAllItems = [];
+                    this.editAllOriginals = {};
+                    this.editAllMsg = '';
+                    this.editAllError = false;
+                    this.editAllDirtyCount = 0;
+                },
+                async saveEditAll() {
+                    this.editAllSaving = true;
+                    this.editAllMsg = '';
+                    this.editAllError = false;
+                    try {
+                        var resp = await fetch('/partial/rfqs/' + this.rfqId + '/bulk-update-items', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            credentials: 'same-origin',
+                            body: JSON.stringify({ items: this.editAllItems })
+                        });
+                        if (resp.ok) {
+                            // Replace the page content with the re-rendered detail partial
+                            var html = await resp.text();
+                            document.getElementById('main-content').innerHTML = html;
+                            htmx.process(document.getElementById('main-content'));
+                        } else {
+                            var data = await resp.json().catch(function() { return {}; });
+                            this.editAllMsg = data.message || 'Save failed';
+                            this.editAllError = true;
+                        }
+                    } catch (e) {
+                        this.editAllMsg = 'Request failed';
+                        this.editAllError = true;
+                    } finally {
+                        this.editAllSaving = false;
+                    }
                 },
                 _sendAction(action, refreshAfter) {
                     var rfqId = this.rfqId;

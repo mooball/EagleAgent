@@ -28,6 +28,26 @@ Important rules for items:
 - Handle multiple formats in one email: items may appear in body text AND in a table AND
   in an attachment. Extract all of them.
 
+### Description Hygiene
+
+The `input_description` field should be a clean, readable product description. Apply these rules:
+
+- **Do NOT repeat brand, quantity, or UOM in the description** — those have their own fields.
+  Bad: "100 x Caterpillar fuel filter 1R-0750" → Good: "Fuel filter 1R-0750"
+- **Remove parenthetical clarifications of total quantities** — e.g. "115 x 6m lengths (690m)"
+  means 115 items of 6m each. The "(690m)" is just arithmetic confirmation, not part of the
+  description. Extract as: description="6m lengths ...", quantity=115, uom="ea".
+- **Standardise metric abbreviations**: "mt" or "mtr" → "m", "mm" stays as "mm",
+  "kg" stays as "kg", "ltr" → "L".
+- **Clean up separators**: replace "/" with spaces or commas where appropriate
+  (e.g. "bell ends/ threaded" → "bell ends, threaded").
+- **UOM should be a standard abbreviation**: ea, m, mm, kg, L, pair, set, box, roll, pkt, carton.
+  "Lengths" is NOT a valid UOM — if the item is discrete lengths of material, UOM is "ea".
+- **Quantity × length patterns**: "50 x 6m lengths" means quantity=50, uom="ea", and "6m"
+  is part of the description. The item is a 6m piece, sold individually.
+- **Carton/pack patterns**: "50 x cartons of 12" means quantity=50, uom="carton".
+  Do NOT multiply (not 600 ea).
+
 ### Warnings
 Report `warnings[]` only for genuinely problematic situations:
 - Quantity is completely missing and cannot be inferred (not even 1)
