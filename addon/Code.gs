@@ -37,7 +37,9 @@ function isCacheEnabled() {
 // Blocked domains — emails where ALL parties are on these domains
 // get a simplified card with no link actions.
 // ============================================================
-var BLOCKED_DOMAINS = [
+// Internal/service domains — used only for "isInternal" UI banner.
+// Direction detection uses mailbox-owner comparison, not domain lists.
+var INTERNAL_DOMAINS = [
   'google.com',
   'accounts.google.com',
   'eagle-exports.com.au',
@@ -47,61 +49,92 @@ var BLOCKED_DOMAINS = [
 ];
 
 /**
- * Extract the domain from a Gmail address string.
+ * Extract the email address from a Gmail address string.
  * Handles formats: "Name" <email@domain.com> or plain email@domain.com
  */
-function extractDomain(sender) {
-  var match = sender.match(/<([^>]+)>/) || [null, sender];
-  var addr = match[1].trim().toLowerCase();
-  var parts = addr.split('@');
+function extractEmail(addrStr) {
+  var match = addrStr.match(/<([^>]+)>/);
+  return match ? match[1].trim().toLowerCase() : addrStr.trim().toLowerCase();
+}
+
+/**
+ * Extract the domain from a Gmail address string.
+ */
+function extractDomain(addrStr) {
+  var email = extractEmail(addrStr);
+  var parts = email.split('@');
   return parts.length === 2 ? parts[1] : '';
 }
 
 /**
- * Check if a domain is in the blocked list.
+ * Check if ALL parties on an email are internal/service domains.
+ * Used only for the UI warning banner — not for direction detection.
  */
-function isDomainBlocked(domain) {
-  if (!domain) return true;
-  for (var i = 0; i < BLOCKED_DOMAINS.length; i++) {
-    if (domain === BLOCKED_DOMAINS[i]) return true;
+function isAllInternal(message) {
+  var addresses = [];
+  addresses.push(message.getFrom());
+  var to = message.getTo();
+  if (to) {
+    var parts = to.split(',');
+    for (var i = 0; i < parts.length; i++) {
+      addresses.push(parts[i].trim());
+    }
   }
-  return false;
+  for (var j = 0; j < addresses.length; j++) {
+    var domain = extractDomain(addresses[j]);
+    if (!domain) continue;
+    var found = false;
+    for (var k = 0; k < INTERNAL_DOMAINS.length; k++) {
+      if (domain === INTERNAL_DOMAINS[k]) { found = true; break; }
+    }
+    if (!found) return false;
+  }
+  return true;
 }
 
 /**
- * Determine the relevant external contact for an email message.
+ * Determine direction, contact address, and sender/recipient for an email.
  *
- * For received emails (sender is external) → the sender is the contact.
- * For sent/draft emails (sender is internal) → the first external To
- * recipient is the contact.
+ * Uses the mailbox owner (Session.getActiveUser()) to reliably determine
+ * direction regardless of domain. This handles:
+ * - External emails (customer → me or me → customer)
+ * - Internal forwards (colleague → me)
+ * - Sent emails viewed in sent folder
  *
- * Returns { address: string, direction: 'received'|'sent' } or null if
- * all parties are blocked/internal.
+ * Returns:
+ *   { direction: 'received'|'sent',
+ *     contact: email address of the other party,
+ *     senderEmail: the FROM address,
+ *     recipientEmail: the primary TO address,
+ *     userEmail: the mailbox owner }
  */
-function getRelevantContact(message) {
-  var sender = message.getFrom();
-  var senderDomain = extractDomain(sender);
+function getEmailContext(message) {
+  var userEmail = Session.getActiveUser().getEmail().toLowerCase();
+  var fromRaw = message.getFrom();
+  var fromEmail = extractEmail(fromRaw);
+  var toRaw = message.getTo() || '';
+  var toFirstEmail = toRaw ? extractEmail(toRaw.split(',')[0]) : '';
 
-  // If sender is external → relevant contact is the sender
-  if (!isDomainBlocked(senderDomain)) {
-    return { address: sender, direction: 'received' };
+  var direction;
+  var contact;
+
+  if (fromEmail === userEmail) {
+    // I sent this email — contact is the first TO recipient
+    direction = 'sent';
+    contact = toFirstEmail || fromRaw;
+  } else {
+    // Someone else sent this — contact is the sender
+    direction = 'received';
+    contact = fromRaw;  // keep full "Name <email>" for display/matching
   }
 
-  // Sender is internal — check To recipients for an external address
-  var to = message.getTo();
-  if (to) {
-    var recipients = to.split(',');
-    for (var i = 0; i < recipients.length; i++) {
-      var recip = recipients[i].trim();
-      var recipDomain = extractDomain(recip);
-      if (recipDomain && !isDomainBlocked(recipDomain)) {
-        return { address: recip, direction: 'sent' };
-      }
-    }
-  }
-
-  // All parties are blocked/internal
-  return null;
+  return {
+    direction: direction,
+    contact: contact,
+    senderEmail: fromEmail,
+    recipientEmail: toFirstEmail,
+    userEmail: userEmail
+  };
 }
 
 /**
@@ -264,14 +297,10 @@ function onGmailMessageOpen(e) {
     var sender = message.getFrom();
     var threadId = message.getThread().getId();
 
-    // Determine the relevant external contact
-    var contact = getRelevantContact(message);
-    if (!contact) {
-      return [buildNoActionsCard(subject)];
-    }
-
-    // Use the external contact address for backend matching
-    var contactAddress = contact.address;
+    // Determine direction and relevant contact using mailbox owner
+    var emailCtx = getEmailContext(message);
+    var isInternal = isAllInternal(message);
+    var contactAddress = emailCtx.contact;
 
     // Check cache first (production only — skipped when DEPLOYMENT_MODE not set)
     var cacheKey = 'ctx:' + messageId;
@@ -279,7 +308,7 @@ function onGmailMessageOpen(e) {
       var cache = CacheService.getUserCache();
       var cached = cache.get(cacheKey);
       if (cached) {
-        return [buildContextCard(JSON.parse(cached), messageId, threadId, subject, contactAddress)];
+        return [buildContextCard(JSON.parse(cached), messageId, threadId, subject, contactAddress, isInternal)];
       }
     }
 
@@ -290,7 +319,11 @@ function onGmailMessageOpen(e) {
         gmail_message_id: messageId,
         gmail_thread_id: threadId,
         subject: subject,
-        sender: contactAddress
+        sender: contactAddress,
+        direction: emailCtx.direction,
+        sender_email: emailCtx.senderEmail,
+        recipient_email: emailCtx.recipientEmail,
+        user_email: emailCtx.userEmail
       });
     } catch (err) {
       return [buildErrorCard(err.message)];
@@ -301,7 +334,7 @@ function onGmailMessageOpen(e) {
       cache.put(cacheKey, JSON.stringify(context), CONTEXT_CACHE_TTL);
     }
 
-    return [buildContextCard(context, messageId, threadId, subject, contactAddress)];
+    return [buildContextCard(context, messageId, threadId, subject, contactAddress, isInternal)];
   } catch (e) {
     return [buildErrorCard(e.message || String(e), e.stack || '')];
   }
@@ -311,12 +344,26 @@ function onGmailMessageOpen(e) {
 // UI: Build the context card
 // ============================================================
 
-function buildContextCard(context, messageId, threadId, subject, sender) {
+function buildContextCard(context, messageId, threadId, subject, sender, isInternal) {
+  isInternal = isInternal || false;
   var builder = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
         .setSubtitle(subject.length > 60 ? subject.substring(0, 57) + '...' : subject)
     );
+
+  // ---- Internal email warning ----
+  if (isInternal) {
+    builder.addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText(
+              '<b>⚠ All parties on this email are internal or service domains.</b>'
+            )
+        )
+    );
+  }
 
   // ---- Pipeline status (supplier quote classification) ----
   if (context.pipeline_status) {
@@ -1032,6 +1079,33 @@ function onSelectEntity(e) {
 // ============================================================
 // Phase 2: Link to RFQ — search + select flow
 // ============================================================
+
+/**
+ * User clicked "Create New RFQ". Trigger the RFQ creation pipeline.
+ */
+function onCreateRfq(e) {
+  var result;
+  try {
+    result = fetchBackend('/api/addon/create-rfq', {
+      gmail_message_id: e.parameters.messageId,
+      gmail_thread_id: e.parameters.threadId
+    });
+  } catch (err) {
+    return CardService.newActionResponseBuilder()
+      .setNotification(
+        CardService.newNotification().setText('Error: ' + err.message)
+      )
+      .build();
+  }
+
+  return CardService.newActionResponseBuilder()
+    .setNotification(
+      CardService.newNotification().setText(
+        result.message || 'RFQ creation started. Refresh the card to see the new RFQ.'
+      )
+    )
+    .build();
+}
 
 /**
  * User clicked "Link to RFQ". Push a search card.

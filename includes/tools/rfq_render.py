@@ -12,7 +12,7 @@ def _render_rfq_summary(rfq: dict) -> str:
     customer = rfq.get("customer", "Unknown")
     created = rfq.get("created_date", "")
     rfq_id = rfq.get("id", "???")
-    notes = rfq.get("notes", "")
+    notes = rfq.get("title", "")
     ref = rfq.get("reference", "")
     netsuite = rfq.get("netsuite_opportunity", "")
     hubspot = rfq.get("hubspot_deal", "")
@@ -54,7 +54,7 @@ def _render_rfq_summary(rfq: dict) -> str:
             lines.append(f"**Contact:** {' · '.join(parts)}")
 
     if notes:
-        lines.append(f"**Notes:** {notes}")
+        lines.append(f"**Title:** {notes}")
 
     lines.append("")
 

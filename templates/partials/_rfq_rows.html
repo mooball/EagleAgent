@@ -8,7 +8,7 @@
     hx-get="/partial/rfqs/{{ rfq.id }}" hx-target="#main-content" hx-push-url="/rfqs/{{ rfq.id }}">
     <td class="px-4 py-3 font-bold text-gray-900 dark:text-gray-100 whitespace-nowrap {{ age_class }}">{{ rfq.id }}{% if rfq.netsuite_opportunity %} <span class="text-blue-600 dark:text-blue-400 font-normal">/ {{ rfq.netsuite_opportunity }}</span>{% endif %}</td>
     <td class="px-4 py-3 text-gray-700 dark:text-gray-300 {{ age_class }}">{{ rfq.customer or 'Unknown' }}</td>
-    <td class="px-4 py-3 text-gray-500 dark:text-gray-400 max-w-xs truncate {{ age_class }}">{{ rfq.notes or '—' }}</td>
+    <td class="px-4 py-3 text-gray-500 dark:text-gray-400 max-w-xs truncate {{ age_class }}">{{ rfq.title or '—' }}</td>
     <td class="px-4 py-3 whitespace-nowrap">
         {% if status == 'draft' %}
         <span class="text-xs px-2 py-0.5 rounded-full bg-gray-600 text-gray-100">Draft</span>

@@ -587,7 +587,7 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
                 r.get("customer", ""),
                 r.get("reference", ""),
                 r.get("netsuite_opportunity", ""),
-                r.get("notes", ""),
+                r.get("title", ""),
                 r.get("assigned_to", ""),
                 r.get("status", ""),
             ])).lower()
@@ -721,6 +721,7 @@ async def rfq_detail(request: Request, rfq_id: str,
         "active_nav": "rfqs",
         "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
         "active_tab": "items",
+        "all_users": _get_all_user_emails(),
     }
     return _render(request, "rfq_detail.html", "partials/rfq_detail.html", ctx, user)
 
@@ -980,7 +981,7 @@ async def partial_rfq_update(request: Request, rfq_id: str,
     """Update RFQ header properties (customer, netsuite, hubspot, notes)."""
     form = await request.form()
     data = {}
-    updatable = ["customer", "customer_id", "opportunity_id", "assigned_to", "notes", "netsuite_opportunity", "hubspot_deal"]
+    updatable = ["customer", "customer_id", "opportunity_id", "assigned_to", "title", "notes", "netsuite_opportunity", "hubspot_deal"]
     for key in updatable:
         val = form.get(key)
         if val is not None:

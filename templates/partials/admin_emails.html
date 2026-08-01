@@ -45,7 +45,9 @@ window._emailData = {
         hasSupplier: {{ 'true' if e.supplier_name else 'false' }},
         rfqToken: {{ (e.rfq_token or e.rfq_id or '') | tojson }},
         customerName: {{ (e.customer_name or '') | tojson }},
-        supplierName: {{ (e.supplier_name or '') | tojson }}
+        supplierName: {{ (e.supplier_name or '') | tojson }},
+        gmailThreadId: {{ (e.gmail_thread_id or '') | tojson }},
+        isInternal: {{ 'true' if e.is_internal else 'false' }}
     },
     {% endfor %}
 };
@@ -73,6 +75,12 @@ window._emailData = {
             linking: false,
             linkMsg: '',
             linkError: false,
+            canCreateRfq: false,
+            creatingRfq: false,
+            createRfqMsg: '',
+            createRfqError: false,
+            isInternal: false,
+            internalStep: 'idle',  // 'idle' | 'selecting' | 'linking'
 
             openEmail(id) {
                 const data = window._emailData[id];
@@ -95,6 +103,15 @@ window._emailData = {
                 this.supplierResults = [];
                 this.linkMsg = '';
                 this.linkError = false;
+                this.isInternal = data.isInternal || false;
+                this.canCreateRfq = !data.hasRfq && (
+                    (data.direction === 'received' && data.hasCustomer)
+                    || (data.isInternal && data.hasCustomer)
+                );
+                this.internalStep = 'idle';
+                this.creatingRfq = false;
+                this.createRfqMsg = '';
+                this.createRfqError = false;
                 this.show = true;
 
                 if (data.messageId) {
@@ -168,6 +185,77 @@ window._emailData = {
                 } finally {
                     this.linking = false;
                 }
+            },
+
+            async createRfq() {
+                this.creatingRfq = true;
+                this.createRfqMsg = '';
+                this.createRfqError = false;
+                try {
+                    const resp = await fetch('/api/admin/create-rfq', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ email_id: this.email.id })
+                    });
+                    const data = await resp.json();
+                    if (data.status === 'ok' || data.status === 'processing') {
+                        this.createRfqMsg = data.message || 'RFQ creation started';
+                        this.canCreateRfq = false;
+                        this.needsRfq = false;
+                        this.internalStep = 'idle';
+                    } else {
+                        this.createRfqMsg = data.message || 'Failed to create RFQ';
+                        this.createRfqError = true;
+                    }
+                } catch (e) {
+                    this.createRfqMsg = 'Request failed';
+                    this.createRfqError = true;
+                } finally {
+                    this.creatingRfq = false;
+                }
+            },
+
+            startInternalRfq() {
+                // Internal email: step 1 — select customer
+                this.internalStep = 'selecting';
+                this.createRfqMsg = '';
+                this.createRfqError = false;
+            },
+
+            async linkAndCreateRfq() {
+                // Step 2: link customer, then create RFQ
+                this.internalStep = 'linking';
+                this.linkMsg = '';
+                this.linkError = false;
+                const payload = {
+                    email_id: this.email.id,
+                    link_type: 'customer',
+                    entity_id: this.selectedCustomerId,
+                    save_domain: false  // never save internal domains
+                };
+                try {
+                    const resp = await fetch('/api/admin/link-email', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await resp.json();
+                    if (data.status === 'ok') {
+                        this.needsCustomer = false;
+                        this.email.hasCustomer = true;
+                        this.email.customerName = data.entity_name || '';
+                        // Now create the RFQ
+                        await this.createRfq();
+                    } else {
+                        this.linkMsg = data.message || 'Link failed';
+                        this.linkError = true;
+                        this.internalStep = 'selecting';
+                    }
+                } catch (e) {
+                    this.linkMsg = 'Request failed';
+                    this.linkError = true;
+                    this.internalStep = 'selecting';
+                }
             }
         }));
     }
@@ -199,6 +287,81 @@ window._emailData = {
 
     <!-- Email Detail Modal -->
     {% set extraFooter %}
+            <!-- Footer: Internal email — link customer then create RFQ -->
+            <div x-show="isInternal && !email.hasRfq && internalStep !== 'idle'" x-cloak
+                 class="shrink-0 border-t border-gray-200 dark:border-gray-700 px-5 py-3 bg-amber-50 dark:bg-amber-900/20 rounded-b-lg">
+                <p class="text-[11px] text-amber-700 dark:text-amber-300 mb-2">
+                    ⚠ All parties on this email are internal or service domains.
+                </p>
+                <!-- Step 1: Select customer -->
+                <div x-show="internalStep === 'selecting'" class="flex flex-col gap-2">
+                    <label class="text-[10px] text-gray-500">Link to customer first</label>
+                    <div class="flex gap-2 items-start relative">
+                        <input type="text" x-model="linkCustomerSearch" placeholder="Search customers..."
+                               class="text-xs px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 w-52"
+                               @input.debounce.300ms="searchEntities('customer')"
+                               @keydown.escape="customerResults = []">
+                        <button @click="linkAndCreateRfq()" :disabled="!selectedCustomerId || internalStep === 'linking'"
+                                class="text-xs px-2.5 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 font-medium">
+                            <span x-show="internalStep !== 'linking'">Link &amp; Create RFQ</span>
+                            <span x-show="internalStep === 'linking'" class="flex items-center gap-1">
+                                <svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                                Linking...
+                            </span>
+                        </button>
+                        <ul x-show="customerResults.length > 0"
+                            class="absolute bottom-full mb-1 left-0 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded shadow-lg max-h-40 overflow-y-auto w-52 text-xs">
+                            <template x-for="c in customerResults" :key="c.id">
+                                <li @click="selectedCustomerId = c.id; linkCustomerSearch = c.name; customerResults = []"
+                                    class="px-2 py-1.5 hover:bg-blue-50 dark:hover:bg-gray-700 cursor-pointer" x-text="c.name"></li>
+                            </template>
+                        </ul>
+                    </div>
+                    <p x-show="linkMsg" class="text-xs" :class="linkError ? 'text-red-600' : 'text-green-600'" x-text="linkMsg"></p>
+                </div>
+                <!-- Spinner while creating -->
+                <div x-show="internalStep === 'linking' && creatingRfq" class="flex items-center gap-2 text-xs text-gray-500">
+                    <svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                    Creating RFQ...
+                </div>
+                <p x-show="createRfqMsg" class="mt-2 text-xs"
+                   :class="createRfqError ? 'text-red-600' : 'text-green-600'"
+                   x-text="createRfqMsg"></p>
+            </div>
+
+            <!-- Footer: Internal email — start button (initial state) -->
+            <div x-show="isInternal && !email.hasRfq && internalStep === 'idle' && !canCreateRfq" x-cloak
+                 class="shrink-0 border-t border-gray-200 dark:border-gray-700 px-5 py-3 bg-amber-50 dark:bg-amber-900/20 rounded-b-lg">
+                <p class="text-[11px] text-amber-700 dark:text-amber-300 mb-2">
+                    ⚠ All parties on this email are internal or service domains.
+                </p>
+                <button @click="startInternalRfq()"
+                        class="text-xs px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 font-medium">
+                    + Create new RFQ
+                </button>
+            </div>
+
+            <!-- Footer: Create RFQ button (received or internal email, customer linked, no RFQ yet) -->
+            <div x-show="canCreateRfq" x-cloak
+                 class="shrink-0 border-t border-gray-200 dark:border-gray-700 px-5 py-3 bg-blue-50 dark:bg-blue-900/20 rounded-b-lg">
+                <div class="flex items-center gap-3">
+                    <button @click="createRfq()" :disabled="creatingRfq"
+                            class="text-xs px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 font-medium">
+                        <span x-show="!creatingRfq">+ Create new RFQ</span>
+                        <span x-show="creatingRfq" class="flex items-center gap-1">
+                            <svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                            Creating...
+                        </span>
+                    </button>
+                    <span class="text-[11px] text-gray-500 dark:text-gray-400">
+                        Extracts items from this email and creates a new RFQ
+                    </span>
+                </div>
+                <p x-show="createRfqMsg" class="mt-2 text-xs"
+                   :class="createRfqError ? 'text-red-600' : 'text-green-600'"
+                   x-text="createRfqMsg"></p>
+            </div>
+
             <!-- Footer: Linking controls -->
             <div x-show="needsRfq || needsCustomer || needsSupplier" x-cloak
                  class="shrink-0 border-t border-gray-200 dark:border-gray-700 px-5 py-3 bg-gray-50 dark:bg-gray-800/50 rounded-b-lg">

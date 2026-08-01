@@ -89,6 +89,10 @@ class ContextRequest(BaseModel):
     gmail_thread_id: str
     subject: str | None = None
     sender: str | None = None
+    direction: str | None = None  # 'received' | 'sent'
+    sender_email: str | None = None  # actual FROM address
+    recipient_email: str | None = None  # primary TO address
+    user_email: str | None = None  # mailbox owner
 
 
 class ContextResponse(BaseModel):
@@ -108,6 +112,10 @@ class LinkEmailRequest(BaseModel):
     rfq_token: str | None = None  # RFQ number for rfq type
     sender: str | None = None  # optional — sender email for domain save
     save_domain: bool = True  # auto-save domain to entity for future matching
+    direction: str | None = None  # 'received' | 'sent'
+    sender_email: str | None = None
+    recipient_email: str | None = None
+    user_email: str | None = None
 
 
 class MatchRequest(BaseModel):
@@ -124,6 +132,15 @@ class UnlinkEmailRequest(BaseModel):
 class MatchResponse(BaseModel):
     matched: bool
     entity: dict | None = None  # {type, id, name, match_type} or None
+
+
+class CreateRfqRequest(BaseModel):
+    gmail_message_id: str
+    gmail_thread_id: str
+    direction: str | None = None
+    sender_email: str | None = None
+    recipient_email: str | None = None
+    user_email: str | None = None
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
@@ -186,7 +203,20 @@ def get_email_context(body: ContextRequest, user: AddonUser):
             )
 
         if not tracking:
-            return ContextResponse(email_tracked=False)
+            # Auto-create tracking record — email hasn't been synced yet
+            tracking = _ensure_email_tracking(
+                session,
+                gmail_message_id=body.gmail_message_id,
+                gmail_thread_id=body.gmail_thread_id,
+                subject=body.subject or "",
+                sender=body.sender or "",
+                direction=body.direction,
+                sender_email=body.sender_email,
+                recipient_email=body.recipient_email,
+                user_email=body.user_email or user.get("email", ""),
+            )
+            session.commit()
+            logger.info(f"[addon] auto-created tracking #{tracking.id} for {body.gmail_message_id}")
 
         result = ContextResponse(email_tracked=True)
 
@@ -406,10 +436,19 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
             )
 
         if not tracking:
-            return JSONResponse(
-                {"status": "error", "message": "Email not found in tracking"},
-                status_code=404,
+            # Auto-create tracking record — email hasn't been synced yet
+            tracking = _ensure_email_tracking(
+                session,
+                gmail_message_id=body.gmail_message_id,
+                gmail_thread_id=body.gmail_thread_id,
+                sender=body.sender or "",
+                direction=body.direction,
+                sender_email=body.sender_email,
+                recipient_email=body.recipient_email,
+                user_email=body.user_email or user.get("email", ""),
             )
+            session.commit()
+            logger.info(f"[addon] auto-created tracking #{tracking.id} for link-email")
 
         tid = tracking.gmail_thread_id or ""
 
@@ -439,10 +478,12 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
                 {"cid": str(customer_id), "tid": tid, "eid": tracking.id},
             )
 
-            # Auto-save sender domain if requested
+            # Auto-save sender domain if requested (skip internal domains)
             if body.save_domain and body.sender:
-                from includes.gmail.matching import save_sender_domain
-                save_sender_domain(session, body.sender, "customer", customer_id)
+                from includes.gmail.matching import save_sender_domain, _INTERNAL_DOMAINS, _GENERIC_DOMAINS
+                sender_domain = body.sender.split("@")[-1].lower() if "@" in body.sender else ""
+                if sender_domain and sender_domain not in _INTERNAL_DOMAINS and sender_domain not in _GENERIC_DOMAINS:
+                    save_sender_domain(session, body.sender, "customer", customer_id)
 
             session.commit()
             return JSONResponse({
@@ -477,10 +518,12 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
                 {"sid": str(supplier_id), "tid": tid, "eid": tracking.id},
             )
 
-            # Auto-save sender domain if requested
+            # Auto-save sender domain if requested (skip internal domains)
             if body.save_domain and body.sender:
-                from includes.gmail.matching import save_sender_domain
-                save_sender_domain(session, body.sender, "supplier", supplier_id)
+                from includes.gmail.matching import save_sender_domain, _INTERNAL_DOMAINS, _GENERIC_DOMAINS
+                sender_domain = body.sender.split("@")[-1].lower() if "@" in body.sender else ""
+                if sender_domain and sender_domain not in _INTERNAL_DOMAINS and sender_domain not in _GENERIC_DOMAINS:
+                    save_sender_domain(session, body.sender, "supplier", supplier_id)
 
             session.commit()
 
@@ -635,6 +678,95 @@ def unlink_email(body: UnlinkEmailRequest, user: AddonUser):
         session.close()
 
 
+@router.post("/create-rfq")
+def create_rfq(body: CreateRfqRequest, user: AddonUser):
+    """Create an RFQ from a Gmail email thread.
+
+    Finds the EmailTracking record, triggers the RFQ creation pipeline
+    in a background thread, and returns immediately.
+    """
+    from fastapi.responses import JSONResponse
+    from includes.dashboard.database import get_session
+    from includes.dashboard.models import EmailTracking
+
+    session = get_session()
+    try:
+        tracking = (
+            session.query(EmailTracking)
+            .filter(EmailTracking.gmail_message_id == body.gmail_message_id)
+            .first()
+        )
+        if not tracking:
+            tracking = (
+                session.query(EmailTracking)
+                .filter(EmailTracking.gmail_thread_id == body.gmail_thread_id)
+                .order_by(EmailTracking.id.desc())
+                .first()
+            )
+
+        if not tracking:
+            # Auto-create tracking record — email hasn't been synced yet
+            tracking = _ensure_email_tracking(
+                session,
+                gmail_message_id=body.gmail_message_id,
+                gmail_thread_id=body.gmail_thread_id,
+                direction=body.direction,
+                sender_email=body.sender_email,
+                recipient_email=body.recipient_email,
+                user_email=body.user_email or user.get("email", ""),
+            )
+            session.commit()
+            logger.info(f"[addon] auto-created tracking #{tracking.id} for create-rfq")
+
+        # Guard: must be linked to a customer
+        if not tracking.customer_id:
+            return JSONResponse(
+                {"status": "error", "message": "No customer linked. Link a customer first."},
+                status_code=400,
+            )
+
+        # Guard: must not already be linked to an RFQ
+        if tracking.rfq_token or tracking.rfq_id:
+            return JSONResponse(
+                {"status": "error",
+                 "message": f"Already linked to RFQ {tracking.rfq_token or tracking.rfq_id}"},
+                status_code=400,
+            )
+
+        # Guard: idempotency — already processing or completed
+        if tracking.rfq_creation_result:
+            existing = tracking.rfq_creation_result
+            if existing.get("status") == "error":
+                return JSONResponse(
+                    {"status": "error",
+                     "message": f"Previous attempt failed: {existing.get('error', 'unknown')}"},
+                    status_code=400,
+                )
+            return JSONResponse({
+                "status": "ok",
+                "message": f"RFQ already created: {existing.get('rfq_number', 'unknown')}",
+            })
+
+        user_ident = user.get("email", user.get("identifier", "addon"))
+        from includes.tools.rfq_creation_pipeline import trigger_rfq_creation_pipeline
+        trigger_rfq_creation_pipeline(tracking.id, user_id=user_ident)
+
+        return JSONResponse({
+            "status": "processing",
+            "message": "RFQ creation started. Refresh the card to see the new RFQ.",
+        })
+
+    except Exception as exc:
+        session.rollback()
+        logger.exception("Error creating RFQ from add-on")
+        return JSONResponse(
+            {"status": "error", "message": str(exc)},
+            status_code=500,
+        )
+    finally:
+        session.close()
+
+
 def _maybe_trigger_quote_pipeline(session, gmail_thread_id: str):
     """Trigger the supplier quote pipeline if the thread has received emails
     linked to both a supplier and an RFQ.
@@ -671,3 +803,86 @@ def _maybe_trigger_quote_pipeline(session, gmail_thread_id: str):
             candidate.id,
             gmail_thread_id,
         )
+
+
+# ---------------------------------------------------------------------------
+# Auto-create tracking record when email hasn't been synced yet
+# ---------------------------------------------------------------------------
+
+def _ensure_email_tracking(
+    session,
+    gmail_message_id: str,
+    gmail_thread_id: str,
+    subject: str = "",
+    sender: str = "",
+    direction: str | None = None,
+    sender_email: str | None = None,
+    recipient_email: str | None = None,
+    user_email: str | None = None,
+) -> "EmailTracking":
+    """Get or create an EmailTracking record for a Gmail message.
+
+    Checks by gmail_message_id first (unique), then falls back to
+    the latest message in the same thread. Creates a minimal record
+    if neither is found, so link/create-rfq operations can proceed
+    even before the Gmail sync has caught up.
+
+    The sync's Tier 1 dedup check will skip this record when it
+    eventually processes the same message_id — no duplicates.
+    """
+    from datetime import datetime, timezone
+    from includes.dashboard.models import EmailTracking
+
+    # Try exact message_id match first
+    tracking = (
+        session.query(EmailTracking)
+        .filter(EmailTracking.gmail_message_id == gmail_message_id)
+        .first()
+    )
+    if tracking:
+        return tracking
+
+    # Fall back to latest in same thread
+    tracking = (
+        session.query(EmailTracking)
+        .filter(EmailTracking.gmail_thread_id == gmail_thread_id)
+        .order_by(EmailTracking.id.desc())
+        .first()
+    )
+    if tracking:
+        return tracking
+
+    # Resolve direction and fields
+    # direction: 'received' | 'sent' (default to 'received' if unknown)
+    dir_ = (direction or "received").lower()
+    user_email = user_email or ""
+
+    # Populate sender/recipient per sync conventions:
+    #   received: sender_email = FROM (external), recipient_email = user (mailbox owner)
+    #   sent:     sender_email = user (mailbox owner), recipient_email = TO (external)
+    if dir_ == "sent":
+        s_email = sender_email or user_email
+        r_email = recipient_email or sender or ""
+    else:
+        s_email = sender_email or sender or ""
+        r_email = recipient_email or user_email
+
+    # Create record
+    tracking = EmailTracking(
+        gmail_message_id=gmail_message_id,
+        gmail_thread_id=gmail_thread_id,
+        subject=subject or "",
+        sender_email=s_email,
+        recipient_email=r_email,
+        user_email=user_email,
+        direction=dir_,
+        match_type="manual",
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(tracking)
+    session.flush()  # get ID without committing
+    logger.info(
+        "[addon] created tracking #%d for message %s (direction=%s, user=%s)",
+        tracking.id, gmail_message_id, dir_, user_email,
+    )
+    return tracking

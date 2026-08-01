@@ -482,6 +482,29 @@ async def admin_duplicates_delete(request: Request, user: dict = require_admin) 
 _EMAIL_PAGE_SIZE = 50
 
 
+def _is_email_all_internal(sender_email: str | None, recipient_email: str | None, user_email: str | None) -> bool:
+    """Return True if ALL parties on an email are internal or generic domains."""
+    from includes.gmail.matching import _INTERNAL_DOMAINS, _GENERIC_DOMAINS
+    all_internal = _INTERNAL_DOMAINS | _GENERIC_DOMAINS
+    addresses: list[str] = []
+    if sender_email:
+        addresses.append(sender_email.strip())
+    if recipient_email:
+        for addr in recipient_email.split(","):
+            a = addr.strip()
+            if a:
+                addresses.append(a)
+    if user_email:
+        addresses.append(user_email.strip())
+    if not addresses:
+        return False
+    for addr in addresses:
+        domain = addr.split("@")[-1].lower() if "@" in addr else ""
+        if domain and domain not in all_internal:
+            return False
+    return True
+
+
 def _query_email_logs(session, q: str = "", user_filter: str = "", page: int = 1):
     """Query email_tracking with optional filters. Returns (emails, total, has_more, next_page)."""
     from datetime import datetime, timezone
@@ -569,6 +592,9 @@ def _query_email_logs(session, q: str = "", user_filter: str = "", page: int = 1
             e["display_time"] = ts[:16].replace("T", " ") if len(ts) >= 16 else ts
         else:
             e["display_time"] = "—"
+        e["is_internal"] = _is_email_all_internal(
+            e.get("sender_email"), e.get("recipient_email"), e.get("user_email")
+        )
         emails.append(e)
 
     return emails, total, page < total_pages, page + 1
@@ -778,6 +804,60 @@ async def api_search_entities(request: Request, type: str, q: str, user: dict = 
             return JSONResponse({"results": [{"id": str(r["id"]), "name": r["companyname"]} for r in rows]})
         else:
             return JSONResponse({"results": []})
+    finally:
+        session.close()
+
+
+@router.post("/api/admin/create-rfq")
+async def api_create_rfq(request: Request, user: dict = Depends(_helpers.require_user)):
+    """Create an RFQ from an email in the dashboard (same pipeline as Gmail add-on)."""
+    from includes.dashboard.models import EmailTracking
+
+    body = await request.json()
+    email_id = body.get("email_id")
+    if not email_id:
+        return JSONResponse({"status": "error", "message": "Missing email_id"}, status_code=400)
+
+    session = _helpers.get_session()
+    try:
+        tracking = session.query(EmailTracking).filter(EmailTracking.id == email_id).first()
+        if not tracking:
+            return JSONResponse({"status": "error", "message": "Email not found"}, status_code=404)
+
+        if not tracking.customer_id:
+            return JSONResponse({"status": "error", "message": "No customer linked. Link a customer first."}, status_code=400)
+
+        if tracking.rfq_token or tracking.rfq_id:
+            return JSONResponse({
+                "status": "error",
+                "message": f"Already linked to RFQ {tracking.rfq_token or tracking.rfq_id}"
+            }, status_code=400)
+
+        if tracking.rfq_creation_result:
+            existing = tracking.rfq_creation_result
+            if existing.get("status") == "error":
+                return JSONResponse({
+                    "status": "error",
+                    "message": f"Previous attempt failed: {existing.get('error', 'unknown')}"
+                }, status_code=400)
+            return JSONResponse({
+                "status": "ok",
+                "message": f"RFQ already created: {existing.get('rfq_number', 'unknown')}",
+            })
+
+        user_ident = user.get("email", user.get("identifier", "dashboard"))
+        from includes.tools.rfq_creation_pipeline import trigger_rfq_creation_pipeline
+        trigger_rfq_creation_pipeline(tracking.id, user_id=user_ident)
+
+        return JSONResponse({
+            "status": "processing",
+            "message": "RFQ creation started. Refresh the page to see the new RFQ.",
+        })
+
+    except Exception as exc:
+        session.rollback()
+        logger.exception("Error creating RFQ from dashboard")
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
     finally:
         session.close()
 
