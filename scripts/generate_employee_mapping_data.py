@@ -4,8 +4,9 @@ Generate employee mapping data for manual matching between NetSuite and local us
 
 This script:
 1. Extracts all unique employees from NetSuite transactions
-2. Displays them in a format for manual email/name matching
-3. Can export to CSV for spreadsheet matching
+2. Fetches email, name, and active status from the employee entity table
+3. Displays them in a format for manual email/name matching
+4. Can export to CSV for spreadsheet matching
 
 Usage:
   uv run python -m scripts.generate_employee_mapping_data
@@ -49,14 +50,19 @@ def get_db_engine():
 def get_netsuite_employees(client: NetSuiteClient) -> list[dict]:
     """
     Extract all unique employees from NetSuite transactions.
-    
+
+    Note: NetSuite's SuiteQL and REST API do not expose the employee entity
+    table directly. We can only get employee ID + display name from the
+    transaction table. Emails must be maintained manually in
+    create_netsuite_employee_mappings.py.
+
     Returns list of dicts with:
     - employee_id: NetSuite employee ID
     - employee_name: Display name from BUILTIN.DF
     """
     print("\n📥 Fetching employees from NetSuite transactions...")
-    
-    query = (
+
+    tx_query = (
         "SELECT DISTINCT "
         "employee, "
         "BUILTIN.DF(employee) AS employee_name "
@@ -64,126 +70,155 @@ def get_netsuite_employees(client: NetSuiteClient) -> list[dict]:
         "WHERE employee IS NOT NULL "
         "ORDER BY employee"
     )
-    
+
     try:
         response = client.post(
             "query/v1/suiteql",
-            json={"q": query},
+            json={"q": tx_query},
             params={"limit": 1000, "offset": 0},
         )
         data = response.json()
         items = data.get("items", [])
-        
+
         employees = []
         for item in items:
             employees.append({
                 "employee_id": item.get("employee"),
                 "employee_name": item.get("employee_name"),
             })
-        
-        print(f"✓ Found {len(employees)} unique NetSuite employees")
+
+        print(f"✓ Found {len(employees)} unique NetSuite employees in transactions")
         return employees
-    
+
     except Exception as e:
-        logger.error(f"Error fetching employees: {e}")
+        logger.error(f"Error fetching employees from transactions: {e}")
         raise
 
 
 def get_local_users(engine) -> list[dict]:
     """
-    Extract all users from local database.
-    
-    Assumes a 'users' table with email and full_name fields.
-    Adjust query based on your actual schema.
+    Get existing employee mappings from the local database for comparison.
+    Uses netsuite_employee_mappings table (the canonical source).
     """
-    print("\n📥 Fetching users from local database...")
-    
+    print("\n📥 Fetching existing employee mappings from local database...")
+
     try:
         with engine.connect() as conn:
-            # Query the users table - adjust column names as needed
             result = conn.execute(
                 text("""
-                    SELECT 
+                    SELECT
                         id,
+                        netsuite_employee_id,
+                        name,
                         email,
-                        full_name
-                    FROM users
-                    WHERE email IS NOT NULL
-                    ORDER BY full_name
+                        is_active
+                    FROM netsuite_employee_mappings
+                    ORDER BY name
                 """)
             )
-            
+
             users = []
             for row in result:
                 users.append({
-                    "user_id": row[0],
-                    "email": row[1],
-                    "full_name": row[2],
+                    "mapping_id": row[0],
+                    "netsuite_employee_id": row[1],
+                    "name": row[2],
+                    "email": row[3],
+                    "is_active": row[4],
                 })
-            
-            print(f"✓ Found {len(users)} local users")
+
+            print(f"✓ Found {len(users)} existing employee mappings")
             return users
-    
+
     except Exception as e:
-        logger.warning(f"Error fetching local users (table may not exist yet): {e}")
+        logger.warning(f"Error fetching local mappings: {e}")
         return []
 
 
-def display_netsuite_employees(employees: list[dict]):
-    """Display NetSuite employees for manual review."""
-    print("\n" + "=" * 80)
+def display_netsuite_employees(employees: list[dict], local_users: list[dict] | None = None):
+    """Display NetSuite employees, cross-referenced with existing local mappings."""
+    # Build lookup of existing mappings by netsuite_employee_id
+    existing: dict[str, dict] = {}
+    if local_users:
+        for u in local_users:
+            ns_id = str(u.get("netsuite_employee_id", ""))
+            if ns_id:
+                existing[ns_id] = u
+
+    print("\n" + "=" * 100)
     print("NETSUITE EMPLOYEES (from transactions)")
-    print("=" * 80)
-    print()
-    
+    print("=" * 100)
+
+    mapped = 0
+    unmapped = 0
     for emp in employees:
         emp_id = emp.get("employee_id", "N/A")
         emp_name = emp.get("employee_name", "Unknown")
-        print(f"  ID: {emp_id:8} | Name: {emp_name}")
-    
+        local = existing.get(str(emp_id))
+
+        if local:
+            mapped += 1
+            status = "✓ mapped"
+            email = local.get("email") or "(no email)"
+            name = local.get("name", "")
+            active = "active" if local.get("is_active") else "INACTIVE"
+            print(f"  NS ID: {emp_id:8} | {status:10} | Name: {name:25} | Email: {email}  [{active}]")
+        else:
+            unmapped += 1
+            status = "✗ UNMAPPED"
+            print(f"  NS ID: {emp_id:8} | {status:10} | Tx Name: {emp_name}")
+
+    print(f"\n  Mapped: {mapped}  |  Unmapped: {unmapped}  |  Total: {len(employees)}")
     print()
 
 
 def display_local_users(users: list[dict]):
-    """Display local users for manual review."""
+    """Display existing employee mappings from local database."""
     if not users:
-        print("\n⚠️  No local users found. Check that 'users' table exists.")
+        print("\n⚠️  No existing employee mappings found.")
         return
-    
-    print("\n" + "=" * 80)
-    print("LOCAL USERS (for matching)")
-    print("=" * 80)
+
+    print("\n" + "=" * 100)
+    print("EXISTING EMPLOYEE MAPPINGS (local DB)")
+    print("=" * 100)
     print()
-    
-    for user in users:
-        user_id = user.get("user_id", "N/A")
-        email = user.get("email", "N/A")
-        full_name = user.get("full_name", "Unknown")
-        print(f"  ID: {user_id:4} | Email: {email:30} | Name: {full_name}")
-    
+
+    for u in users:
+        ns_id = u.get("netsuite_employee_id", "N/A")
+        name = u.get("name", "Unknown")
+        email = u.get("email") or "(no email)"
+        active = "✓" if u.get("is_active") else "✗"
+        print(f"  NS ID: {ns_id:8} | Active: {active} | Name: {name:25} | Email: {email}")
+
     print()
 
 
 def display_comparison(netsuite_employees: list[dict], local_users: list[dict]):
-    """Display side-by-side comparison for manual matching."""
-    print("\n" + "=" * 80)
-    print("MATCHING GUIDE (NetSuite → Local Users)")
-    print("=" * 80)
-    print("\nInstructions:")
-    print("  1. Look at each NetSuite employee")
-    print("  2. Find the matching local user by email or name")
-    print("  3. Create a mapping: <NetSuite ID> → <Local User ID>")
-    print("\n" + "-" * 80)
-    
-    for emp in netsuite_employees:
+    """Display unmapped NetSuite employees that need manual mapping entries."""
+    # Build lookup of existing mappings
+    existing_ids: set[str] = set()
+    for u in local_users:
+        ns_id = str(u.get("netsuite_employee_id", ""))
+        if ns_id:
+            existing_ids.add(ns_id)
+
+    unmapped = [e for e in netsuite_employees if str(e.get("employee_id")) not in existing_ids]
+
+    if not unmapped:
+        print("\n✓ All NetSuite employees have existing mappings.")
+        return
+
+    print("\n" + "=" * 100)
+    print(f"UNMAPPED EMPLOYEES ({len(unmapped)} need entries)")
+    print("=" * 100)
+    print("\nAdd these to VERIFIED_MAPPINGS in create_netsuite_employee_mappings.py:\n")
+
+    for emp in unmapped:
         emp_id = emp.get("employee_id")
         emp_name = emp.get("employee_name")
-        
-        print(f"\nNetSuite Employee:")
-        print(f"  ID: {emp_id}")
-        print(f"  Name: {emp_name}")
-        print(f"  → Find matching user from list above")
-        print(f"  → Store mapping: netsuite_employee_id={emp_id} → local_user_id=<YOUR_ID>")
+        print(f'  {{"netsuite_id": "{emp_id}", "name": "{emp_name}", "email": "FIXME@eagle-exports.com", "is_active": True}},')
+
+    print()
 
 
 def export_to_csv(netsuite_employees: list[dict], local_users: list[dict], filename: str):
@@ -198,31 +233,40 @@ def export_to_csv(netsuite_employees: list[dict], local_users: list[dict], filen
             writer.writerow([
                 "NetSuite Employee ID",
                 "NetSuite Employee Name",
-                "Local User ID (to fill)",
-                "Local User Email (reference)",
-                "Local User Name (reference)",
+                "Has Local Mapping",
+                "Local Name",
+                "Local Email",
+                "Is Active",
             ])
-            
-            # Write NetSuite employees with blank local fields
+
+            # Build lookup of existing mappings
+            existing: dict[str, dict] = {}
+            for u in local_users:
+                ns_id = str(u.get("netsuite_employee_id", ""))
+                if ns_id:
+                    existing[ns_id] = u
+
             for emp in netsuite_employees:
-                writer.writerow([
-                    emp.get("employee_id"),
-                    emp.get("employee_name"),
-                    "",  # To be filled in
-                    "",  # Reference
-                    "",  # Reference
-                ])
-            
-            # Write reference section
-            writer.writerow([])
-            writer.writerow(["=== LOCAL USERS REFERENCE ==="])
-            writer.writerow(["User ID", "Email", "Full Name"])
-            for user in local_users:
-                writer.writerow([
-                    user.get("user_id"),
-                    user.get("email"),
-                    user.get("full_name"),
-                ])
+                emp_id = str(emp.get("employee_id"))
+                local = existing.get(emp_id)
+                if local:
+                    writer.writerow([
+                        emp_id,
+                        emp.get("employee_name"),
+                        "Yes",
+                        local.get("name"),
+                        local.get("email") or "",
+                        "Yes" if local.get("is_active") else "No",
+                    ])
+                else:
+                    writer.writerow([
+                        emp_id,
+                        emp.get("employee_name"),
+                        "No — needs mapping",
+                        "",
+                        "",
+                        "",
+                    ])
         
         print(f"✓ Exported to {filename}")
     
@@ -268,7 +312,7 @@ def main():
         local_users = get_local_users(engine)
         
         # Display results
-        display_netsuite_employees(netsuite_employees)
+        display_netsuite_employees(netsuite_employees, local_users)
         
         if args.local_users:
             display_local_users(local_users)

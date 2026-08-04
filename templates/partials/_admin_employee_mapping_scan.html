@@ -1,0 +1,24 @@
+{% if unmapped %}
+<div class="bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800 p-4 mb-6">
+    <h3 class="text-sm font-semibold text-amber-800 dark:text-amber-300 mb-2">
+        {{ unmapped|length }} Unmapped Employee{{ 's' if unmapped|length != 1 else '' }} Found in NetSuite
+    </h3>
+    <p class="text-xs text-amber-600 dark:text-amber-400 mb-3">These employees appear in NetSuite transactions but have no mapping entry. Add their email to link them.</p>
+    <div class="space-y-2">
+        {% for emp in unmapped %}
+        <div class="flex items-center gap-3 bg-white dark:bg-gray-800 rounded border border-amber-200 dark:border-amber-700 px-3 py-2">
+            <span class="font-mono text-xs text-gray-900 dark:text-gray-100 w-16">{{ emp.employee_id }}</span>
+            <span class="text-sm text-gray-700 dark:text-gray-300 flex-1">{{ emp.employee_name }}</span>
+            <button onclick="addMapping('{{ emp.employee_id }}', '{{ emp.employee_name|e }}')"
+                    class="px-3 py-1 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700 flex-shrink-0">
+                Add Mapping
+            </button>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% else %}
+<div class="bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800 p-4 mb-6">
+    <p class="text-sm text-green-700 dark:text-green-300">✓ All NetSuite employees have mappings.</p>
+</div>
+{% endif %}
