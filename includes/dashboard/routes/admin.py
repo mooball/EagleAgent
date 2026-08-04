@@ -1152,6 +1152,55 @@ async def admin_employee_mappings_toggle(request: Request, user: dict = require_
         session.close()
 
 
+# ---------------------------------------------------------------------------
+# System Settings — read-only viewer for the system_settings table
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/system-settings")
+async def admin_system_settings(request: Request, user: dict = require_admin) -> HTMLResponse:
+    from includes.system_settings import list_settings
+
+    session = _helpers.get_session()
+    try:
+        settings = list_settings(session)
+        ctx = {"active_nav": "admin", "settings": settings}
+        return _render(request, "admin_system_settings.html", "partials/admin_system_settings.html", ctx, user)
+    finally:
+        session.close()
+
+
+@router.get("/partial/admin/system-settings")
+async def partial_admin_system_settings(request: Request, user: dict = require_admin) -> HTMLResponse:
+    from includes.system_settings import list_settings
+
+    session = _helpers.get_session()
+    try:
+        settings = list_settings(session)
+        return templates.TemplateResponse(request, "partials/admin_system_settings.html", {
+            "user": user, "active_nav": "admin", "settings": settings,
+        })
+    finally:
+        session.close()
+
+
+@router.get("/partial/admin/system-settings/{key}")
+async def partial_admin_system_setting_detail(request: Request, user: dict = require_admin) -> HTMLResponse:
+    """Return the full JSON value for a single setting."""
+    import json
+    from includes.system_settings import get_setting
+
+    key = request.path_params["key"]
+    session = _helpers.get_session()
+    try:
+        value = get_setting(session, key)
+        pretty = json.dumps(value, indent=2, default=str, ensure_ascii=False)
+        return HTMLResponse(
+            f'<pre class="text-xs text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-900 p-3 rounded overflow-x-auto max-h-96 overflow-y-auto"><code>{pretty}</code></pre>'
+        )
+    finally:
+        session.close()
+
+
 def _get_all_mappings(session) -> list[dict]:
     """Get all netsuite_employee_mappings as dicts."""
     rows = session.execute(
