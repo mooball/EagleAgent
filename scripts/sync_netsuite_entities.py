@@ -27,6 +27,7 @@ STEPS: list[dict] = [
     {"name": "contacts",      "module": "scripts.sync_netsuite_contacts",      "args": ["--resume"],  "description": "Sync contacts"},
     {"name": "customers",     "module": "scripts.sync_netsuite_customers",     "args": ["--resume"],  "description": "Sync customers"},
     {"name": "opportunities", "module": "scripts.sync_netsuite_opportunities", "args": ["--resume"],  "description": "Sync opportunities"},
+    {"name": "rfq_opp_links",  "module": "scripts.backfill_rfq_opp_links",     "args": [],              "description": "Link RFQs to opportunities"},
 ]
 
 
