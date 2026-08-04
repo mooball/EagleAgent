@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Two-pass matching thresholds
 TRIGRAM_THRESHOLD = 0.45  # Broad initial filter
-HIGH_CONFIDENCE_THRESHOLD = 0.7  # Name similarity alone is enough
+HIGH_CONFIDENCE_THRESHOLD = 0.9  # Name similarity alone is enough
 
 
 def _get_supplier_domains(supplier) -> set[str]:
@@ -41,8 +41,12 @@ def _get_supplier_domains(supplier) -> set[str]:
     return domains
 
 
-def scan_duplicates(session: Session) -> list[dict]:
+def scan_duplicates(session: Session, name_filter: str | None = None) -> list[dict]:
     """Find potential duplicate suppliers.
+
+    Args:
+        session: Database session.
+        name_filter: Optional case-insensitive substring to filter suppliers by name.
 
     Returns a list of dicts:
     {
@@ -65,6 +69,11 @@ def scan_duplicates(session: Session) -> list[dict]:
         if "__dedup_reviewed__" not in (s.alt_names or [])
     ]
 
+    # Apply optional name filter to both sides
+    if name_filter:
+        filter_lower = name_filter.lower()
+        new_suppliers = [s for s in new_suppliers if filter_lower in (s.name or "").lower()]
+
     if not new_suppliers:
         return []
 
@@ -74,6 +83,11 @@ def scan_duplicates(session: Session) -> list[dict]:
         .filter(Supplier.netsuite_id.isnot(None))
         .all()
     )
+
+    # Apply optional name filter to netsuite side too
+    if name_filter:
+        filter_lower = name_filter.lower()
+        netsuite_suppliers = [s for s in netsuite_suppliers if filter_lower in (s.name or "").lower()]
 
     if not netsuite_suppliers:
         return []
@@ -155,7 +169,7 @@ def scan_duplicates(session: Session) -> list[dict]:
                     best_confidence = sim
                     best_reasons = [f"name_similarity:{sim:.2f}"]
 
-        if best_match and best_confidence >= 0.6:
+        if best_match and best_confidence > 0.9:
             results.append({
                 "new_supplier": _supplier_summary(new_sup),
                 "match": _supplier_summary(best_match),
@@ -177,11 +191,15 @@ def _name_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-def scan_internal_duplicates(session: Session) -> list[dict]:
+def scan_internal_duplicates(session: Session, name_filter: str | None = None) -> list[dict]:
     """Find duplicates among non-netsuite (web-added) suppliers themselves.
 
     Compares every non-netsuite supplier against every other non-netsuite
     supplier. Groups them so only the best match per cluster is returned.
+
+    Args:
+        session: Database session.
+        name_filter: Optional case-insensitive substring to filter suppliers by name.
 
     Returns a list of dicts:
     {
@@ -202,6 +220,11 @@ def scan_internal_duplicates(session: Session) -> list[dict]:
         s for s in new_suppliers
         if "__dedup_reviewed__" not in (s.alt_names or [])
     ]
+
+    # Apply optional name filter
+    if name_filter:
+        filter_lower = name_filter.lower()
+        new_suppliers = [s for s in new_suppliers if filter_lower in (s.name or "").lower()]
 
     if len(new_suppliers) < 2:
         return []
@@ -274,7 +297,7 @@ def scan_internal_duplicates(session: Session) -> list[dict]:
                 best_confidence = confidence
                 best_reasons = reasons
 
-        if best_match and best_confidence >= 0.6:
+        if best_match and best_confidence > 0.9:
             # Pick the "keep" supplier: prefer the one with more data (url, contacts, etc.)
             keep, remove = _pick_keep_remove(sup_a, best_match)
             matched_ids.add(str(remove.id))
