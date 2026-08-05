@@ -145,10 +145,13 @@ def _run_rfq_creation_pipeline(email_tracking_id: int, user_id: str) -> None:
             _save_error(email_tracking_id, "No customer linked to this email. Link a customer first.")
             return
 
-        # Must not already be linked to an RFQ
+        # Skip if RFQ already created (e.g., synchronously by the addon endpoint).
+        # Don't log as an error — this is an expected path.
         if tracking.rfq_token or tracking.rfq_id:
-            _save_error(email_tracking_id,
-                        f"Email already linked to RFQ {tracking.rfq_token or tracking.rfq_id}.")
+            logger.info(
+                f"[rfq-creation] #{email_tracking_id}: RFQ already linked "
+                f"({tracking.rfq_token or tracking.rfq_id}), skipping"
+            )
             return
 
         # Idempotency: skip if already processed
@@ -182,6 +185,8 @@ def _run_rfq_creation_pipeline(email_tracking_id: int, user_id: str) -> None:
         rfq = _create_rfq_sync(
             data={
                 "customer": customer_name,
+                "customer_id": str(customer.id),
+                "status": "in_progress",
                 "assigned_to": user_email,
                 "reference": subject,
             },
@@ -204,6 +209,24 @@ def _run_rfq_creation_pipeline(email_tracking_id: int, user_id: str) -> None:
         )
         session.commit()
         logger.info(f"[rfq-creation] #{email_tracking_id}: linked email thread to {rfq_number}")
+
+        # Auto-create NetSuite Opportunity if customer has a netsuite_id
+        if customer.netsuite_id:
+            try:
+                from includes.netsuite.records.opportunity import create_and_link_opportunity
+                opp_result = create_and_link_opportunity(rfq_number)
+                if opp_result.success:
+                    logger.info(
+                        f"[rfq-creation] #{email_tracking_id}: auto-created opportunity {opp_result.tran_id}"
+                    )
+                else:
+                    logger.info(
+                        f"[rfq-creation] #{email_tracking_id}: skipped opportunity creation — {opp_result.error}"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"[rfq-creation] #{email_tracking_id}: opportunity creation failed (non-fatal): {e}"
+                )
 
     except Exception as e:
         session.rollback()

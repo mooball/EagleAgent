@@ -147,6 +147,36 @@ class NetSuiteClient:
 
     # ── Record access ────────────────────────────────────────────
 
+    def create_record(self, record_type: str, data: dict) -> str:
+        """Create a record in NetSuite via REST API.
+
+        Args:
+            record_type: e.g. "opportunity", "customer", "contact"
+            data: JSON body per NetSuite REST API schema
+
+        Returns:
+            The NetSuite internal ID of the created record.
+
+        Raises:
+            requests.HTTPError: on 4xx/5xx responses
+        """
+        url = f"{self._base_url}/record/v1/{record_type}"
+        headers = self._headers()
+        headers["Content-Type"] = "application/json"
+
+        response = self._session.post(url, headers=headers, json=data, timeout=_DEFAULT_TIMEOUT)
+        if not response.ok:
+            logger.error(
+                "CREATE %s → %s: %s", record_type, response.status_code, response.text[:500]
+            )
+            response.raise_for_status()
+
+        # 204 No Content — ID is in the Location header
+        location = response.headers.get("Location", "")
+        netsuite_id = location.rstrip("/").split("/")[-1]
+        logger.info("Created %s/%s", record_type, netsuite_id)
+        return netsuite_id
+
     def get_record(self, record_type: str, record_id: str) -> dict:
         """
         Fetch a single record by type and internal ID.

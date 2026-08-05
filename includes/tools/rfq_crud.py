@@ -359,6 +359,7 @@ def _create_rfq_sync(data: dict, user_id: str) -> dict:
         rfq = RFQ(
             rfq_number=new_number,
             customer=customer,
+            customer_id=data.get("customer_id"),
             customer_contact=data.get("customer_contact"),
             reference=data.get("reference"),
             netsuite_opportunity=data.get("netsuite_opportunity"),
@@ -367,7 +368,7 @@ def _create_rfq_sync(data: dict, user_id: str) -> dict:
             created_date=_now_dt(),
             assigned_to=data.get("assigned_to", user_id),
             thread_id=data.get("thread_id"),
-            status="draft",
+            status=data.get("status", "draft"),
             title=data.get("title", ""),
             history=[{"date": now, "user": user_id, "action": history_action}],
             updated_at=_now_dt(),
@@ -1597,6 +1598,45 @@ def _link_external_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
         now = _now_iso()
         history = list(rfq.history or [])
         history.append({"date": now, "user": user_id, "action": f"Linked {', '.join(linked)}"})
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except SQLAlchemyError:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _create_opportunity_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
+    """Create a NetSuite Opportunity for the RFQ and link it locally.
+
+    Returns the updated RFQ dict on success, or an error string.
+    """
+    from includes.netsuite.records.opportunity import create_and_link_opportunity
+
+    result = create_and_link_opportunity(rfq_number)
+    if not result.success:
+        return f"Error: {result.error}"
+
+    # Re-fetch the RFQ to return the updated state
+    session = _get_session()
+    try:
+        from includes.dashboard.models import RFQ
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found after opportunity creation"
+
+        # Append to history
+        now = _now_iso()
+        history = list(rfq.history or [])
+        history.append({
+            "date": now,
+            "user": user_id,
+            "action": f"Created NetSuite Opportunity {result.tran_id}",
+        })
         rfq.history = history
         rfq.updated_at = _now_dt()
         session.commit()
