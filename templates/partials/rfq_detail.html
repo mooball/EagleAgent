@@ -22,7 +22,8 @@
     "unmatched": items | selectattr('match', 'equalto', 'unmatched') | list
 } | tojson }}</script>
 <div data-dashboard-context='{{ ctx | tojson }}' class="pt-6"
-     x-data="rfqDetail()">
+     x-data="rfqDetail()"
+     x-init="Alpine.store('rfqEdit', {customerId: '{{ rfq.customer_id or '' }}'})">
     <!-- Breadcrumb -->
     <nav class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 mb-4">
         <a hx-get="/partial/rfqs" hx-target="#main-content" hx-push-url="/rfqs"
@@ -109,62 +110,7 @@
                     </span>
                 </div>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div x-data='{
-                        search: {{ rfq.customer | tojson }},
-                        selectedId: {{ (rfq.customer_id or "") | tojson }},
-                        results: [],
-                        searching: false,
-                        activeIdx: -1,
-                        debounce: null,
-
-                        doSearch() {
-                            clearTimeout(this.debounce);
-                            const q = this.search.trim();
-                            if (q.length < 2) { this.results = []; this.activeIdx = -1; return; }
-                            this.debounce = setTimeout(() => {
-                                this.searching = true;
-                                fetch("/api/customers/search?q=" + encodeURIComponent(q))
-                                    .then(r => r.json())
-                                    .then(d => {
-                                        this.results = d.results || [];
-                                        this.activeIdx = -1;
-                                        this.searching = false;
-                                        if (!this.results.some(r => r.name === this.search)) this.selectedId = "";
-                                    })
-                                    .catch(() => { this.results = []; this.activeIdx = -1; this.searching = false; });
-                            }, 200);
-                        },
-
-                        select(r) {
-                            this.search = r.name;
-                            this.selectedId = r.id;
-                            this.results = [];
-                            this.activeIdx = -1;
-                        },
-
-                        clearAll() {
-                            this.search = "";
-                            this.selectedId = "";
-                            this.results = [];
-                        },
-
-                        onKeydown(e) {
-                            if (!this.results.length) return;
-                            if (e.key === "ArrowDown") {
-                                e.preventDefault();
-                                this.activeIdx = (this.activeIdx + 1) % this.results.length;
-                            } else if (e.key === "ArrowUp") {
-                                e.preventDefault();
-                                this.activeIdx = (this.activeIdx - 1 + this.results.length) % this.results.length;
-                            } else if (e.key === "Enter" && this.activeIdx >= 0) {
-                                e.preventDefault();
-                                this.select(this.results[this.activeIdx]);
-                            } else if (e.key === "Escape") {
-                                this.results = [];
-                                this.activeIdx = -1;
-                            }
-                        }
-                    }'>
+                    <div x-data='rfqCustomerSearch({{ rfq.customer | tojson }}, {{ (rfq.customer_id or '') | tojson }})'>
                         <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Customer</label>
                         <div class="relative">
                             <input type="text" name="customer" x-model="search"
@@ -204,94 +150,18 @@
                         <input type="text" name="title" value="{{ rfq.title or '' }}"
                                class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
                     </div>
-                    <div x-data='{
-                        oppSearch: {{ (rfq.netsuite_opportunity or "") | tojson }},
-                        oppSelectedId: {{ (rfq.opportunity_id or "") | tojson }},
-                        oppResults: [],
-                        oppSearching: false,
-                        oppDebounce: null,
-                        oppActiveIdx: -1,
-                        showLookup: {{ "true" if rfq.netsuite_opportunity else "false" }},
-
-                        init() {
-                            this.$watch("oppSearch", () => this.oppDoSearch());
-                        },
-
-                        oppDoSearch() {
-                            clearTimeout(this.oppDebounce);
-                            const q = this.oppSearch.trim();
-                            if (q.length < 2) { this.oppResults = []; this.oppActiveIdx = -1; return; }
-                            this.oppDebounce = setTimeout(() => {
-                                this.oppSearching = true;
-                                const cid = document.querySelector(`input[name="customer_id"]`)?.value || "";
-                                fetch("/api/opportunities/search?q=" + encodeURIComponent(q) + "&customer_id=" + encodeURIComponent(cid))
-                                    .then(r => r.json())
-                                    .then(d => {
-                                        this.oppResults = d.results || [];
-                                        this.oppActiveIdx = -1;
-                                        this.oppSearching = false;
-                                        if (!this.oppResults.some(r => (r.number || r.name || "").toUpperCase() === this.oppSearch.toUpperCase())) this.oppSelectedId = "";
-                                    })
-                                    .catch(() => { this.oppResults = []; this.oppActiveIdx = -1; this.oppSearching = false; });
-                            }, 200);
-                        },
-
-                        oppSelect(r) {
-                            this.oppSearch = r.number || r.name;
-                            this.oppSelectedId = r.id;
-                            this.oppResults = [];
-                            this.oppActiveIdx = -1;
-                            if (r.customer_id && r.customer_name) {
-                                const ci = document.querySelector(`input[name="customer"]`);
-                                const custDiv = ci?.closest(`[x-data]`);
-                                if (custDiv?._x_dataStack?.[0]) {
-                                    const cd = custDiv._x_dataStack[0];
-                                    cd.search = r.customer_name;
-                                    cd.selectedId = r.customer_id;
-                                    cd.results = [];
-                                }
-                            }
-                            if (r.title) {
-                                const ti = document.querySelector(`input[name="title"]`);
-                                if (ti) ti.value = r.title;
-                            }
-                            if (r.salesrep_email) {
-                                const os = document.querySelector(`select[name="assigned_to"]`);
-                                if (os) os.value = r.salesrep_email;
-                            }
-                        },
-
-                        oppClearAll() {
-                            this.oppSearch = "";
-                            this.oppSelectedId = "";
-                            this.oppResults = [];
-                        },
-
-                        oppOnKeydown(e) {
-                            if (!this.oppResults.length) return;
-                            if (e.key === "ArrowDown") {
-                                e.preventDefault();
-                                this.oppActiveIdx = (this.oppActiveIdx + 1) % this.oppResults.length;
-                            } else if (e.key === "ArrowUp") {
-                                e.preventDefault();
-                                this.oppActiveIdx = (this.oppActiveIdx - 1 + this.oppResults.length) % this.oppResults.length;
-                            } else if (e.key === "Enter" && this.oppActiveIdx >= 0) {
-                                e.preventDefault();
-                                this.oppSelect(this.oppResults[this.oppActiveIdx]);
-                            } else if (e.key === "Escape") {
-                                this.oppResults = [];
-                                this.oppActiveIdx = -1;
-                            }
-                        }
-                    }'>
+                    <div x-data='rfqOppSearch({{ (rfq.netsuite_opportunity or '') | tojson }}, {{ (rfq.opportunity_id or '') | tojson }}, {{ 'true' if rfq.netsuite_opportunity else 'false' }})'>
                         <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">NetSuite Opportunity</label>
                         <div class="flex items-center gap-2">
                             <button type="button"
                                     x-show="!showLookup"
+                                    x-bind:disabled="!$store.rfqEdit.customerId"
+                                    x-bind:title="$store.rfqEdit.customerId ? '' : 'Link a customer first to enable opportunity creation'"
+                                    x-bind:class="$store.rfqEdit.customerId ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-gray-300 text-gray-500 cursor-not-allowed'"
                                     hx-post="/partial/rfqs/{{ rfq.id }}/create-opportunity"
                                     hx-target="#main-content"
                                     hx-indicator="#opp-create-spinner-edit"
-                                    class="text-xs px-2.5 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors inline-flex items-center gap-1">
+                                    class="text-xs px-2.5 py-1.5 rounded transition-colors inline-flex items-center gap-1">
                                 <svg id="opp-create-spinner-edit" class="htmx-indicator w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                                 Create New
                             </button>
