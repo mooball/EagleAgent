@@ -2344,6 +2344,152 @@
         },
     });
     });
+
+    // RFQ edit form components — registered globally so HTMX-loaded partials
+    // can reference them via x-data="rfqCustomerSearch(...)" without inline JS.
+    document.addEventListener('alpine:init', () => {
+        Alpine.data('rfqCustomerSearch', (initialSearch, initialSelectedId) => ({
+            search: initialSearch,
+            selectedId: initialSelectedId,
+            results: [],
+            searching: false,
+            activeIdx: -1,
+            debounce: null,
+
+            doSearch() {
+                clearTimeout(this.debounce);
+                const q = this.search.trim();
+                if (q.length < 2) { this.results = []; this.activeIdx = -1; return; }
+                this.debounce = setTimeout(() => {
+                    this.searching = true;
+                    fetch("/api/customers/search?q=" + encodeURIComponent(q))
+                        .then(r => r.json())
+                        .then(d => {
+                            this.results = d.results || [];
+                            this.activeIdx = -1;
+                            this.searching = false;
+                            if (!this.results.some(r => r.name === this.search)) this.selectedId = "";
+                        })
+                        .catch(() => { this.results = []; this.activeIdx = -1; this.searching = false; });
+                }, 200);
+            },
+
+            select(r) {
+                this.search = r.name;
+                this.selectedId = r.id;
+                this.results = [];
+                this.activeIdx = -1;
+                const store = Alpine.store('rfqEdit');
+                if (store) store.customerId = r.id;
+            },
+
+            clearAll() {
+                this.search = "";
+                this.selectedId = "";
+                this.results = [];
+                const store = Alpine.store('rfqEdit');
+                if (store) store.customerId = '';
+            },
+
+            onKeydown(e) {
+                if (!this.results.length) return;
+                if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    this.activeIdx = (this.activeIdx + 1) % this.results.length;
+                } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    this.activeIdx = (this.activeIdx - 1 + this.results.length) % this.results.length;
+                } else if (e.key === "Enter" && this.activeIdx !== -1) {
+                    e.preventDefault();
+                    this.select(this.results[this.activeIdx]);
+                } else if (e.key === "Escape") {
+                    this.results = [];
+                    this.activeIdx = -1;
+                }
+            }
+        }));
+
+        Alpine.data('rfqOppSearch', (initialOpp, initialOppId, hasExisting) => ({
+            oppSearch: initialOpp,
+            oppSelectedId: initialOppId,
+            oppResults: [],
+            oppSearching: false,
+            oppDebounce: null,
+            oppActiveIdx: -1,
+            showLookup: hasExisting,
+
+            init() {
+                this.$watch("oppSearch", () => this.oppDoSearch());
+            },
+
+            oppDoSearch() {
+                clearTimeout(this.oppDebounce);
+                const q = this.oppSearch.trim();
+                if (q.length < 2) { this.oppResults = []; this.oppActiveIdx = -1; return; }
+                this.oppDebounce = setTimeout(() => {
+                    this.oppSearching = true;
+                    const cid = document.querySelector(`input[name="customer_id"]`)?.value || "";
+                    fetch("/api/opportunities/search?q=" + encodeURIComponent(q) + "&customer_id=" + encodeURIComponent(cid))
+                        .then(r => r.json())
+                        .then(d => {
+                            this.oppResults = d.results || [];
+                            this.oppActiveIdx = -1;
+                            this.oppSearching = false;
+                            if (!this.oppResults.some(r => (r.number || r.name || "").toUpperCase() === this.oppSearch.toUpperCase())) this.oppSelectedId = "";
+                        })
+                        .catch(() => { this.oppResults = []; this.oppActiveIdx = -1; this.oppSearching = false; });
+                }, 200);
+            },
+
+            oppSelect(r) {
+                this.oppSearch = r.number || r.name;
+                this.oppSelectedId = r.id;
+                this.oppResults = [];
+                this.oppActiveIdx = -1;
+                if (r.customer_id && r.customer_name) {
+                    const ci = document.querySelector(`input[name="customer"]`);
+                    const custDiv = ci?.closest(`[x-data]`);
+                    if (custDiv?._x_dataStack?.[0]) {
+                        const cd = custDiv._x_dataStack[0];
+                        cd.search = r.customer_name;
+                        cd.selectedId = r.customer_id;
+                        cd.results = [];
+                    }
+                }
+                if (r.title) {
+                    const ti = document.querySelector(`input[name="title"]`);
+                    if (ti) ti.value = r.title;
+                }
+                if (r.salesrep_email) {
+                    const os = document.querySelector(`select[name="assigned_to"]`);
+                    if (os) os.value = r.salesrep_email;
+                }
+            },
+
+            oppClearAll() {
+                this.oppSearch = "";
+                this.oppSelectedId = "";
+                this.oppResults = [];
+            },
+
+            oppOnKeydown(e) {
+                if (!this.oppResults.length) return;
+                if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    this.oppActiveIdx = (this.oppActiveIdx + 1) % this.oppResults.length;
+                } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    this.oppActiveIdx = (this.oppActiveIdx - 1 + this.oppResults.length) % this.oppResults.length;
+                } else if (e.key === "Enter" && this.oppActiveIdx !== -1) {
+                    e.preventDefault();
+                    this.oppSelect(this.oppResults[this.oppActiveIdx]);
+                } else if (e.key === "Escape") {
+                    this.oppResults = [];
+                    this.oppActiveIdx = -1;
+                }
+            }
+        }));
+    });
     </script>
 </body>
 </html>
