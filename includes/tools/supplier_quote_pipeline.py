@@ -305,6 +305,32 @@ def _classify_heuristic_fallback(tracking) -> dict:
 # Stage 2: Extract
 # ---------------------------------------------------------------------------
 
+def _strip_signature(text: str) -> str:
+    """Remove common email signature patterns to reduce noise in LLM content.
+
+    Strips everything from common signature markers to the end of the text.
+    """
+    import re
+    # Detectors: lines that signal the start of a signature block
+    patterns = [
+        r'\n--\s*\n',                          # standard sig separator
+        r'\n---\s*\n',                          # variant
+        r'\n_{3,}\s*\n',                        # underscore separator
+        r'\n\*\*Kind Regards?\*\*',             # "Kind Regards"
+        r'\nBest regards?\b',                   # "Best regards"
+        r'\nSincerely\b',                       # "Sincerely"
+        r'\nThanks,?\s*\n',                     # standalone "Thanks,"
+        r'\nRegards,?\s*\n',                    # standalone "Regards,"
+        r'\nCheers,?\s*\n',                     # "Cheers,"
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            text = text[:m.start()]
+            break
+    return text.strip()
+
+
 def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[str] | None = None) -> str:
     """Synchronous extraction: fetch body + process attachments.
 
@@ -322,10 +348,39 @@ def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[
 
         parts = []
 
-        # Email body
+        # Email body — restructure forwarded emails to surface the original request
         body = tracking.body_markdown or tracking.body_html or ""
         if body:
-            parts.append(f"## Email Body\n\n{body}")
+            # Detect forwarded emails: "---------- Forwarded message ---------"
+            fwd_marker = "---------- Forwarded message ---------"
+            if fwd_marker in body:
+                # Split into segments at each forwarding boundary
+                segments = body.split(fwd_marker)
+                # The first segment is the outermost message (signatures, forwarding note).
+                # The last segment is the innermost (original) message — where items live.
+                outermost = segments[0].strip()
+                innermost = segments[-1].strip()
+
+                # Strip the <!-- quoted --> marker from the innermost segment
+                innermost = innermost.replace("<!-- quoted -->", "").strip()
+
+                if innermost:
+                    parts.append(f"## Original Request (innermost message)\n\n{innermost}")
+
+                # Build the full thread for context (collapse signatures)
+                middle_segments = segments[1:-1] if len(segments) > 2 else []
+                thread_parts = []
+                if outermost:
+                    # Strip email signatures from outermost to reduce noise
+                    thread_parts.append(_strip_signature(outermost))
+                for seg in middle_segments:
+                    stripped = _strip_signature(seg.strip())
+                    if stripped:
+                        thread_parts.append(stripped)
+                if thread_parts:
+                    parts.append(f"## Full Email Thread (for context)\n\n{fwd_marker}\n\n".join(thread_parts))
+            else:
+                parts.append(f"## Email Body\n\n{body}")
 
         # Process attachments — triage images via signature cache
         if tracking.attachments_json and tracking.gmail_message_id:
