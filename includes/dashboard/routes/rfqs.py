@@ -523,8 +523,8 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
             if thread["has_reply"]:
                 group["has_reply"] = True
 
-        # Sort: suppliers first, then customers, then unknown
-        type_order = {"supplier": 0, "customer": 1, "unknown": 2}
+        # Sort: customers first, then suppliers, then unknown
+        type_order = {"customer": 0, "supplier": 1, "unknown": 2}
         return sorted(source_groups.values(), key=lambda g: (type_order.get(g["source_type"], 9), g["source_name"].lower()))
     except Exception:
         return []
