@@ -21,6 +21,7 @@ from includes.tools.rfq_crud import (  # noqa: F401
     _list_rfqs_sync, _update_rfq_sync, _update_item_sync, _delete_item_sync,
     _add_supplier_sync, _update_supplier_sync, _clear_suppliers_sync,
     _assign_sync, _update_status_sync, _add_note_sync, _link_external_sync,
+    _create_opportunity_sync,
     _update_item_groups_sync,
     _find_brand_suppliers_sync, _cross_apply_suppliers_sync,
     _select_quote_sync, _decline_quote_sync, _set_supplier_meta_sync,
@@ -769,6 +770,10 @@ def create_quote_tools(user_id: str) -> list:
           group_items   — Set or update sourcing groups. data keys:
                           item_groups (required, the grouping result object
                           with {groups: [...], ungrouped: [...]})
+          create_opportunity — Create a NetSuite Opportunity for this RFQ.
+                          Links it to the RFQ and the customer. Only works
+                          if the RFQ doesn't already have an opportunity
+                          and the customer has a NetSuite ID.
 
           ═══════════════ Bulk Operations (use instead of per-line calls) ═══════
           add_suppliers_bulk — Add suppliers to multiple lines at once. data
@@ -843,6 +848,7 @@ def create_quote_tools(user_id: str) -> list:
             "update_items_bulk": lambda: asyncio.to_thread(_update_items_bulk_sync, rfq_id, data, user_id),
             "update_quotes_bulk": lambda: asyncio.to_thread(_update_quotes_bulk_sync, rfq_id, data, user_id),
             "select_quotes_bulk": lambda: asyncio.to_thread(_select_quotes_bulk_sync, rfq_id, data, user_id),
+            "create_opportunity": lambda: asyncio.to_thread(_create_opportunity_sync, rfq_id, data, user_id),
         }
 
         handler = _ACTION_MAP.get(action)
@@ -851,7 +857,7 @@ def create_quote_tools(user_id: str) -> list:
                 f"Error: unknown action '{action}'. Valid actions: create, "
                 "update, update_item, delete_item, add_items, add_supplier, update_supplier, "
                 "clear_suppliers, assign, update_status, add_note, link_external, "
-                "group_items, update_quote, select_quote, decline_quote, set_supplier_meta, "
+                "group_items, create_opportunity, update_quote, select_quote, decline_quote, set_supplier_meta, "
                 "add_suppliers_bulk, update_items_bulk, update_quotes_bulk, select_quotes_bulk."
             )
 

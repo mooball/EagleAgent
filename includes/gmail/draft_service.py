@@ -225,7 +225,7 @@ def _save_draft_to_tracking(
         opportunity_id: Optional secondary tracking ID
     """
     try:
-        from sqlalchemy import text, func
+        from sqlalchemy import case, text, func
         from includes.dashboard.models import Contact
         
         session = get_session()
@@ -236,6 +236,12 @@ def _save_draft_to_tracking(
                 contact = session.query(Contact).filter(
                     func.lower(Contact.email) == recipient_email.lower().strip(),
                     Contact.isinactive == False,
+                ).order_by(
+                    case(
+                        (Contact.supplier_id.isnot(None), 0),
+                        (Contact.customer_id.isnot(None), 1),
+                        else_=2,
+                    )
                 ).first()
                 if contact and contact.supplier_id:
                     supplier_id = contact.supplier_id
@@ -310,7 +316,7 @@ def _save_sent_to_tracking(
 ) -> None:
     """Save sent email info to email_tracking table."""
     try:
-        from sqlalchemy import text, func
+        from sqlalchemy import case, text, func
         from includes.dashboard.models import Contact, Supplier
 
         session = get_session()
@@ -321,6 +327,12 @@ def _save_sent_to_tracking(
                 contact = session.query(Contact).filter(
                     func.lower(Contact.email) == recipient_email.lower().strip(),
                     Contact.isinactive == False,
+                ).order_by(
+                    case(
+                        (Contact.supplier_id.isnot(None), 0),
+                        (Contact.customer_id.isnot(None), 1),
+                        else_=2,
+                    )
                 ).first()
                 if contact and contact.supplier_id:
                     supplier_id = contact.supplier_id

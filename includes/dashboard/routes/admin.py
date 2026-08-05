@@ -281,13 +281,14 @@ async def admin_duplicates_scan(request: Request, user: dict = require_admin) ->
 
     form = await request.form()
     scan_mode = form.get("scan_mode", "netsuite")
+    name_filter = (form.get("name_filter", "") or "").strip() or None
 
     session = _helpers.get_session()
     try:
         if scan_mode == "internal":
-            duplicates = await asyncio.to_thread(scan_internal_duplicates, session)
+            duplicates = await asyncio.to_thread(scan_internal_duplicates, session, name_filter)
         else:
-            duplicates = await asyncio.to_thread(scan_duplicates, session)
+            duplicates = await asyncio.to_thread(scan_duplicates, session, name_filter)
     finally:
         session.close()
 
@@ -1008,3 +1009,205 @@ def _save_email_domain(session, tracking: "EmailTracking", entity_type: str, ent
         return ""
 
     return save_sender_domain(session, external_email, entity_type, entity_id)
+
+
+# ---------------------------------------------------------------------------
+# Employee Mappings — manage netsuite_employee_mappings table
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/employee-mappings")
+async def admin_employee_mappings(request: Request, user: dict = require_admin) -> HTMLResponse:
+    session = _helpers.get_session()
+    try:
+        mappings = _get_all_mappings(session)
+        ctx = {"active_nav": "admin", "mappings": mappings}
+        return _render(request, "admin_employee_mappings.html", "partials/admin_employee_mappings.html", ctx, user)
+    finally:
+        session.close()
+
+
+@router.get("/partial/admin/employee-mappings")
+async def partial_admin_employee_mappings(request: Request, user: dict = require_admin) -> HTMLResponse:
+    session = _helpers.get_session()
+    try:
+        mappings = _get_all_mappings(session)
+        return templates.TemplateResponse(request, "partials/admin_employee_mappings.html", {
+            "user": user, "active_nav": "admin", "mappings": mappings, "unmapped": None,
+        })
+    finally:
+        session.close()
+
+
+@router.post("/admin/employee-mappings/scan")
+async def admin_employee_mappings_scan(request: Request, user: dict = require_admin) -> HTMLResponse:
+    """Scan NetSuite for employees and return any not yet in the mapping table."""
+    from includes.netsuite.client import NetSuiteClient
+
+    session = _helpers.get_session()
+    try:
+        existing_mappings = _get_all_mappings(session)
+        existing_ids = {str(m["netsuite_employee_id"]) for m in existing_mappings}
+
+        # Query NetSuite for employees from transactions
+        client = NetSuiteClient()
+        tx_query = (
+            "SELECT DISTINCT employee, BUILTIN.DF(employee) AS employee_name "
+            "FROM transaction WHERE employee IS NOT NULL ORDER BY employee"
+        )
+        resp = client.post("query/v1/suiteql", json={"q": tx_query}, params={"limit": 1000, "offset": 0})
+        ns_employees = resp.json().get("items", [])
+
+        unmapped = [
+            {"employee_id": e["employee"], "employee_name": e["employee_name"]}
+            for e in ns_employees
+            if str(e["employee"]) not in existing_ids
+        ]
+
+        return templates.TemplateResponse(request, "partials/_admin_employee_mapping_scan.html", {
+            "user": user, "unmapped": unmapped,
+        })
+    except Exception as e:
+        logger.exception("Employee mapping scan failed")
+        return HTMLResponse(
+            f'<div class="text-red-500 text-sm p-2">Scan failed: {e}</div>'
+        )
+    finally:
+        session.close()
+
+
+@router.post("/admin/employee-mappings/save")
+async def admin_employee_mappings_save(request: Request, user: dict = require_admin) -> HTMLResponse:
+    """Add or update a netsuite_employee_mapping entry."""
+    from includes.dashboard.models import NetSuiteEmployeeMapping
+    from sqlalchemy.orm.attributes import flag_modified
+
+    form = await request.form()
+    ns_id = (form.get("netsuite_id", "") or "").strip()
+    name = (form.get("name", "") or "").strip()
+    email = (form.get("email", "") or "").strip().lower() or None
+    is_active = form.get("is_active", "1") == "1"
+
+    if not ns_id or not name:
+        return HTMLResponse('<div class="text-red-500 text-sm p-2">Name and NetSuite ID are required.</div>')
+
+    session = _helpers.get_session()
+    try:
+        existing = session.query(NetSuiteEmployeeMapping).filter(
+            NetSuiteEmployeeMapping.netsuite_employee_id == ns_id
+        ).first()
+
+        if existing:
+            existing.name = name
+            existing.email = email
+            existing.is_active = is_active
+            session.commit()
+            return HTMLResponse(
+                '<div class="text-green-600 text-sm p-2">✓ Updated.</div>',
+                headers={"HX-Trigger": "mapping-saved"}
+            )
+        else:
+            new_mapping = NetSuiteEmployeeMapping(
+                netsuite_employee_id=ns_id,
+                name=name,
+                email=email,
+                is_active=is_active,
+            )
+            session.add(new_mapping)
+            session.commit()
+            return HTMLResponse(
+                '<div class="text-green-600 text-sm p-2">✓ Added.</div>',
+                headers={"HX-Trigger": "mapping-saved"}
+            )
+    except Exception as e:
+        session.rollback()
+        logger.exception("Save mapping failed")
+        return HTMLResponse(f'<div class="text-red-500 text-sm p-2">Error: {e}</div>')
+    finally:
+        session.close()
+
+
+@router.post("/admin/employee-mappings/toggle")
+async def admin_employee_mappings_toggle(request: Request, user: dict = require_admin) -> HTMLResponse:
+    """Toggle is_active for a mapping entry."""
+    from includes.dashboard.models import NetSuiteEmployeeMapping
+
+    form = await request.form()
+    ns_id = (form.get("netsuite_id", "") or "").strip()
+
+    session = _helpers.get_session()
+    try:
+        mapping = session.query(NetSuiteEmployeeMapping).filter(
+            NetSuiteEmployeeMapping.netsuite_employee_id == ns_id
+        ).first()
+        if mapping:
+            mapping.is_active = not mapping.is_active
+            session.commit()
+            new_state = "active" if mapping.is_active else "inactive"
+            return HTMLResponse(
+                f'<span class="text-xs {"text-green-600" if mapping.is_active else "text-gray-400"}">{new_state}</span>',
+                headers={"HX-Trigger": "mapping-saved"}
+            )
+        return HTMLResponse("")
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# System Settings — read-only viewer for the system_settings table
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/system-settings")
+async def admin_system_settings(request: Request, user: dict = require_admin) -> HTMLResponse:
+    from includes.system_settings import list_settings
+
+    session = _helpers.get_session()
+    try:
+        settings = list_settings(session)
+        ctx = {"active_nav": "admin", "settings": settings}
+        return _render(request, "admin_system_settings.html", "partials/admin_system_settings.html", ctx, user)
+    finally:
+        session.close()
+
+
+@router.get("/partial/admin/system-settings")
+async def partial_admin_system_settings(request: Request, user: dict = require_admin) -> HTMLResponse:
+    from includes.system_settings import list_settings
+
+    session = _helpers.get_session()
+    try:
+        settings = list_settings(session)
+        return templates.TemplateResponse(request, "partials/admin_system_settings.html", {
+            "user": user, "active_nav": "admin", "settings": settings,
+        })
+    finally:
+        session.close()
+
+
+@router.get("/partial/admin/system-settings/{key}")
+async def partial_admin_system_setting_detail(request: Request, user: dict = require_admin) -> HTMLResponse:
+    """Return the full JSON value for a single setting."""
+    import json
+    from includes.system_settings import get_setting
+
+    key = request.path_params["key"]
+    session = _helpers.get_session()
+    try:
+        value = get_setting(session, key)
+        pretty = json.dumps(value, indent=2, default=str, ensure_ascii=False)
+        return HTMLResponse(
+            f'<pre class="text-xs text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-900 p-3 rounded overflow-x-auto max-h-96 overflow-y-auto"><code>{pretty}</code></pre>'
+        )
+    finally:
+        session.close()
+
+
+def _get_all_mappings(session) -> list[dict]:
+    """Get all netsuite_employee_mappings as dicts."""
+    rows = session.execute(
+        text("""
+            SELECT netsuite_employee_id, name, email, is_active
+            FROM netsuite_employee_mappings
+            ORDER BY is_active DESC, name
+        """)
+    ).mappings().all()
+    return [dict(r) for r in rows]

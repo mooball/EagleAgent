@@ -11,7 +11,7 @@ import re
 from typing import Optional
 from urllib.parse import urlparse
 
-from sqlalchemy import or_, func
+from sqlalchemy import case, or_, func
 from sqlalchemy.orm import Session
 
 from includes.dashboard.models import (
@@ -176,11 +176,20 @@ def find_sender_match(
     email_lower = _extract_email_addr(sender_email).lower()
 
     # Step 1: Exact match on contact email or customer email
+    # Order by: linked contacts first (supplier_id → customer_id → unlinked)
+    # This ensures non-deterministic row order won't miss a valid match
     contact = (
         session.query(Contact)
         .filter(
             func.lower(Contact.email) == email_lower,
             Contact.isinactive == False,
+        )
+        .order_by(
+            case(
+                (Contact.supplier_id.isnot(None), 0),
+                (Contact.customer_id.isnot(None), 1),
+                else_=2,
+            )
         )
         .first()
     )
@@ -345,10 +354,16 @@ def match_by_contact(
     for email in email_addresses:
         email_lower = email.lower().strip()
 
-        # Check contacts table
+        # Check contacts table — order by linked contacts first
         contact = session.query(Contact).filter(
             func.lower(Contact.email) == email_lower,
             Contact.isinactive == False,
+        ).order_by(
+            case(
+                (Contact.supplier_id.isnot(None), 0),
+                (Contact.customer_id.isnot(None), 1),
+                else_=2,
+            )
         ).first()
         if contact and (contact.supplier_id or contact.customer_id):
             return {

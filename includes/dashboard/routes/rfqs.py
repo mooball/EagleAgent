@@ -523,8 +523,8 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
             if thread["has_reply"]:
                 group["has_reply"] = True
 
-        # Sort: suppliers first, then customers, then unknown
-        type_order = {"supplier": 0, "customer": 1, "unknown": 2}
+        # Sort: customers first, then suppliers, then unknown
+        type_order = {"customer": 0, "supplier": 1, "unknown": 2}
         return sorted(source_groups.values(), key=lambda g: (type_order.get(g["source_type"], 9), g["source_name"].lower()))
     except Exception:
         return []
@@ -1018,6 +1018,25 @@ async def partial_rfq_update(request: Request, rfq_id: str,
 async def partial_rfq_status(request: Request, rfq_id: str,
                              user: dict = Depends(require_user)):
     """Update just the RFQ status via the dropdown."""
+
+
+@router.post("/partial/rfqs/{rfq_id}/create-opportunity")
+async def partial_rfq_create_opportunity(request: Request, rfq_id: str,
+                                         user: dict = Depends(require_user)):
+    """Create a NetSuite Opportunity for this RFQ and link it."""
+    from includes.netsuite.records.opportunity import create_and_link_opportunity
+
+    result = await asyncio.to_thread(create_and_link_opportunity, rfq_id)
+    if not result.success:
+        raise HTTPException(status_code=400, detail=result.error)
+
+    # Re-fetch the RFQ to render the updated page
+    from includes.tools.quote_tools import _get_rfq_dict_sync
+    rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+    if not rfq:
+        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+    _enrich_rfq_supplier_contacts(rfq)
+    return _render_rfq_detail_partial_response(request, user, rfq)
     form = await request.form()
     new_status = form.get("status", "")
 

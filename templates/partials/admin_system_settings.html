@@ -1,0 +1,43 @@
+<div class="pt-6 max-w-4xl mx-auto px-4">
+    <nav class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 mb-4">
+        <a hx-get="/partial/admin" hx-target="#main-content" hx-push-url="/admin"
+           class="hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer">Admin</a>
+        <span>›</span>
+        <span class="text-gray-900 dark:text-gray-100">System Settings</span>
+    </nav>
+
+    <div class="mb-6">
+        <h1 class="text-xl font-bold text-gray-900 dark:text-gray-100">System Settings</h1>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Key-value store for reference data, feature flags, and configuration.</p>
+    </div>
+
+    {% if settings %}
+    <div class="space-y-3">
+        {% for s in settings %}
+        <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <button onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('.chevron').classList.toggle('rotate-90')"
+                    class="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors">
+                <div>
+                    <span class="font-mono text-sm font-medium text-gray-900 dark:text-gray-100">{{ s.key }}</span>
+                    {% if s.description %}
+                    <span class="ml-2 text-xs text-gray-400">— {{ s.description }}</span>
+                    {% endif %}
+                </div>
+                <div class="flex items-center gap-3 text-xs text-gray-400">
+                    <span>{{ s.updated_at.strftime('%Y-%m-%d %H:%M') if s.updated_at else '—' }}</span>
+                    <svg class="chevron w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                </div>
+            </button>
+            <div class="hidden border-t border-gray-200 dark:border-gray-700"
+                 hx-get="/partial/admin/system-settings/{{ s.key }}" hx-trigger="revealed" hx-swap="innerHTML">
+                <div class="p-4 text-sm text-gray-400">Loading…</div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6 text-center text-sm text-gray-400">
+        No settings stored yet.
+    </div>
+    {% endif %}
+</div>

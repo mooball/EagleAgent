@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, Integer, BigInteger, Numeric, String, Text, Float, Date, DateTime, Boolean, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, BigInteger, Numeric, String, Text, Float, Date, DateTime, Boolean, ForeignKey, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 from pgvector.sqlalchemy import Vector
@@ -234,6 +234,25 @@ class NetSuiteEmployeeMapping(Base):
 
     def __repr__(self):
         return f"<NetSuiteEmployeeMapping(netsuite_employee_id='{self.netsuite_employee_id}', name='{self.name}')>"
+
+
+class SystemSetting(Base):
+    """Key-value store for system settings and reference data.
+
+    Stores arbitrary JSON values keyed by name. Used for reference data
+    synced from NetSuite (departments, categories, etc.), feature flags,
+    and other configuration that doesn't warrant its own table.
+    """
+    __tablename__ = 'system_settings'
+
+    key = Column(String, primary_key=True)
+    value = Column(JSONB, nullable=False, default=dict)
+    description = Column(String, nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_by = Column(String, nullable=True)
+
+    def __repr__(self):
+        return f"<SystemSetting(key='{self.key}')>"
 
 
 class RFQ(Base):

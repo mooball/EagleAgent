@@ -748,12 +748,85 @@ def create_rfq(body: CreateRfqRequest, user: AddonUser):
             })
 
         user_ident = user.get("email", user.get("identifier", "addon"))
+
+        # Create the RFQ synchronously so we can return the updated context
+        from includes.dashboard.models import Customer
+        from includes.tools.rfq_crud import _create_rfq_sync
+        from sqlalchemy import text as sa_text
+
+        customer_name = "Unknown"
+        rfq_number = None
+
+        # Re-open a fresh session for the synchronous write
+        session2 = get_session()
+        try:
+            customer = session2.query(Customer).get(tracking.customer_id)
+            customer_name = customer.companyname if customer else "Unknown"
+
+            rfq = _create_rfq_sync(
+                data={
+                    "customer": customer_name,
+                    "customer_id": str(tracking.customer_id),
+                    "status": "in_progress",
+                    "assigned_to": tracking.user_email or user_ident,
+                    "reference": tracking.subject or "",
+                },
+                user_id=user_ident,
+            )
+            if isinstance(rfq, str):
+                return JSONResponse({"status": "error", "message": rfq}, status_code=500)
+
+            rfq_number = rfq["rfq_number"]
+
+            # Link the email thread to the new RFQ
+            session2.execute(
+                sa_text(
+                    "UPDATE email_tracking SET rfq_token = :token, match_type = 'manual' "
+                    "WHERE gmail_thread_id = :tid"
+                ),
+                {"token": rfq_number, "tid": tracking.gmail_thread_id},
+            )
+            session2.commit()
+
+            # Auto-create NetSuite Opportunity
+            if customer and customer.netsuite_id:
+                try:
+                    from includes.netsuite.records.opportunity import create_and_link_opportunity
+                    create_and_link_opportunity(rfq_number)
+                except Exception:
+                    logger.exception("Opportunity creation failed (non-fatal)")
+
+        except Exception:
+            session2.rollback()
+            raise
+        finally:
+            session2.close()
+
+        # Spawn LLM extraction in background (non-blocking)
         from includes.tools.rfq_creation_pipeline import trigger_rfq_creation_pipeline
         trigger_rfq_creation_pipeline(tracking.id, user_id=user_ident)
 
+        # Build updated context to return (matches ContextResponse format)
+        updated_context = {
+            "customer": {
+                "id": str(tracking.customer_id),
+                "name": customer_name,
+            },
+            "supplier": None,
+            "rfq": {
+                "id": str(rfq["id"]) if isinstance(rfq, dict) else "",
+                "rfq_number": rfq_number,
+                "status": "in_progress",
+            },
+            "opportunity": None,
+            "tracked": True,
+        }
+
         return JSONResponse({
-            "status": "processing",
-            "message": "RFQ creation started. Refresh the card to see the new RFQ.",
+            "status": "ok",
+            "rfq_number": rfq_number,
+            "message": f"Created {rfq_number} for {customer_name}",
+            "context": updated_context,
         })
 
     except Exception as exc:

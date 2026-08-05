@@ -494,11 +494,11 @@ function buildContextCard(context, messageId, threadId, subject, sender, isInter
     hasActions = true;
   }
 
-  // Only show "Create New RFQ" if a customer is already linked
-  if (context.customer) {
+  // Only show "Create RFQ + OP" if a customer is linked and no RFQ exists yet
+  if (context.customer && !context.rfq) {
     actionsSection.addWidget(
       CardService.newTextButton()
-        .setText('Create New RFQ')
+        .setText('Create RFQ + OP')
         .setOnClickAction(
           CardService.newAction()
             .setFunctionName('onCreateRfq')
@@ -1081,7 +1081,8 @@ function onSelectEntity(e) {
 // ============================================================
 
 /**
- * User clicked "Create New RFQ". Trigger the RFQ creation pipeline.
+ * User clicked "Create RFQ + OP". Backend creates the RFQ synchronously
+ * and returns updated context — use it to auto-refresh the card.
  */
 function onCreateRfq(e) {
   var result;
@@ -1098,11 +1099,33 @@ function onCreateRfq(e) {
       .build();
   }
 
-  return CardService.newActionResponseBuilder()
-    .setNotification(
-      CardService.newNotification().setText(
-        result.message || 'RFQ creation started. Refresh the card to see the new RFQ.'
+  if (result.status === 'error') {
+    return CardService.newActionResponseBuilder()
+      .setNotification(
+        CardService.newNotification().setText(result.message || 'Failed to create RFQ')
       )
+      .build();
+  }
+
+  // Clear cache so next card open gets fresh data
+  if (isCacheEnabled()) {
+    CacheService.getUserCache().remove('ctx:' + e.parameters.messageId);
+  }
+
+  // Build refreshed card from the context returned by the backend
+  var card = buildContextCard(
+    result.context,
+    e.parameters.messageId,
+    e.parameters.threadId,
+    e.parameters.subject,
+    e.parameters.sender,
+    false
+  );
+
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().pushCard(card))
+    .setNotification(
+      CardService.newNotification().setText(result.message || 'RFQ + OP created!')
     )
     .build();
 }

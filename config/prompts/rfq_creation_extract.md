@@ -4,6 +4,29 @@ spreadsheet attachments, or images.
 
 ## Instructions
 
+### Forwarded Emails
+The content may present the **Original Request** (innermost message) first, followed by the
+**Full Email Thread** for context. The actual RFQ items are almost always in the Original
+Request section. If the Original Request is empty or contains only a signature, look in the
+Full Email Thread.
+
+Email signatures (lines like "Kind Regards", "Best regards", "---", phone numbers,
+social media links) are noise — ignore them completely. They contain no RFQ data.
+
+### Table Formats
+Tables from email clients may contain formatting artifacts from HTML-to-text conversion:
+
+- **Underscore padding**: `| UT32-100 ____ |` means the value is "UT32-100". The underscores
+  are visual padding artifacts — ignore them.
+- **Semicolons on values**: `| GRID-ANTI SLIP;____ |` means the description is "GRID-ANTI SLIP".
+  Strip trailing semicolons.
+- **Extra pipe characters**: some layouts may have doubled pipes `||` between columns.
+- **Inline HTML remnants**: `<br>`, `&nbsp;`, `&amp;` — treat as whitespace or decode.
+- **Nested tables**: if you see a second table inside a cell, that's likely layout markup —
+  extract the text content.
+
+A table with even a single data row is a valid RFQ — extract it.
+
 ### Line Items
 Extract ALL line items from the email content. For each item, provide:
 

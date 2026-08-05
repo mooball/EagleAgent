@@ -1,0 +1,129 @@
+<div class="pt-6 max-w-4xl mx-auto px-4">
+    <!-- Breadcrumb -->
+    <nav class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 mb-4">
+        <a hx-get="/partial/admin" hx-target="#main-content" hx-push-url="/admin"
+           class="hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer">Admin</a>
+        <span>›</span>
+        <span class="text-gray-900 dark:text-gray-100">Employee Mappings</span>
+    </nav>
+
+    <div class="flex items-center justify-between mb-6">
+        <div class="min-w-0 mr-4">
+            <h1 class="text-xl font-bold text-gray-900 dark:text-gray-100">Employee Mappings</h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1 max-w-sm">Link NetSuite employee IDs to email addresses for RFQ assignment and opportunity tracking.</p>
+        </div>
+        <div class="flex items-center gap-2 flex-shrink-0">
+            <button hx-post="/admin/employee-mappings/scan" hx-target="#scan-results" hx-swap="innerHTML" hx-indicator="#scan-spinner"
+                    class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                Scan NetSuite
+            </button>
+            <svg id="scan-spinner" class="htmx-indicator w-5 h-5 animate-spin text-gray-400" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+        </div>
+    </div>
+
+    <!-- Scan results (unmapped employees) -->
+    <div id="scan-results" class="mb-8"></div>
+
+    <!-- Existing mappings table -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
+         id="mappings-table"
+         hx-get="/partial/admin/employee-mappings" hx-trigger="mapping-saved from:body" hx-swap="outerHTML">
+        {% if mappings %}
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50 dark:bg-gray-750 border-b border-gray-200 dark:border-gray-700">
+                <tr>
+                    <th class="px-4 py-2 text-left font-medium text-gray-600 dark:text-gray-400">NS ID</th>
+                    <th class="px-4 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Name</th>
+                    <th class="px-4 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Email</th>
+                    <th class="px-4 py-2 text-center font-medium text-gray-600 dark:text-gray-400 w-20">Active</th>
+                    <th class="px-4 py-2 w-16"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
+                {% for m in mappings %}
+                <tr class="hover:bg-gray-50 dark:hover:bg-gray-750">
+                    <td class="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{{ m.netsuite_employee_id }}</td>
+                    <td class="px-4 py-2 text-gray-900 dark:text-gray-100">{{ m.name }}</td>
+                    <td class="px-4 py-2 text-gray-500 dark:text-gray-400">{{ m.email or '—' }}</td>
+                    <td class="px-4 py-2 text-center">
+                        <button hx-post="/admin/employee-mappings/toggle" hx-target="closest span" hx-swap="outerHTML"
+                                hx-vals='{"netsuite_id": "{{ m.netsuite_employee_id }}"}'
+                                class="text-xs cursor-pointer">
+                            <span>{% if m.is_active %}<span class="text-green-600 font-medium">active</span>{% else %}<span class="text-gray-400">inactive</span>{% endif %}</span>
+                        </button>
+                    </td>
+                    <td class="px-4 py-2 text-right">
+                        <button onclick="editMapping('{{ m.netsuite_employee_id }}', '{{ m.name|e }}', '{{ m.email or '' }}')"
+                                class="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300">
+                            Edit
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="p-6 text-center text-sm text-gray-400">No mappings yet. Click "Scan NetSuite" to find employees.</div>
+        {% endif %}
+    </div>
+
+    <!-- Add/Edit form (hidden by default) -->
+    <div id="mapping-form" class="mt-6 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hidden">
+        <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
+            <span id="form-title">Add Employee Mapping</span>
+        </h3>
+        <form hx-post="/admin/employee-mappings/save" hx-target="#form-result" hx-swap="innerHTML"
+              hx-on::after-request="if(event.detail.successful) setTimeout(() => document.getElementById('mapping-form').classList.add('hidden'), 800)">
+            <input type="hidden" id="form-netsuite-id" name="netsuite_id" value="">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+                <div>
+                    <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">NetSuite ID</label>
+                    <input type="text" id="display-ns-id" disabled
+                           class="w-full px-3 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-700 text-gray-500">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">Name *</label>
+                    <input type="text" id="form-name" name="name" required
+                           class="w-full px-3 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">Email</label>
+                    <input type="email" id="form-email" name="email" placeholder="name@eagle-exports.com"
+                           class="w-full px-3 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <label class="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400">
+                    <input type="checkbox" name="is_active" value="1" checked class="rounded">
+                    Active
+                </label>
+                <button type="submit" class="px-4 py-1.5 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700">Save</button>
+                <button type="button" onclick="document.getElementById('mapping-form').classList.add('hidden')"
+                        class="px-4 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700">Cancel</button>
+            </div>
+        </form>
+        <div id="form-result" class="mt-2"></div>
+    </div>
+</div>
+
+<script>
+function editMapping(nsId, name, email) {
+    document.getElementById('form-netsuite-id').value = nsId;
+    document.getElementById('display-ns-id').value = nsId;
+    document.getElementById('form-name').value = name;
+    document.getElementById('form-email').value = email;
+    document.getElementById('form-title').textContent = 'Edit Employee Mapping';
+    document.getElementById('mapping-form').classList.remove('hidden');
+    document.getElementById('mapping-form').scrollIntoView({behavior: 'smooth'});
+}
+function addMapping(nsId, name) {
+    document.getElementById('form-netsuite-id').value = nsId;
+    document.getElementById('display-ns-id').value = nsId;
+    document.getElementById('form-name').value = name;
+    document.getElementById('form-email').value = '';
+    document.getElementById('form-title').textContent = 'Add Employee Mapping';
+    document.getElementById('mapping-form').classList.remove('hidden');
+    document.getElementById('mapping-form').scrollIntoView({behavior: 'smooth'});
+}
+</script>
