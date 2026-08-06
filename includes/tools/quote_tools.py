@@ -693,12 +693,12 @@ def create_quote_tools(user_id: str) -> list:
         Actions:
           create        — Create a new RFQ. data keys: customer (required),
                           customer_contact ({name, email, phone}), reference,
-                          netsuite_opportunity, hubspot_deal, notes,
+                          title, notes, netsuite_opportunity,
                           items ([{input_description, input_code, part_number,
                           brand, quantity, uom}])
           update        — Update top-level RFQ properties. data keys: any of
-                          customer, customer_contact, reference, notes,
-                          netsuite_opportunity, hubspot_deal, assigned_to
+                          customer, customer_contact, reference, title, notes,
+                          netsuite_opportunity, assigned_to
           update_item   — Update an RFQ line item. data keys: line (required, int),
                           plus any of: input_description, input_code, part_number,
                           brand, product_id, quantity, uom, match, notes, sale_price.
@@ -766,10 +766,9 @@ def create_quote_tools(user_id: str) -> list:
                           line (optional, int — if omitted clears ALL lines)
           assign        — Reassign the RFQ. data keys: assigned_to (required)
           update_status — Change RFQ status. data keys: status (required, one of
-                          draft/in_progress/awaiting_quotes/completed/cancelled)
+                          draft/in_progress/issued_quote/closed_won/closed_lost)
           add_note      — Append a note. data keys: note (required)
           link_external — Set external IDs. data keys: netsuite_opportunity
-                          and/or hubspot_deal
           group_items   — Set or update sourcing groups. data keys:
                           item_groups (required, the grouping result object
                           with {groups: [...], ungrouped: [...]})
