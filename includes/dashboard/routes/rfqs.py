@@ -1018,6 +1018,18 @@ async def partial_rfq_update(request: Request, rfq_id: str,
 async def partial_rfq_status(request: Request, rfq_id: str,
                              user: dict = Depends(require_user)):
     """Update just the RFQ status via the dropdown."""
+    form = await request.form()
+    new_status = form.get("status", "")
+
+    from includes.tools.rfq_crud import _update_status_sync
+    user_ident = user.get("identifier", "dashboard")
+    result = await asyncio.to_thread(_update_status_sync, rfq_id, {"status": new_status}, user_ident)
+    if isinstance(result, str):
+        return HTMLResponse(f"<p>{result}</p>", status_code=400)
+
+    rfq = result
+    _enrich_rfq_supplier_contacts(rfq)
+    return _render_rfq_detail_partial_response(request, user, rfq)
 
 
 @router.post("/partial/rfqs/{rfq_id}/create-opportunity")
@@ -1035,18 +1047,6 @@ async def partial_rfq_create_opportunity(request: Request, rfq_id: str,
     rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
     if not rfq:
         return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
-    _enrich_rfq_supplier_contacts(rfq)
-    return _render_rfq_detail_partial_response(request, user, rfq)
-    form = await request.form()
-    new_status = form.get("status", "")
-
-    from includes.tools.rfq_crud import _update_status_sync
-    user_ident = user.get("identifier", "dashboard")
-    result = await asyncio.to_thread(_update_status_sync, rfq_id, {"status": new_status}, user_ident)
-    if isinstance(result, str):
-        return HTMLResponse(f"<p>{result}</p>", status_code=400)
-
-    rfq = result
     _enrich_rfq_supplier_contacts(rfq)
     return _render_rfq_detail_partial_response(request, user, rfq)
 
