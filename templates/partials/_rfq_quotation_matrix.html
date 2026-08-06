@@ -252,8 +252,8 @@
                          :style="'max-width: 350px; transform: translateX(' + scrollX + 'px)'">&nbsp;</div>
                 </td>
                 <td colspan="3" class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 bg-gray-50 dark:bg-gray-700">Totals</td>
-                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col">{{ '%.2f' | format(ns.total_cost) if ns.total_cost else '—' }}</td>
-                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col">{{ '%.2f' | format(ns.total_sale) if ns.total_sale else '—' }}</td>
+                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col">{{ '$%.2f' | format(ns.total_cost) if ns.total_cost else '—' }}</td>
+                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col">{{ '$%.2f' | format(ns.total_sale) if ns.total_sale else '—' }}</td>
                 {% for _ in supplier_names %}
                 <td></td>
                 {% endfor %}
