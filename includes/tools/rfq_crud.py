@@ -629,6 +629,7 @@ def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
     updatable = [
         "input_description", "input_code", "part_number", "brand",
         "product_id", "quantity", "uom", "match", "notes",
+        "sale_price",
     ]
     _no_clear = {"product_id", "match"}
     changes = []
