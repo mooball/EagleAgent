@@ -701,7 +701,7 @@ def create_quote_tools(user_id: str) -> list:
                           netsuite_opportunity, hubspot_deal, assigned_to
           update_item   — Update an RFQ line item. data keys: line (required, int),
                           plus any of: input_description, input_code, part_number,
-                          brand, product_id, quantity, uom, match, notes.
+                          brand, product_id, quantity, uom, match, notes, sale_price.
                           Item match values: unmatched, specific, branded,
                           generic, discrepancy (problem found — part number
                           mismatch or cannot be verified)
@@ -740,7 +740,7 @@ def create_quote_tools(user_id: str) -> list:
                           💡 For multiple lines, use add_suppliers_bulk instead.
           update_item   — Update an RFQ line item. data keys: line (required, int),
                           plus any of: input_description, input_code, part_number,
-                          brand, product_id, quantity, uom, match, notes.
+                          brand, product_id, quantity, uom, match, notes, sale_price.
                           Item match values: unmatched, specific, branded,
                           generic, discrepancy (problem found — part number
                           mismatch or cannot be verified).
