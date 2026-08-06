@@ -27,6 +27,7 @@ from includes.tools.rfq_crud import (  # noqa: F401
     _select_quote_sync, _decline_quote_sync, _set_supplier_meta_sync,
     # Bulk operations
     _update_item_core, _update_items_bulk_sync,
+    _delete_items_bulk_sync,
     _add_suppliers_to_line_core, _add_suppliers_bulk_sync,
     _select_quote_core, _select_quotes_bulk_sync,
     _update_supplier_core, _update_quotes_bulk_sync,
@@ -378,7 +379,14 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
     try:
         for name_lower, sup_list in names_to_match.items():
             sup_country = sup_list[0].get("country")
-            row = match_supplier(name_lower, url=None, country=sup_country, session=session)
+            # Extract URL from contacts if available — enables domain-first lookup
+            # and verification gates in match_supplier on the first pass
+            sup_url = None
+            for c in sup_list[0].get("contacts", []):
+                if isinstance(c, dict) and c.get("url"):
+                    sup_url = c["url"]
+                    break
+            row = match_supplier(name_lower, url=sup_url, country=sup_country, session=session)
             if row:
                 logger.info(f"[supplier-match] '{name_lower}' → '{row.name}' (id={row.id})")
                 matched.add(name_lower)
@@ -700,6 +708,7 @@ def create_quote_tools(user_id: str) -> list:
           delete_item   — Delete a line item from the RFQ. data keys: line
                           (required, int). IMPORTANT: Always confirm with the
                           user before deleting. Remaining items are renumbered.
+                          💡 For multiple lines, use delete_items_bulk instead.
           add_items     — Add multiple line items to an existing RFQ. data keys:
                           items (required, list of dicts with input_description,
                           input_code, part_number, brand, quantity, uom).
@@ -798,6 +807,12 @@ def create_quote_tools(user_id: str) -> list:
                           and name). Same semantics as select_quote per entry.
                           Example: {"selections": [{"line": 1, "name": "Acme"},
                           {"line": 2, "name": "Acme"}]}
+          delete_items_bulk — Delete multiple line items from an RFQ in one
+                          transaction. data keys: lines (required, list of
+                          line numbers or "all"). Items are renumbered after
+                          deletion.
+                          Example: {"lines": [6, 7, 8, 9, 10]}
+                          Example: {"lines": "all"}
 
         Args:
             action: The mutation to perform (see above).
@@ -849,6 +864,7 @@ def create_quote_tools(user_id: str) -> list:
             "update_quotes_bulk": lambda: asyncio.to_thread(_update_quotes_bulk_sync, rfq_id, data, user_id),
             "select_quotes_bulk": lambda: asyncio.to_thread(_select_quotes_bulk_sync, rfq_id, data, user_id),
             "create_opportunity": lambda: asyncio.to_thread(_create_opportunity_sync, rfq_id, data, user_id),
+            "delete_items_bulk": lambda: asyncio.to_thread(_delete_items_bulk_sync, rfq_id, data, user_id),
         }
 
         handler = _ACTION_MAP.get(action)
@@ -858,7 +874,7 @@ def create_quote_tools(user_id: str) -> list:
                 "update, update_item, delete_item, add_items, add_supplier, update_supplier, "
                 "clear_suppliers, assign, update_status, add_note, link_external, "
                 "group_items, create_opportunity, update_quote, select_quote, decline_quote, set_supplier_meta, "
-                "add_suppliers_bulk, update_items_bulk, update_quotes_bulk, select_quotes_bulk."
+                "add_suppliers_bulk, update_items_bulk, update_quotes_bulk, select_quotes_bulk, delete_items_bulk."
             )
 
         if action != "create" and not rfq_id:

@@ -818,6 +818,94 @@ def _delete_item_sync(rfq_number: str, line_num: int, user_id: str) -> dict | st
         session.close()
 
 
+def _delete_items_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
+    """Delete multiple RFQ line items in one transaction.
+
+    data["lines"] can be:
+      - "all" — delete every item
+      - a list of line numbers: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+
+    Lines are processed in descending order so renumbering doesn't
+    affect not-yet-deleted items. Returns the updated RFQ dict or
+    an error string.
+    """
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy import text
+
+    lines_raw = data.get("lines")
+    if lines_raw is None:
+        return "Error: 'lines' is required. Use a list of line numbers or 'all'."
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+
+        if lines_raw == "all":
+            count = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).count()
+            if count == 0:
+                return f"Error: RFQ '{rfq_number}' has no items to delete."
+            session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).delete()
+            now = _now_iso()
+            history = list(rfq.history or [])
+            history.append({"date": now, "user": user_id, "action": f"Deleted all {count} items"})
+            rfq.history = history
+            rfq.updated_at = _now_dt()
+            session.commit()
+            session.refresh(rfq)
+            return _rfq_to_dict(rfq)
+
+        if not isinstance(lines_raw, list):
+            return "Error: 'lines' must be a list of line numbers or 'all'."
+
+        # Deduplicate and sort descending
+        line_numbers = sorted(set(int(l) for l in lines_raw), reverse=True)
+        if not line_numbers:
+            return "Error: no valid line numbers provided."
+
+        deleted = []
+        for line_num in line_numbers:
+            line_item = session.query(RFQItem).filter(
+                RFQItem.rfq_id == rfq.id, RFQItem.line == line_num
+            ).first()
+            if not line_item:
+                continue
+
+            desc = line_item.input_description or line_item.part_number or f"line {line_num}"
+            session.delete(line_item)
+            session.flush()
+
+            # Renumber: shift items above the deleted line down by 1
+            session.execute(
+                text("UPDATE rfq_items SET line = -(line - 1) WHERE rfq_id = :rfq_id AND line > :line"),
+                {"rfq_id": rfq.id, "line": line_num},
+            )
+            session.execute(
+                text("UPDATE rfq_items SET line = -line WHERE rfq_id = :rfq_id AND line < 0"),
+                {"rfq_id": rfq.id},
+            )
+
+            deleted.append(f"line {line_num}: {desc}")
+
+        if not deleted:
+            return f"Error: none of the specified lines were found in {rfq_number}."
+
+        now = _now_iso()
+        history = list(rfq.history or [])
+        history.append({"date": now, "user": user_id, "action": f"Deleted {len(deleted)} items: {', '.join(deleted)}"})
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except SQLAlchemyError:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 def _add_suppliers_to_line_core(session, rfq, line_item, data):
     """Process and merge suppliers into a single line item in-place.
 
