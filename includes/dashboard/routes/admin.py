@@ -1047,7 +1047,7 @@ async def api_re_extract_rfq(email_id: int, request: Request,
                     logger.warning(f"Re-extract #{email_id}: failed to update title/notes — {e}")
 
         # Save result for the badge/popup
-        customer_name = tracking.customer_id  # We don't have the name easily, but the old result has it
+        customer_name = str(tracking.customer_id) if tracking.customer_id else ""
         result = {
             "rfq_number": rfq_number,
             "items_extracted": len(items),
@@ -1072,7 +1072,14 @@ async def api_re_extract_rfq(email_id: int, request: Request,
         _save_rfq_creation_result(email_id, result)
 
         logger.info(f"Admin {user.get('email')} re-extracted RFQ items for email #{email_id}: {len(items)} items")
-        return JSONResponse({"status": "ok", "items": len(items), "message": f"Extracted {len(items)} items", "result": result})
+        # Return a small HTML indicator — the button swaps itself out
+        indicator = f"✓ {len(items)}" if items else "✓ 0"
+        title = f"Found {len(items)} items" if items else "Extraction complete — no items found"
+        return HTMLResponse(
+            f'<span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full '
+            f'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" '
+            f'title="{title}">{indicator}</span>'
+        )
     except Exception as e:
         logger.exception(f"Error re-extracting RFQ for email #{email_id}")
         return JSONResponse({"status": "error", "message": str(e)})
