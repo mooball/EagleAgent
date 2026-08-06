@@ -43,7 +43,7 @@ def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
     Three-pass strategy:
     1. Containment — DB name in input or input in DB name (prefer closest length)
     2. Alt names — check if input matches any entry in the alt_names JSONB array
-    3. pg_trgm similarity fallback (threshold 0.6)
+    3. pg_trgm similarity fallback (threshold 0.8)
 
     Returns the Supplier row or None. Caller manages the session.
     """
@@ -87,7 +87,7 @@ def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
             sim = func.similarity(func.lower(Supplier.name), name_lower)
             row = (
                 session.query(Supplier)
-                .filter(sim > 0.6)
+                .filter(sim > 0.8)
                 .order_by(sim.desc())
                 .first()
             )
@@ -153,6 +153,7 @@ def match_supplier(
     if own_session:
         from includes.dashboard.database import get_session
         session = get_session()
+    name_lower = name.strip().lower()
     try:
         # --- Domain-first lookup ---
         # If a URL is provided, search for any existing supplier with the
@@ -168,6 +169,17 @@ def match_supplier(
             for s in all_suppliers:
                 s_domain = _extract_domain(s.url)
                 if s_domain and s_domain == incoming_domain:
+                    # Domain match is strong, but verify names are at least loosely compatible
+                    s_name = (s.name or "").strip().lower()
+                    if s_name and name_lower not in s_name and s_name not in name_lower:
+                        from difflib import SequenceMatcher
+                        name_sim = SequenceMatcher(None, name_lower, s_name).ratio()
+                        if name_sim < 0.3:
+                            logger.info(
+                                f"[supplier-match] '{name}' domain-matched '{s.name}' "
+                                f"({incoming_domain}) but REJECTED: names too different (sim={name_sim:.2f})"
+                            )
+                            continue
                     logger.info(
                         f"[supplier-match] '{name}' → '{s.name}' via domain match ({incoming_domain})"
                     )

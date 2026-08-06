@@ -176,3 +176,21 @@ def create_and_link_opportunity(rfq_id: str) -> CreateResult:
         )
     finally:
         session.close()
+
+
+def update_opportunity_title(netsuite_id: str, title: str) -> None:
+    """Update the title of an existing NetSuite Opportunity.
+
+    Called whenever an RFQ's title changes and the RFQ is linked
+    to an opportunity. Runs in a background thread so the UI isn't blocked.
+
+    Args:
+        netsuite_id: NetSuite internal ID of the opportunity.
+        title: New title to set.
+    """
+    try:
+        client = NetSuiteClient()
+        client.update_record("opportunity", netsuite_id, {"title": title})
+        logger.info("Updated opportunity %s title to %r", netsuite_id, title)
+    except Exception:
+        logger.exception("Failed to update opportunity %s title", netsuite_id)

@@ -177,6 +177,29 @@ class NetSuiteClient:
         logger.info("Created %s/%s", record_type, netsuite_id)
         return netsuite_id
 
+    def update_record(self, record_type: str, record_id: str, data: dict) -> None:
+        """Update a record in NetSuite via REST API (PATCH).
+
+        Args:
+            record_type: e.g. "opportunity", "customer"
+            record_id: NetSuite internal ID of the record to update
+            data: JSON body with fields to update
+
+        Raises:
+            requests.HTTPError: on 4xx/5xx responses
+        """
+        url = f"{self._base_url}/record/v1/{record_type}/{record_id}"
+        headers = self._headers()
+        headers["Content-Type"] = "application/json"
+
+        response = self._session.patch(url, headers=headers, json=data, timeout=_DEFAULT_TIMEOUT)
+        if not response.ok:
+            logger.error(
+                "UPDATE %s/%s → %s: %s", record_type, record_id, response.status_code, response.text[:500]
+            )
+            response.raise_for_status()
+        logger.info("Updated %s/%s", record_type, record_id)
+
     def get_record(self, record_type: str, record_id: str) -> dict:
         """
         Fetch a single record by type and internal ID.

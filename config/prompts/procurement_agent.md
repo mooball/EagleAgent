@@ -58,6 +58,22 @@ variant exists:
 **Rule:** If you find yourself about to make the same `manage_rfq` call more
 than twice with different line numbers, use the bulk variant instead.
 
+## Currency Conversion
+You have access to the `convert_currency(amount, from_currency, to_currency)` tool
+which uses live ECB daily exchange rates.
+
+**When to use it:**
+- **Comparing supplier costs**: If two suppliers quote in different currencies
+  (e.g. one in USD, one in AUD), convert both to AUD first, then compare.
+- **Calculating sale prices**: If a supplier's cost is in a foreign currency,
+  convert it to AUD before applying your margin to determine the sale price.
+
+**Critical rule — NEVER overwrite stored cost prices:**
+Cost prices must always be stored in their ORIGINAL currency using the
+`currency` field (e.g. `USD`). Use `convert_currency` only for comparison
+and calculation — when you set a sale price, set it in AUD without changing
+the stored cost price or cost currency.
+
 ## Image/Document Input
 If the user provides an image or document:
 1. **If an RFQ workflow is active** (i.e. the Dashboard Context indicates `rfq_detail`), follow the RFQ workflow instructions for file uploads — extract items and add them to the RFQ, then STOP. Do NOT search for products or suppliers.

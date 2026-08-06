@@ -89,7 +89,7 @@
                 {# Cost (editable) #}
                 <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col" @click.stop>
                     <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right"
-                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(item.cost_price) if item.cost_price is not none else '—' }}</span>
+                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ item.cost_price | currency }}</span>
                     <input type="text" inputmode="decimal"
                            class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                            value="{{ item.cost_price if item.cost_price is not none else '' }}"
@@ -101,7 +101,7 @@
                 {# Sale (editable) #}
                 <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col" @click.stop>
                     <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right"
-                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(item.sale_price) if item.sale_price is not none else '—' }}</span>
+                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ item.sale_price | currency }}</span>
                     <input type="text" inputmode="decimal"
                            class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                            value="{{ item.sale_price if item.sale_price is not none else '' }}"
@@ -141,7 +141,7 @@
                               @click.stop="selectSupplier({{ item.line }}, '{{ name | replace("'", "\\'") }}')" title="Select supplier">☆</span>
                         {% endif %}
                         {# Price — always show $ prefix, trailing currency code for non-AUD #}
-                        {% set price_str = '$%.2f'|format(ns.quote_cost or 0) %}
+                        {% set price_str = (ns.quote_cost or 0) | currency %}
                         <span class="inline-flex">
                             {% if ns.quote_status == 'declined' %}
                             <span class="px-1.5 py-0.5 -my-0.5 -mx-1 inline-block min-w-[50px] text-right text-gray-400 dark:text-gray-500">{{ price_str if ns.quote_cost is not none else '—' }}{% if ns.quote_currency and ns.quote_currency != 'AUD' %} <span class="text-[10px] opacity-60">{{ ns.quote_currency }}</span>{% endif %}</span>
@@ -217,7 +217,7 @@
                     {% set shipping_cost = sm.get('shipping_cost') %}
                 <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap border-l border-gray-100 dark:border-gray-700" @click.stop>
                     <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right text-gray-400"
-                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(shipping_cost) if shipping_cost is not none else '—' }}</span>
+                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ shipping_cost | currency }}</span>
                     <input type="text" inputmode="decimal"
                            class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                            value="{{ shipping_cost if shipping_cost is not none else '' }}"
@@ -252,8 +252,8 @@
                          :style="'max-width: 350px; transform: translateX(' + scrollX + 'px)'">&nbsp;</div>
                 </td>
                 <td colspan="3" class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 bg-gray-50 dark:bg-gray-700">Totals</td>
-                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col">{{ '%.2f' | format(ns.total_cost) if ns.total_cost else '—' }}</td>
-                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col">{{ '%.2f' | format(ns.total_sale) if ns.total_sale else '—' }}</td>
+                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col">{{ ns.total_cost | currency }}</td>
+                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col">{{ ns.total_sale | currency }}</td>
                 {% for _ in supplier_names %}
                 <td></td>
                 {% endfor %}

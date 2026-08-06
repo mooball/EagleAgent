@@ -298,7 +298,22 @@ def _run_rfq_creation_pipeline(email_tracking_id: int, user_id: str) -> None:
         "processed_at": _now_iso(),
     }
 
-    if not items:
+    # Include extraction diagnostics for debugging
+    if llm_result:
+        if llm_result.get("_raw_response"):
+            result["llm_raw_response"] = llm_result["_raw_response"]
+        if llm_result.get("error"):
+            result["extraction_error"] = llm_result["error"]
+            if llm_result.get("raw_response"):
+                result["llm_raw_response"] = llm_result["raw_response"]
+            result["status"] = "error"
+        elif not llm_result.get("has_items", True):
+            result["warnings"].append(
+                f"LLM found no items (has_items=false). Raw response: "
+                f"{llm_result.get('_raw_response', '')[:500]}"
+            )
+
+    if not items and result["status"] != "error":
         result["warnings"].append("No items could be extracted from the email content. "
                                   "RFQ created as empty draft — add items manually.")
 
@@ -382,7 +397,7 @@ def _extract_rfq_items_sync(email_tracking_id: int) -> tuple[list, Optional[dict
     content_bundle = _extract_email_content_sync(email_tracking_id)
     if not content_bundle or content_bundle.startswith("Error:"):
         logger.warning(f"[rfq-creation] #{email_tracking_id}: empty content bundle — {content_bundle}")
-        return [], None
+        return [], {"error": f"Failed to extract email content: {content_bundle}"}
 
     # LLM extraction
     prompt = _load_extraction_prompt()
@@ -399,9 +414,10 @@ def _extract_rfq_items_sync(email_tracking_id: int) -> tuple[list, Optional[dict
     raw_text = (response.text or "").strip()
     if not raw_text:
         logger.warning(f"[rfq-creation] #{email_tracking_id}: LLM returned empty response")
-        return [], None
+        return [], {"error": "LLM returned empty response", "raw_response": ""}
 
     # Parse JSON from response (handle markdown code fences)
+    raw_original = raw_text
     if raw_text.startswith("```"):
         raw_text = raw_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         # Handle "```json" prefix
@@ -412,7 +428,10 @@ def _extract_rfq_items_sync(email_tracking_id: int) -> tuple[list, Optional[dict
         llm_result = json.loads(raw_text)
     except json.JSONDecodeError:
         logger.warning(f"[rfq-creation] #{email_tracking_id}: LLM returned invalid JSON: {raw_text[:300]}")
-        return [], None
+        return [], {"error": "LLM returned invalid JSON", "raw_response": raw_original[:1000]}
+
+    # Store the raw response for debugging
+    llm_result["_raw_response"] = raw_original[:2000]
 
     # Items are already in standard 5-field format from the LLM prompt
     # ({input_description, input_code, brand, quantity, uom, confidence}).

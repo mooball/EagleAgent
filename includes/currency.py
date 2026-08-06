@@ -129,3 +129,52 @@ def convert(amount: float, from_currency: str, to_currency: str) -> float:
 def convert_to_aud(amount: float, from_currency: str) -> float:
     """Convenience: convert any amount to AUD."""
     return convert(amount, from_currency, "AUD")
+
+
+# ── Agent-accessible tool ──────────────────────────────────────
+
+from langchain_core.tools import tool
+
+
+@tool
+async def convert_currency(
+    amount: float,
+    from_currency: str,
+    to_currency: str,
+) -> str:
+    """Convert a monetary amount between currencies using ECB daily rates.
+
+    Use this tool to:
+    - Compare supplier costs in different currencies (convert both to AUD first)
+    - Calculate sale prices from cost prices when cost is in a foreign currency
+    - Check exchange rates before pricing decisions
+
+    IMPORTANT: This is for comparison and margin calculation only.
+    Always store prices in their ORIGINAL currency — never overwrite
+    stored cost prices with converted values.
+
+    Args:
+        amount: The monetary amount to convert.
+        from_currency: 3-letter ISO code of the source currency (e.g. 'USD', 'GBP').
+        to_currency: 3-letter ISO code of the target currency (e.g. 'AUD').
+
+    Returns:
+        A string describing the conversion result, including the rate used.
+    """
+    import asyncio
+
+    def _convert():
+        rate = get_rate(from_currency.upper(), to_currency.upper())
+        result = amount * rate
+        return rate, result
+
+    try:
+        rate, result = await asyncio.to_thread(_convert)
+        return (
+            f"{from_currency.upper()} {amount:,.2f} = {to_currency.upper()} {result:,.2f} "
+            f"(rate: {rate:.4f})"
+        )
+    except ValueError as e:
+        return f"Conversion failed: {e}"
+    except Exception as e:
+        return f"Conversion error: {e}"

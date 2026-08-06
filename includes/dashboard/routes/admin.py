@@ -282,13 +282,17 @@ async def admin_duplicates_scan(request: Request, user: dict = require_admin) ->
     form = await request.form()
     scan_mode = form.get("scan_mode", "netsuite")
     name_filter = (form.get("name_filter", "") or "").strip() or None
+    try:
+        result_limit = int(form.get("limit", "20"))
+    except (TypeError, ValueError):
+        result_limit = 20
 
     session = _helpers.get_session()
     try:
         if scan_mode == "internal":
-            duplicates = await asyncio.to_thread(scan_internal_duplicates, session, name_filter)
+            duplicates = await asyncio.to_thread(scan_internal_duplicates, session, name_filter, result_limit)
         else:
-            duplicates = await asyncio.to_thread(scan_duplicates, session, name_filter)
+            duplicates = await asyncio.to_thread(scan_duplicates, session, name_filter, result_limit)
     finally:
         session.close()
 
@@ -568,6 +572,7 @@ def _query_email_logs(session, q: str = "", user_filter: str = "", page: int = 1
                 et.created_at,
                 et.match_type,
                 et.supplier_pipeline_result,
+                et.rfq_creation_result,
                 s.name AS supplier_name,
                 c.companyname AS customer_name
             FROM email_tracking et
@@ -990,6 +995,97 @@ async def api_run_email_pipeline(email_id: int, request: Request,
         return JSONResponse({"status": "ok", "message": f"Pipeline triggered for email #{email_id}"})
     except Exception as e:
         logger.error(f"Error triggering pipeline for email #{email_id}: {e}")
+        return JSONResponse({"status": "error", "message": str(e)})
+    finally:
+        session.close()
+
+
+@router.post("/api/emails/{email_id}/re-extract-rfq")
+async def api_re_extract_rfq(email_id: int, request: Request,
+                              user: dict = Depends(_helpers.require_user)):
+    """Re-run RFQ item extraction for an already-linked email (admin only).
+
+    Runs only the Stage 3 extraction (email content → items + title + notes)
+    and applies the results to the existing RFQ. Does NOT create a new RFQ.
+    """
+    if user.get("role") != "Admin":
+        return JSONResponse({"status": "error", "message": "Admin only"}, status_code=403)
+
+    from includes.dashboard.database import get_session
+    from includes.dashboard.models import EmailTracking
+    from includes.tools.rfq_creation_pipeline import _extract_rfq_items_sync, _save_rfq_creation_result, _now_iso
+
+    session = get_session()
+    try:
+        tracking = session.query(EmailTracking).get(email_id)
+        if not tracking:
+            return JSONResponse({"status": "error", "message": "Email not found"}, status_code=404)
+
+        rfq_number = tracking.rfq_token or tracking.rfq_id
+        if not rfq_number:
+            return JSONResponse({"status": "error", "message": "Email not linked to an RFQ"}, status_code=400)
+
+        # Run extraction
+        items, llm_result = _extract_rfq_items_sync(email_id)
+
+        # Apply items to the RFQ
+        if items:
+            from includes.tools.rfq_crud import _add_items_sync
+            try:
+                _add_items_sync(rfq_number=rfq_number, data={"items": items}, user_id=user.get("email", "admin"))
+            except Exception as e:
+                logger.warning(f"Re-extract #{email_id}: failed to add items — {e}")
+
+        # Apply title and notes
+        if llm_result:
+            from includes.tools.rfq_crud import _update_rfq_sync
+            updates = {}
+            if llm_result.get("title"):
+                updates["title"] = llm_result["title"]
+            if llm_result.get("customer_notes"):
+                updates["notes"] = llm_result["customer_notes"]
+            if updates:
+                try:
+                    _update_rfq_sync(rfq_number, updates, user.get("email", "admin"))
+                except Exception as e:
+                    logger.warning(f"Re-extract #{email_id}: failed to update title/notes — {e}")
+
+        # Save result for the badge/popup
+        customer_name = str(tracking.customer_id) if tracking.customer_id else ""
+        result = {
+            "rfq_number": rfq_number,
+            "items_extracted": len(items),
+            "customer": customer_name,
+            "status": "complete",
+            "extraction_method": "gemini_llm",
+            "title": llm_result.get("title", "") if llm_result else "",
+            "customer_notes": llm_result.get("customer_notes", "") if llm_result else "",
+            "raw_items": items,
+            "warnings": llm_result.get("warnings", []) if llm_result else [],
+            "actions": [f"Re-extracted: {len(items)} items found"],
+            "processed_at": _now_iso(),
+        }
+        if llm_result and llm_result.get("_raw_response"):
+            result["llm_raw_response"] = llm_result["_raw_response"]
+        if llm_result and llm_result.get("error"):
+            result["extraction_error"] = llm_result["error"]
+            result["status"] = "error"
+        if not items and result["status"] != "error":
+            result["warnings"].append("No items could be extracted from the email content.")
+
+        _save_rfq_creation_result(email_id, result)
+
+        logger.info(f"Admin {user.get('email')} re-extracted RFQ items for email #{email_id}: {len(items)} items")
+        # Return a small HTML indicator — the button swaps itself out
+        indicator = f"✓ {len(items)}" if items else "✓ 0"
+        title = f"Found {len(items)} items" if items else "Extraction complete — no items found"
+        return HTMLResponse(
+            f'<span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full '
+            f'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" '
+            f'title="{title}">{indicator}</span>'
+        )
+    except Exception as e:
+        logger.exception(f"Error re-extracting RFQ for email #{email_id}")
         return JSONResponse({"status": "error", "message": str(e)})
     finally:
         session.close()

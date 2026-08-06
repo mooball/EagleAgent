@@ -6,11 +6,12 @@ by callers (UI, agents, pipelines).
 """
 
 from .base import CreateResult, NetSuiteCreateError
-from .opportunity import create_opportunity, create_and_link_opportunity
+from .opportunity import create_opportunity, create_and_link_opportunity, update_opportunity_title
 
 __all__ = [
     "CreateResult",
     "NetSuiteCreateError",
     "create_opportunity",
     "create_and_link_opportunity",
+    "update_opportunity_title",
 ]
