@@ -704,7 +704,8 @@ def create_quote_tools(user_id: str) -> list:
                           brand, product_id, quantity, uom, match, notes, sale_price.
                           Item match values: unmatched, specific, branded,
                           generic, discrepancy (problem found — part number
-                          mismatch or cannot be verified)
+                          mismatch or cannot be verified).
+                          💡 For multiple items, use update_items_bulk instead.
           delete_item   — Delete a line item from the RFQ. data keys: line
                           (required, int). IMPORTANT: Always confirm with the
                           user before deleting. Remaining items are renumbered.
@@ -738,13 +739,6 @@ def create_quote_tools(user_id: str) -> list:
                           purchase_ref: optional dict {doc_number, date,
                           order_count} linking to the latest purchase record.
                           💡 For multiple lines, use add_suppliers_bulk instead.
-          update_item   — Update an RFQ line item. data keys: line (required, int),
-                          plus any of: input_description, input_code, part_number,
-                          brand, product_id, quantity, uom, match, notes, sale_price.
-                          Item match values: unmatched, specific, branded,
-                          generic, discrepancy (problem found — part number
-                          mismatch or cannot be verified).
-                          💡 For multiple items, use update_items_bulk instead.
           update_supplier — Update a supplier on a line item. data keys:
                           line (required), name (required), plus any of: status,
                           price, price_type, currency, lead_time, notes,
