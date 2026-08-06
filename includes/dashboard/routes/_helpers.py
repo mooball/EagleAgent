@@ -28,6 +28,19 @@ from includes.dashboard.models import (
 logger = logging.getLogger(__name__)
 templates = Jinja2Templates(directory="templates")
 
+# Add format_currency filter for $1,234.56 display
+def _format_currency(value):
+    """Format a number as currency with $ and thousands separators."""
+    if value is None:
+        return "—"
+    try:
+        v = float(value)
+        return f"${v:,.2f}"
+    except (ValueError, TypeError):
+        return str(value)
+
+templates.env.filters["currency"] = _format_currency
+
 
 # Cache-busting hash for static assets (computed once at startup)
 def _css_hash() -> str:
