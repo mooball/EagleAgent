@@ -568,6 +568,7 @@ def _query_email_logs(session, q: str = "", user_filter: str = "", page: int = 1
                 et.created_at,
                 et.match_type,
                 et.supplier_pipeline_result,
+                et.rfq_creation_result,
                 s.name AS supplier_name,
                 c.companyname AS customer_name
             FROM email_tracking et
