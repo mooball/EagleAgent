@@ -370,6 +370,7 @@ def _create_rfq_sync(data: dict, user_id: str) -> dict:
             thread_id=data.get("thread_id"),
             status=data.get("status", "draft"),
             title=data.get("title", ""),
+            notes=data.get("notes", ""),
             history=[{"date": now, "user": user_id, "action": history_action}],
             updated_at=_now_dt(),
         )
