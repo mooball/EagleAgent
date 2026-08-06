@@ -41,12 +41,13 @@ def _get_supplier_domains(supplier) -> set[str]:
     return domains
 
 
-def scan_duplicates(session: Session, name_filter: str | None = None) -> list[dict]:
+def scan_duplicates(session: Session, name_filter: str | None = None, limit: int = 20) -> list[dict]:
     """Find potential duplicate suppliers.
 
     Args:
         session: Database session.
         name_filter: Optional case-insensitive substring to filter suppliers by name.
+        limit: Maximum number of results to return (default 20).
 
     Returns a list of dicts:
     {
@@ -179,7 +180,7 @@ def scan_duplicates(session: Session, name_filter: str | None = None) -> list[di
 
     # Sort by confidence descending
     results.sort(key=lambda r: -r["confidence"])
-    return results
+    return results[:limit] if limit else results
 
 
 def _name_similarity(a: str, b: str) -> float:
@@ -191,7 +192,7 @@ def _name_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-def scan_internal_duplicates(session: Session, name_filter: str | None = None) -> list[dict]:
+def scan_internal_duplicates(session: Session, name_filter: str | None = None, limit: int = 20) -> list[dict]:
     """Find duplicates among non-netsuite (web-added) suppliers themselves.
 
     Compares every non-netsuite supplier against every other non-netsuite
@@ -309,7 +310,7 @@ def scan_internal_duplicates(session: Session, name_filter: str | None = None) -
             })
 
     results.sort(key=lambda r: -r["confidence"])
-    return results
+    return results[:limit] if limit else results
 
 
 def _pick_keep_remove(a, b):

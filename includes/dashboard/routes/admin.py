@@ -282,13 +282,17 @@ async def admin_duplicates_scan(request: Request, user: dict = require_admin) ->
     form = await request.form()
     scan_mode = form.get("scan_mode", "netsuite")
     name_filter = (form.get("name_filter", "") or "").strip() or None
+    try:
+        result_limit = int(form.get("limit", "20"))
+    except (TypeError, ValueError):
+        result_limit = 20
 
     session = _helpers.get_session()
     try:
         if scan_mode == "internal":
-            duplicates = await asyncio.to_thread(scan_internal_duplicates, session, name_filter)
+            duplicates = await asyncio.to_thread(scan_internal_duplicates, session, name_filter, result_limit)
         else:
-            duplicates = await asyncio.to_thread(scan_duplicates, session, name_filter)
+            duplicates = await asyncio.to_thread(scan_duplicates, session, name_filter, result_limit)
     finally:
         session.close()
 
