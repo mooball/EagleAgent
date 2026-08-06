@@ -325,6 +325,21 @@ class BaseSubAgent(ABC):
         intent_context = state.get("intent_context")
         if intent_context:
             system_prompt += f"\n\n**Current user intent:** {intent_context}"
+
+        # Append current dashboard RFQ context so the agent knows which
+        # RFQ the user is looking at (prevents hallucinating wrong RFQ IDs)
+        from includes.dashboard.context import get_context as _get_dc
+        dc = _get_dc(user_id)
+        if dc and dc.get("view") == "rfq_detail" and dc.get("id"):
+            system_prompt += (
+                f"\n\n**Current RFQ:** {dc['id']}"
+                + (f" — {dc['customer']}" if dc.get("customer") else "")
+                + f" | Status: {dc.get('status', 'unknown')}"
+                + f" | Items: {dc.get('item_count', 0)}"
+                + f"\nThe user is viewing this RFQ on the dashboard right now."
+                + f" Use this RFQ ID ({dc['id']}) for all tool calls unless"
+                + f" they explicitly mention a different RFQ."
+            )
         
         # Prepend system prompt if not already present
         enhanced_messages = list(messages)
