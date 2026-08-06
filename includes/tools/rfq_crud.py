@@ -580,12 +580,38 @@ def _update_rfq_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         rfq.updated_at = _now_dt()
         session.commit()
         session.refresh(rfq)
+
+        # If title changed and RFQ has a linked NetSuite opportunity,
+        # sync the title to NetSuite in a background thread.
+        if "title" in changes and rfq.opportunity_id:
+            opp = session.query(Opportunity).get(rfq.opportunity_id)
+            if opp and opp.netsuite_id:
+                import threading
+                ns_id = opp.netsuite_id
+                new_title = rfq.title or ""
+                threading.Thread(
+                    target=lambda: _sync_title_to_netsuite(ns_id, new_title),
+                    daemon=True,
+                    name=f"ns-title-sync-{rfq.rfq_number}",
+                ).start()
+
         return _rfq_to_dict(rfq)
     except SQLAlchemyError:
         session.rollback()
         raise
     finally:
         session.close()
+
+
+def _sync_title_to_netsuite(netsuite_id: str, title: str) -> None:
+    """Update the title of a NetSuite Opportunity — runs in a background thread."""
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        from includes.netsuite.records.opportunity import update_opportunity_title
+        update_opportunity_title(netsuite_id, title)
+    except Exception:
+        logger.exception("Background title sync failed for NS opportunity %s", netsuite_id)
 
 
 def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
