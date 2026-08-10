@@ -930,7 +930,7 @@ async def api_link_email(request: Request, user: dict = Depends(_helpers.require
             session.commit()
             customer = session.query(Customer).filter(Customer.id == entity_id).first()
             name = customer.companyname if customer else "customer"
-            return JSONResponse({"status": "ok", "message": f"Linked to {name}. {domain_msg}".strip()})
+            return JSONResponse({"status": "ok", "message": f"Linked to {name}. {domain_msg}".strip(), "entity_name": name})
 
         elif link_type == "supplier":
             entity_id = body.get("entity_id")
@@ -958,7 +958,7 @@ async def api_link_email(request: Request, user: dict = Depends(_helpers.require
             if rfq_id and tracking.direction == "received":
                 from includes.tools.supplier_quote_pipeline import trigger_supplier_quote_pipeline
                 trigger_supplier_quote_pipeline(email_id, user_id=user.get("email", "manual"))
-            return JSONResponse({"status": "ok", "message": f"Linked to {name}. {domain_msg}".strip()})
+            return JSONResponse({"status": "ok", "message": f"Linked to {name}. {domain_msg}".strip(), "entity_name": name})
 
         else:
             return JSONResponse({"status": "error", "message": f"Unknown link type: {link_type}"})
@@ -967,6 +967,60 @@ async def api_link_email(request: Request, user: dict = Depends(_helpers.require
         session.rollback()
         logger.error(f"Error linking email {email_id}: {e}")
         return JSONResponse({"status": "error", "message": str(e)})
+    finally:
+        session.close()
+
+
+@router.post("/api/admin/unlink-email")
+async def api_unlink_email(request: Request, user: dict = Depends(_helpers.require_user)):
+    """Unlink an email (and its thread) from a customer, supplier, or RFQ."""
+    from includes.dashboard.models import EmailTracking
+
+    body = await request.json()
+    email_id = body.get("email_id")
+    link_type = body.get("link_type")  # 'rfq', 'customer', 'supplier'
+
+    if not email_id or not link_type:
+        return JSONResponse({"status": "error", "message": "Missing email_id or link_type"}, status_code=400)
+    if link_type not in ("rfq", "customer", "supplier"):
+        return JSONResponse({"status": "error", "message": "link_type must be 'rfq', 'customer', or 'supplier'"}, status_code=400)
+
+    session = _helpers.get_session()
+    try:
+        tracking = session.query(EmailTracking).filter(EmailTracking.id == email_id).first()
+        if not tracking:
+            return JSONResponse({"status": "error", "message": "Email not found"}, status_code=404)
+
+        tid = tracking.gmail_thread_id or ""
+
+        if link_type == "customer":
+            session.execute(
+                text("UPDATE email_tracking SET customer_id = NULL WHERE gmail_thread_id = :tid OR id = :eid"),
+                {"tid": tid, "eid": email_id},
+            )
+            session.commit()
+            return JSONResponse({"status": "ok", "message": "Unlinked from customer"})
+
+        elif link_type == "supplier":
+            session.execute(
+                text("UPDATE email_tracking SET supplier_id = NULL WHERE gmail_thread_id = :tid OR id = :eid"),
+                {"tid": tid, "eid": email_id},
+            )
+            session.commit()
+            return JSONResponse({"status": "ok", "message": "Unlinked from supplier"})
+
+        elif link_type == "rfq":
+            session.execute(
+                text("UPDATE email_tracking SET rfq_token = NULL, rfq_id = NULL WHERE gmail_thread_id = :tid OR id = :eid"),
+                {"tid": tid, "eid": email_id},
+            )
+            session.commit()
+            return JSONResponse({"status": "ok", "message": "Unlinked from RFQ"})
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error unlinking email {email_id}: {e}")
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
     finally:
         session.close()
 

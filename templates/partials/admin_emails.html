@@ -81,6 +81,9 @@ window._emailData = {
             createRfqError: false,
             isInternal: false,
             internalStep: 'idle',  // 'idle' | 'selecting' | 'linking'
+            unlinkingEntity: null,
+            unlinkMsg: '',
+            unlinkError: false,
 
             openEmail(id) {
                 const data = window._emailData[id];
@@ -172,9 +175,19 @@ window._emailData = {
                     const data = await resp.json();
                     if (data.status === 'ok') {
                         this.linkMsg = data.message || 'Linked successfully';
-                        if (linkType === 'rfq') this.needsRfq = false;
-                        else if (linkType === 'customer') this.needsCustomer = false;
-                        else if (linkType === 'supplier') this.needsSupplier = false;
+                        if (linkType === 'rfq') {
+                            this.needsRfq = false;
+                            this.email.hasRfq = true;
+                            this.email.rfqToken = this.linkRfq;
+                        } else if (linkType === 'customer') {
+                            this.needsCustomer = false;
+                            this.email.hasCustomer = true;
+                            this.email.customerName = data.entity_name || this.linkCustomerSearch;
+                        } else if (linkType === 'supplier') {
+                            this.needsSupplier = false;
+                            this.email.hasSupplier = true;
+                            this.email.supplierName = data.entity_name || this.linkSupplierSearch;
+                        }
                     } else {
                         this.linkMsg = data.message || 'Link failed';
                         this.linkError = true;
@@ -220,6 +233,47 @@ window._emailData = {
                 this.internalStep = 'selecting';
                 this.createRfqMsg = '';
                 this.createRfqError = false;
+            },
+
+            async unlinkEntity(linkType) {
+                this.unlinkingEntity = linkType;
+                this.unlinkMsg = '';
+                this.unlinkError = false;
+                try {
+                    const resp = await fetch('/api/admin/unlink-email', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ email_id: this.email.id, link_type: linkType })
+                    });
+                    const data = await resp.json();
+                    if (data.status === 'ok') {
+                        this.unlinkMsg = data.message;
+                        if (linkType === 'rfq') {
+                            this.email.hasRfq = false;
+                            this.email.rfqToken = '';
+                            this.needsRfq = true;
+                            this.canCreateRfq = false;
+                        } else if (linkType === 'customer') {
+                            this.email.hasCustomer = false;
+                            this.email.customerName = '';
+                            this.needsCustomer = true;
+                            if (!this.email.hasSupplier) this.needsSupplier = true;
+                        } else if (linkType === 'supplier') {
+                            this.email.hasSupplier = false;
+                            this.email.supplierName = '';
+                            this.needsSupplier = true;
+                            if (!this.email.hasCustomer) this.needsCustomer = true;
+                        }
+                    } else {
+                        this.unlinkMsg = data.message || 'Unlink failed';
+                        this.unlinkError = true;
+                    }
+                } catch (e) {
+                    this.unlinkMsg = 'Request failed';
+                    this.unlinkError = true;
+                } finally {
+                    this.unlinkingEntity = null;
+                }
             },
 
             async linkAndCreateRfq() {
@@ -360,6 +414,42 @@ window._emailData = {
                 <p x-show="createRfqMsg" class="mt-2 text-xs"
                    :class="createRfqError ? 'text-red-600' : 'text-green-600'"
                    x-text="createRfqMsg"></p>
+            </div>
+
+            <!-- Footer: Manage Links (when entities are already linked) -->
+            <div x-show="(email.hasRfq || email.hasCustomer || email.hasSupplier)" x-cloak
+                 class="shrink-0 border-t border-gray-200 dark:border-gray-700 px-5 py-3 bg-gray-50 dark:bg-gray-800/50 rounded-b-lg">
+                <p class="text-[10px] font-medium text-gray-500 dark:text-gray-400 mb-2 uppercase tracking-wide">Manage Links</p>
+                <div class="flex flex-wrap gap-3 items-center">
+                    <!-- RFQ linked -->
+                    <div x-show="email.hasRfq" class="flex items-center gap-1.5">
+                        <span class="text-xs px-2 py-1 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded font-medium" x-text="'RFQ: ' + email.rfqToken"></span>
+                        <button @click="unlinkEntity('rfq')" :disabled="unlinkingEntity === 'rfq'"
+                                class="text-[10px] px-1.5 py-0.5 text-red-600 hover:text-red-800 hover:bg-red-50 dark:hover:bg-red-900/20 rounded disabled:opacity-50 font-medium">
+                            <span x-show="unlinkingEntity !== 'rfq'">✕ Unlink</span>
+                            <span x-show="unlinkingEntity === 'rfq'" class="inline-block animate-spin">⟳</span>
+                        </button>
+                    </div>
+                    <!-- Customer linked -->
+                    <div x-show="email.hasCustomer" class="flex items-center gap-1.5">
+                        <span class="text-xs px-2 py-1 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded font-medium" x-text="'Customer: ' + email.customerName"></span>
+                        <button @click="unlinkEntity('customer')" :disabled="unlinkingEntity === 'customer'"
+                                class="text-[10px] px-1.5 py-0.5 text-red-600 hover:text-red-800 hover:bg-red-50 dark:hover:bg-red-900/20 rounded disabled:opacity-50 font-medium">
+                            <span x-show="unlinkingEntity !== 'customer'">✕ Unlink</span>
+                            <span x-show="unlinkingEntity === 'customer'" class="inline-block animate-spin">⟳</span>
+                        </button>
+                    </div>
+                    <!-- Supplier linked -->
+                    <div x-show="email.hasSupplier" class="flex items-center gap-1.5">
+                        <span class="text-xs px-2 py-1 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded font-medium" x-text="'Supplier: ' + email.supplierName"></span>
+                        <button @click="unlinkEntity('supplier')" :disabled="unlinkingEntity === 'supplier'"
+                                class="text-[10px] px-1.5 py-0.5 text-red-600 hover:text-red-800 hover:bg-red-50 dark:hover:bg-red-900/20 rounded disabled:opacity-50 font-medium">
+                            <span x-show="unlinkingEntity !== 'supplier'">✕ Unlink</span>
+                            <span x-show="unlinkingEntity === 'supplier'" class="inline-block animate-spin">⟳</span>
+                        </button>
+                    </div>
+                </div>
+                <p x-show="unlinkMsg" class="mt-2 text-xs" :class="unlinkError ? 'text-red-600' : 'text-green-600'" x-text="unlinkMsg"></p>
             </div>
 
             <!-- Footer: Linking controls -->
