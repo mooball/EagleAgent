@@ -12,10 +12,12 @@ def _render_rfq_summary(rfq: dict) -> str:
     customer = rfq.get("customer", "Unknown")
     created = rfq.get("created_date", "")
     rfq_id = rfq.get("id", "???")
-    notes = rfq.get("title", "")
+    title = rfq.get("title", "")
+    rfq_notes = rfq.get("notes", "")
     ref = rfq.get("reference", "")
     netsuite = rfq.get("netsuite_opportunity", "")
     hubspot = rfq.get("hubspot_deal", "")
+    pipeline_stage = rfq.get("pipeline_stage", "")
 
     items = rfq.get("items", [])
     total = len(items)
@@ -53,8 +55,13 @@ def _render_rfq_summary(rfq: dict) -> str:
         if parts:
             lines.append(f"**Contact:** {' · '.join(parts)}")
 
-    if notes:
-        lines.append(f"**Title:** {notes}")
+    if title:
+        lines.append(f"**Title:** {title}")
+    if rfq_notes:
+        lines.append(f"**Notes:** {rfq_notes}")
+    if pipeline_stage:
+        stage_label = pipeline_stage.replace("_", " ").title()
+        lines.append(f"**Pipeline:** {stage_label}")
 
     lines.append("")
 
@@ -65,8 +72,8 @@ def _render_rfq_summary(rfq: dict) -> str:
             "discrepancy": "🟠 Discrepancy",
             "unmatched": "⬜ Unmatched",
         }
-        lines.append("| # | Description | Part Number | Brand | Qty | Match | Suppliers |")
-        lines.append("|---|------------|-------------|-------|-----|--------|-----------|")
+        lines.append("| # | Description | Part Number | Brand | Qty | Cost (AUD) | Sale | Match | Notes | Suppliers |")
+        lines.append("|---|------------|-------------|-------|-----|------------|------|--------|-------|-----------|")
         for item in items:
             line_num = item.get("line", "")
             desc = item.get("input_description", "")
@@ -76,9 +83,14 @@ def _render_rfq_summary(rfq: dict) -> str:
             uom = item.get("uom", "")
             qty_str = f"{qty} {uom}".strip() if qty else "—"
             status = status_icons.get(item.get("match", ""), item.get("match", ""))
-            item_notes = item.get("notes", "")
-            if item_notes:
-                status += f" ({item_notes})"
+            item_notes = item.get("notes", "") or "—"
+
+            # Item-level cost/sale prices
+            item_cost = item.get("cost_price")
+            item_sale = item.get("sale_price")
+            cost_str = f"${float(item_cost):,.2f}" if item_cost else "—"
+            sale_str = f"${float(item_sale):,.2f}" if item_sale else "—"
+
             suppliers = item.get("suppliers", [])
             if suppliers:
                 sup_parts = []
@@ -139,7 +151,7 @@ def _render_rfq_summary(rfq: dict) -> str:
             else:
                 sup_str = "—"
             lines.append(
-                f"| {line_num} | {desc} | {pn} | {brand} | {qty_str} | {status} | {sup_str} |"
+                f"| {line_num} | {desc} | {pn} | {brand} | {qty_str} | {cost_str} | {sale_str} | {status} | {item_notes} | {sup_str} |"
             )
 
         lines.append("")
@@ -170,6 +182,30 @@ def _render_rfq_summary(rfq: dict) -> str:
                     lines.append(f"- **{g.get('id', '?')}: {g.get('label', '?')}** — lines {line_list}")
                 if ungrouped:
                     lines.append(f"- *Ungrouped:* lines {', '.join(str(l) for l in ungrouped)}")
+
+        # Render supplier metadata (shipping, notes, terms per supplier)
+        supplier_meta = rfq.get("supplier_meta") or {}
+        if supplier_meta:
+            lines.append("")
+            lines.append("**Supplier Notes & Terms:**")
+            for sup_name, meta in supplier_meta.items():
+                if not isinstance(meta, dict):
+                    continue
+                bits = []
+                shipping = meta.get("shipping_cost")
+                shipping_curr = meta.get("shipping_currency", "")
+                if shipping is not None:
+                    try:
+                        curr_tag = f" {shipping_curr}" if shipping_curr and shipping_curr != "AUD" else ""
+                        bits.append(f"shipping ${float(shipping):,.2f}{curr_tag}")
+                    except (ValueError, TypeError):
+                        pass
+                if meta.get("notes"):
+                    bits.append(meta["notes"])
+                if meta.get("terms"):
+                    bits.append(f"terms: {meta['terms']}")
+                if bits:
+                    lines.append(f"- **{sup_name}:** {' · '.join(bits)}")
     else:
         lines.append("*No items yet.*")
 
