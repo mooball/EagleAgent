@@ -39,6 +39,7 @@ window._emailData = {
         direction: {{ (e.direction or '') | tojson }},
         from: {{ (e.sender_email or e.user_email or '') | tojson }},
         to: {{ (e.recipient_email or '') | tojson }},
+        userEmail: {{ (e.user_email or '') | tojson }},
         date: {{ e.display_time | tojson }},
         hasRfq: {{ 'true' if (e.rfq_token or e.rfq_id) else 'false' }},
         hasCustomer: {{ 'true' if e.customer_name else 'false' }},
@@ -84,11 +85,22 @@ window._emailData = {
             unlinkingEntity: null,
             unlinkMsg: '',
             unlinkError: false,
+            suggestCandidates: [],
+            suggestingMatches: false,
+            suggestMsg: '',
 
             openEmail(id) {
                 const data = window._emailData[id];
                 if (!data) return;
                 this.email = data;
+                // External party: sender for received, recipient for sent/draft
+                if (data.direction === 'sent') {
+                    this.email.externalEmail = data.to;
+                    this.email.externalLabel = 'recipient';
+                } else {
+                    this.email.externalEmail = data.from;
+                    this.email.externalLabel = 'sender';
+                }
                 this.loading = false;
                 this.error = null;
                 this.bodyHtml = '';
@@ -115,12 +127,20 @@ window._emailData = {
                 this.creatingRfq = false;
                 this.createRfqMsg = '';
                 this.createRfqError = false;
+                this.suggestCandidates = [];
+                this.suggestMsg = '';
+                this.suggestingMatches = false;
                 this.show = true;
 
                 if (data.messageId) {
                     this.fetchBody(data.messageId);
                 } else {
                     this.error = 'No Gmail message ID \u2014 content unavailable';
+                }
+
+                // Auto-suggest matches if email needs linking AND has external party
+                if ((this.needsCustomer || this.needsSupplier) && this.email.externalEmail && !this.isInternal) {
+                    this.suggestMatches();
                 }
             },
 
@@ -273,6 +293,50 @@ window._emailData = {
                     this.unlinkError = true;
                 } finally {
                     this.unlinkingEntity = null;
+                }
+            },
+
+            async suggestMatches() {
+                // Never suggest for fully internal emails
+                if (this.isInternal) return;
+                this.suggestingMatches = true;
+                this.suggestCandidates = [];
+                this.suggestMsg = '';
+                const matchEmail = this.email.externalEmail || this.email.from;
+                if (!matchEmail) {
+                    this.suggestMsg = 'No external email to match';
+                    this.suggestingMatches = false;
+                    return;
+                }
+                try {
+                    const resp = await fetch(`/api/admin/match-email?email=${encodeURIComponent(matchEmail)}`);
+                    const data = await resp.json();
+                    if (data.candidates && data.candidates.length > 0) {
+                        this.suggestCandidates = data.candidates;
+                        if (data.is_unique) {
+                            this.suggestMsg = '1 match found — click to link';
+                        } else {
+                            this.suggestMsg = data.candidates.length + ' matches found — select one';
+                        }
+                    } else {
+                        this.suggestMsg = 'No matches found';
+                    }
+                } catch (e) {
+                    this.suggestMsg = 'Match lookup failed';
+                } finally {
+                    this.suggestingMatches = false;
+                }
+            },
+
+            quickLink(candidate) {
+                if (candidate.type === 'customer') {
+                    this.selectedCustomerId = candidate.id;
+                    this.linkCustomerSearch = candidate.name;
+                    this.doLink('customer');
+                } else {
+                    this.selectedSupplierId = candidate.id;
+                    this.linkSupplierSearch = candidate.name;
+                    this.doLink('supplier');
                 }
             },
 
@@ -456,6 +520,26 @@ window._emailData = {
             <div x-show="needsRfq || needsCustomer || needsSupplier" x-cloak
                  class="shrink-0 border-t border-gray-200 dark:border-gray-700 px-5 py-3 bg-gray-50 dark:bg-gray-800/50 rounded-b-lg">
                 <p class="text-[10px] font-medium text-gray-500 dark:text-gray-400 mb-2 uppercase tracking-wide">Link this email</p>
+
+                <!-- Auto-suggested matches (runs automatically when preview opens) -->
+                <div x-show="suggestCandidates.length > 0" class="mb-2">
+                    <p class="text-[10px] text-gray-500 dark:text-gray-400 mb-1">
+                        🔍 <span x-text="suggestCandidates.length"></span> match<span x-show="suggestCandidates.length > 1">es</span> found for <span class="font-medium" x-text="email.externalLabel"></span>
+                    </p>
+                    <div class="flex flex-wrap gap-1.5">
+                        <template x-for="c in suggestCandidates" :key="c.type + ':' + c.id">
+                            <button @click="quickLink(c)"
+                                    class="text-[10px] px-2 py-1 rounded border cursor-pointer hover:opacity-80"
+                                    :class="c.type === 'customer'
+                                        ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 border-green-200 dark:border-green-800'
+                                        : 'bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800'">
+                                <span x-text="c.name + (c.type === 'customer' ? ' (Customer)' : ' (Supplier)') + ' · ' + c.match_type"></span>
+                            </button>
+                        </template>
+                    </div>
+                </div>
+                <!-- Suggest status message (no matches, errors, etc.) -->
+                <p x-show="suggestMsg && suggestCandidates.length === 0" class="mb-2 text-[10px] text-gray-500" x-text="suggestMsg"></p>
                 <div class="flex flex-wrap gap-3 items-end">
                     <!-- RFQ link -->
                     <div x-show="needsRfq" class="flex flex-col gap-1">
