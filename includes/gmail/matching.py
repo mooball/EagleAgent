@@ -137,10 +137,30 @@ def build_domain_index(session: Session) -> dict[str, list[dict]]:
 
 # Common email providers — skip domain matching for these
 _GENERIC_DOMAINS = frozenset({
+    # Global freemail
     'gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.com.au',
     'hotmail.com', 'outlook.com', 'live.com', 'msn.com',
     'icloud.com', 'me.com', 'mac.com', 'aol.com',
     'protonmail.com', 'proton.me', 'mail.com', 'zoho.com',
+    # Yahoo country variants
+    'yahoo.co.id', 'yahoo.co.in', 'yahoo.co.uk',
+    # Yahoo-owned freemail aliases
+    'ymail.com', 'y7mail.com', 'rocketmail.com',
+    # Microsoft country variants
+    'hotmail.com.au', 'live.com.au', 'live.fr', 'outlook.com.au',
+    # Chinese freemail
+    '163.com', 'qq.com',
+    # Korean portal
+    'naver.com',
+    # Australian consumer ISPs
+    'bigpond.com', 'bigpond.com.au', 'bigpond.net.au',
+    'optusnet.com.au', 'tpg.com.au', 'iinet.net.au',
+    'internode.on.net', 'westnet.com.au', 'dodo.com.au',
+    'iprimus.com.au', 'ozemail.com.au', 'exemail.com.au',
+    'onthenet.com.au', 'activ8.net.au', 'skymesh.com.au',
+    'pacific.net.au',
+    # International ISPs
+    'orange.fr', 'wanadoo.fr', 'btinternet.com', 'connect.com.fj',
 })
 
 # Internal company domains — never save these as entity domains
