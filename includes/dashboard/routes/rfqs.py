@@ -1722,6 +1722,12 @@ async def quotation_select_supplier(
                     line_item.cost_price = Decimal(str(quote_cost))
                 except (InvalidOperation, ValueError):
                     pass
+            # Copy supplier's part number if RFQ item doesn't have a real one yet
+            from includes.tools.rfq_crud import _is_empty_part_number
+            if _is_empty_part_number(line_item.part_number):
+                supplier_pn = target_supplier.get("quote_part_number")
+                if supplier_pn:
+                    line_item.part_number = str(supplier_pn)
 
         line_item.suppliers = suppliers
         flag_modified(line_item, "suppliers")

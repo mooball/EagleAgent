@@ -27,6 +27,17 @@ def _get_line(data: dict):
     return None
 
 
+# Part number values that should be treated as empty
+_EMPTY_PART_NUMBERS = frozenset({"tbd", "-", "\u2013", "\u2014", "n/a", "na", "none", "?", ""})
+
+
+def _is_empty_part_number(pn) -> bool:
+    """Return True if the part number is effectively empty (null, blank, or placeholder)."""
+    if not pn:
+        return True
+    return str(pn).strip().lower() in _EMPTY_PART_NUMBERS
+
+
 def _now_iso() -> str:
     """Return current AEST (UTC+10) timestamp in ISO format."""
     return datetime.datetime.now(
@@ -1257,8 +1268,8 @@ def _select_quote_core(session, rfq, line_item, data):
                 line_item.cost_price = Decimal(str(qc))
             except (InvalidOperation, ValueError):
                 pass
-        # Copy supplier's part number if RFQ item doesn't have one yet
-        if not line_item.part_number:
+        # Copy supplier's part number if RFQ item doesn't have a real one yet
+        if _is_empty_part_number(line_item.part_number):
             supplier_pn = target.get("quote_part_number")
             if supplier_pn:
                 line_item.part_number = str(supplier_pn)
