@@ -133,7 +133,7 @@ def create_and_link_opportunity(rfq_id: str) -> CreateResult:
                 record_type="opportunity",
             )
 
-        title = rfq.title or f"RFQ {rfq.rfq_number}"
+        title = rfq.title or rfq.rfq_number
 
         # Create in NetSuite
         result = create_opportunity(
