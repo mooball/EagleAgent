@@ -11,7 +11,7 @@ import re
 from typing import Optional
 from urllib.parse import urlparse
 
-from sqlalchemy import case, or_, func
+from sqlalchemy import or_, func
 from sqlalchemy.orm import Session
 
 from includes.dashboard.models import (
@@ -137,10 +137,30 @@ def build_domain_index(session: Session) -> dict[str, list[dict]]:
 
 # Common email providers — skip domain matching for these
 _GENERIC_DOMAINS = frozenset({
+    # Global freemail
     'gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.com.au',
     'hotmail.com', 'outlook.com', 'live.com', 'msn.com',
     'icloud.com', 'me.com', 'mac.com', 'aol.com',
     'protonmail.com', 'proton.me', 'mail.com', 'zoho.com',
+    # Yahoo country variants
+    'yahoo.co.id', 'yahoo.co.in', 'yahoo.co.uk',
+    # Yahoo-owned freemail aliases
+    'ymail.com', 'y7mail.com', 'rocketmail.com',
+    # Microsoft country variants
+    'hotmail.com.au', 'live.com.au', 'live.fr', 'outlook.com.au',
+    # Chinese freemail
+    '163.com', 'qq.com',
+    # Korean portal
+    'naver.com',
+    # Australian consumer ISPs
+    'bigpond.com', 'bigpond.com.au', 'bigpond.net.au',
+    'optusnet.com.au', 'tpg.com.au', 'iinet.net.au',
+    'internode.on.net', 'westnet.com.au', 'dodo.com.au',
+    'iprimus.com.au', 'ozemail.com.au', 'exemail.com.au',
+    'onthenet.com.au', 'activ8.net.au', 'skymesh.com.au',
+    'pacific.net.au',
+    # International ISPs
+    'orange.fr', 'wanadoo.fr', 'btinternet.com', 'connect.com.fj',
 })
 
 # Internal company domains — never save these as entity domains
@@ -150,107 +170,169 @@ _INTERNAL_DOMAINS = frozenset({
 })
 
 
-def find_sender_match(
+def find_all_matches(
     session: Session,
     sender_email: str,
     domain_index: dict[str, list[dict]] | None = None,
-) -> dict | None:
-    """Look up a sender email against known contacts, customers, and domains.
+) -> dict:
+    """Find ALL candidate entities matching a sender email.
 
-    Uses the same exact-match → domain-fallback strategy as the automated
-    Gmail sync pipeline.  Returns a single definitive match or None.
+    Steps:
+      0. Skip generic/ISP domains entirely
+      1. Exact email match against contacts + customers
+      2. Domain fallback against domain_index
 
     Returns:
         {
-            "type": "customer" | "supplier",
-            "id": UUID,
-            "name": str,
-            "match_type": "exact" | "domain",
+            "match_type": "exact" | "domain" | None,
+            "candidates": [
+                {"type": "supplier"|"customer", "id": UUID, "name": str, "match_type": "exact"|"domain"},
+                ...
+            ],
+            "is_unique": bool,   # True if all candidates are the same (type, id)
+            "unique_entity": {"type": ..., "id": ..., "name": ..., "match_type": ...} | None,
         }
-        or None if no match.
     """
+    empty = {"match_type": None, "candidates": [], "is_unique": False, "unique_entity": None}
+
     if not sender_email:
-        return None
+        return empty
 
-    # Parse Gmail format: "Name" <email@domain.com> → email@domain.com
     email_lower = _extract_email_addr(sender_email).lower()
+    if not email_lower or "@" not in email_lower:
+        return empty
 
-    # Step 1: Exact match on contact email or customer email
-    # Order by: linked contacts first (supplier_id → customer_id → unlinked)
-    # This ensures non-deterministic row order won't miss a valid match
-    contact = (
+    # ── Step 0: Skip generic/ISP/internal domains ──────────────────────────
+    domain = email_lower.rsplit("@", 1)[1].lower()
+    if domain in _GENERIC_DOMAINS or domain in _INTERNAL_DOMAINS:
+        logger.debug("Skipping domain: %s", domain)
+        return empty
+
+    candidates: list[dict] = []
+
+    def _add(etype: str, eid, ename: str, match_type: str):
+        """Add a candidate, deduplicating by (type, id)."""
+        eid_str = str(eid)
+        for c in candidates:
+            if c["type"] == etype and c["id"] == eid_str:
+                return
+        candidates.append({
+            "type": etype,
+            "id": eid_str,
+            "name": ename or etype.capitalize(),
+            "match_type": match_type,
+        })
+
+    # ── Step 1: Exact email match — find ALL matches ─────────────────────
+    # Contacts with this email
+    contacts = (
         session.query(Contact)
         .filter(
             func.lower(Contact.email) == email_lower,
             Contact.isinactive == False,
         )
-        .order_by(
-            case(
-                (Contact.supplier_id.isnot(None), 0),
-                (Contact.customer_id.isnot(None), 1),
-                else_=2,
-            )
-        )
-        .first()
+        .all()
     )
-    if contact and (contact.supplier_id or contact.customer_id):
-        if contact.supplier_id:
-            supplier = session.query(Supplier).get(contact.supplier_id)
-            return {
-                "type": "supplier",
-                "id": contact.supplier_id,
-                "name": supplier.name if supplier else "Supplier",
-                "match_type": "exact",
-            }
-        else:
-            customer = session.query(Customer).get(contact.customer_id)
-            return {
-                "type": "customer",
-                "id": contact.customer_id,
-                "name": customer.companyname if customer else "Customer",
-                "match_type": "exact",
-            }
+    for c in contacts:
+        if c.supplier_id:
+            supplier = session.get(Supplier, c.supplier_id)
+            if supplier:
+                _add("supplier", c.supplier_id, supplier.name, "exact")
+        elif c.customer_id:
+            customer = session.get(Customer, c.customer_id)
+            if customer:
+                _add("customer", c.customer_id, customer.companyname, "exact")
 
-    customer = (
+    # Customers with this email
+    cust_matches = (
         session.query(Customer)
         .filter(
             func.lower(Customer.email) == email_lower,
             Customer.isinactive == False,
         )
-        .first()
+        .all()
     )
-    if customer:
+    for cust in cust_matches:
+        _add("customer", cust.id, cust.companyname, "exact")
+
+    if candidates:
+        # Check uniqueness: all candidates same type+id?
+        unique_ids = set((c["type"], str(c["id"])) for c in candidates)
+        is_unique = len(unique_ids) == 1
         return {
-            "type": "customer",
-            "id": customer.id,
-            "name": customer.companyname,
             "match_type": "exact",
+            "candidates": candidates,
+            "is_unique": is_unique,
+            "unique_entity": candidates[0] if is_unique else None,
         }
 
-    # Step 2: Domain fallback
-    domain = extract_domain(sender_email)
-    if domain and domain not in _GENERIC_DOMAINS:
-        if domain_index is None:
-            domain_index = build_domain_index(session)
-        entries = domain_index.get(domain.lower())
-        if entries:
-            entry = entries[0]  # first match only — no ambiguity
-            # Resolve name if not already in the index
-            name = entry.get("name")
-            if not name and entry["type"] == "supplier":
-                supplier = session.query(Supplier).get(entry["id"])
-                name = supplier.name if supplier else "Supplier"
-            elif not name and entry["type"] == "customer":
-                customer = session.query(Customer).get(entry["id"])
-                name = customer.companyname if customer else "Customer"
-            return {
-                "type": entry["type"],
-                "id": entry["id"],
-                "name": name or entry["type"].capitalize(),
-                "match_type": "domain",
-            }
+    # ── Step 2: Domain fallback ──────────────────────────────────────────
+    if domain_index is None:
+        domain_index = build_domain_index(session)
 
+    entries = domain_index.get(domain.lower(), [])
+    if not entries:
+        return empty
+
+    # Collect all unique entities from domain entries
+    for entry in entries:
+        ename = entry.get("name")
+        if not ename:
+            if entry["type"] == "supplier":
+                supplier = session.get(Supplier, entry["id"])
+                ename = supplier.name if supplier else "Supplier"
+            else:
+                customer = session.get(Customer, entry["id"])
+                ename = customer.companyname if customer else "Customer"
+        _add(entry["type"], entry["id"], ename, "domain")
+
+    if not candidates:
+        return empty
+
+    unique_ids = set((c["type"], str(c["id"])) for c in candidates)
+    is_unique = len(unique_ids) == 1
+    return {
+        "match_type": "domain",
+        "candidates": candidates,
+        "is_unique": is_unique,
+        "unique_entity": candidates[0] if is_unique else None,
+    }
+
+
+def find_unique_match(
+    session: Session,
+    sender_email: str,
+    domain_index: dict[str, list[dict]] | None = None,
+) -> dict | None:
+    """Find a single definitive match for a sender email.
+
+    Only returns a match if the sender is UNIQUELY linked to exactly one entity.
+    Ambiguous matches (2+ distinct entities) return None — caller should use
+    find_all_matches() to present a picker.
+
+    Returns:
+        {"type": "supplier"|"customer", "id": UUID, "name": str, "match_type": "exact"|"domain"}
+        or None if no unique match.
+    """
+    result = find_all_matches(session, sender_email, domain_index)
+    if result["is_unique"] and result["unique_entity"]:
+        return result["unique_entity"]
     return None
+
+
+# ── Backward-compatible wrapper ──────────────────────────────────────────────
+# find_sender_match() is kept for existing callers that expect a single result.
+# It now delegates to find_unique_match() for safe matching.
+def find_sender_match(
+    session: Session,
+    sender_email: str,
+    domain_index: dict[str, list[dict]] | None = None,
+) -> dict | None:
+    """Look up a sender email — returns a match only if unambiguous.
+
+    Delegates to find_unique_match().  Ambiguous matches return None.
+    """
+    return find_unique_match(session, sender_email, domain_index)
 
 
 def save_sender_domain(
@@ -341,6 +423,10 @@ def match_by_contact(
 ) -> dict:
     """Tier 3: Match sender/recipients to known contacts or domains.
 
+    Only returns a match if the email/domain is UNIQUELY linked to one entity.
+    Ambiguous matches (2+ distinct entities) are skipped — they need manual
+    resolution via the addon or admin dashboard.
+
     Returns:
         dict with keys:
             - match_type: 'exact' | 'domain' | None
@@ -350,53 +436,13 @@ def match_by_contact(
     if not email_addresses:
         return {"match_type": None, "supplier_id": None, "customer_id": None}
 
-    # Step A: Exact email match
     for email in email_addresses:
-        email_lower = email.lower().strip()
-
-        # Check contacts table — order by linked contacts first
-        contact = session.query(Contact).filter(
-            func.lower(Contact.email) == email_lower,
-            Contact.isinactive == False,
-        ).order_by(
-            case(
-                (Contact.supplier_id.isnot(None), 0),
-                (Contact.customer_id.isnot(None), 1),
-                else_=2,
-            )
-        ).first()
-        if contact and (contact.supplier_id or contact.customer_id):
+        match = find_unique_match(session, email, domain_index)
+        if match:
             return {
-                "match_type": "exact",
-                "supplier_id": contact.supplier_id,
-                "customer_id": contact.customer_id,
-            }
-
-        # Check customer email
-        customer = session.query(Customer).filter(
-            func.lower(Customer.email) == email_lower,
-            Customer.isinactive == False,
-        ).first()
-        if customer:
-            return {
-                "match_type": "exact",
-                "supplier_id": None,
-                "customer_id": customer.id,
-            }
-
-    # Step B: Domain fallback
-    for email in email_addresses:
-        domain = extract_domain(email)
-        if not domain or domain in _GENERIC_DOMAINS:
-            continue
-        entries = domain_index.get(domain)
-        if entries:
-            # Take first match (could be multiple — pick first)
-            entry = entries[0]
-            return {
-                "match_type": "domain",
-                "supplier_id": entry["id"] if entry["type"] == "supplier" else None,
-                "customer_id": entry["id"] if entry["type"] == "customer" else None,
+                "match_type": match["match_type"],
+                "supplier_id": match["id"] if match["type"] == "supplier" else None,
+                "customer_id": match["id"] if match["type"] == "customer" else None,
             }
 
     return {"match_type": None, "supplier_id": None, "customer_id": None}

@@ -131,7 +131,9 @@ class UnlinkEmailRequest(BaseModel):
 
 class MatchResponse(BaseModel):
     matched: bool
-    entity: dict | None = None  # {type, id, name, match_type} or None
+    entity: dict | None = None  # {type, id, name, match_type} — unique match
+    candidates: list[dict] | None = None  # [{type, id, name, match_type}] — multiple
+    is_unique: bool = False  # True if exactly one entity matched
 
 
 class CreateRfqRequest(BaseModel):
@@ -149,20 +151,32 @@ class CreateRfqRequest(BaseModel):
 def match_sender(body: MatchRequest, user: AddonUser):
     """Look up a sender email against known contacts, customers, and domains.
 
-    Uses the same exact-match → domain-fallback logic as the automated
-    Gmail sync pipeline.
+    Returns:
+      - If exactly one entity matches: matched=true, entity={...}, is_unique=true
+      - If multiple entities match: matched=true, candidates=[...], is_unique=false
+      - If no match: matched=false
     """
     if not body.sender:
         return MatchResponse(matched=False)
 
     from includes.dashboard.database import get_session
-    from includes.gmail.matching import find_sender_match
+    from includes.gmail.matching import find_all_matches
 
     session = get_session()
     try:
-        result = find_sender_match(session, body.sender)
-        if result:
-            return MatchResponse(matched=True, entity=result)
+        result = find_all_matches(session, body.sender)
+        if result["is_unique"] and result["unique_entity"]:
+            return MatchResponse(
+                matched=True,
+                entity=result["unique_entity"],
+                is_unique=True,
+            )
+        elif result["candidates"]:
+            return MatchResponse(
+                matched=True,
+                candidates=result["candidates"],
+                is_unique=False,
+            )
         return MatchResponse(matched=False)
     finally:
         session.close()

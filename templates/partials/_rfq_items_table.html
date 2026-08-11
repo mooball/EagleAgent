@@ -409,14 +409,14 @@
             <tr x-show="addingItem" x-cloak class="bg-green-50 dark:bg-green-950">
                 <td class="px-3 py-2.5 text-center font-mono text-xs text-gray-400">+</td>
                 <td class="px-3 py-2.5">
+                    <input type="text" name="part_number" placeholder="Part #" form="add-item-form"
+                           class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 font-mono">
+                </td>
+                <td class="px-3 py-2.5">
                     <form id="add-item-form" hx-post="/partial/rfqs/{{ rfq.id }}/add-item" hx-target="#main-content">
                         <input type="text" name="input_description" placeholder="Item description"
                                class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
                     </form>
-                </td>
-                <td class="px-3 py-2.5">
-                    <input type="text" name="part_number" placeholder="Part #" form="add-item-form"
-                           class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 font-mono">
                 </td>
                 <td class="px-3 py-2.5">
                     <input type="text" name="brand" placeholder="Brand" form="add-item-form"

@@ -27,6 +27,17 @@ def _get_line(data: dict):
     return None
 
 
+# Part number values that should be treated as empty
+_EMPTY_PART_NUMBERS = frozenset({"tbd", "-", "\u2013", "\u2014", "n/a", "na", "none", "?", ""})
+
+
+def _is_empty_part_number(pn) -> bool:
+    """Return True if the part number is effectively empty (null, blank, or placeholder)."""
+    if not pn:
+        return True
+    return str(pn).strip().lower() in _EMPTY_PART_NUMBERS
+
+
 def _now_iso() -> str:
     """Return current AEST (UTC+10) timestamp in ISO format."""
     return datetime.datetime.now(
@@ -1015,7 +1026,8 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
                         "cost_currency",
                         "price_date", "price_doc", "price_doc_type",
                         "transaction_count",
-                        "quote_status", "quote_cost", "quote_currency", "quote_leadtime"]:
+                        "quote_status", "quote_cost", "quote_currency", "quote_leadtime",
+                        "quote_part_number"]:
                 val = sup.get(key)
                 if val is not None and val != "" and val != []:
                     existing[key] = val
@@ -1046,6 +1058,7 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
                 "quote_cost": sup.get("quote_cost"),
                 "quote_currency": sup.get("quote_currency"),
                 "quote_leadtime": sup.get("quote_leadtime"),
+                "quote_part_number": sup.get("quote_part_number"),
             }
             current_suppliers.append(supplier_entry)
             existing_by_name[name.lower()] = supplier_entry
@@ -1255,6 +1268,11 @@ def _select_quote_core(session, rfq, line_item, data):
                 line_item.cost_price = Decimal(str(qc))
             except (InvalidOperation, ValueError):
                 pass
+        # Copy supplier's part number if RFQ item doesn't have a real one yet
+        if _is_empty_part_number(line_item.part_number):
+            supplier_pn = target.get("quote_part_number")
+            if supplier_pn:
+                line_item.part_number = str(supplier_pn)
         action = f"Selected '{name}' on line {line_item.line}"
 
     line_item.suppliers = suppliers
@@ -1438,6 +1456,7 @@ def _update_supplier_core(session, rfq, line_item, data):
         "status", "price", "price_type", "cost_currency",
         "lead_time", "notes", "contacts", "purchase_ref",
         "quote_status", "quote_cost", "quote_currency", "quote_leadtime",
+        "quote_part_number",
     ]
     changes = []
     for key in updatable:

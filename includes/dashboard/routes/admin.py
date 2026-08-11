@@ -788,6 +788,29 @@ async def admin_mailbox_toggle(request: Request, email: str, user: dict = requir
 # Email Linking API
 # ---------------------------------------------------------------------------
 
+@router.get("/api/admin/match-email")
+async def api_match_email(request: Request, email: str, user: dict = Depends(_helpers.require_user)):
+    """Suggest entity matches for an email address (exact email → domain fallback).
+
+    Returns candidates for the admin email linking UI.
+    """
+    if not email or "@" not in email:
+        return JSONResponse({"candidates": [], "is_unique": False})
+
+    from includes.gmail.matching import find_all_matches
+
+    session = _helpers.get_session()
+    try:
+        result = find_all_matches(session, email)
+        return JSONResponse({
+            "candidates": result["candidates"],
+            "is_unique": result["is_unique"],
+            "match_type": result["match_type"],
+        })
+    finally:
+        session.close()
+
+
 @router.get("/api/admin/search-entities")
 async def api_search_entities(request: Request, type: str, q: str, user: dict = Depends(_helpers.require_user)):
     """Search suppliers or customers by name for the email linking UI."""

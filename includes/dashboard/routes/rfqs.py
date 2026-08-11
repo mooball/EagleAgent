@@ -12,7 +12,7 @@ from sqlalchemy import func as sa_func
 from includes.dashboard.models import Supplier, Transaction, EmailTracking, Contact
 from includes.tools.product_tools import normalize_part_number
 from . import _helpers
-from ._helpers import router, templates, require_user, _render
+from ._helpers import router, templates, require_user, _render, _is_htmx
 from .api import _lookup_rfq_thread_id
 
 RFQ_PAGE_SIZE = 25
@@ -801,6 +801,13 @@ async def rfq_detail_tab(request: Request, rfq_id: str, tab: str,
 async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
                            q: str = "", page: int = 1, mine: str = "1", status: str = "open",
                            sort: str = "rfq_number", order: str = "desc"):
+    # Redirect non-HTMX requests (direct URL visits / refreshes) to the full page
+    if not _is_htmx(request):
+        from fastapi.responses import RedirectResponse
+        from urllib.parse import urlencode
+        params = {k: v for k, v in request.query_params.items()}
+        return RedirectResponse(url=f"/rfqs?{urlencode(params)}", status_code=302)
+
     user_email = user.get("email", "")
     rfqs, total, has_more, next_page = await _fetch_rfqs(
         q, page, mine=mine, user_email=user_email, status=status,
@@ -828,6 +835,12 @@ async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
                            q: str = "", page: int = 1, mine: str = "1", status: str = "open",
                            sort: str = "rfq_number", order: str = "desc"):
     """Return just the RFQ card rows + sentinel for infinite scroll."""
+    if not _is_htmx(request):
+        from fastapi.responses import RedirectResponse
+        from urllib.parse import urlencode
+        params = {k: v for k, v in request.query_params.items()}
+        return RedirectResponse(url=f"/rfqs?{urlencode(params)}", status_code=302)
+
     user_email = user.get("email", "")
     rfqs, total, has_more, next_page = await _fetch_rfqs(
         q, page, mine=mine, user_email=user_email, status=status,
@@ -1709,6 +1722,12 @@ async def quotation_select_supplier(
                     line_item.cost_price = Decimal(str(quote_cost))
                 except (InvalidOperation, ValueError):
                     pass
+            # Copy supplier's part number if RFQ item doesn't have a real one yet
+            from includes.tools.rfq_crud import _is_empty_part_number
+            if _is_empty_part_number(line_item.part_number):
+                supplier_pn = target_supplier.get("quote_part_number")
+                if supplier_pn:
+                    line_item.part_number = str(supplier_pn)
 
         line_item.suppliers = suppliers
         flag_modified(line_item, "suppliers")

@@ -647,19 +647,34 @@ function onLinkEntity(e) {
 
     if (response.getResponseCode() === 200) {
       var data = JSON.parse(response.getContentText());
-      if (data.matched && data.entity) {
-        // Found — show suggestion card
-        var matchCard = buildMatchSuggestionCard(
-          data.entity,
-          e.parameters.messageId,
-          e.parameters.threadId,
-          sender,
-          subject
-        );
-        var nav = CardService.newNavigation().pushCard(matchCard);
-        return CardService.newActionResponseBuilder()
-          .setNavigation(nav)
-          .build();
+      if (data.matched) {
+        if (data.is_unique && data.entity) {
+          // Single unique match — show suggestion card
+          var matchCard = buildMatchSuggestionCard(
+            data.entity,
+            e.parameters.messageId,
+            e.parameters.threadId,
+            sender,
+            subject
+          );
+          var nav = CardService.newNavigation().pushCard(matchCard);
+          return CardService.newActionResponseBuilder()
+            .setNavigation(nav)
+            .build();
+        } else if (!data.is_unique && data.candidates && data.candidates.length > 1) {
+          // Multiple candidates — show picker card
+          var pickerCard = buildCandidatePickerCard(
+            data.candidates,
+            e.parameters.messageId,
+            e.parameters.threadId,
+            sender,
+            subject
+          );
+          var nav = CardService.newNavigation().pushCard(pickerCard);
+          return CardService.newActionResponseBuilder()
+            .setNavigation(nav)
+            .build();
+        }
       }
     }
   } catch (err) {
@@ -668,6 +683,76 @@ function onLinkEntity(e) {
 
   // No match — show type chooser
   return showTypeChooser(e.parameters.messageId, e.parameters.threadId, sender, subject);
+}
+
+
+/**
+ * Build a picker card showing multiple candidate matches for the user to choose.
+ */
+function buildCandidatePickerCard(candidates, messageId, threadId, sender, subject) {
+  var card = CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle('Multiple Matches Found')
+        .setSubtitle(candidates.length + ' entities share this ' +
+          (candidates[0].match_type === 'exact' ? 'email' : 'domain'))
+    );
+
+  var section = CardService.newCardSection()
+    .addWidget(
+      CardService.newTextParagraph()
+        .setText(
+          'This sender matches <b>' + candidates.length + ' entities</b>. ' +
+          'Please select the correct one to link.'
+        )
+    );
+
+  // List each candidate with a "Link" button
+  for (var i = 0; i < candidates.length; i++) {
+    var c = candidates[i];
+    var label = c.type === 'customer' ? 'Customer' : 'Supplier';
+    var badge = c.type === 'customer' ? '🏢' : '🏭';
+    var via = c.match_type === 'exact' ? 'exact email' : 'domain';
+
+    section.addWidget(
+      CardService.newDecoratedText()
+        .setTopLabel(label + ' · ' + via)
+        .setText(badge + ' ' + c.name)
+        .setBottomLabel('Click to link this email to ' + c.name)
+        .setOnClickAction(
+          CardService.newAction()
+            .setFunctionName('onConfirmLink')
+            .setParameters({
+              messageId: messageId,
+              threadId: threadId,
+              linkType: c.type,
+              entityId: c.id,
+              entityName: c.name,
+              sender: sender,
+              subject: subject
+            })
+        )
+    );
+  }
+
+  // Also offer manual search as fallback
+  section.addWidget(
+    CardService.newTextButton()
+      .setText('None of these — search manually')
+      .setOnClickAction(
+        CardService.newAction()
+          .setFunctionName('onManualLink')
+          .setParameters({
+            messageId: messageId,
+            threadId: threadId,
+            sender: sender,
+            subject: subject
+          })
+      )
+  );
+
+  card.addSection(section);
+  return card.build();
 }
 
 /**
