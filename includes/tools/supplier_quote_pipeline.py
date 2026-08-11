@@ -492,7 +492,7 @@ Return ONLY valid JSON in this exact format:
 ```json
 {{
   "quotes": [
-    {{"item_line": 1, "confidence": "high", "price": 42.50, "currency": "AUD", "lead_time": "2 weeks"}},
+    {{"item_line": 1, "confidence": "high", "price": 42.50, "currency": "AUD", "lead_time": "2 weeks", "part_number": "SP-1234"}},
   ],
   "shipping": {{"cost": 25.00, "currency": "AUD"}},
   "declined_items": [2],
@@ -506,6 +506,7 @@ Rules:
 - `item_line` must match a line number from the RFQ items list.
 - `price` is the unit price (not total).
 - `currency` defaults to "AUD" if not specified in the email.
+- `part_number` is the supplier's own part number for the item (if they provide one). Leave as empty string "" if not provided or if they simply reference the RFQ's existing part number.
 - `shipping` is null if not mentioned.
 - `declined_items` lists line numbers the supplier explicitly cannot supply.
 - `warnings` flags anything uncertain.
@@ -574,6 +575,7 @@ def _apply_quote_data(rfq_id: str, supplier_name: str, quote_data: dict, user_id
         currency = quote.get("currency", "AUD")
         lead_time = quote.get("lead_time")
         confidence = quote.get("confidence", "medium")
+        part_number = quote.get("part_number")
 
         if line is None or price is None:
             continue
@@ -602,6 +604,8 @@ def _apply_quote_data(rfq_id: str, supplier_name: str, quote_data: dict, user_id
             }
             if lead_time:
                 update_data["quote_leadtime"] = lead_time
+            if part_number:
+                update_data["quote_part_number"] = part_number
             _update_supplier_sync(rfq_id, update_data, user_id)
             conf_icon = "✓" if confidence == "high" else "~" if confidence == "medium" else "?"
             actions.append(
@@ -620,6 +624,8 @@ def _apply_quote_data(rfq_id: str, supplier_name: str, quote_data: dict, user_id
             }
             if lead_time:
                 add_data["quote_leadtime"] = lead_time
+            if part_number:
+                add_data["quote_part_number"] = part_number
             _add_supplier_sync(rfq_id, add_data, user_id)
             actions.append(f"+ Line {line}: added {supplier_name} @ {price} {currency}")
 
