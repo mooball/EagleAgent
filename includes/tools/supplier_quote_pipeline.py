@@ -82,6 +82,42 @@ def _save_pipeline_result(email_tracking_id: int, result: dict) -> None:
         session.close()
 
 
+def _backfill_email_content_from_gmail(session, tracking) -> bool:
+    """Fetch body/attachments from Gmail for a tracking row that has no content.
+
+    Placeholder rows (created by the Gmail add-on before the mailbox sync ran)
+    have body_markdown/body_html/attachments_json all empty. The dashboard
+    lazy-fetches content on view; the pipeline needs the same self-healing so
+    it doesn't classify an empty email.
+    """
+    from datetime import datetime, timezone
+
+    if not tracking.gmail_message_id or not tracking.user_email:
+        return False
+    try:
+        from includes.gmail import get_gmail_client
+        from scripts.sync_gmail_mailboxes import fetch_message_content
+
+        service = get_gmail_client(tracking.user_email)
+        content = fetch_message_content(service, tracking.gmail_message_id)
+        if not content:
+            logger.warning(f"[quote-pipeline] #{tracking.id}: Gmail fetch returned no content")
+            return False
+        tracking.body_markdown = content["body_markdown"]
+        tracking.body_html = content["body_html"]
+        tracking.attachments_json = content["attachments_json"]
+        tracking.sender_name = tracking.sender_name or content["sender_name"]
+        tracking.all_recipients = tracking.all_recipients or content["all_recipients"]
+        tracking.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        logger.info(f"[quote-pipeline] #{tracking.id}: backfilled empty email content from Gmail")
+        return True
+    except Exception as e:
+        session.rollback()
+        logger.warning(f"[quote-pipeline] #{tracking.id}: failed to backfill content from Gmail — {e}")
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Stage 1: Classify (LLM-based)
 # ---------------------------------------------------------------------------
@@ -205,6 +241,12 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
                 matched_supplier = supplier_obj.name
 
         result["supplier_name"] = matched_supplier
+
+        # Self-heal content-less rows (add-on placeholders created before the
+        # mailbox sync ran) — fetch from Gmail so classification sees the real
+        # body and attachment list.
+        if not (tracking.body_markdown or tracking.body_html) and not tracking.attachments_json:
+            _backfill_email_content_from_gmail(session, tracking)
 
         # Build context for LLM classification
         subject = tracking.subject or "(no subject)"
@@ -710,6 +752,20 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                 if tracking.supplier_pipeline_result:
                     logger.info(f"[quote-pipeline] #{email_tracking_id}: already processed, skipping")
                     return
+                # Atomically claim the run: writes a visible "processing" marker
+                # for the UI and prevents concurrent triggers from double-running.
+                from sqlalchemy import text as _text
+                claimed = session.execute(_text(
+                    "UPDATE email_tracking SET supplier_pipeline_result = CAST(:marker AS jsonb) "
+                    "WHERE id = :id AND supplier_pipeline_result IS NULL"
+                ), {
+                    "marker": json.dumps({"status": "processing", "started_at": _now_iso()}),
+                    "id": email_tracking_id,
+                }).rowcount
+                session.commit()
+                if not claimed:
+                    logger.info(f"[quote-pipeline] #{email_tracking_id}: run already claimed, skipping")
+                    return
             finally:
                 session.close()
 
@@ -816,6 +872,16 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
             )
         except Exception as e:
             logger.error(f"[quote-pipeline] #{email_tracking_id}: failed — {e}", exc_info=True)
+            # Persist the failure so the UI spinner is replaced by an error badge
+            # instead of showing "processing" forever.
+            try:
+                _save_pipeline_result(email_tracking_id, {
+                    "classification": "error",
+                    "error": str(e),
+                    "processed_at": _now_iso(),
+                })
+            except Exception:
+                logger.exception(f"[quote-pipeline] #{email_tracking_id}: failed to save error result")
 
     threading.Thread(target=_run, daemon=True, name=f"quote-pipeline-{email_tracking_id}").start()
 

@@ -22,7 +22,10 @@
     <!-- Jodit (free rich text editor for in-app email compose) -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jodit@4.2.27/es2021/jodit.fat.min.css">
     <script src="https://cdn.jsdelivr.net/npm/jodit@4.2.27/es2021/jodit.fat.min.js"></script>
-    <script>htmx.config.allowScriptTags = true;</script>
+    <script>htmx.config.allowScriptTags = true;
+    // Disable htmx's localStorage history cache: back/forward must always
+    // refetch from the server so email/pipeline updates are never stale.
+    htmx.config.historyCacheSize = 0;</script>
     <style>
         [x-cloak] { display: none !important; }
         .border-l-3 { border-left-width: 3px; }
@@ -2037,6 +2040,25 @@
         }
     </script>
     <script>
+    // RFQ communications: shared expand/collapse state so poll refreshes
+    // don't collapse the threads the user is reading. Supports multiple
+    // expanded threads plus expand/collapse-all.
+    document.addEventListener('alpine:init', () => {
+        Alpine.store('comms', {
+            expanded: [],
+            isOpen(id) { return this.expanded.includes(id); },
+            toggle(id) {
+                const i = this.expanded.indexOf(id);
+                if (i === -1) this.expanded.push(id); else this.expanded.splice(i, 1);
+            },
+            expandAll(ids) {
+                this.expanded = Array.from(new Set([...this.expanded, ...(ids || [])]));
+            },
+            collapseAll() { this.expanded = []; }
+        });
+    });
+    </script>
+    <script>
     // Bulk compose modal — registered before Alpine scans the DOM.
     // Uses alpine:init (not DOMContentLoaded) so the component exists when
     // Alpine encounters x-data="bulkComposeModal".
@@ -2380,7 +2402,37 @@
                 this.results = [];
                 this.activeIdx = -1;
                 const store = Alpine.store('rfqEdit');
-                if (store) store.customerId = r.id;
+                if (store) {
+                    store.customerId = r.id;
+                    store.customerError = '';
+                }
+                // Persist the customer link immediately so downstream actions
+                // (e.g. create NetSuite opportunity) don't need a full Save.
+                if (store && store.rfqId) {
+                    store.customerSaving = true;
+                    fetch(`/partial/rfqs/${store.rfqId}/link-customer`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({ customer_id: r.id, customer: r.name })
+                    })
+                    .then(resp => resp.json())
+                    .then(d => {
+                        store.customerSaving = false;
+                        if (d.status !== 'ok') {
+                            store.customerError = d.message || 'Failed to save customer';
+                            store.customerId = '';
+                            this.search = '';
+                            this.selectedId = '';
+                        }
+                    })
+                    .catch(() => {
+                        store.customerSaving = false;
+                        store.customerError = 'Failed to save customer — check connection';
+                        store.customerId = '';
+                        this.search = '';
+                        this.selectedId = '';
+                    });
+                }
             },
 
             clearAll() {
@@ -2388,7 +2440,10 @@
                 this.selectedId = "";
                 this.results = [];
                 const store = Alpine.store('rfqEdit');
-                if (store) store.customerId = '';
+                if (store) {
+                    store.customerId = '';
+                    store.customerError = '';
+                }
             },
 
             onKeydown(e) {
@@ -2489,6 +2544,63 @@
                 }
             }
         }));
+    });
+    </script>
+    <script>
+    // ── RFQ communications polling ─────────────────────────────────────────
+    // One shared timer refreshing the comms block in place. Polls whenever the
+    // block is on screen (so it picks up pipeline runs triggered from another
+    // tab/page), with a faster interval while a pipeline is processing.
+    // Reconciled after every HTMX swap and on tab visibility changes.
+    window._commsPoll = {
+        timer: null,
+        interval: null,
+        start(url, interval) {
+            if (!url) return;
+            if (this.timer && this.interval === interval) return;
+            this.stop();
+            this.interval = interval;
+            this.timer = setInterval(() => {
+                if (!document.getElementById('rfq-comms')) { this.stop(); return; }
+                htmx.ajax('GET', url, { target: '#rfq-comms', swap: 'outerHTML' });
+            }, interval);
+        },
+        stop() {
+            if (this.timer) { clearInterval(this.timer); this.timer = null; this.interval = null; }
+        }
+    };
+    function _reconcileCommsPoll() {
+        if (document.hidden) { window._commsPoll.stop(); return; }
+        var block = document.getElementById('rfq-comms');
+        if (!block) { window._commsPoll.stop(); return; }
+        var interval = block.dataset.processing === 'true' ? 4000 : 10000;
+        window._commsPoll.start(block.dataset.pollUrl, interval);
+    }
+    document.addEventListener('htmx:afterSwap', _reconcileCommsPoll);
+    // htmx:load fires on initial page load (and after content loads) — without
+    // this, a full page render of the comms tab never starts the poller.
+    document.addEventListener('htmx:load', _reconcileCommsPoll);
+    document.addEventListener('visibilitychange', _reconcileCommsPoll);
+    document.addEventListener('htmx:beforeRequest', function (e) {
+        // A swap that replaces #main-content removes the comms block; stop
+        // polling — htmx:afterSwap will restart it if the new page needs it.
+        if (e.detail.elt && e.detail.elt.id === 'main-content') {
+            window._commsPoll.stop();
+        }
+    });
+    window.addEventListener('beforeunload', function () { window._commsPoll.stop(); });
+    // Kick the poller immediately for the initial page render.
+    _reconcileCommsPoll();
+
+    // Back/forward from the browser bfcache restores a stale page without any
+    // request — refetch main content so data is always current.
+    window.addEventListener('pageshow', function (event) {
+        if (event.persisted && window.htmx) {
+            htmx.ajax('GET', location.pathname + location.search, {
+                target: '#main-content',
+                swap: 'innerHTML'
+            });
+        }
     });
     </script>
 </body>

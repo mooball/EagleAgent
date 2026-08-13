@@ -573,6 +573,7 @@ def _query_email_logs(session, q: str = "", user_filter: str = "", page: int = 1
                 et.match_type,
                 et.supplier_pipeline_result,
                 et.rfq_creation_result,
+                et.feedback,
                 s.name AS supplier_name,
                 c.companyname AS customer_name
             FROM email_tracking et
@@ -1072,6 +1073,55 @@ async def api_run_email_pipeline(email_id: int, request: Request,
         return JSONResponse({"status": "ok", "message": f"Pipeline triggered for email #{email_id}"})
     except Exception as e:
         logger.error(f"Error triggering pipeline for email #{email_id}: {e}")
+        return JSONResponse({"status": "error", "message": str(e)})
+    finally:
+        session.close()
+
+
+@router.post("/api/emails/{email_id}/feedback")
+async def api_email_feedback(email_id: int, request: Request,
+                              user: dict = Depends(_helpers.require_user)):
+    """Save user feedback about a supplier quote pipeline result.
+
+    Body: {"text": "..."} — stored on the email_tracking.feedback JSONB column
+    together with a snapshot of the pipeline result at feedback time.
+    """
+    from datetime import datetime, timezone
+    from includes.dashboard.models import EmailTracking
+
+    try:
+        body = await request.json()
+        text = (body.get("text") or "").strip()
+    except Exception:
+        return JSONResponse({"status": "error", "message": "Invalid JSON body"}, status_code=400)
+
+    if not text:
+        return JSONResponse({"status": "error", "message": "Feedback text is required"}, status_code=400)
+
+    session = _helpers.get_session()
+    try:
+        tracking = session.query(EmailTracking).filter(EmailTracking.id == email_id).first()
+        if not tracking:
+            return JSONResponse({"status": "error", "message": "Email not found"}, status_code=404)
+
+        spr = tracking.supplier_pipeline_result or {}
+        feedback = {
+            "text": text,
+            "user": user.get("email", ""),
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+            "snapshot": {
+                "classification": spr.get("classification"),
+                "reason": spr.get("reason"),
+                "processed_at": spr.get("processed_at"),
+            },
+        }
+        tracking.feedback = feedback
+        session.commit()
+        logger.info(f"Feedback saved for email #{email_id} by {user.get('email')}")
+        return JSONResponse({"status": "ok", "feedback": feedback})
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error saving feedback for email #{email_id}: {e}")
         return JSONResponse({"status": "error", "message": str(e)})
     finally:
         session.close()

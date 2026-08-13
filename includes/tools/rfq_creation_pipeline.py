@@ -159,6 +159,21 @@ def _run_rfq_creation_pipeline(email_tracking_id: int, user_id: str) -> None:
             logger.info(f"[rfq-creation] #{email_tracking_id}: already processed, skipping")
             return
 
+        # Atomically claim the run: writes a visible "processing" marker for the
+        # UI and prevents concurrent triggers from double-processing.
+        from sqlalchemy import text as _text
+        claimed = session.execute(_text(
+            "UPDATE email_tracking SET rfq_creation_result = CAST(:marker AS jsonb) "
+            "WHERE id = :id AND rfq_creation_result IS NULL"
+        ), {
+            "marker": json.dumps({"status": "processing", "started_at": _now_iso()}),
+            "id": email_tracking_id,
+        }).rowcount
+        session.commit()
+        if not claimed:
+            logger.info(f"[rfq-creation] #{email_tracking_id}: run already claimed, skipping")
+            return
+
         # Direction NOT checked — manual trigger means user decided this IS a quote request
         logger.info(f"[rfq-creation] #{email_tracking_id}: guard checks passed "
                     f"(customer={tracking.customer_id}, direction={tracking.direction})")

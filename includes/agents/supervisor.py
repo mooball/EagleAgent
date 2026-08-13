@@ -138,6 +138,7 @@ class Supervisor:
                     {"id": "RFQ_QUERY", "description": "User wants information about the current RFQ itself — its items, quantities, linked client, contacted suppliers, or status. They are asking about the RFQ's own data, not querying the general database. Examples: 'how many items in this RFQ?', 'which client is this RFQ linked to?', 'let me know which suppliers have been contacted', 'what's the total value', 'show me line 3 details'"},
                     {"id": "RFQ_UPDATE", "description": "User explicitly asks to modify RFQ data — add/remove suppliers, change quantities, update item details, or perform any CRUD operation. IMPORTANT: If the user's intent is ambiguous between a query and an update, do NOT assume update — classify as UNCERTAIN instead. Examples: 'add this supplier to line 2', 'remove all suppliers', 'change qty to 10', 'update line 4 part number'"},
                     {"id": "RFQ_ADD_ITEMS", "description": "User is providing a list of items (via pasted text or an uploaded image/file) to add to the current RFQ. They want the items extracted and added to the RFQ, then asked what to do next. They do NOT want research, web search, or the supplier-finding pipeline — just add the items to the RFQ. Examples: pasting a multi-line parts list, uploading a photo of a parts catalog page, or typing several item descriptions."},
+                    {"id": "RFQ_QUOTE_APPLY", "description": "User is providing a supplier quote or pricing response — an uploaded quote document (PDF/image/spreadsheet) or pasted pricing text — and wants it applied to the current RFQ. They want the curated quote-interpretation pipeline run, not generic item editing. Examples: 'add this quote to the RFQ', 'extract the prices from this quote and apply to the RFQ', 'update the RFQ with this supplier quote'"},
                 ]
                 directions = rfq_directions + base_directions
                 classifier_context = "User is viewing an RFQ in the procurement system."
@@ -171,7 +172,7 @@ class Supervisor:
             # Route based on intent
             if intent == "RUN_WORKFLOW":
                 return {"next_agent": "ProcurementAgent", "intent": "RUN_WORKFLOW", "step_count": 0}
-            elif intent in ("RFQ_QUERY", "RFQ_UPDATE", "RFQ_ADD_ITEMS"):
+            elif intent in ("RFQ_QUERY", "RFQ_UPDATE", "RFQ_ADD_ITEMS", "RFQ_QUOTE_APPLY"):
                 return {"next_agent": "ProcurementAgent", "intent": intent, "step_count": 0}
             elif intent == "DB_QUERY":
                 return {"next_agent": "ProcurementAgent", "intent": "DB_QUERY", "step_count": 0}

@@ -62,34 +62,66 @@ Object.assign(window._emailData || {}, {
             <span class="truncate">{{ e.subject or '(no subject)' }}</span>
             {% if e.supplier_pipeline_result %}
                 {% set spr_class = e.supplier_pipeline_result.get('classification', '') %}
-                {% if spr_class == 'quote_response' %}
+                {% if e.supplier_pipeline_result.get('status') == 'processing' %}
+                <span class="shrink-0 inline-flex items-center gap-1 px-1.5 py-0 text-[10px] font-medium rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                    <svg class="animate-spin w-2.5 h-2.5" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                    Quote…
+                </span>
+                {% elif spr_class == 'quote_response' %}
                 <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 cursor-pointer"
                       data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
-                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Quote</span>
+                      data-email-id='{{ e.id }}'
+                      data-feedback='{{ (e.feedback or none) | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Quote</span>
                 {% elif spr_class == 'declined' %}
                 <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 cursor-pointer"
                       data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
-                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Declined</span>
+                      data-email-id='{{ e.id }}'
+                      data-feedback='{{ (e.feedback or none) | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Declined</span>
                 {% elif spr_class == 'clarification_required' %}
                 <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300 cursor-pointer"
                       data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
-                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Clarification</span>
+                      data-email-id='{{ e.id }}'
+                      data-feedback='{{ (e.feedback or none) | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Clarification</span>
                 {% elif spr_class == 'acknowledgement' %}
                 <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 cursor-pointer"
                       data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
-                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Ack</span>
+                      data-email-id='{{ e.id }}'
+                      data-feedback='{{ (e.feedback or none) | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Ack</span>
                 {% elif spr_class == 'not_quote' %}
                 <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400 cursor-pointer"
                       data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
-                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">—</span>
+                      data-email-id='{{ e.id }}'
+                      data-feedback='{{ (e.feedback or none) | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">—</span>
                 {% elif spr_class == 'needs_review' %}
                 <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 cursor-pointer"
                       data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
-                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Review</span>
+                      data-email-id='{{ e.id }}'
+                      data-feedback='{{ (e.feedback or none) | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Review</span>
+                {% elif spr_class == 'error' %}
+                <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 cursor-pointer"
+                      data-pipeline='{{ e.supplier_pipeline_result | tojson }}'
+                      data-email-id='{{ e.id }}'
+                      data-feedback='{{ (e.feedback or none) | tojson }}'
+                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Error</span>
                 {% endif %}
+            {% endif %}
+            {% if e.feedback %}
+            <span class="shrink-0 w-1.5 h-1.5 rounded-full bg-purple-500" title="Has feedback: {{ e.feedback.text or '' }}"></span>
             {% endif %}
             {% if e.rfq_creation_result %}
                 {% set rcr_status = e.rfq_creation_result.get('status', '') %}
+                {% if rcr_status == 'processing' %}
+                <span class="shrink-0 inline-flex items-center gap-1 px-1.5 py-0 text-[10px] font-medium rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                    <svg class="animate-spin w-2.5 h-2.5" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                    RFQ…
+                </span>
+                {% else %}
                 <span class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full cursor-pointer
                        {% if rcr_status == 'complete' %}bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300
                        {% elif rcr_status == 'partial' %}bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300
@@ -98,6 +130,7 @@ Object.assign(window._emailData || {}, {
                       @click.stop="$dispatch('show-rfq-pipeline-detail', JSON.parse($el.dataset.rfqResult))">
                     {{ 'RFQ' if rcr_status == 'complete' else 'RFQ*' if rcr_status == 'partial' else 'RFQ!' }}
                 </span>
+                {% endif %}
             {% endif %}
             {% if user and user.role == 'Admin' and (e.rfq_token or e.rfq_id) and e.rfq_creation_result %}
                 <button class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800/40 cursor-pointer"
