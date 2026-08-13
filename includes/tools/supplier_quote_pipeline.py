@@ -82,6 +82,42 @@ def _save_pipeline_result(email_tracking_id: int, result: dict) -> None:
         session.close()
 
 
+def _backfill_email_content_from_gmail(session, tracking) -> bool:
+    """Fetch body/attachments from Gmail for a tracking row that has no content.
+
+    Placeholder rows (created by the Gmail add-on before the mailbox sync ran)
+    have body_markdown/body_html/attachments_json all empty. The dashboard
+    lazy-fetches content on view; the pipeline needs the same self-healing so
+    it doesn't classify an empty email.
+    """
+    from datetime import datetime, timezone
+
+    if not tracking.gmail_message_id or not tracking.user_email:
+        return False
+    try:
+        from includes.gmail import get_gmail_client
+        from scripts.sync_gmail_mailboxes import fetch_message_content
+
+        service = get_gmail_client(tracking.user_email)
+        content = fetch_message_content(service, tracking.gmail_message_id)
+        if not content:
+            logger.warning(f"[quote-pipeline] #{tracking.id}: Gmail fetch returned no content")
+            return False
+        tracking.body_markdown = content["body_markdown"]
+        tracking.body_html = content["body_html"]
+        tracking.attachments_json = content["attachments_json"]
+        tracking.sender_name = tracking.sender_name or content["sender_name"]
+        tracking.all_recipients = tracking.all_recipients or content["all_recipients"]
+        tracking.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        logger.info(f"[quote-pipeline] #{tracking.id}: backfilled empty email content from Gmail")
+        return True
+    except Exception as e:
+        session.rollback()
+        logger.warning(f"[quote-pipeline] #{tracking.id}: failed to backfill content from Gmail — {e}")
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Stage 1: Classify (LLM-based)
 # ---------------------------------------------------------------------------
@@ -205,6 +241,12 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
                 matched_supplier = supplier_obj.name
 
         result["supplier_name"] = matched_supplier
+
+        # Self-heal content-less rows (add-on placeholders created before the
+        # mailbox sync ran) — fetch from Gmail so classification sees the real
+        # body and attachment list.
+        if not (tracking.body_markdown or tracking.body_html) and not tracking.attachments_json:
+            _backfill_email_content_from_gmail(session, tracking)
 
         # Build context for LLM classification
         subject = tracking.subject or "(no subject)"

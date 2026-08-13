@@ -632,7 +632,21 @@ def process_message(
         EmailTracking.gmail_message_id == msg_meta["id"]
     ).first()
     if existing_msg:
-        # Already tracked — nothing to do
+        # Already tracked — but placeholder rows (e.g., created by the Gmail
+        # add-on before the sync saw the message) have no content. Backfill it
+        # so downstream pipelines don't process an empty email.
+        if not dry_run and not existing_msg.body_markdown and not existing_msg.attachments_json:
+            content = fetch_message_content(service, msg_meta["id"])
+            if content:
+                existing_msg.body_markdown = content["body_markdown"]
+                existing_msg.body_html = content["body_html"]
+                existing_msg.attachments_json = content["attachments_json"]
+                existing_msg.sender_name = existing_msg.sender_name or content["sender_name"]
+                existing_msg.all_recipients = existing_msg.all_recipients or content["all_recipients"]
+                existing_msg.updated_at = datetime.now(timezone.utc)
+                logger.info(
+                    f"  [T1] Backfilled content for tracked message {msg_meta['id']} (#{existing_msg.id})"
+                )
         return "tier1"
 
     # Check if this thread is tracked (matches an existing record)
