@@ -2402,7 +2402,37 @@
                 this.results = [];
                 this.activeIdx = -1;
                 const store = Alpine.store('rfqEdit');
-                if (store) store.customerId = r.id;
+                if (store) {
+                    store.customerId = r.id;
+                    store.customerError = '';
+                }
+                // Persist the customer link immediately so downstream actions
+                // (e.g. create NetSuite opportunity) don't need a full Save.
+                if (store && store.rfqId) {
+                    store.customerSaving = true;
+                    fetch(`/partial/rfqs/${store.rfqId}/link-customer`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({ customer_id: r.id, customer: r.name })
+                    })
+                    .then(resp => resp.json())
+                    .then(d => {
+                        store.customerSaving = false;
+                        if (d.status !== 'ok') {
+                            store.customerError = d.message || 'Failed to save customer';
+                            store.customerId = '';
+                            this.search = '';
+                            this.selectedId = '';
+                        }
+                    })
+                    .catch(() => {
+                        store.customerSaving = false;
+                        store.customerError = 'Failed to save customer — check connection';
+                        store.customerId = '';
+                        this.search = '';
+                        this.selectedId = '';
+                    });
+                }
             },
 
             clearAll() {
@@ -2410,7 +2440,10 @@
                 this.selectedId = "";
                 this.results = [];
                 const store = Alpine.store('rfqEdit');
-                if (store) store.customerId = '';
+                if (store) {
+                    store.customerId = '';
+                    store.customerError = '';
+                }
             },
 
             onKeydown(e) {

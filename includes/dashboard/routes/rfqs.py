@@ -1079,6 +1079,34 @@ async def partial_rfq_update(request: Request, rfq_id: str,
     return _render_rfq_detail_partial_response(request, user, rfq)
 
 
+@router.post("/partial/rfqs/{rfq_id}/link-customer")
+async def partial_rfq_link_customer(request: Request, rfq_id: str,
+                                    user: dict = Depends(require_user)):
+    """Persist a customer selection immediately (no full-page re-render).
+
+    Called by the header edit form's customer picker as soon as a customer is
+    selected, so the RFQ row in the DB is up to date without waiting for the
+    user to press Save.
+    """
+    from includes.tools.quote_tools import _update_rfq_sync
+
+    form = await request.form()
+    customer = (form.get("customer") or "").strip()
+    customer_id = (form.get("customer_id") or "").strip()
+    if not customer_id:
+        return JSONResponse({"status": "error", "message": "No customer selected"}, status_code=400)
+
+    data = {"customer_id": customer_id}
+    if customer:
+        data["customer"] = customer
+
+    user_ident = user.get("identifier", "dashboard")
+    result = await asyncio.to_thread(_update_rfq_sync, rfq_id, data, user_ident)
+    if isinstance(result, str):
+        return JSONResponse({"status": "error", "message": result}, status_code=404)
+    return JSONResponse({"status": "ok"})
+
+
 @router.patch("/partial/rfqs/{rfq_id}/status")
 async def partial_rfq_status(request: Request, rfq_id: str,
                              user: dict = Depends(require_user)):
@@ -1101,7 +1129,23 @@ async def partial_rfq_status(request: Request, rfq_id: str,
 async def partial_rfq_create_opportunity(request: Request, rfq_id: str,
                                          user: dict = Depends(require_user)):
     """Create a NetSuite Opportunity for this RFQ and link it."""
+    from includes.tools.quote_tools import _update_rfq_sync
     from includes.netsuite.records.opportunity import create_and_link_opportunity
+
+    # The edit form posts its (possibly unsaved) fields — persist the customer
+    # link first so the NetSuite payload uses the selected customer even when
+    # the user hasn't pressed Save yet.
+    form = await request.form()
+    customer = (form.get("customer") or "").strip()
+    customer_id = (form.get("customer_id") or "").strip()
+    if customer_id:
+        data = {"customer_id": customer_id}
+        if customer:
+            data["customer"] = customer
+        user_ident = user.get("identifier", "dashboard")
+        result = await asyncio.to_thread(_update_rfq_sync, rfq_id, data, user_ident)
+        if isinstance(result, str):
+            raise HTTPException(status_code=400, detail=result)
 
     result = await asyncio.to_thread(create_and_link_opportunity, rfq_id)
     if not result.success:
