@@ -2041,9 +2041,21 @@
     </script>
     <script>
     // RFQ communications: shared expand/collapse state so poll refreshes
-    // don't collapse the thread the user is reading.
+    // don't collapse the threads the user is reading. Supports multiple
+    // expanded threads plus expand/collapse-all.
     document.addEventListener('alpine:init', () => {
-        Alpine.store('comms', { openThread: null });
+        Alpine.store('comms', {
+            expanded: [],
+            isOpen(id) { return this.expanded.includes(id); },
+            toggle(id) {
+                const i = this.expanded.indexOf(id);
+                if (i === -1) this.expanded.push(id); else this.expanded.splice(i, 1);
+            },
+            expandAll(ids) {
+                this.expanded = Array.from(new Set([...this.expanded, ...(ids || [])]));
+            },
+            collapseAll() { this.expanded = []; }
+        });
     });
     </script>
     <script>

@@ -632,8 +632,37 @@
     </div>
 
     <!-- Pipeline Detail Modal -->
-    <div x-data="{ showPipeline: false, pd: {} }"
-         @show-pipeline-detail.window="pd = $event.detail; showPipeline = true"
+    <div x-data="{ showPipeline: false, pd: {}, feedbackOpen: false, feedbackText: '', feedbackSubmitting: false, feedbackMsg: '', feedbackError: false,
+                   submitFeedback() {
+                       if (!this.pd.email_id || !this.feedbackText.trim()) return;
+                       this.feedbackSubmitting = true;
+                       this.feedbackMsg = '';
+                       fetch('/api/emails/' + this.pd.email_id + '/feedback', {
+                           method: 'POST',
+                           headers: { 'Content-Type': 'application/json' },
+                           body: JSON.stringify({ text: this.feedbackText.trim() })
+                       })
+                       .then(r => r.json().then(d => ({ ok: r.ok, d })))
+                       .then(res => {
+                           this.feedbackSubmitting = false;
+                           if (res.ok && res.d.status === 'ok') {
+                               this.pd.feedback = res.d.feedback;
+                               this.feedbackOpen = false;
+                               this.feedbackText = '';
+                               this.feedbackMsg = 'Saved';
+                               this.feedbackError = false;
+                           } else {
+                               this.feedbackMsg = res.d.message || 'Failed to save';
+                               this.feedbackError = true;
+                           }
+                       })
+                       .catch(() => {
+                           this.feedbackSubmitting = false;
+                           this.feedbackMsg = 'Network error';
+                           this.feedbackError = true;
+                       });
+                   } }"
+         @show-pipeline-detail.window="pd = $event.detail; showPipeline = true; feedbackOpen = false; feedbackText = ''; feedbackMsg = ''"
          @keydown.escape.window="showPipeline = false">
         <template x-if="showPipeline">
             <div class="fixed inset-0 z-[60] flex items-center justify-center" @click.self="showPipeline = false">
@@ -703,6 +732,39 @@
                         </template>
                         <template x-if="pd.processed_at">
                             <div class="text-[10px] text-gray-400 dark:text-gray-500 pt-1 border-t border-gray-100 dark:border-gray-700" x-text="'Processed: ' + new Date(pd.processed_at).toLocaleString()"></div>
+                        </template>
+
+                        <!-- Feedback -->
+                        <template x-if="pd.email_id">
+                            <div class="border-t border-gray-100 dark:border-gray-700 pt-2">
+                                <template x-if="!feedbackOpen && !pd.feedback">
+                                    <button @click="feedbackOpen = true"
+                                            class="text-xs font-medium text-purple-600 dark:text-purple-400 hover:underline">
+                                        Provide feedback
+                                    </button>
+                                </template>
+                                <template x-if="pd.feedback">
+                                    <div class="text-xs bg-purple-50 dark:bg-purple-900/20 border border-purple-100 dark:border-purple-800 rounded px-2 py-1.5">
+                                        <div class="font-medium text-purple-700 dark:text-purple-300">Feedback</div>
+                                        <div x-text="pd.feedback.text"></div>
+                                        <div class="text-[10px] text-gray-400 mt-0.5" x-text="pd.feedback.submitted_at ? (pd.feedback.user || '') + ' · ' + new Date(pd.feedback.submitted_at).toLocaleString() : ''"></div>
+                                    </div>
+                                </template>
+                                <template x-if="feedbackOpen">
+                                    <div class="space-y-1.5">
+                                        <textarea x-model="feedbackText" rows="3" placeholder="What went wrong?"
+                                                  class="w-full text-xs px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 focus:ring-1 focus:ring-purple-400"></textarea>
+                                        <div class="flex items-center gap-2">
+                                            <button @click="submitFeedback()" :disabled="feedbackSubmitting || !feedbackText.trim()"
+                                                    class="px-2.5 py-1 text-xs font-medium rounded bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50">
+                                                Submit
+                                            </button>
+                                            <button @click="feedbackOpen = false" class="text-xs text-gray-500 dark:text-gray-400 hover:underline">Cancel</button>
+                                            <span x-show="feedbackMsg" class="text-[10px]" :class="feedbackError ? 'text-red-500' : 'text-green-600'" x-text="feedbackMsg"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
                         </template>
                     </div>
                 </div>

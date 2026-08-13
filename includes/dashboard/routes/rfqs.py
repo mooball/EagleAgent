@@ -461,6 +461,7 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
             text(
                 """
                 SELECT
+                    et.id,
                     et.direction,
                     et.email_type,
                     et.subject,
@@ -477,6 +478,7 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
                     et.customer_id,
                     et.supplier_pipeline_result,
                     et.rfq_creation_result,
+                    et.feedback,
                     s.name AS supplier_name,
                     c.companyname AS customer_name
                 FROM email_tracking et

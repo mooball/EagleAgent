@@ -432,6 +432,9 @@ class EmailTracking(Base):
     # RFQ creation pipeline result (idempotency guard + debug info)
     rfq_creation_result = Column(JSONB, nullable=True)
 
+    # User feedback on pipeline results (survives pipeline re-runs)
+    feedback = Column(JSONB, nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=True)
     updated_at = Column(DateTime(timezone=True), nullable=True)
 

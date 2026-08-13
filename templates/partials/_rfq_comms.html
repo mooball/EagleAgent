@@ -19,7 +19,22 @@
         },
         {% endfor %}{% endfor %}{% endfor %}
     };
+    window._commsThreadIds = [
+    {% for group in groups %}{% for thread in group.threads %}
+        {{ thread.thread_id | tojson }},
+    {% endfor %}{% endfor %}
+    ];
     </script>
+    <div class="flex items-center justify-end gap-2 mb-3">
+        <button @click="$store.comms.expandAll(window._commsThreadIds)"
+                class="btn-sm">
+            Expand all
+        </button>
+        <button @click="$store.comms.collapseAll()"
+                class="btn-sm">
+            Collapse all
+        </button>
+    </div>
     <div class="space-y-8">
         {% for group in groups %}
         <!-- Supplier/source group card -->
@@ -54,11 +69,11 @@
                 <div class="rounded-md border border-gray-200 dark:border-gray-700 overflow-hidden">
                     <!-- Thread row -->
                     <button
-                        @click="$store.comms.openThread = $store.comms.openThread === '{{ thread.thread_id }}' ? null : '{{ thread.thread_id }}'"
+                        @click="$store.comms.toggle('{{ thread.thread_id }}')"
                         class="w-full flex items-center gap-2 px-3 py-2 text-left bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors"
-                        :class="$store.comms.openThread === '{{ thread.thread_id }}' ? 'bg-gray-50 dark:bg-gray-700/40' : ''">
+                        :class="$store.comms.isOpen('{{ thread.thread_id }}') ? 'bg-gray-50 dark:bg-gray-700/40' : ''">
                         <svg class="w-3.5 h-3.5 text-gray-400 transition-transform flex-shrink-0"
-                             :class="$store.comms.openThread === '{{ thread.thread_id }}' ? 'rotate-90' : ''"
+                             :class="$store.comms.isOpen('{{ thread.thread_id }}') ? 'rotate-90' : ''"
                              fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                         </svg>
@@ -91,7 +106,7 @@
                     </button>
 
                     <!-- Expanded messages -->
-                    <div x-show="$store.comms.openThread === '{{ thread.thread_id }}'" x-transition.duration.200ms>
+                    <div x-show="$store.comms.isOpen('{{ thread.thread_id }}')" x-transition.duration.200ms>
                         <div class="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-2 space-y-1">
                             {% for msg in thread.messages %}
                             <!-- Individual message row (click opens modal) -->
@@ -103,8 +118,9 @@
                                     {% elif msg.direction == 'received' %}bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300
                                     {% else %}bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300{% endif %}">
                                     {{ msg.direction }}
-                                </span>
-                                {% if msg.spr_stale %}
+                                </span>                                {% if msg.feedback %}
+                                <span class="shrink-0 w-1.5 h-1.5 rounded-full bg-purple-500" title="Has feedback: {{ msg.feedback.text }}"></span>
+                                {% endif %}                                {% if msg.spr_stale %}
                                 <span class="text-[10px] px-1 py-px rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" title="Quote pipeline appears stuck (server may have restarted)">Quote timeout</span>
                                 {% elif msg.spr_processing %}
                                 <span class="shrink-0 inline-flex items-center gap-1 text-[10px] px-1 py-px rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
@@ -116,31 +132,45 @@
                                     {% if spr_class == 'quote_response' %}
                                 <span class="text-[10px] px-1 py-px rounded-full bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 cursor-pointer"
                                       data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
-                                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Quote</span>
+                                      data-email-id='{{ msg.id }}'
+                                      data-feedback='{{ (msg.feedback or none) | tojson }}'
+                                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Quote</span>
                                     {% elif spr_class == 'declined' %}
                                 <span class="text-[10px] px-1 py-px rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 cursor-pointer"
                                       data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
-                                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Declined</span>
+                                      data-email-id='{{ msg.id }}'
+                                      data-feedback='{{ (msg.feedback or none) | tojson }}'
+                                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Declined</span>
                                     {% elif spr_class == 'clarification_required' %}
                                 <span class="text-[10px] px-1 py-px rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300 cursor-pointer"
                                       data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
-                                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Clarification</span>
+                                      data-email-id='{{ msg.id }}'
+                                      data-feedback='{{ (msg.feedback or none) | tojson }}'
+                                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Clarification</span>
                                     {% elif spr_class == 'acknowledgement' %}
                                 <span class="text-[10px] px-1 py-px rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 cursor-pointer"
                                       data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
-                                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Ack</span>
+                                      data-email-id='{{ msg.id }}'
+                                      data-feedback='{{ (msg.feedback or none) | tojson }}'
+                                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Ack</span>
                                     {% elif spr_class == 'not_quote' %}
                                 <span class="text-[10px] px-1 py-px rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400 cursor-pointer"
                                       data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
-                                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">—</span>
+                                      data-email-id='{{ msg.id }}'
+                                      data-feedback='{{ (msg.feedback or none) | tojson }}'
+                                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">—</span>
                                     {% elif spr_class == 'needs_review' %}
                                 <span class="text-[10px] px-1 py-px rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 cursor-pointer"
                                       data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
-                                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Review</span>
+                                      data-email-id='{{ msg.id }}'
+                                      data-feedback='{{ (msg.feedback or none) | tojson }}'
+                                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Review</span>
                                     {% elif spr_class == 'error' %}
                                 <span class="text-[10px] px-1 py-px rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 cursor-pointer"
                                       data-pipeline='{{ msg.supplier_pipeline_result | tojson }}'
-                                      @click.stop="$dispatch('show-pipeline-detail', JSON.parse($el.dataset.pipeline))">Error</span>
+                                      data-email-id='{{ msg.id }}'
+                                      data-feedback='{{ (msg.feedback or none) | tojson }}'
+                                      @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Error</span>
                                     {% endif %}
                                 {% endif %}
                                 {% if msg.rcr_stale %}
