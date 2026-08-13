@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 # Convert MB config to bytes for comparison
 _MAX_FILE_SIZE_BYTES = config.MAX_FILE_SIZE_MB * 1024 * 1024
 
+# Max number of PDF pages rendered to images for vision (bounds token cost)
+_MAX_PDF_VISION_PAGES = 10
+# Render scale: 2x at default 72 DPI ≈ 144 DPI — readable for tables/OCR
+_PDF_RENDER_SCALE = 2.0
+
 
 def process_image(file_bytes: bytes, mime_type: str) -> Dict[str, Any]:
     """
@@ -108,6 +113,72 @@ def extract_pdf_text(file_bytes: bytes) -> str:
     except Exception as e:
         logger.error(f"Failed to extract PDF text: {e}")
         return f"[Error extracting PDF text: {str(e)}]"
+
+
+def render_pdf_pages_for_vision(
+    file_bytes: bytes,
+    filename: str = "",
+    max_pages: int = _MAX_PDF_VISION_PAGES,
+) -> list[Dict[str, Any]]:
+    """Render PDF pages that need vision and return them as base64 images.
+
+    pdfplumber only reads the *text layer* of a PDF. Scanned documents and
+    pages with embedded images contain data pdfplumber can't see. This renders
+    those pages to PNG so a vision-capable model can read them.
+
+    Rendering decision per page:
+      - No extractable text  → render (scanned/image-only page)
+      - Contains images      → render (data may be embedded in the images)
+      - Pure text page       → skip (already covered by text extraction)
+
+    Returns:
+        list of {"base64": str, "mime_type": "image/png", "page": int} dicts.
+    """
+    rendered = []
+    try:
+        # Determine which pages need rendering
+        pages_needing_vision = []
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page_num, page in enumerate(pdf.pages, 1):
+                if page_num > max_pages:
+                    break
+                page_text = (page.extract_text() or "").strip()
+                has_images = bool(getattr(page, "images", []))
+                if not page_text or has_images:
+                    pages_needing_vision.append(page_num)
+
+        if not pages_needing_vision:
+            return []
+
+        import pypdfium2 as pdfium
+
+        pdf = pdfium.PdfDocument(file_bytes)
+        try:
+            for page_num in pages_needing_vision:
+                if page_num > len(pdf):
+                    break
+                page = pdf[page_num - 1]
+                bitmap = page.render(scale=_PDF_RENDER_SCALE)
+                try:
+                    pil_image = bitmap.to_pil()
+                    buffer = io.BytesIO()
+                    pil_image.save(buffer, format="PNG")
+                    rendered.append({
+                        "base64": base64.b64encode(buffer.getvalue()).decode("utf-8"),
+                        "mime_type": "image/png",
+                        "page": page_num,
+                    })
+                finally:
+                    bitmap.close()
+        finally:
+            pdf.close()
+
+        logger.info(
+            f"Rendered {len(rendered)} PDF page(s) for vision from {filename or 'pdf'}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to render PDF pages for vision ({filename or 'pdf'}): {e}")
+    return rendered
 
 
 def extract_text_from_file(file_bytes: bytes, mime_type: str, filename: str = "") -> str:
@@ -281,6 +352,11 @@ def process_file(
             text = extract_pdf_text(file_bytes)
             result["processed_type"] = "pdf"
             result["content"] = text
+            # Scanned/mixed PDFs: render pages that need vision so the model
+            # can read image-only content.
+            page_images = render_pdf_pages_for_vision(file_bytes, filename)
+            if page_images:
+                result["page_images"] = page_images
             
         # Process text files
         elif mime_type.startswith("text/"):
@@ -370,7 +446,16 @@ def create_multimodal_content(text: str, processed_files: list[Dict[str, Any]]) 
                     "type": "text",
                     "text": f"[Content from {filename}]:\n{extracted_text}"
                 })
-                
+
+            # PDF pages rendered for vision (scanned or image-bearing pages)
+            for page_image in file_data.get("page_images", []) or []:
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": (
+                        f"data:{page_image['mime_type']};base64,{page_image['base64']}"
+                    ),
+                })
+
         elif processed_type == "audio":
             # For now, just mention the audio file
             filename = file_data["filename"]
@@ -381,5 +466,5 @@ def create_multimodal_content(text: str, processed_files: list[Dict[str, Any]]) 
                     "type": "text",
                     "text": f"[Audio file attached: {filename}]"
                 })
-    
+
     return content_parts if content_parts else [{"type": "text", "text": text or ""}]

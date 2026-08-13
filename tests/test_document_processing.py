@@ -182,6 +182,39 @@ class TestProcessFile:
         )
         assert result["processed_type"] == "spreadsheet"
 
+    def test_image_only_pdf_gets_vision_pages(self):
+        """A scanned/image-only PDF should be rendered to page images for vision."""
+        from PIL import Image
+        img = Image.new("RGB", (40, 40), color="blue")
+        buf = io.BytesIO()
+        img.save(buf, format="PDF")
+        data = buf.getvalue()
+
+        result = process_file(data, "application/pdf", "scan.pdf")
+        assert result["processed_type"] == "pdf"
+        assert "no extractable text" in result["content"]
+        pages = result.get("page_images", [])
+        assert len(pages) >= 1
+        assert pages[0]["mime_type"] == "image/png"
+        assert len(pages[0]["base64"]) > 0
+
+    def test_text_pdf_has_no_vision_pages(self):
+        """A pure-text PDF should not be rendered to images (no wasted tokens)."""
+        try:
+            from fpdf import FPDF
+        except ImportError:
+            pytest.skip("fpdf2 not installed")
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Helvetica", size=12)
+        pdf.cell(text="Plain text quote")
+        data = pdf.output()
+
+        result = process_file(data, "application/pdf", "text.pdf")
+        assert result["processed_type"] == "pdf"
+        assert "Plain text quote" in result["content"]
+        assert not result.get("page_images")
+
 
 # ── Multimodal content builder ───────────────────────────────────
 
@@ -192,6 +225,24 @@ class TestCreateMultimodalContent:
         assert len(parts) == 1
         assert parts[0]["type"] == "text"
         assert parts[0]["text"] == "Hello"
+
+    def test_pdf_page_images_become_image_parts(self):
+        """Rendered PDF pages should be added as image_url parts after the text."""
+        processed = [{
+            "filename": "scan.pdf",
+            "processed_type": "pdf",
+            "content": "[PDF contains no extractable text]",
+            "page_images": [
+                {"base64": "aGVsbG8=", "mime_type": "image/png", "page": 1},
+                {"base64": "d29ybGQ=", "mime_type": "image/png", "page": 2},
+            ],
+        }]
+        parts = create_multimodal_content("read this quote", processed)
+        assert parts[0]["type"] == "text"
+        assert "no extractable text" in parts[0]["text"]
+        image_parts = [p for p in parts if p["type"] == "image_url"]
+        assert len(image_parts) == 2
+        assert image_parts[0]["image_url"].startswith("data:image/png;base64,")
 
     def test_empty_text_and_files(self):
         parts = create_multimodal_content("", [])
