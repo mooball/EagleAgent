@@ -403,8 +403,50 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
     if ctx["active_tab"] == "suppliers":
         ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
     if ctx["active_tab"] == "communications":
-        ctx["email_groups"] = _get_rfq_email_events(rfq["id"], rfq.get("rfq_number"))
+        ctx.update(_rfq_comms_context(rfq))
     return ctx
+
+
+# Pipeline markers older than this are considered stale (server restart mid-run)
+_PIPELINE_STALE_SECONDS = 600
+
+
+def _annotate_pipeline_flags(event: dict) -> None:
+    """Annotate an email event with spr_*/rcr_* processing and stale flags.
+
+    spr = supplier quote pipeline result, rcr = RFQ creation pipeline result.
+    A processing marker that is older than _PIPELINE_STALE_SECONDS is considered
+    stale (e.g., the app restarted mid-run) and is surfaced as a timeout.
+    """
+    for prefix, key in (("spr", "supplier_pipeline_result"), ("rcr", "rfq_creation_result")):
+        res = event.get(key)
+        processing = isinstance(res, dict) and res.get("status") == "processing"
+        stale = False
+        if processing:
+            started = res.get("started_at")
+            stale = True
+            if isinstance(started, str):
+                try:
+                    dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    stale = (datetime.now(timezone.utc) - dt).total_seconds() > _PIPELINE_STALE_SECONDS
+                except ValueError:
+                    pass
+        event[f"{prefix}_processing"] = processing and not stale
+        event[f"{prefix}_stale"] = processing and stale
+
+
+def _rfq_comms_context(rfq: dict) -> dict:
+    """Build the context needed to render the RFQ communications block."""
+    email_groups = _get_rfq_email_events(rfq["id"], rfq.get("rfq_number"))
+    processing = any(
+        m.get("spr_processing") or m.get("rcr_processing")
+        for g in email_groups
+        for t in g["threads"]
+        for m in t["messages"]
+    )
+    return {"email_groups": email_groups, "comms_processing": processing}
 
 
 def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
@@ -434,6 +476,7 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
                     et.supplier_id,
                     et.customer_id,
                     et.supplier_pipeline_result,
+                    et.rfq_creation_result,
                     s.name AS supplier_name,
                     c.companyname AS customer_name
                 FROM email_tracking et
@@ -451,6 +494,7 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
         local_tz = ZoneInfo(_helpers.config.TIMEZONE)
         for row in rows:
             event = dict(row)
+            _annotate_pipeline_flags(event)
             ts = event.get("sent_at") or event.get("created_at")
             if isinstance(ts, datetime):
                 if ts.tzinfo is None:
@@ -488,6 +532,8 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
                     "last_time": event["display_time"],
                     "message_count": 0,
                     "has_reply": False,
+                    "processing": False,
+                    "stale": False,
                     "messages": [],
                     "source_type": source_type,
                     "source_id": source_id,
@@ -499,6 +545,10 @@ def _get_rfq_email_events(rfq_id: str, rfq_number: str = None) -> list[dict]:
             thread["last_time"] = event["display_time"]
             if event.get("direction") == "received":
                 thread["has_reply"] = True
+            if event.get("spr_processing") or event.get("rcr_processing"):
+                thread["processing"] = True
+            if event.get("spr_stale") or event.get("rcr_stale"):
+                thread["stale"] = True
             # Track latest pipeline classification for thread header
             spr = event.get("supplier_pipeline_result")
             if spr and spr.get("classification"):
@@ -1890,6 +1940,28 @@ async def partial_rfq_email_suppliers(
         "rfq": rfq,
         "suppliers": suppliers,
     })
+
+
+@router.get("/partial/rfqs/{rfq_id}/communications-block")
+async def partial_rfq_comms_block(request: Request, rfq_id: str,
+                                  user: dict = Depends(require_user)):
+    """Return just the communications block for an RFQ.
+
+    Used by the client-side poller to refresh email/pipeline state in place
+    while a supplier quote or RFQ creation pipeline is running.
+    """
+    from includes.tools.quote_tools import _get_rfq_dict_sync
+
+    rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+    if not rfq:
+        return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
+
+    ctx = _rfq_comms_context(rfq)
+    ctx["rfq"] = rfq
+    ctx["user"] = user
+    response = templates.TemplateResponse(request, "partials/_rfq_comms.html", ctx)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/partial/rfqs/{rfq_id}/{tab}")

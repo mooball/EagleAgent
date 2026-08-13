@@ -752,6 +752,20 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                 if tracking.supplier_pipeline_result:
                     logger.info(f"[quote-pipeline] #{email_tracking_id}: already processed, skipping")
                     return
+                # Atomically claim the run: writes a visible "processing" marker
+                # for the UI and prevents concurrent triggers from double-running.
+                from sqlalchemy import text as _text
+                claimed = session.execute(_text(
+                    "UPDATE email_tracking SET supplier_pipeline_result = CAST(:marker AS jsonb) "
+                    "WHERE id = :id AND supplier_pipeline_result IS NULL"
+                ), {
+                    "marker": json.dumps({"status": "processing", "started_at": _now_iso()}),
+                    "id": email_tracking_id,
+                }).rowcount
+                session.commit()
+                if not claimed:
+                    logger.info(f"[quote-pipeline] #{email_tracking_id}: run already claimed, skipping")
+                    return
             finally:
                 session.close()
 
@@ -858,6 +872,16 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
             )
         except Exception as e:
             logger.error(f"[quote-pipeline] #{email_tracking_id}: failed — {e}", exc_info=True)
+            # Persist the failure so the UI spinner is replaced by an error badge
+            # instead of showing "processing" forever.
+            try:
+                _save_pipeline_result(email_tracking_id, {
+                    "classification": "error",
+                    "error": str(e),
+                    "processed_at": _now_iso(),
+                })
+            except Exception:
+                logger.exception(f"[quote-pipeline] #{email_tracking_id}: failed to save error result")
 
     threading.Thread(target=_run, daemon=True, name=f"quote-pipeline-{email_tracking_id}").start()
 
