@@ -1,5 +1,7 @@
 """Tests for includes/gmail/draft_service.py — draft creation and email sending."""
 
+import base64
+
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 from includes.gmail.draft_service import (
@@ -102,3 +104,171 @@ class TestCreateDraftEmail:
 
         assert result["status"] == "error"
         assert "Failed to create draft" in result["message"]
+
+
+# ---------------------------------------------------------------------------
+# MIME builder: cid conversion, nesting, header injection
+# ---------------------------------------------------------------------------
+
+def _tiny_png_b64() -> str:
+    return base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 16).decode()
+
+
+class TestInlineImagesToCid:
+    def test_data_uri_converted_to_cid(self):
+        from includes.gmail.draft_service import _inline_images_to_cid
+
+        html = f'<p>Hi</p><img src="data:image/png;base64,{_tiny_png_b64()}">'
+        out, parts = _inline_images_to_cid(html)
+        assert "data:image" not in out
+        assert "cid:" in out
+        assert len(parts) == 1
+        assert parts[0]["Content-ID"].startswith("<img")
+        assert parts[0]["Content-Disposition"].startswith("inline")
+
+    def test_malformed_data_uri_left_untouched(self):
+        from includes.gmail.draft_service import _inline_images_to_cid
+
+        html = '<img src="data:image/png;base64,!!!not-base64!!!">'
+        out, parts = _inline_images_to_cid(html)
+        assert "!!!not-base64!!!" in out
+        assert parts == []
+
+
+class TestBuildMimeMessage:
+    def _build(self, **overrides):
+        from includes.gmail.draft_service import _build_mime_message
+
+        defaults = dict(
+            user_email="staff@eagle.com",
+            recipient_email="supplier@acme.com",
+            subject="Quote Request",
+            body_html="<p>Hello</p>",
+            headers={"X-Eagle-OP": "RFQ-2026-0042"},
+        )
+        defaults.update(overrides)
+        return _build_mime_message(**defaults)
+
+    def test_basic_nesting_mixed_to_alternative(self):
+        msg = self._build()
+        assert msg.get_content_type() == "multipart/mixed"
+        children = msg.get_payload()
+        assert len(children) == 1
+        alternative = children[0]
+        assert alternative.get_content_type() == "multipart/alternative"
+        alts = alternative.get_payload()
+        assert [p.get_content_type() for p in alts] == ["text/plain", "text/html"]
+
+    def test_attachment_is_direct_child_of_mixed(self):
+        msg = self._build(
+            attachments=[{"filename": "quote.pdf", "mime_type": "application/pdf", "data": b"%PDF fake"}]
+        )
+        children = msg.get_payload()
+        assert len(children) == 2
+        pdf = children[1]
+        assert pdf.get_content_type() == "application/pdf"
+        assert pdf["Content-Disposition"].startswith("attachment")
+        assert "quote.pdf" in pdf["Content-Disposition"]
+
+    def test_inline_image_nesting(self):
+        html = f'<img src="data:image/png;base64,{_tiny_png_b64()}">'
+        msg = self._build(body_html=html)
+        assert msg.get_content_type() == "multipart/mixed"
+        related = msg.get_payload()[0]
+        assert related.get_content_type() == "multipart/related"
+        parts = related.get_payload()
+        assert parts[0].get_content_type() == "multipart/alternative"
+        assert parts[1].get_content_type().startswith("image/")
+        assert parts[1]["Content-Disposition"].startswith("inline")
+        html_part = parts[0].get_payload()[1]
+        html_text = html_part.get_payload(decode=True).decode("utf-8")
+        assert "cid:" in html_text
+        assert "data:image" not in html_text
+
+    def test_mixed_case_pasted_image_plus_attachment(self):
+        html = f'<p>Hi</p><img src="data:image/png;base64,{_tiny_png_b64()}">'
+        msg = self._build(
+            body_html=html,
+            attachments=[{"filename": "f.pdf", "mime_type": "application/pdf", "data": b"x"}],
+        )
+        children = msg.get_payload()
+        assert len(children) == 2
+        assert children[0].get_content_type() == "multipart/related"
+        assert children[1].get_content_type() == "application/pdf"
+
+    def test_header_injection_stripped(self):
+        msg = self._build(
+            subject="Bad\r\nBcc: evil@x.com",
+            attachments=[{"filename": "a\r\nb.pdf", "mime_type": "application/pdf", "data": b"x"}],
+        )
+        assert "\r" not in msg["subject"]
+        assert "\n" not in msg["subject"]
+        attachment = msg.get_payload()[1]
+        assert "\r" not in attachment["Content-Disposition"]
+        assert "\n" not in attachment["Content-Disposition"]
+
+    def test_body_plain_override(self):
+        msg = self._build(body_plain="custom plain text")
+        plain = msg.get_payload()[0].get_payload()[0]
+        assert plain.get_content_type() == "text/plain"
+        assert plain.get_payload(decode=True).decode("utf-8") == "custom plain text"
+
+
+class TestGmailTransport:
+    def _msg(self, attachment: bytes | None = None):
+        from includes.gmail.draft_service import _build_mime_message
+
+        atts = (
+            [{"filename": "big.bin", "mime_type": "application/octet-stream", "data": attachment}]
+            if attachment
+            else None
+        )
+        return _build_mime_message(
+            user_email="a@b.com",
+            recipient_email="c@d.com",
+            subject="S",
+            body_html="<p>body</p>",
+            headers={},
+            attachments=atts,
+        )
+
+    def test_small_send_uses_json_raw(self):
+        from includes.gmail.draft_service import _gmail_send
+
+        service = MagicMock()
+        _gmail_send(service, self._msg())
+        service.users().messages().send.assert_called_once()
+        kwargs = service.users().messages().send.call_args.kwargs
+        assert "raw" in kwargs["body"]
+        assert "media_body" not in kwargs
+
+    def test_large_send_uses_media_upload(self):
+        from includes.gmail.draft_service import _gmail_send
+
+        msg = self._msg(b"Z" * (5 * 1024 * 1024))  # 5 MB raw -> MIME > 4 MB
+        assert len(msg.as_bytes()) > 4 * 1024 * 1024
+        service = MagicMock()
+        _gmail_send(service, msg)
+        kwargs = service.users().messages().send.call_args.kwargs
+        assert kwargs["body"] == {}
+        assert "media_body" in kwargs
+
+    def test_small_draft_uses_json_raw(self):
+        from includes.gmail.draft_service import _gmail_create_draft
+
+        service = MagicMock()
+        _gmail_create_draft(service, self._msg())
+        service.users().drafts().create.assert_called_once()
+        kwargs = service.users().drafts().create.call_args.kwargs
+        assert "raw" in kwargs["body"]["message"]
+        assert "media_body" not in kwargs
+
+    def test_large_draft_uses_media_upload(self):
+        from includes.gmail.draft_service import _gmail_create_draft
+
+        msg = self._msg(b"Z" * (5 * 1024 * 1024))
+        service = MagicMock()
+        _gmail_create_draft(service, msg)
+        kwargs = service.users().drafts().create.call_args.kwargs
+        assert kwargs["body"]["message"] == {}
+        assert "media_body" in kwargs

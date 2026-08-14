@@ -1337,6 +1337,10 @@
                     composeUrl: null,
                     error: null,
                     success: null,
+                    attachments: [],   // [{upload_id, filename, size}]
+                    uploading: false,
+                    attachError: null,
+                    attachDragOver: false,
 
                     _prepare(rfqId, recipientEmail, recipientName, subject, bodyHtml, trackingId = null, userEmail = null) {
                         this.rfqId = rfqId;
@@ -1350,6 +1354,10 @@
                         this.composeUrl = null;
                         this.error = null;
                         this.success = null;
+                        this.attachments = [];
+                        this.uploading = false;
+                        this.attachError = null;
+                        this.attachDragOver = false;
                     },
 
                     // Opens in-app editor path
@@ -1384,6 +1392,43 @@
                         this.composeUrl = null;
                         this.error = null;
                         this.success = null;
+                        this.attachments = [];
+                        this.uploading = false;
+                        this.attachError = null;
+                        this.attachDragOver = false;
+                    },
+
+                    uploadFiles(fileList) {
+                        const files = Array.from(fileList || []);
+                        if (!files.length) return;
+                        this.uploading = true;
+                        this.attachError = null;
+                        const fd = new FormData();
+                        for (const f of files) fd.append('files', f);
+                        fetch('/api/email-uploads', {
+                            method: 'POST',
+                            body: fd,
+                            credentials: 'same-origin',
+                        })
+                            .then(resp => resp.json())
+                            .then(data => {
+                                if (data.status !== 'ok') throw new Error(data.message || 'Upload failed');
+                                this.attachments.push(...data.uploads);
+                            })
+                            .catch(e => { this.attachError = e.message; })
+                            .finally(() => { this.uploading = false; });
+                    },
+
+                    removeAttachment(uploadId) {
+                        this.attachments = this.attachments.filter(a => a.upload_id !== uploadId);
+                        fetch(`/api/email-uploads/${uploadId}`, {
+                            method: 'DELETE',
+                            credentials: 'same-origin',
+                        }).catch(() => {});
+                    },
+
+                    _attachmentPayload() {
+                        return { attachments: this.attachments.map(a => ({ upload_id: a.upload_id })) };
                     },
 
                     _initEditorDeferred() {
@@ -1687,6 +1732,7 @@
                                     recipient_name: this.recipientName,
                                     subject: (this.trackingId ? '[' + this.trackingId + '] ' : '') + this.subject,
                                     body_html: bodyHtml,
+                                    ...this._attachmentPayload(),
                                 }),
                             });
                             const data = await response.json();
@@ -1722,6 +1768,7 @@
                                     recipient_name: this.recipientName,
                                     subject: (this.trackingId ? '[' + this.trackingId + '] ' : '') + this.subject,
                                     body_html: bodyHtml,
+                                    ...this._attachmentPayload(),
                                 }),
                             });
                             const data = await response.json();
@@ -2081,6 +2128,9 @@
             okCount: 0,
             failCount: 0,
             error: null,
+            attachments: [],   // shared across all recipients
+            uploading: false,
+            attachError: null,
 
             init() {
                 window.__bulkComposeOpen = (selectedSuppliers, rfqId, opportunityId) => {
@@ -2102,6 +2152,9 @@
                 this.okCount = 0;
                 this.failCount = 0;
                 this.error = null;
+                this.attachments = [];
+                this.uploading = false;
+                this.attachError = null;
                 this.mode = 'editor';
                 this.isOpen = true;
                 this.$nextTick(() => this._initEditor());
@@ -2116,6 +2169,52 @@
                 this.okCount = 0;
                 this.failCount = 0;
                 this.error = null;
+                this.attachments = [];
+                this.uploading = false;
+                this.attachError = null;
+            },
+
+            uploadFiles(fileList) {
+                const files = Array.from(fileList || []);
+                if (!files.length) return;
+                this.uploading = true;
+                this.attachError = null;
+                const fd = new FormData();
+                for (const f of files) fd.append('files', f);
+                fetch('/api/email-uploads', {
+                    method: 'POST',
+                    body: fd,
+                    credentials: 'same-origin',
+                })
+                    .then(resp => resp.json())
+                    .then(data => {
+                        if (data.status !== 'ok') throw new Error(data.message || 'Upload failed');
+                        this.attachments.push(...data.uploads);
+                    })
+                    .catch(e => { this.attachError = e.message; })
+                    .finally(() => { this.uploading = false; });
+            },
+
+            removeAttachment(uploadId) {
+                this.attachments = this.attachments.filter(a => a.upload_id !== uploadId);
+                fetch(`/api/email-uploads/${uploadId}`, {
+                    method: 'DELETE',
+                    credentials: 'same-origin',
+                }).catch(() => {});
+            },
+
+            _attachmentPayload() {
+                return { attachments: this.attachments.map(a => ({ upload_id: a.upload_id })) };
+            },
+
+            _cleanupAttachments() {
+                for (const a of this.attachments) {
+                    fetch(`/api/email-uploads/${a.upload_id}`, {
+                        method: 'DELETE',
+                        credentials: 'same-origin',
+                    }).catch(() => {});
+                }
+                this.attachments = [];
             },
 
             _destroyEditor() {
@@ -2238,6 +2337,7 @@
                                 recipient_name: r.contact_name || r.name,
                                 subject: (this.trackingId ? '[' + this.trackingId + '] ' : '') + this.subject,
                                 body_html: bodyHtml,
+                                ...this._attachmentPayload(),
                             }),
                         });
                         const data = await resp.json();
@@ -2250,6 +2350,7 @@
                         await new Promise(r => setTimeout(r, 500));
                     }
                 }
+                this._cleanupAttachments();
                 this.mode = 'result';
                 this.isSending = false;
                 this.okCount = this.sendResults.filter(r => r.status === 'ok').length;
@@ -2278,6 +2379,7 @@
                                 recipient_name: r.contact_name || r.name,
                                 subject: (this.trackingId ? '[' + this.trackingId + '] ' : '') + this.subject,
                                 body_html: bodyHtml,
+                                ...this._attachmentPayload(),
                             }),
                         });
                         const data = await resp.json();
@@ -2290,6 +2392,7 @@
                         await new Promise(r => setTimeout(r, 500));
                     }
                 }
+                this._cleanupAttachments();
                 this.mode = 'result';
                 this.isSending = false;
                 this.okCount = this.sendResults.filter(r => r.status === 'ok').length;

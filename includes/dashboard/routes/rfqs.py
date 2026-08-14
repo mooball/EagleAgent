@@ -5,7 +5,7 @@ import math
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import Request, Depends, HTTPException
+from fastapi import File, Request, Depends, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from sqlalchemy import func as sa_func
 
@@ -2163,6 +2163,78 @@ async def api_get_email_body_rendered(
 
 
 # ---------------------------------------------------------------------------
+# Email Integration: Transient Attachment Uploads
+# ---------------------------------------------------------------------------
+
+@router.post("/api/email-uploads")
+async def api_email_upload(
+    files: list[UploadFile] = File(...),
+    user: dict = Depends(require_user),
+):
+    """Accept email attachment uploads into the owner-scoped transient store."""
+    from includes.dashboard.email_uploads import save_upload
+
+    user_email = user.get("email", "")
+    if not user_email:
+        return JSONResponse({"status": "error", "message": "User email not found"}, status_code=400)
+    if len(files) > 10:
+        return JSONResponse({"status": "error", "message": "Too many files"}, status_code=400)
+    uploads = []
+    for f in files:
+        data = await f.read()
+        try:
+            uploads.append(save_upload(user_email, f.filename, f.content_type, data))
+        except ValueError as e:
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
+    return JSONResponse({"status": "ok", "uploads": uploads})
+
+
+@router.delete("/api/email-uploads/{upload_id}")
+async def api_email_upload_delete(
+    upload_id: str,
+    user: dict = Depends(require_user),
+):
+    """Delete a transient upload when the user removes its chip."""
+    from includes.dashboard.email_uploads import delete_upload
+
+    user_email = user.get("email", "")
+    if not user_email:
+        return JSONResponse({"status": "error", "message": "User email not found"}, status_code=400)
+    try:
+        delete_upload(user_email, upload_id)
+    except ValueError:
+        return JSONResponse({"status": "error", "message": "Invalid upload id"}, status_code=400)
+    return JSONResponse({"status": "ok"})
+
+
+def _resolve_attachments(user_email: str, attachments_raw) -> list[dict]:
+    """Resolve upload_ids from a request body into loaded attachment dicts.
+
+    Ownership is enforced by the store's path scoping; filenames come from
+    meta.json, never from the request body. Raises ValueError on any problem.
+    """
+    from includes.dashboard.email_uploads import TOTAL_MAX_BYTES, load_upload
+
+    if not attachments_raw:
+        return []
+    if not isinstance(attachments_raw, list) or len(attachments_raw) > 10:
+        raise ValueError("Invalid attachments payload")
+    resolved = []
+    total = 0
+    for item in attachments_raw:
+        if not isinstance(item, dict) or "upload_id" not in item:
+            raise ValueError("Invalid attachments payload")
+        att = load_upload(user_email, item["upload_id"])
+        total += att["size"]
+        if total > TOTAL_MAX_BYTES:
+            raise ValueError(
+                f"Attachments exceed {_helpers.config.EMAIL_ATTACHMENT_TOTAL_MB}MB total limit"
+            )
+        resolved.append(att)
+    return resolved
+
+
+# ---------------------------------------------------------------------------
 # Email Integration: Draft Creation
 # ---------------------------------------------------------------------------
 
@@ -2234,6 +2306,12 @@ async def api_create_email_draft(
                 status_code=400
             )
         
+        # Resolve transient uploads into attachment payloads (ownership-checked)
+        try:
+            attachments = _resolve_attachments(user_email, body.get("attachments"))
+        except ValueError as e:
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
+        
         # Create draft with Gmail API (runs in thread to avoid blocking)
         draft_result = await asyncio.to_thread(
             create_draft_email,
@@ -2243,7 +2321,8 @@ async def api_create_email_draft(
             body_html=body_html,
             rfq_id=rfq_id,
             email_type="rfq_outreach",  # Can be extended to support other types
-            opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal")
+            opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal"),
+            attachments=attachments,
         )
         
         if draft_result["status"] != "ok":
@@ -2302,6 +2381,11 @@ async def api_send_email_direct(
         if not user_email:
             return JSONResponse({"status": "error", "message": "User email not found"}, status_code=400)
 
+        try:
+            attachments = _resolve_attachments(user_email, body.get("attachments"))
+        except ValueError as e:
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
+
         send_result = await asyncio.to_thread(
             send_email_direct,
             user_email=user_email,
@@ -2311,6 +2395,7 @@ async def api_send_email_direct(
             rfq_id=rfq_id,
             email_type="rfq_outreach",
             opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal"),
+            attachments=attachments,
         )
 
         if send_result["status"] != "ok":

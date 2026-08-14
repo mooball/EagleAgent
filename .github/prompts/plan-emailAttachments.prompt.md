@@ -4,16 +4,16 @@
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| **1** | Settings: `EMAIL_ATTACHMENT_MAX_MB`, `EMAIL_ATTACHMENT_TOTAL_MB`, `EMAIL_UPLOAD_TTL_HOURS` | ❌ Not started |
-| **2** | `includes/dashboard/email_uploads.py` — owner-scoped transient store | ❌ Not started |
-| **3** | `POST /api/email-uploads` + `DELETE /api/email-uploads/{id}` | ❌ Not started |
-| **4** | MIME builder (`mixed` → `related` → `alternative`) + `cid:` inline images + text alternative | ❌ Not started |
-| **5** | Gmail media upload path for messages > 4 MB | ❌ Not started |
-| **6** | Send endpoints accept `attachments` (no inline deletion) | ❌ Not started |
-| **7** | Attach UI in single-supplier compose modal | ❌ Not started |
-| **8** | Attach UI in bulk compose modal (shared attachments) | ❌ Not started |
-| **9** | TTL cleanup hooked into existing `_maintenance_loop` | ❌ Not started |
-| **10** | Tests (MIME nesting, cid conversion, upload ownership, size caps) | ❌ Not started |
+| **1** | Settings: `EMAIL_ATTACHMENT_MAX_MB`, `EMAIL_ATTACHMENT_TOTAL_MB`, `EMAIL_UPLOAD_TTL_HOURS` | ✅ Done |
+| **2** | `includes/dashboard/email_uploads.py` — owner-scoped transient store | ✅ Done |
+| **3** | `POST /api/email-uploads` + `DELETE /api/email-uploads/{id}` | ✅ Done |
+| **4** | MIME builder (`mixed` → `related` → `alternative`) + `cid:` inline images + text alternative | ✅ Done |
+| **5** | Gmail media upload path for messages > 4 MB | ✅ Done |
+| **6** | Send endpoints accept `attachments` (no inline deletion) | ✅ Done |
+| **7** | Attach UI in single-supplier compose modal | ✅ Done |
+| **8** | Attach UI in bulk compose modal (shared attachments) | ✅ Done |
+| **9** | TTL cleanup hooked into existing `_maintenance_loop` | ✅ Done |
+| **10** | Tests (MIME nesting, cid conversion, upload ownership, size caps) | ✅ Done |
 
 ---
 

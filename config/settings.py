@@ -119,6 +119,11 @@ class Config:
     # Max file upload size in MB
     MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
     
+    # Email attachment limits (Gmail caps a message at 25MB; base64 adds ~33%)
+    EMAIL_ATTACHMENT_MAX_MB = int(os.getenv("EMAIL_ATTACHMENT_MAX_MB", "10"))     # per file
+    EMAIL_ATTACHMENT_TOTAL_MB = int(os.getenv("EMAIL_ATTACHMENT_TOTAL_MB", "18"))  # per email, raw
+    EMAIL_UPLOAD_TTL_HOURS = int(os.getenv("EMAIL_UPLOAD_TTL_HOURS", "6"))
+    
     
     # ==================== NetSuite Integration ====================
     
