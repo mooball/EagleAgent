@@ -1431,6 +1431,14 @@
                         return { attachments: this.attachments.map(a => ({ upload_id: a.upload_id })) };
                     },
 
+                    _formatSize(size) {
+                        const n = Number(size);
+                        if (!n) return '0 B';
+                        if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+                        if (n >= 1024) return (n / 1024).toFixed(0) + ' KB';
+                        return n + ' B';
+                    },
+
                     _initEditorDeferred() {
                         const initFn = () => this._initEditor();
                         if (window.Alpine && typeof Alpine.nextTick === 'function') {
@@ -2205,6 +2213,14 @@
 
             _attachmentPayload() {
                 return { attachments: this.attachments.map(a => ({ upload_id: a.upload_id })) };
+            },
+
+            _formatSize(size) {
+                const n = Number(size);
+                if (!n) return '0 B';
+                if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+                if (n >= 1024) return (n / 1024).toFixed(0) + ' KB';
+                return n + ' B';
             },
 
             _cleanupAttachments() {
