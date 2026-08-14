@@ -26,6 +26,10 @@
     ];
     </script>
     <div class="flex items-center justify-end gap-2 mb-3">
+        <button @click="window._openAiSummary && window._openAiSummary('{{ rfq.id }}')"
+                class="btn-sm">
+            Agent Summary
+        </button>
         <button @click="$store.comms.expandAll(window._commsThreadIds)"
                 class="btn-sm">
             Expand all

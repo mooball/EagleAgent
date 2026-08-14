@@ -189,6 +189,18 @@ def _run_maintenance():
             if removed_files:
                 logger.info(f"Maintenance: removed {removed_files} old attachment files (>{attachment_days}d)")
 
+        # --- Sweep expired email uploads (transient attachment staging) ---
+        try:
+            from includes.dashboard.email_uploads import sweep_expired
+            removed_uploads = sweep_expired(config.EMAIL_UPLOAD_TTL_HOURS)
+            if removed_uploads:
+                logger.info(
+                    f"Maintenance: removed {removed_uploads} expired email uploads "
+                    f"(>{config.EMAIL_UPLOAD_TTL_HOURS}h)"
+                )
+        except Exception as e:
+            logger.warning(f"Maintenance: email upload sweep failed: {e}")
+
     except Exception as e:
         session.rollback()
         logger.error(f"Maintenance cycle failed: {e}")
