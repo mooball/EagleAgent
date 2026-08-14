@@ -410,3 +410,62 @@ class TestCommsSummaryEndpoint:
             resp = client.get("/api/rfqs/RFQ-NOPE/comms-summary")
         assert resp.status_code == 404
         assert resp.json()["message"] == "RFQ not found"
+
+
+class TestRfqSummaryEndpoint:
+    @pytest.fixture
+    def client(self):
+        return TestClient(_make_test_app())
+
+    def _rfq_dict(self):
+        return {
+            "id": "RFQ-2026-0042",
+            "rfq_number": "RFQ-2026-0042",
+            "customer": "Acme Mining",
+            "status": "in_progress",
+            "created_date": "2026-08-12",
+            "title": "",
+            "notes": "",
+            "reference": "",
+            "netsuite_opportunity": "",
+            "hubspot_deal": "",
+            "pipeline_stage": "complete",
+            "assigned_to": "staff@eagle.com",
+            "customer_contact": {"name": "Jane", "email": "jane@acme.com"},
+            "items": [
+                {
+                    "line": 1,
+                    "input_description": "Hydraulic hose",
+                    "input_code": "HH-100",
+                    "quantity": 5,
+                    "uom": "ea",
+                    "match": "specific",
+                    "part_number": "HH-100",
+                    "suppliers": [{"name": "HoseCo", "price": 12.5}],
+                }
+            ],
+        }
+
+    def test_requires_auth(self, client):
+        resp = client.get("/api/rfqs/RFQ-2026-0042/summary-md", follow_redirects=False)
+        assert resp.status_code == 303
+
+    def test_returns_markdown_summary(self, client):
+        client.get("/_test/login")
+        with patch("includes.tools.rfq_crud._get_rfq_dict_sync", return_value=self._rfq_dict()):
+            resp = client.get("/api/rfqs/RFQ-2026-0042/summary-md")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert "RFQ-2026-0042" in data["markdown"]
+        assert "Acme Mining" in data["markdown"]
+        # includes the quotation snapshot (view_rfq_quotation view)
+        assert "Quotation Status" in data["markdown"]
+        assert "Price Matrix" in data["markdown"]
+
+    def test_not_found(self, client):
+        client.get("/_test/login")
+        with patch("includes.tools.rfq_crud._get_rfq_dict_sync", return_value=None):
+            resp = client.get("/api/rfqs/RFQ-NOPE/summary-md")
+        assert resp.status_code == 404
+        assert resp.json()["message"] == "RFQ not found"

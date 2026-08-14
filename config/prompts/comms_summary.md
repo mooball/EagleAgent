@@ -8,7 +8,7 @@ Output **markdown only** — no preamble, no code fences, no closing remarks.
 
 **Do NOT include a "Dates" section — the application generates it automatically.**
 
-Use exactly these three level-2 headings, in this order:
+Use exactly these four level-2 headings, in this order:
 
 ## Quotes received
 
@@ -19,6 +19,11 @@ If none: "No quotes received yet."
 
 A Markdown numbered list (`1.`, `2.`, `3.`, ...). Each entry starts with the supplier name in bold, then a short summary of their query (use the pipeline classification reason or email subject).
 If none: "No clarifications outstanding."
+
+## Declined
+
+A Markdown numbered list (`1.`, `2.`, `3.`, ...) of suppliers who have replied but declined to quote. Start each entry with the supplier name in bold, then a short summary of why they declined (from the pipeline classification reason or email subject).
+If none: "No suppliers have declined."
 
 ## No response
 

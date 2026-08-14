@@ -2166,6 +2166,27 @@ async def api_get_email_body_rendered(
 # Email Integration: AI Communications Summary
 # ---------------------------------------------------------------------------
 
+@router.get("/api/rfqs/{rfq_id}/summary-md")
+async def api_rfq_summary_md(
+    rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Return the RFQ's markdown summary — the same formats the agent sees.
+
+    Combines the full RFQ detail (get_rfq brief=False) with the quotation
+    snapshot (view_rfq_quotation): price matrix, supplier details, totals.
+    """
+    from includes.tools.comms_summary import decorate_dates
+    from includes.tools.rfq_crud import _get_rfq_dict_sync
+    from includes.tools.rfq_render import _render_rfq_summary
+    from includes.tools.quote_tools import _build_quotation_snapshot
+
+    rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+    if not rfq:
+        return JSONResponse({"status": "error", "message": "RFQ not found"}, status_code=404)
+    markdown = _render_rfq_summary(rfq) + "\n\n" + _build_quotation_snapshot(rfq)
+    return JSONResponse({"status": "ok", "markdown": decorate_dates(markdown)})
+
 @router.get("/api/rfqs/{rfq_id}/comms-summary")
 async def api_comms_summary(
     request: Request,

@@ -1,0 +1,45 @@
+{#
+  RFQ Summary modal — shows the same markdown summary the agent sees.
+
+  Requires the Alpine component `rfqSummaryModal()` (registered in base.html).
+  Usage:
+    <div x-data="rfqSummaryModal">
+      {% include "partials/_rfq_summary_modal.html" %}
+    </div>
+#}
+<div x-show="show" x-cloak
+     class="fixed inset-0 z-[9997] flex items-center justify-center p-4"
+     @keydown.escape.window="close()">
+    <!-- Backdrop -->
+    <div class="absolute inset-0 bg-black/50" @click="close()" x-transition.opacity></div>
+    <!-- Modal panel -->
+    <div class="relative w-full bg-white dark:bg-gray-900 rounded-lg shadow-xl flex flex-col overflow-hidden"
+         style="width: 90%; max-width: 1200px; max-height: 85vh"
+         x-transition @click.stop>
+        <!-- Header -->
+        <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200 dark:border-gray-700 shrink-0">
+            <div class="flex items-center gap-2 min-w-0">
+                <svg class="w-4 h-4 text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">RFQ Summary</h3>
+            </div>
+            <button @click="close()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 shrink-0">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+
+        <!-- Body -->
+        <div class="flex-1 overflow-y-auto px-5 py-4 min-h-0">
+            <div x-show="loading" class="flex items-center gap-2 text-sm text-gray-400">
+                <svg class="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                Loading summary…
+            </div>
+            <div x-show="error" x-cloak class="flex items-center gap-2 text-sm text-gray-500 bg-gray-100 dark:bg-gray-800 rounded p-3">
+                <svg class="w-5 h-5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span x-text="error"></span>
+            </div>
+            <div x-show="markdownHtml" x-cloak>
+                <div id="rfq-summary-body" class="email-body ai-summary text-sm leading-relaxed" x-html="markdownHtml"></div>
+            </div>
+        </div>
+    </div>
+</div>

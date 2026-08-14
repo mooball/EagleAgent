@@ -778,6 +778,38 @@
             };
         }
 
+        // RFQ summary modal — shows the markdown summary the agent sees
+        function rfqSummaryModal() {
+            return {
+                show: false,
+                loading: false,
+                error: '',
+                markdownHtml: '',
+                init() { window._openRfqSummary = this.open.bind(this); },
+                async open(rfqId) {
+                    this.show = true;
+                    this.loading = true;
+                    this.error = '';
+                    this.markdownHtml = '';
+                    const self = this;
+                    try {
+                        const resp = await fetch('/api/rfqs/' + rfqId + '/summary-md', { credentials: 'same-origin' });
+                        const data = await resp.json();
+                        if (data.status !== 'ok') throw new Error(data.message || 'Failed to load summary');
+                        self.markdownHtml = marked.parse(data.markdown || '');
+                        window.Alpine.nextTick(function() {
+                            _decorateTimeAgo(document.getElementById('rfq-summary-body'));
+                        });
+                    } catch (e) {
+                        self.error = e.message;
+                    } finally {
+                        self.loading = false;
+                    }
+                },
+                close() { this.show = false; }
+            };
+        }
+
         function rfqDetail() {
             return {
                 expanded: {},
