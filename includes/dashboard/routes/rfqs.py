@@ -2163,9 +2163,35 @@ async def api_get_email_body_rendered(
 
 
 # ---------------------------------------------------------------------------
-# Email Integration: Transient Attachment Uploads
+# Email Integration: AI Communications Summary
 # ---------------------------------------------------------------------------
 
+@router.get("/api/rfqs/{rfq_id}/comms-summary")
+async def api_comms_summary(
+    request: Request,
+    rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Get (or generate + cache) the AI communications summary for an RFQ.
+
+    Query params:
+        refresh=1  — force regeneration, bypassing the cache
+    """
+    force = request.query_params.get("refresh") in ("1", "true")
+    from includes.tools.comms_summary import decorate_dates, get_or_generate_summary
+
+    result = await asyncio.to_thread(get_or_generate_summary, rfq_id, force)
+    http_status = result.pop("http_status", None)
+    if result.get("status") != "ok":
+        return JSONResponse(result, status_code=http_status or 500)
+    # Wrap timestamps for client-side relative-time display (cache keeps raw markdown)
+    result["markdown"] = decorate_dates(result["markdown"])
+    return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
+# Email Integration: Transient Attachment Uploads
+# ---------------------------------------------------------------------------
 @router.post("/api/email-uploads")
 async def api_email_upload(
     files: list[UploadFile] = File(...),

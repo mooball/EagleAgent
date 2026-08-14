@@ -39,6 +39,16 @@
         .email-body a { color: #2563eb; text-decoration: underline; }
         .email-body img { max-width: 100%; height: auto; background: #e5e7eb; min-width: 32px; min-height: 32px; border-radius: 2px; }
         .email-body ul, .email-body ol { padding-left: 1.2em; margin: 0.25em 0; }
+        .email-body ul { list-style: disc; }
+        .email-body ol { list-style: decimal; }
+        .email-body li { margin: 0.15em 0; }
+        .ai-summary h1, .ai-summary h2, .ai-summary h3, .ai-summary h4 {
+            font-weight: 700; margin: 1em 0 0.35em; color: #1f2937;
+        }
+        .ai-summary h1, .ai-summary h2 { font-size: 15px; }
+        .ai-summary h3, .ai-summary h4 { font-size: 13px; }
+        .dark .ai-summary h1, .dark .ai-summary h2, .dark .ai-summary h3, .dark .ai-summary h4 { color: #f3f4f6; }
+        .ts-ago { color: #9ca3af; }
         .dark .email-body { color: #9ca3af; }
         .dark .email-body strong { color: #e5e7eb; }
         .dark .email-body th { background: #374151; }
@@ -701,6 +711,68 @@
                         },
                         function(err) { self.error = err; self.loading = false; }
                     );
+                },
+                close() { this.show = false; }
+            };
+        }
+
+        // Append human 'time ago' labels to date spans emitted by the AI summary
+        function _decorateTimeAgo(root) {
+            if (!root) return;
+            root.querySelectorAll('.ts[data-ts]').forEach(function(el) {
+                var t = parseInt(el.getAttribute('data-ts'), 10);
+                if (!t) return;
+                var diff = (Date.now() / 1000) - t;
+                if (diff < 0) return;  // future timestamps: leave as-is
+                var label;
+                if (diff < 60) label = 'just now';
+                else if (diff < 3600) label = Math.floor(diff / 60) + 'm ago';
+                else if (diff < 86400) label = (diff / 3600).toFixed(1).replace(/\.0$/, '') + 'h ago';
+                else if (diff < 7 * 86400) label = (diff / 86400).toFixed(1).replace(/\.0$/, '') + ' days ago';
+                else label = Math.round(diff / (7 * 86400)) + 'w ago';
+                el.insertAdjacentHTML('afterend', ' <span class="ts-ago">(' + label + ')</span>');
+            });
+        }
+
+        // AI communications summary modal — used by the RFQ comms tab
+        function aiSummaryModal() {
+            return {
+                show: false,
+                loading: false,
+                refreshing: false,
+                error: '',
+                markdownHtml: '',
+                meta: null,
+                _rfqId: null,
+                init() { window._openAiSummary = this.open.bind(this); },
+                async open(rfqId, refresh) {
+                    this.show = true;
+                    this.loading = true;
+                    this.refreshing = !!refresh;
+                    this.error = '';
+                    this.markdownHtml = '';
+                    if (rfqId) this._rfqId = rfqId;
+                    const self = this;
+                    try {
+                        const url = '/api/rfqs/' + this._rfqId + '/comms-summary' + (refresh ? '?refresh=1' : '');
+                        const resp = await fetch(url, { credentials: 'same-origin' });
+                        const data = await resp.json();
+                        if (data.status !== 'ok') throw new Error(data.message || 'Failed to generate summary');
+                        self.markdownHtml = marked.parse(data.markdown || '');
+                        self.meta = data;
+                        window.Alpine.nextTick(function() {
+                            _decorateTimeAgo(document.getElementById('ai-summary-body'));
+                        });
+                    } catch (e) {
+                        self.error = e.message;
+                    } finally {
+                        self.loading = false;
+                        self.refreshing = false;
+                    }
+                },
+                refresh() {
+                    if (this.loading || !this._rfqId) return;
+                    this.open(null, true);
                 },
                 close() { this.show = false; }
             };

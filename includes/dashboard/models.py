@@ -283,6 +283,9 @@ class RFQ(Base):
     supplier_emails = Column(JSONB, nullable=True)            # [{email, name}, ...] contact list for multi-supplier RFQs
     supplier_meta = Column(JSONB, nullable=True)               # {supplier_name: {shipping_cost, shipping_currency, notes, terms, ...}}
     
+    # AI communications summary (comms tab) — {cache_key, generated_at, markdown}
+    comms_summary = Column(JSONB, nullable=True)
+    
     updated_at = Column(DateTime(timezone=True), nullable=True)
     pipeline_stage = Column(String, nullable=False, server_default='unprocessed')  # unprocessed/classified/validation_gate/validated/grouped/suppliers_internal/awaiting_web_search/complete
 

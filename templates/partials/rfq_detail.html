@@ -639,6 +639,11 @@
     {% include "partials/_email_viewer_modal.html" %}
     </div>
 
+    <!-- AI communications summary modal -->
+    <div x-data="aiSummaryModal">
+    {% include "partials/_ai_summary_modal.html" %}
+    </div>
+
     <!-- Pipeline Detail Modal -->
     <div x-data="{ showPipeline: false, pd: {}, feedbackOpen: false, feedbackText: '', feedbackSubmitting: false, feedbackMsg: '', feedbackError: false,
                    submitFeedback() {
