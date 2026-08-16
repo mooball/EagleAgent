@@ -53,7 +53,7 @@ A checklist file, reviewed and signed off before any Phase 1 code. Derived from
 | `features.unsafe_allow_html` | `true` | **Drop** — only exists for the token-footer `<div>` (app.py:1237). Becomes structured metadata. |
 | `features.spontaneous_file_upload.accept` | images, PDF, text, audio, xlsx/xls | Keep. Must be enforced **server-side** after migration. |
 | `features.spontaneous_file_upload.max_files` | `20` | Keep |
-| `features.spontaneous_file_upload.max_size_mb` | `50` | Keep (note: `document_processing.py` uses `MAX_FILE_SIZE_MB=100` — **reconcile**) |
+| `features.spontaneous_file_upload.max_size_mb` | `50` | Keep. **Reconciled 2026-08-16** — `MAX_FILE_SIZE_MB` lowered 100 → 50 so the server check matches the UI gate. Previously the UI rejected first and the 100 MB server check was unreachable, so the effective limit would have silently doubled once the Chainlit gate went away. |
 | `features.auto_tag_thread` | `true` | **Change** — profile moves from thread tag to `threads.metadata.agent` |
 | `features.edit_message` | `true` | **Drop** — decided 2026-08-16. Not carried to the new UI. |
 | `features.user_message_autoscroll` | `true` | Keep — becomes ours to implement |
@@ -68,6 +68,8 @@ A checklist file, reviewed and signed off before any Phase 1 code. Derived from
 | `project.allow_origins` | `["*"]` | **Tighten** — same-origin only after migration |
 
 ### Behavioural items not in config
+
+All **keep** — confirmed 2026-08-16.
 
 - [ ] Thread list: create / rename / delete / resume
 - [ ] Thread auto-naming (`"{RFQ} — {customer}"`)
@@ -469,7 +471,42 @@ Recorded 2026-08-16 (read-only).
 - [x] Full suite green
 - [x] Prod snapshot recorded above
 - [ ] The 8 ad-hoc `cl` mocks in existing tests migrated to the shared fakes *(deferred to Phase 1, when ChatContext lands)*
-- [ ] Coverage measured on `app.py` + `includes/chat/` as a baseline
+- [x] Coverage baseline measured on `app.py` + `includes/chat/`
+
+### Coverage baseline — 2026-08-16
+
+`uv run pytest tests/ --cov=app --cov=includes/chat` (browser agent excluded).
+
+| Module | Stmts | Cover |
+| --- | ---: | ---: |
+| `includes/chat/streaming_logic.py` | 80 | **98%** |
+| `includes/chat/middleware.py` | 58 | 90% |
+| `includes/chat/document_processing.py` | 183 | 87% |
+| `includes/chat/actions.py` | 79 | 68% |
+| `includes/chat/local_storage_client.py` | 48 | 62% |
+| `app.py` | 582 | 44% |
+| **`includes/chat/rfq_actions.py`** | **635** | **19%** |
+| `includes/chat/data_layer.py` | 53 | 17% |
+| `includes/chat/job_progress.py` | 35 | **0%** |
+| `includes/chat/supplier_search_gate.py` | 45 | **0%** |
+| **TOTAL** | **1,798** | **42%** |
+
+### What the baseline says about Phase 1
+
+- **`rfq_actions.py` is the risk, and now it is quantified**: 635 statements, 514
+  uncovered, and it holds 21 of the 25 in-scope callbacks. The 5 characterised here
+  cover the distinct *shapes*, not the bulk of the code. Every conversion in Step 6
+  is largely unguarded, which is why the plan insists on one commit per callback.
+- **Two files sit at 0%** — `job_progress.py` and `supplier_search_gate.py`. Both are
+  in the Phase 1 Step 2 "leaf modules" batch. Worth a few tests as they are converted,
+  rather than converting blind.
+- **`streaming_logic.py` at 98%** confirms the extraction did its job: the logic that
+  was unreachable inside a 590-line coroutine is now the best-covered code in the tree.
+- `data_layer.py` at 17% is not worth improving — Phase 6 deletes it.
+- The uncovered ranges in `app.py` are dominated by the lifecycle hooks
+  (`on_chat_start` 259-362, `on_chat_resume` 374-564), which need a real Chainlit
+  session. Phase 1 makes them thin adapters, so their coverage matters less than it
+  looks.
 
 ### What was built
 

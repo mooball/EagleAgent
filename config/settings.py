@@ -113,7 +113,7 @@ class Config:
     # ==================== File Storage Settings ====================
     
     # Max file upload size in MB
-    MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
+    MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
     
     # Email attachment limits (Gmail caps a message at 25MB; base64 adds ~33%)
     EMAIL_ATTACHMENT_MAX_MB = int(os.getenv("EMAIL_ATTACHMENT_MAX_MB", "10"))     # per file
