@@ -55,7 +55,7 @@ A checklist file, reviewed and signed off before any Phase 1 code. Derived from
 | `features.spontaneous_file_upload.max_files` | `20` | Keep |
 | `features.spontaneous_file_upload.max_size_mb` | `50` | Keep (note: `document_processing.py` uses `MAX_FILE_SIZE_MB=100` — **reconcile**) |
 | `features.auto_tag_thread` | `true` | **Change** — profile moves from thread tag to `threads.metadata.agent` |
-| `features.edit_message` | `true` | **Decide** — out of scope for v1? |
+| `features.edit_message` | `true` | **Drop** — decided 2026-08-16. Not carried to the new UI. |
 | `features.user_message_autoscroll` | `true` | Keep — becomes ours to implement |
 | `features.assistant_message_autoscroll` | `true` | Keep — becomes ours to implement |
 | `features.latex` | `false` | Drop |
@@ -84,10 +84,11 @@ A checklist file, reviewed and signed off before any Phase 1 code. Derived from
 
 ### Action callbacks — enumerate every one
 
-**28 total: 21 in [includes/chat/rfq_actions.py](includes/chat/rfq_actions.py), 7 in
-[app.py](app.py).** "Action buttons work" is not a parity criterion — we could lose
- twenty of these and still tick that box. Each row below is a distinct user-facing
-capability and must be individually verified.
+**28 exist today: 21 in [includes/chat/rfq_actions.py](includes/chat/rfq_actions.py), 7 in
+[app.py](app.py). 25 are in scope** after dropping the three delete-all actions.
+"Action buttons work" is not a parity criterion — we could lose twenty of these and
+still tick that box. Each row below is a distinct user-facing capability and must be
+individually verified.
 
 The split by **trigger source** matters, because the two groups need different
 replacement machinery:
@@ -135,17 +136,42 @@ The five `rfq_pipeline_*` supplier options plus `_done` are built by
 [includes/chat/supplier_search_gate.py](includes/chat/supplier_search_gate.py) — verify
 them as one menu, not six independent buttons.
 
-#### C. System actions — 7, all in [app.py](app.py)
+#### C. System actions — 4, all in [app.py](app.py)
 
 | Action | Line | Notes |
 | --- | --- | --- |
 | `new_conversation` | 605 | |
-| `delete_all_data` | 611 | Opens the confirmation prompt |
-| `confirm_delete_all` | 617 | **Destructive** — wipes all user data |
-| `cancel_delete_all` | 636 | |
 | `cancel_run_script` | 645 | |
 | `cancel_job` | 655 | |
 | `stop_agent` | 672 | Also reachable via `/api/stop-agent`, which **bypasses the bridge lock** |
+
+#### Dropped — decided 2026-08-16
+
+`delete_all_data`, `confirm_delete_all`, `cancel_delete_all` are **not** carried to
+the new UI. Their footprint is wider than the three callbacks:
+
+| Location | What goes |
+| --- | --- |
+| [app.py](app.py#L588) | the three `@cl.action_callback` handlers |
+| [includes/chat/actions.py](includes/chat/actions.py#L172) | the `delete_all_data` registry entry and `handle_delete_all_data`, which builds the confirm/cancel buttons |
+| [includes/chat/commands.py](includes/chat/commands.py) | **the entire file** — `handle_deleteall_command` is its only contents |
+| [includes/tools/action_tools.py](includes/tools/action_tools.py#L67) | the agent-callable path |
+| [tests/test_actions.py](tests/test_actions.py) | 6 references |
+
+Two consequences worth noting:
+
+- **It removes an LLM-invokable destructive action.** `action_tools.py` let the agent
+  call `dispatch_action("delete_all_data")` itself. Losing that is a safety improvement,
+  not just a scope reduction.
+- **`includes/chat/commands.py` leaves the Phase 1 refactor scope entirely**, since it
+  existed only to serve this feature.
+
+> **Resolved 2026-08-16: deleted immediately** rather than converted in Phase 1 and
+> removed in Phase 6. Phase 1 is one file and three callbacks lighter as a result.
+> `ADMIN_ONLY_TOOLS` in [includes/graph.py](includes/graph.py#L33) is now empty but
+> retained as the registration point for future admin-only tools.
+> `.chainlit/config.toml`'s `edit_message` is left as-is — it disappears with Chainlit,
+> and flipping it now would change current behaviour for no benefit.
 
 #### Decisions this list forces
 
@@ -352,8 +378,9 @@ persistence trick (app.py:754–757) records the elements.
 
 ### 5.9 Action callbacks — representative sample
 
-**28 total** (21 in [includes/chat/rfq_actions.py](includes/chat/rfq_actions.py),
-7 in [app.py](app.py)). Don't test all of them; pick 8 covering each distinct shape:
+**28 exist today** (21 in [includes/chat/rfq_actions.py](includes/chat/rfq_actions.py),
+7 in [app.py](app.py)); **25 are in scope**. Don't test all of them; pick 8 covering
+each distinct shape:
 
 | Callback | Line | Shape being covered |
 | --- | --- | --- |
@@ -364,7 +391,7 @@ persistence trick (app.py:754–757) records the elements.
 | `rfq_pipeline_web_search` | rfq_actions:698 | The heaviest — 6 messages, 3 `notify_dashboard` |
 | `rfq_pipeline_skip_validation` | rfq_actions:598 | Counter reset |
 | `stop_agent` | app.py:672 | Cancellation |
-| `confirm_delete_all` | app.py:617 | **Destructive** — must be pinned |
+| `confirm_delete_all` | app.py:617 | **Destructive** — dropped at parity, so pin only if it is converted rather than deleted |
 
 For each: assert the messages sent, the session keys touched, and the
 `notify_dashboard` calls — *not* the exact prose.

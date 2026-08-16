@@ -168,39 +168,6 @@ async def handle_new_conversation(**_kwargs: Any) -> None:
     ).send()
 
 
-@register_action(
-    name="delete_all_data",
-    label="Delete All My Data",
-    description="Permanently erase all your data (admin only)",
-    icon="trash",
-    admin_only=True,
-)
-async def handle_delete_all_data(**_kwargs: Any) -> None:
-    """Send a confirmation prompt with Yes / Cancel action buttons."""
-    actions = [
-        cl.Action(
-            name="confirm_delete_all",
-            payload={"confirm": True},
-            label="Yes, delete everything",
-        ),
-        cl.Action(
-            name="cancel_delete_all",
-            payload={"confirm": False},
-            label="Cancel",
-        ),
-    ]
-    await cl.Message(
-        content=(
-            "⚠️ **Warning:** This will permanently delete all preferences, "
-            "settings, and memories associated with your profile, and start "
-            "a new blank conversation.\n\n"
-            "**Do you really want me to delete all your data?**"
-        ),
-        author="EagleAgent",
-        actions=actions,
-    ).send()
-
-
 # ---------------------------------------------------------------------------
 # Procurement intent action handlers
 # ---------------------------------------------------------------------------

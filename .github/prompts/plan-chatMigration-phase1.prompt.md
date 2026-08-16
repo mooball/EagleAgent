@@ -24,16 +24,22 @@ ambient `cl.*` globals. Ship it **on Chainlit**, with no user-visible change.
 | --- | --- | --- |
 | [includes/chat/rfq_actions.py](includes/chat/rfq_actions.py) | 1,177 | **21** `@cl.action_callback`, 4 pinning helpers, ~40 `user_session` reads |
 | [includes/tools/quote_tools.py](includes/tools/quote_tools.py) | 1,189 | `_stream_to_user`, `manage_rfq`, `_notify_rfq_updated`, data-layer rename |
-| [app.py](app.py) | 1,289 | **7** `@cl.action_callback`, all lifecycle hooks, the stream loop |
+| [app.py](app.py) | 1,289 | **4** `@cl.action_callback` (3 delete-all handlers dropped at parity), all lifecycle hooks, the stream loop |
 | [includes/agent_bridge.py](includes/agent_bridge.py) | 260 | `WebsocketSession`, `init_ws_context`, locks |
 | [includes/agents/base.py](includes/agents/base.py) | 502 | 1 call (`_notify_retry`, L132–136) |
 | [includes/chat/actions.py](includes/chat/actions.py) | 295 | dispatcher + intent handlers |
 | [includes/chat/job_progress.py](includes/chat/job_progress.py) | 80 | 4 message sites |
 | [includes/chat/supplier_search_gate.py](includes/chat/supplier_search_gate.py) | ~150 | builds 5 `cl.Action` |
 | [includes/chat/middleware.py](includes/chat/middleware.py) | 107 | `GeminiRetryNotifier` L97–100 |
-| [includes/tools/browser_tools.py](includes/tools/browser_tools.py) | ~360 | `cl.Image` L180–192 |
 | [includes/tools/job_tools.py](includes/tools/job_tools.py) | ~260 | confirmation buttons L52–69 |
-| [includes/chat/commands.py](includes/chat/commands.py) | 45 | `cl.data._data_layer.get_user` L19 |
+| [includes/tools/browser_tools.py](includes/tools/browser_tools.py) | ~360 | `cl.Image` L180–192 |
+
+**Removed from scope by the parity decision:**
+[includes/chat/commands.py](includes/chat/commands.py) — its only contents,
+`handle_deleteall_command`, serve the dropped delete-all feature. Also drops the
+`delete_all_data` entry in [includes/chat/actions.py](includes/chat/actions.py#L172)
+and the agent-callable path in
+[includes/tools/action_tools.py](includes/tools/action_tools.py#L67).
 
 **Already clean — do not touch:** [includes/graph.py](includes/graph.py),
 [includes/chat/document_processing.py](includes/chat/document_processing.py),
@@ -60,7 +66,7 @@ So there are two ways to deliver context, and we need both:
 
 | Mechanism | Use for | Why |
 | --- | --- | --- |
-| **Explicit argument** | The 28 action callbacks, `actions.py`, `job_progress.py`, `supplier_search_gate.py` | We control the call site. Explicit is testable and obvious. |
+| **Explicit argument** | The 25 in-scope action callbacks, `actions.py`, `job_progress.py`, `supplier_search_gate.py` | We control the call site. Explicit is testable and obvious. |
 | **Our own `ContextVar`** | Deep tool calls: `quote_tools._stream_to_user`, `browser_tools`, `job_tools`, `base.py._notify_retry` | Threading an argument through `create_react_agent` → tool would mean changing every tool signature and the agent plumbing. Not worth it. |
 
 The ContextVar is **ours**, set once per run, and settable in tests — which is the
@@ -217,7 +223,7 @@ No call sites changed. Unit-test the fake and the Chainlit impl against `fake_cl
 | [includes/tools/browser_tools.py](includes/tools/browser_tools.py) | L180–192 → `ctx.image(path, name=...)` |
 | [includes/agents/base.py](includes/agents/base.py) | L132–136 `_notify_retry` → `ctx.say(..., transient=True)` |
 | [includes/chat/middleware.py](includes/chat/middleware.py) | L97–100 `GeminiRetryNotifier` → same |
-| [includes/chat/commands.py](includes/chat/commands.py) | L19 → inject the data layer as an argument |
+| [includes/chat/commands.py](includes/chat/commands.py) | L19 → **delete the file** (dropped at parity) |
 
 > `middleware.py` and `base.py` fire from **logging handlers / retry paths**, which may
 > run on a different task. Confirm the ContextVar propagates; if not, they take an
@@ -258,8 +264,8 @@ async def run_turn(
             _run_locks.pop(ctx.thread_id, None)   # unbounded growth otherwise
 ```
 
-Rationale: **every** path reaches the graph through `run_turn()` — `on_message`, the 28
-action callbacks, and (from Phase 2) the HTTP endpoints. One lock therefore protects
+Rationale: **every** path reaches the graph through `run_turn()` — `on_message`, the 25
+in-scope action callbacks, and (from Phase 2) the HTTP endpoints. One lock therefore protects
 Chainlit-originated runs *and* new-backend runs against each other. Without it, two
 concurrent runs on one `thread_id` corrupt the checkpoint — exactly the failure the
 dangling-tool_call repair exists to clean up. This is the precondition for testing both

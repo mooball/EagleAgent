@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Tool access control
 # ---------------------------------------------------------------------------
-ADMIN_ONLY_TOOLS = ["delete_all_user_data"]
+# Empty since delete_all_user_data was removed. Kept as the registration point
+# for future admin-only tools — see includes/tools/job_tools.py.
+ADMIN_ONLY_TOOLS: list[str] = []
 
 # ---------------------------------------------------------------------------
 # PostgreSQL connection pool (opened lazily in setup_globals)

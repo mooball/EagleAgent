@@ -9,7 +9,6 @@ import os
 import logging
 from dotenv import load_dotenv
 from config import config
-from includes.chat.commands import handle_deleteall_command
 from includes.chat.actions import dispatch_action, get_actions_for_user, is_help_request, send_action_buttons
 from includes.chat.document_processing import process_file, create_multimodal_content
 from includes.chat.local_storage_client import LocalStorageClient
@@ -583,40 +582,6 @@ async def on_stop():
 async def on_action_new_conversation(action: cl.Action):
     """Handle the New Conversation action button."""
     await dispatch_action("new_conversation")
-
-
-@cl.action_callback("delete_all_data")
-async def on_action_delete_all_data(action: cl.Action):
-    """Handle the Delete All Data action button (sends confirmation)."""
-    await dispatch_action("delete_all_data")
-
-
-@cl.action_callback("confirm_delete_all")
-async def on_action_confirm_delete(action: cl.Action):
-    """Handle the Yes/confirm button from the delete confirmation."""
-    user_id = cl.user_session.get("user_id", "")
-    if user_id:
-        await handle_deleteall_command(user_id, _store(), _graph_module.pg_pool)
-
-    new_thread = str(uuid.uuid4())
-    cl.user_session.set("thread_id", new_thread)
-    await cl.Message(
-        content=(
-            "🗑️ All stored knowledge, files, and conversation history about you "
-            "has been completely erased from all databases.\n\n"
-            "*Note: Please refresh your browser window now to clear this chat log.*"
-        ),
-        author="EagleAgent",
-    ).send()
-
-
-@cl.action_callback("cancel_delete_all")
-async def on_action_cancel_delete(action: cl.Action):
-    """Handle the Cancel button from the delete confirmation."""
-    await cl.Message(
-        content="Deletion cancelled. Resuming normal conversation.",
-        author="EagleAgent",
-    ).send()
 
 
 @cl.action_callback("cancel_run_script")

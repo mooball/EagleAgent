@@ -455,7 +455,7 @@ whole-dashboard restyle into the chat migration.
 | `useLangGraphRuntime` (`@assistant-ui/react-langgraph`) | **Not as the runtime — but adopt the package as a utility.** See below. |
 | `useDataStreamRuntime` | Possible, but message-only. No place for agent state or the dashboard↔chat commands. |
 | `useExternalStoreRuntime` | Maximum control, maximum code. Fallback if we need speech/feedback/suggestion adapters. |
-| **`useAssistantTransportRuntime`** | **Recommended.** Explicitly designed for "custom agent framework or one without a streaming protocol (e.g. open-source LangGraph)". Ships a **Python** `assistant-stream` package with `append_langgraph_event()` and a FastAPI reference implementation. **Custom commands** map directly onto our 28 RFQ actions. Backend cancellation via `controller.is_cancelled`. |
+| **`useAssistantTransportRuntime`** | **Recommended.** Explicitly designed for "custom agent framework or one without a streaming protocol (e.g. open-source LangGraph)". Ships a **Python** `assistant-stream` package with `append_langgraph_event()` and a FastAPI reference implementation. **Custom commands** map directly onto our 25 in-scope actions. Backend cancellation via `controller.is_cancelled`. |
 
 Trade-off to accept: `AssistantTransport` does not expose speech, dictation,
 feedback, or suggestion adapters. It is layered on `ExternalStoreRuntime`, so
@@ -476,7 +476,7 @@ reasons to decline are narrower but decisive:
    `append_langgraph_event(state, namespace, event_type, chunk)` fed straight from
    `graph.astream(stream_mode=["messages", "updates"], subgraphs=True)`. That is an
    official bridge for exactly our situation.
-3. **No custom-command concept.** Everything is a message. Our 28 dashboard-initiated
+3. **No custom-command concept.** Everything is a message. Our 25 dashboard-initiated
    RFQ actions map far more cleanly onto `AssistantTransport`'s custom commands.
 
 #### Adopt `@assistant-ui/react-langgraph` as a *utility* dependency

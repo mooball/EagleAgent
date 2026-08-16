@@ -25,9 +25,8 @@ class TestActionRegistry:
     """Test the action registry and lookup."""
 
     def test_builtin_actions_registered(self):
-        """Built-in new_conversation and delete_all_data should be present."""
+        """Built-in new_conversation should be present."""
         assert "new_conversation" in _registry
-        assert "delete_all_data" in _registry
 
     def test_get_action_returns_action(self):
         action = get_action("new_conversation")
@@ -38,8 +37,8 @@ class TestActionRegistry:
     def test_get_action_unknown_returns_none(self):
         assert get_action("nonexistent_action") is None
 
-    def test_delete_all_is_admin_only(self):
-        action = get_action("delete_all_data")
+    def test_research_actions_are_admin_only(self):
+        action = get_action("research_product_info")
         assert action is not None
         assert action.admin_only is True
 
@@ -57,7 +56,7 @@ class TestRoleFiltering:
         actions = get_actions_for_user("staff@example.com")
         names = [a.name for a in actions]
         assert "new_conversation" in names
-        assert "delete_all_data" not in names
+        assert "research_product_info" not in names
 
     @patch("includes.chat.actions.config")
     def test_admin_sees_all_actions(self, mock_config):
@@ -65,7 +64,7 @@ class TestRoleFiltering:
         actions = get_actions_for_user("admin@example.com")
         names = [a.name for a in actions]
         assert "new_conversation" in names
-        assert "delete_all_data" in names
+        assert "research_product_info" in names
 
     @patch("includes.chat.actions.config")
     def test_empty_user_id_sees_public_only(self, mock_config):
@@ -73,7 +72,7 @@ class TestRoleFiltering:
         actions = get_actions_for_user("")
         names = [a.name for a in actions]
         assert "new_conversation" in names
-        assert "delete_all_data" not in names
+        assert "research_product_info" not in names
 
 
 # ============================================================================
@@ -137,7 +136,7 @@ class TestDispatchAction:
 
         actions_mod.cl.Message = FakeMessage
         try:
-            await dispatch_action("delete_all_data")
+            await dispatch_action("research_product_info")
             assert len(sent_messages) == 1
             assert "permission" in sent_messages[0].get("content", "").lower()
         finally:
@@ -152,13 +151,11 @@ class TestDispatchAction:
 class TestActionTools:
     """Test the LangGraph tool wrappers."""
 
-    def test_create_action_tools_returns_three_tools(self):
+    def test_create_action_tools_returns_expected_tools(self):
         from includes.tools.action_tools import create_action_tools
         tools = create_action_tools("user@example.com")
         names = [t.name for t in tools]
-        assert "list_available_actions" in names
-        assert "start_new_conversation" in names
-        assert "delete_all_user_data" in names
+        assert names == ["list_available_actions", "start_new_conversation"]
     @patch("includes.chat.actions.config")
     async def test_list_available_actions_tool(self, mock_config):
         mock_config.get_admin_emails.return_value = []
