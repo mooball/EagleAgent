@@ -114,6 +114,18 @@ def fake_cl(monkeypatch):
     """Replace app.cl with a recorder. Returns the recorder for assertions."""
     import app
 
+    return _install_fake_cl(monkeypatch, app)
+
+
+@pytest.fixture
+def patch_cl(monkeypatch):
+    """Install a fake `cl` into any module that does `import chainlit as cl`."""
+    def _patch(module):
+        return _install_fake_cl(monkeypatch, module)
+    return _patch
+
+
+def _install_fake_cl(monkeypatch, module):
     messages: list[FakeMessage] = []
     session_store: dict = {}
     recorder = SimpleNamespace(messages=messages, session=session_store, fail_updates=False)
@@ -140,7 +152,7 @@ def fake_cl(monkeypatch):
         context=context,
         Action=lambda **kw: SimpleNamespace(**kw),
     )
-    monkeypatch.setattr(app, "cl", fake)
+    monkeypatch.setattr(module, "cl", fake)
 
     recorder.module = fake
     return recorder
