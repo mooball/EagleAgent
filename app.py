@@ -15,6 +15,14 @@ from includes.chat.document_processing import process_file, create_multimodal_co
 from includes.chat.local_storage_client import LocalStorageClient
 from includes.chat.data_layer import FixedSQLAlchemyDataLayer
 from includes.chat.middleware import OAuthErrorRedirectMiddleware, GeminiRetryNotifier
+from includes.chat.streaming_logic import (
+    INTERRUPTED_TOOL_RESULT,
+    REPETITION_ABORT_MESSAGE,
+    detect_repetition,
+    extract_ai_text as _extract_ai_text,
+    extract_chunk_texts,
+    plan_checkpoint_repair,
+)
 from includes.graph import setup_globals
 import includes.graph as _graph_module  # for live access to mutable globals
 import asyncio
@@ -94,24 +102,11 @@ def _internal_graph():
 # Helper: extract plain text from an AIMessage's content field
 # ---------------------------------------------------------------------------
 # AIMessage.content can be a plain string OR a list of content parts (e.g.
-# [{"type": "text", "text": "..."}, {"type": "tool_use", ...}]). This helper
-# normalizes both forms into a single plain-text string. Used by the
-# checkpoint-to-UI reconciliation and the streaming fallback paths.
+# [{"type": "text", "text": "..."}, {"type": "tool_use", ...}]). Normalising
+# both forms lives in includes/chat/streaming_logic.py and is imported above
+# as _extract_ai_text. Used by the checkpoint-to-UI reconciliation and the
+# streaming fallback paths.
 # ---------------------------------------------------------------------------
-def _extract_ai_text(ai_msg) -> str:
-    """Return the plain text content of an AIMessage, or '' if none."""
-    content = ai_msg.content
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            if isinstance(part, str):
-                parts.append(part)
-            elif isinstance(part, dict) and part.get("type") == "text":
-                parts.append(part.get("text", ""))
-        return "".join(parts).strip()
-    return ""
 
 
 @cl.header_auth_callback
@@ -890,69 +885,49 @@ async def main(message: cl.Message):
     try:
         checkpoint_state = await active_graph.aget_state(graph_config)
         if checkpoint_state and checkpoint_state.values.get("messages"):
-            from langchain_core.messages import AIMessage, ToolMessage as LCToolMessage, RemoveMessage
-            ckpt_messages = checkpoint_state.values["messages"]
+            from langchain_core.messages import ToolMessage as LCToolMessage, RemoveMessage
 
-            # Collect all tool_call_ids that already have a ToolMessage response
-            existing_tool_msg_ids = {
-                m.tool_call_id for m in ckpt_messages
-                if isinstance(m, LCToolMessage)
-            }
+            plan = plan_checkpoint_repair(checkpoint_state.values["messages"])
 
-            # Find AIMessages that have orphaned tool_calls (no ToolMessage response)
-            corrupted_ai_msgs = []
-            all_dangling = []
-            for m in ckpt_messages:
-                if isinstance(m, AIMessage) and m.tool_calls:
-                    dangling_in_msg = [tc for tc in m.tool_calls if tc["id"] not in existing_tool_msg_ids]
-                    if dangling_in_msg:
-                        corrupted_ai_msgs.append(m)
-                        all_dangling.extend(dangling_in_msg)
-
-            if all_dangling:
-                if len(all_dangling) <= 2:
-                    # LIGHT REPAIR: inject synthetic error ToolMessages.
-                    # The LLM sees "previous op interrupted" and can retry.
-                    logger.warning(
-                        f"[checkpoint-repair] Found {len(all_dangling)} dangling tool_call(s) "
-                        f"in thread {thread_id[:8]}... — injecting synthetic error ToolMessages"
+            if plan.strategy == "inject":
+                # LIGHT REPAIR: inject synthetic error ToolMessages.
+                # The LLM sees "previous op interrupted" and can retry.
+                logger.warning(
+                    f"[checkpoint-repair] Found {len(plan.dangling)} dangling tool_call(s) "
+                    f"in thread {thread_id[:8]}... — injecting synthetic error ToolMessages"
+                )
+                repair_messages = [
+                    LCToolMessage(
+                        content=INTERRUPTED_TOOL_RESULT,
+                        tool_call_id=tc["id"],
                     )
-                    repair_messages = [
-                        LCToolMessage(
-                            content="[Error: previous operation was interrupted. Please retry if needed.]",
-                            tool_call_id=tc["id"],
-                        )
-                        for tc in all_dangling
-                    ]
+                    for tc in plan.dangling
+                ]
+                await active_graph.aupdate_state(
+                    graph_config,
+                    {"messages": repair_messages},
+                )
+                logger.info(f"[checkpoint-repair] Injected {len(repair_messages)} repair message(s)")
+            elif plan.strategy == "remove":
+                # HEAVY REPAIR: too many dangling calls — the history is
+                # badly corrupted. Remove the offending AIMessages entirely
+                # so the LLM gets a clean conversation. This avoids the
+                # "empty response loop" where Gemini is confused by dozens
+                # of synthetic error messages.
+                logger.warning(
+                    f"[checkpoint-repair] Found {len(plan.dangling)} dangling tool_call(s) across "
+                    f"{len(plan.corrupt_message_ids)} AIMessage(s) in thread {thread_id[:8]}... — "
+                    f"removing corrupted messages (too many to patch)"
+                )
+                remove_ops = [RemoveMessage(id=mid) for mid in plan.corrupt_message_ids]
+                if remove_ops:
                     await active_graph.aupdate_state(
                         graph_config,
-                        {"messages": repair_messages},
+                        {"messages": remove_ops},
                     )
-                    logger.info(f"[checkpoint-repair] Injected {len(repair_messages)} repair message(s)")
-                else:
-                    # HEAVY REPAIR: too many dangling calls — the history is
-                    # badly corrupted. Remove the offending AIMessages entirely
-                    # so the LLM gets a clean conversation. This avoids the
-                    # "empty response loop" where Gemini is confused by dozens
-                    # of synthetic error messages.
-                    logger.warning(
-                        f"[checkpoint-repair] Found {len(all_dangling)} dangling tool_call(s) across "
-                        f"{len(corrupted_ai_msgs)} AIMessage(s) in thread {thread_id[:8]}... — "
-                        f"removing corrupted messages (too many to patch)"
+                    logger.info(
+                        f"[checkpoint-repair] Removed {len(remove_ops)} corrupted AIMessage(s)"
                     )
-                    remove_ops = [
-                        RemoveMessage(id=m.id)
-                        for m in corrupted_ai_msgs
-                        if m.id  # RemoveMessage requires a valid id
-                    ]
-                    if remove_ops:
-                        await active_graph.aupdate_state(
-                            graph_config,
-                            {"messages": remove_ops},
-                        )
-                        logger.info(
-                            f"[checkpoint-repair] Removed {len(remove_ops)} corrupted AIMessage(s)"
-                        )
     except Exception as e:
         logger.warning(f"[checkpoint-repair] Failed to check/repair checkpoint: {e}")
 
@@ -1014,37 +989,19 @@ async def main(message: cl.Message):
                 # the final response (no tool call follows). This prevents
                 # intermediate JSON, self-answered questions, and reasoning
                 # text from leaking into the chat.
-                if isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "thinking":
-                            continue  # Skip thinking blocks from Gemini 2.5+
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            chunk_text = part.get("text", "")
-                            if chunk_text:
-                                _stream_buffer.append(chunk_text)
-                        elif isinstance(part, str):
-                            _stream_buffer.append(part)
-                elif isinstance(content, str):
-                    _stream_buffer.append(content)
+                _stream_buffer.extend(extract_chunk_texts(content))
 
                 # Repetition detection: if the buffer is growing large without
                 # a tool call, check for degenerate repetition and abort early.
-                if len(_stream_buffer) > 50:
-                    _buf_tail = "".join(_stream_buffer[-40:])
-                    # Check if a short phrase (5-30 chars) repeats 5+ times
-                    if len(_buf_tail) > 60:
-                        _snippet = _buf_tail[-30:]
-                        _test_window = _buf_tail[:-30]
-                        if _snippet and _test_window.count(_snippet) >= 4:
-                            logger.warning(
-                                f"[repetition-guard] Detected degenerate repetition in stream buffer "
-                                f"(repeated: {repr(_snippet[:40])}). Aborting stream."
-                            )
-                            _stream_buffer.clear()
-                            _stream_buffer.append(
-                                "\n\nSorry, I encountered an issue processing that request. Please try again."
-                            )
-                            break  # Exit the astream_events loop
+                _snippet = detect_repetition(_stream_buffer)
+                if _snippet:
+                    logger.warning(
+                        f"[repetition-guard] Detected degenerate repetition in stream buffer "
+                        f"(repeated: {repr(_snippet[:40])}). Aborting stream."
+                    )
+                    _stream_buffer.clear()
+                    _stream_buffer.append(REPETITION_ABORT_MESSAGE)
+                    break  # Exit the astream_events loop
 
         elif kind == "on_tool_start":
             # A tool call is starting — discard any buffered intermediate text
