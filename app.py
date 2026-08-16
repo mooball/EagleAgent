@@ -958,7 +958,7 @@ async def main(message: cl.Message):
 
     last_event_time = request_start
     try:
-      async for event in active_graph.astream_events(inputs, config=graph_config, version="v1"):
+      async for event in active_graph.astream_events(inputs, config=graph_config, version="v2"):
         # Cooperative stop check — exit the stream loop if stop was requested
         if is_stop_requested(session_id):
             logger.info(f"[stop-agent] Cooperative stop in astream_events for session {session_id[:8]}")
