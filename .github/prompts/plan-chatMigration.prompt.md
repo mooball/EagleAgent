@@ -729,24 +729,25 @@ Sizes are relative effort, not time: **S** < **M** < **L** < **XL**.
 
 > Landing these before Phase 0 keeps unrelated dependency churn out of the migration.
 
-- [ ] Bump `langgraph-checkpoint-postgres`, `langchain-google-genai`, `langchain-mcp-adapters` to current minors; patch-bump the rest. Run the suite.
-- [ ] `astream_events(version="v1")` → `"v2"` at [app.py](app.py#L961).
-- [ ] **Verify the tool-call path specifically** — the v1/v2 equivalence check was run on a graph with no tools, so the buffer-discard-on-`on_tool_start` behaviour is unproven across versions.
+- [x] Bump `langgraph-checkpoint-postgres`, `langchain-google-genai`, `langchain-mcp-adapters` to current minors; patch-bump the rest. Run the suite. **Surfaced a live break:** 4.3.x promotes `frequency_penalty` to a real request field and Gemini rejects it on flash-lite, which is both `DEFAULT_MODEL` and `SUPERVISOR_MODEL`. Removed it — it had never reached the API. See `830ce0e`.
+- [x] `astream_events(version="v1")` → `"v2"` at [app.py](app.py#L961). Equivalence probed on a tool-calling graph: 36 events both, 31 tagged both, identical consumed sequence. See `18abe12`.
+- [x] **Verify the tool-call path specifically** — smoke-tested manually 2026-08-16: RFQ-modifying tools invoked from chat, all behaving correctly. This was the one gap the automated suite could not close, since nothing exercises the streaming loop against a real model.
 - [ ] *Optional, independent:* adopt DaisyUI. Rename `.btn` / `.btn-sm` / `.btn-accent` in [input.css](input.css) and all templates to `ea-*`, then load DaisyUI 4 prebuilt CSS. **Own commit, own decision** — do not fold into the migration.
 
 ### Phase 0 — Baseline & parity contract · **M**
 
 > Detail: [plan-chatMigration-phase0.prompt.md](plan-chatMigration-phase0.prompt.md)
 
-- [ ] Write an explicit **feature-parity checklist**, signed off before any code. Include every `.chainlit/config.toml` setting we actually rely on.
-- [ ] **Characterisation tests** for the untested core, using the existing `cl` mocking patterns from `tests/test_actions.py` / `tests/test_job_tools.py`:
-  - [ ] `on_message` streaming loop: buffered-stream-discard, repetition guard, three fallbacks, token accounting.
-  - [ ] Checkpoint repair (dangling tool_calls: 0, 1, 2, 3+ cases).
-  - [ ] `on_chat_resume` checkpoint↔steps reconciliation.
-  - [ ] A representative sample (~8) of the RFQ action callbacks.
-  - [ ] Attachment round-trip through `process_file()` / `create_multimodal_content()`.
-- [ ] Snapshot prod row counts for `threads` / `steps` / `elements` / `rfq_threads`.
-- [ ] **Gate:** tests green and stable before touching anything.
+- [x] Write an explicit **feature-parity checklist**, signed off before any code. Include every `.chainlit/config.toml` setting we actually rely on. *(Dropped at parity: `edit_message`, and the three delete-all actions — deleted outright in `f600998`. Upload limit reconciled at 50 MB.)*
+- [x] **Characterisation tests** for the untested core — 94 in `tests/chat/`:
+  - [x] `on_message` streaming loop: buffered-stream-discard, repetition guard, three fallbacks, token accounting.
+  - [x] Checkpoint repair (dangling tool_calls: 0, 1, 2, 3+ cases).
+  - [x] `on_chat_resume` checkpoint↔steps reconciliation.
+  - [x] A representative sample of the RFQ action callbacks (5, one per distinct shape).
+  - [x] Attachment round-trip *(already covered by `tests/test_document_processing.py`)*.
+- [x] Snapshot prod row counts — recorded in the Phase 0 doc. **Found `RFQ.thread_id` is vestigial**: 2 rows against 1,487 in `rfq_threads`.
+- [x] Coverage baseline: **42% overall**, `rfq_actions.py` at **19%** with 514 uncovered statements — the quantified Phase 1 risk.
+- [x] **Gate passed:** suite 775 → 869. Four mutations confirmed the tests bite; a fifth initially escaped because a test was green for the wrong reason, and was fixed.
 
 ### Phase 1 — Decouple business logic from Chainlit · **XL** ⭐
 
@@ -840,8 +841,8 @@ Do not proceed past a gate without an explicit go/no-go:
 
 | Gate | Question |
 | --- | --- |
-| After **Prerequisite** | Did the dependency bumps and the v1 → v2 switch land cleanly, including the tool-call path? |
-| After **Phase 0** | Is the parity checklist small enough to be finishable? |
+| After **Prerequisite** | ~~Did the dependency bumps and the v1 → v2 switch land cleanly, including the tool-call path?~~ **Passed 2026-08-16.** Bumps caught a live flash-lite break before it shipped; v2 equivalence probed on a tool-calling graph and smoke-tested manually. |
+| After **Phase 0** | ~~Is the parity checklist small enough to be finishable?~~ **Passed 2026-08-16.** 25 of 28 actions in scope, 94 tests, mutations verified. |
 | After **Phase 1** | Did decoupling alone solve enough of the pain? **A legitimate stopping point.** |
 | After **Phase 2** | Does SSE survive the Railway proxy under real load, on HTTP/2? |
 | After **Phase 3** | Which frontend won, and why? Record it. |
