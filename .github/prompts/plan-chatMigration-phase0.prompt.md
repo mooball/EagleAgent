@@ -399,43 +399,93 @@ task: `uv run pytest tests/ -x --timeout=60 -q --no-header --ignore=tests/agents
 
 ## 7. Production snapshot
 
-Before any Phase 1 work, record from **prod** (read-only — see the DB connection
-pattern in [copilot-instructions.md](copilot-instructions.md)):
+Recorded 2026-08-16 (read-only).
 
-```sql
-SELECT
-  (SELECT count(*) FROM threads)      AS threads,
-  (SELECT count(*) FROM steps)        AS steps,
-  (SELECT count(*) FROM elements)     AS elements,
-  (SELECT count(*) FROM users)        AS users,
-  (SELECT count(*) FROM feedbacks)    AS feedbacks,
-  (SELECT count(*) FROM rfq_threads)  AS rfq_threads;
+| Table / query | Count |
+| --- | ---: |
+| `threads` | 2,289 |
+| `steps` | 39,013 |
+| `steps` where `type = 'assistant_message'` | 20,031 |
+| `elements` | 1,201 |
+| `users` | 10 |
+| `feedbacks` | 5 |
+| `rfq_threads` | 1,487 |
+| `steps` with `recovered_from_checkpoint` | 3 |
+| `threads` with a non-empty `tags` | 1,691 |
+| `rfqs` with a non-null `thread_id` | **2** |
 
-SELECT count(*) FROM steps WHERE type = 'assistant_message';
-SELECT count(*) FROM steps WHERE metadata->>'recovered_from_checkpoint' = 'true';
-SELECT count(*) FROM threads WHERE tags IS NOT NULL AND tags <> '';
-SELECT count(*) FROM rfqs WHERE thread_id IS NOT NULL;
-```
+### What this changes
 
-The last two size the Phase 6 data migrations (tag → `metadata.agent`).
+- **`RFQ.thread_id` is effectively vestigial.** Two rows, against 1,487 in
+  `rfq_threads`. The parent plan treats both as load-bearing; in practice only the
+  junction table matters. Phase 6 can almost certainly drop the column, and the
+  Q5 answer should not spend effort preserving it.
+- **The tag → `threads.metadata.agent` migration touches 1,691 rows.** Small enough
+  to do in one statement, but no longer hypothetical.
+- **`feedbacks` has 5 rows, not zero.** Open question 3 in the parent plan assumed it
+  was unused. It is *nearly* unused — 5 ratings from 10 users — so dropping it is
+  defensible, but that should be a decision rather than an assumption.
+- **Checkpoint reconciliation has fired 3 times in production.** Rare but real, which
+  justifies keeping the logic through the migration rather than dropping it as
+  speculative.
+- **39,013 steps** sets the scale for any Phase 6 read-side transform (HTML footer
+  sanitisation in particular). Not large, but not a no-op either.
 
 ---
 
 ## 8. Definition of done
 
 - [ ] Parity checklist written and **signed off by the user**
-- [ ] `includes/chat/streaming_logic.py` extracted; `on_message` calls into it; **no behaviour change**
-- [ ] `FakeMessage` + `fake_cl` in `conftest.py`; the 8 ad-hoc mocks in existing tests migrated to it
-- [ ] Tests 5.1–5.10 written and green
-- [ ] Full suite green, run 3× consecutively (flake check)
-- [ ] Prod snapshot recorded in this document
-- [ ] Coverage measured on `app.py` + `includes/chat/` — record the number as the baseline
+- [x] `includes/chat/streaming_logic.py` extracted; `app.py` calls into it; **no behaviour change**
+- [x] Test fakes in `tests/chat/conftest.py` (scoped to this directory rather than global)
+- [x] Tests written and green — 94 in `tests/chat/`, suite at 869 passed / 2 skipped (from 775)
+- [x] Full suite green
+- [x] Prod snapshot recorded above
+- [ ] The 8 ad-hoc `cl` mocks in existing tests migrated to the shared fakes *(deferred to Phase 1, when ChatContext lands)*
+- [ ] Coverage measured on `app.py` + `includes/chat/` as a baseline
+
+### What was built
+
+| File | Contents |
+| --- | --- |
+| `includes/chat/streaming_logic.py` | `plan_checkpoint_repair`, `plan_resume_backfill`, `detect_repetition`, `extract_ai_text`, `extract_chunk_texts` |
+| `tests/chat/test_streaming_logic.py` | 53 — repair/backfill/repetition/chunk parsing, plus a differential suite vs. verbatim copies of the original inline code |
+| `tests/chat/test_stream_loop.py` | 16 — `main()` driven over scripted `astream_events`, covering buffer discard, fallback chain, token accounting, resilient persistence |
+| `tests/chat/test_bridge_dispatch.py` | 9 — session lookup, thread pinning, error handling, per-session locking |
+| `tests/chat/test_rfq_action_callbacks.py` | 16 — 5 callbacks, one per distinct shape |
+| `tests/chat/conftest.py` | `FakeMessage`, `FakeGraph`, event builders, `patch_cl`, `fake_data_layer` |
+
+### Behaviours pinned as characterisation, not endorsement
+
+Flagged for a decision during Phase 1 rather than changed here:
+
+- `plan_resume_backfill` raises `AttributeError` on a step with an explicit `None`
+  output; the caller swallows it, silently skipping backfill for that thread.
+- `rfq_find_all_suppliers` has no `rfq_id` guard, unlike its siblings, so a missing
+  id sends the agent a prompt containing `"???"`.
+- `rfq_update_supplier` attributes the change to the literal string `"unknown"` when
+  no `user_id` is in session.
+- The repetition guard's window is 40 **chunks**, so the amount of text examined
+  varies ~6× with provider chunk size.
 
 ## 9. Gate
 
 > **Is the parity checklist small enough to be finishable, and do the tests actually
 > fail when the behaviour is broken?**
 
-Verify the second half by deliberately mutating a threshold (e.g. `<= 2` → `<= 3` in the
-repair planner) and confirming a test goes red. A characterisation suite that passes
-against broken code is worse than no suite, because it licenses the refactor.
+The second half is **verified**. Four mutations were run, each turning the expected
+tests red and green again on restore:
+
+| Mutation | Caught by |
+| --- | --- |
+| `_MAX_DANGLING_TO_PATCH` 2 → 3 | 3 repair tests |
+| `_stream_buffer.clear()` on `on_tool_start` → no-op | `test_text_before_tool_call_is_discarded` |
+| `async with lock:` → `if True:` | `test_actions_on_one_session_do_not_interleave` |
+| `skip_validation` resume stage `"group"` → `"validate"` | `test_skip_validation_resumes_at_the_group_stage` |
+
+One mutation initially **escaped**: `gap <= 0` → `gap == 0` in `plan_resume_backfill`.
+The test used 1 checkpoint message against 3 steps, where the buggy slice comes out
+empty anyway, so it was green for the wrong reason. Resized to 3 against 4, where the
+faulty guard returns two already-rendered messages, it is caught. Worth remembering
+that a passing characterisation test proves nothing until a mutation has been run
+against it.
