@@ -84,10 +84,6 @@ class Config:
     # Model temperature (0.0 - 1.0)
     DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
     
-    # Frequency penalty (0.0 - 2.0) — penalises repeated tokens to prevent
-    # degenerate repetition loops.  0.5 is a balanced default.
-    FREQUENCY_PENALTY = float(os.getenv("FREQUENCY_PENALTY", "0.5"))
-    
     # Max tokens for model responses
     DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "8192"))
     
