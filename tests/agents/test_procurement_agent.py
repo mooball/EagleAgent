@@ -19,9 +19,9 @@ class TestGetTools:
     async def test_returns_search_products_tool(self):
         # Ensure that it correctly wires all procurement tools
         tools = await self.agent.get_tools_async(user_id="test_user") if hasattr(self.agent, "get_tools_async") else self.agent.get_tools(user_id="test_user")
-        assert len(tools) == 20
         tool_names = {t.name for t in tools}
-        assert tool_names == {"search_products", "search_brands", "search_suppliers", "part_purchase_history", "search_purchase_history", "manage_rfq", "get_rfq", "classify_items", "validate_items", "group_items", "view_rfq_quotation", "classify_supplier_email", "extract_email_content", "interpret_quote_response", "classify_rfq_items", "search_previous_suppliers", "search_brand_suppliers", "search_web_suppliers", "show_supplier_search_options", "mark_supplier_search_complete"}
+        assert tool_names == {"search_products", "search_brands", "search_suppliers", "part_purchase_history", "search_purchase_history", "convert_currency", "manage_rfq", "get_rfq", "classify_items", "validate_items", "group_items", "view_rfq_quotation", "classify_supplier_email", "extract_email_content", "interpret_quote_response", "classify_rfq_items", "search_previous_suppliers", "search_brand_suppliers", "search_web_suppliers", "show_supplier_search_options", "mark_supplier_search_complete"}
+        assert len(tools) == len(tool_names), "a tool is registered more than once"
 
 class TestSystemPrompt:
     def setup_method(self):

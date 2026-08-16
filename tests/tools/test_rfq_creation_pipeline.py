@@ -233,7 +233,7 @@ class TestGuardChecks:
         assert "No customer linked" in tracking.rfq_creation_result["error"]
 
     def test_already_linked_to_rfq(self, db_session):
-        """Pipeline should error if email is already linked to an RFQ."""
+        """Pipeline should skip silently if the email is already linked to an RFQ."""
         cust = _create_test_customer(db_session)
         tracking = _create_test_email_tracking(db_session, customer_id=cust.id,
                                                 rfq_token="RFQ-2026-0001")
@@ -244,8 +244,10 @@ class TestGuardChecks:
 
         db_session.expire_all()
         tracking = db_session.query(EmailTracking).filter(EmailTracking.id == tracking.id).first()
-        assert tracking.rfq_creation_result["status"] == "error"
-        assert "already linked" in tracking.rfq_creation_result["error"].lower()
+        # Expected path, not an error: the guard returns before claiming the run,
+        # so no result marker is written and the existing link is untouched.
+        assert tracking.rfq_creation_result is None
+        assert tracking.rfq_token == "RFQ-2026-0001"
 
     def test_idempotency_already_processed(self, db_session):
         """Pipeline should skip if already processed."""
