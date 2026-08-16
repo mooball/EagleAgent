@@ -22,6 +22,7 @@ from includes.chat.streaming_logic import (
     extract_ai_text as _extract_ai_text,
     extract_chunk_texts,
     plan_checkpoint_repair,
+    plan_resume_backfill,
 )
 from includes.graph import setup_globals
 import includes.graph as _graph_module  # for live access to mutable globals
@@ -449,33 +450,16 @@ async def on_chat_resume(thread: ThreadDict):
         checkpoint_state = await active_graph.aget_state(graph_config)
 
         if checkpoint_state and checkpoint_state.values.get("messages"):
-            from langchain_core.messages import AIMessage, HumanMessage as LCHumanMessage
             from chainlit.data import get_data_layer as _get_dl_resume
 
-            ckpt_messages = checkpoint_state.values["messages"]
+            missing = plan_resume_backfill(
+                checkpoint_state.values["messages"],
+                thread.get("steps", []),
+            )
 
-            # Extract all AI responses from the checkpoint (these are the
-            # messages the LLM generated — each one should have a matching
-            # Chainlit step so the user can see it in the thread).
-            ai_messages = [
-                m for m in ckpt_messages
-                if isinstance(m, AIMessage) and _extract_ai_text(m)
-            ]
-
-            # Count how many assistant_message steps Chainlit already has stored.
-            # thread["steps"] contains all persisted steps for this thread.
-            existing_steps = thread.get("steps", [])
-            existing_assistant_steps = [
-                s for s in existing_steps
-                if s.get("type") == "assistant_message"
-                and s.get("output", "").strip()
-            ]
-
-            # If the checkpoint has more AI responses than the UI, back-fill the gap.
-            gap = len(ai_messages) - len(existing_assistant_steps)
-            if gap > 0:
+            if missing:
                 logger.info(
-                    f"[checkpoint-reconcile] Thread {thread_id[:8]}... has {gap} "
+                    f"[checkpoint-reconcile] Thread {thread_id[:8]}... has {len(missing)} "
                     f"AI response(s) in checkpoint not in UI — back-filling"
                 )
                 data_layer = _get_dl_resume()
@@ -483,8 +467,6 @@ async def on_chat_resume(thread: ThreadDict):
                     import uuid as _uuid
                     from datetime import datetime as _dt, timezone as _tz
 
-                    # Take the last `gap` AI messages (the ones most likely missing)
-                    missing = ai_messages[-gap:]
                     for ai_msg in missing:
                         text = _extract_ai_text(ai_msg)
                         if not text:

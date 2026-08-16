@@ -109,6 +109,34 @@ def extract_ai_text(ai_msg: Any) -> str:
     return ""
 
 
+def plan_resume_backfill(
+    ckpt_messages: Sequence[BaseMessage],
+    existing_steps: Sequence[dict],
+) -> list[AIMessage]:
+    """Return AI responses present in the checkpoint but missing from the UI.
+
+    The checkpoint is the source of truth; steps are the rendered transcript, and
+    can fall behind when a socket dies mid-stream. Compares counts rather than
+    identities, so it assumes the missing responses are the most recent ones.
+
+    Note `s["output"].strip()` raises if a step has an explicit None output. That
+    is existing behaviour — the caller treats reconciliation as best-effort and
+    swallows it — and is preserved deliberately.
+    """
+    ai_messages = [
+        m for m in ckpt_messages if isinstance(m, AIMessage) and extract_ai_text(m)
+    ]
+    rendered = [
+        s for s in existing_steps
+        if s.get("type") == "assistant_message" and s.get("output", "").strip()
+    ]
+
+    gap = len(ai_messages) - len(rendered)
+    if gap <= 0:
+        return []
+    return ai_messages[-gap:]
+
+
 def extract_chunk_texts(content: Any) -> list[str]:
     """Return the streamable text parts of a chat model chunk.
 

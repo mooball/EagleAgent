@@ -17,6 +17,7 @@ from includes.chat.streaming_logic import (
     extract_ai_text,
     extract_chunk_texts,
     plan_checkpoint_repair,
+    plan_resume_backfill,
 )
 
 
@@ -207,6 +208,68 @@ class TestExtractAiText:
 
     def test_empty_content(self):
         assert extract_ai_text(AIMessage(content="")) == ""
+
+
+# ---------------------------------------------------------------------------
+# 5.6 Resume backfill — checkpoint is the source of truth, steps can lag
+# ---------------------------------------------------------------------------
+
+def _step(output="a reply", step_type="assistant_message"):
+    return {"type": step_type, "output": output}
+
+
+class TestPlanResumeBackfill:
+    def test_ui_in_sync_backfills_nothing(self):
+        ckpt = [AIMessage(content="one"), AIMessage(content="two")]
+        steps = [_step("one"), _step("two")]
+        assert plan_resume_backfill(ckpt, steps) == []
+
+    def test_gap_of_two_returns_the_last_two(self):
+        ckpt = [AIMessage(content="one"), AIMessage(content="two"), AIMessage(content="three")]
+        steps = [_step("one")]
+        missing = plan_resume_backfill(ckpt, steps)
+        assert [m.content for m in missing] == ["two", "three"]
+
+    def test_ui_ahead_of_checkpoint_backfills_nothing(self):
+        """Negative gap must short-circuit, not fall through to the slice.
+
+        Sized so that a `gap == 0` guard would slip through and return
+        ai_messages[1:] — two messages that are already rendered. A smaller
+        example passes either way, because the slice happens to come out empty.
+        """
+        ckpt = [AIMessage(content="one"), AIMessage(content="two"), AIMessage(content="three")]
+        steps = [_step("one"), _step("two"), _step("three"), _step("four")]
+        assert plan_resume_backfill(ckpt, steps) == []
+
+    def test_empty_checkpoint(self):
+        assert plan_resume_backfill([], [_step("one")]) == []
+
+    def test_empty_ai_messages_are_not_counted(self):
+        ckpt = [AIMessage(content=""), AIMessage(content="real")]
+        assert [m.content for m in plan_resume_backfill(ckpt, [])] == ["real"]
+
+    def test_human_messages_are_ignored(self):
+        ckpt = [HumanMessage(content="question"), AIMessage(content="answer")]
+        assert [m.content for m in plan_resume_backfill(ckpt, [])] == ["answer"]
+
+    def test_non_assistant_steps_do_not_count_as_rendered(self):
+        ckpt = [AIMessage(content="answer")]
+        steps = [_step("question", step_type="user_message")]
+        assert len(plan_resume_backfill(ckpt, steps)) == 1
+
+    def test_blank_steps_do_not_count_as_rendered(self):
+        ckpt = [AIMessage(content="answer")]
+        assert len(plan_resume_backfill(ckpt, [_step("   ")])) == 1
+
+    def test_none_output_raises(self):
+        """Characterisation, not endorsement.
+
+        A step with an explicit None output makes this raise. The caller treats
+        reconciliation as best-effort and swallows it, so the effect is that
+        backfill is silently skipped for that thread.
+        """
+        with pytest.raises(AttributeError):
+            plan_resume_backfill([AIMessage(content="a")], [_step(None)])
 
 
 # ---------------------------------------------------------------------------
