@@ -2,7 +2,7 @@
 
 > Parent: [plan-chatMigration.prompt.md](plan-chatMigration.prompt.md)
 > Depends on: [Phase 0](plan-chatMigration-phase0.prompt.md)
-> Status: **PROPOSAL — not approved, not started.**
+> Status: **IN PROGRESS** — started 2026-08-17.
 
 ## Goal
 
@@ -211,8 +211,29 @@ a whole class of race condition, and ~70 lines of workaround.
 
 Strictly leaf-first, so each step ships independently and green.
 
-### Step 1 — `includes/chat/context.py` + `ChainlitChatContext` + `FakeChatContext` · S
-No call sites changed. Unit-test the fake and the Chainlit impl against `fake_cl`.
+### ~~Step 1 — `includes/chat/context.py` + `ChainlitChatContext` + `FakeChatContext`~~ ✅ · S
+- ~~No call sites changed. Unit-test the fake and the Chainlit impl against `fake_cl`.~~
+- Built `includes/chat/context.py` (`ActionSpec`, `MessageHandle`, `ChatContext` protocols) plus
+  `bind_chat_context` / `reset_chat_context` / `get_chat_context` and two additions the plan
+  did not name: `try_get_chat_context()` for the call sites whose current behaviour is a silent
+  no-op outside a session (`_stream_to_user`, `_notify_retry`), and a `chat_context(ctx)`
+  context manager so binds unwind on exception.
+- `includes/chat/context_chainlit.py` holds `ChainlitChatContext` + `ChainlitMessageHandle`.
+  `ChainlitChatContext.from_session()` is the only boundary constructor.
+- **The thread pinning moved here rather than being deleted outright.** `_send_pinned`'s
+  swap-and-restore now lives in `ChainlitChatContext._pinned()`, keyed off an immutable
+  `thread_id` captured at construction. Business logic never sees it. The four helpers in
+  `rfq_actions.py` still get deleted in Step 6.
+- `FakeChatContext` / `FakeMessageHandle` are defined in `tests/conftest.py`, **not** a
+  `tests/fakes.py` module: a `tests` package in site-packages shadows any `tests.*` import.
+  Exposed as the `chat_ctx`, `bound_chat_ctx`, and `make_chat_ctx` fixtures.
+- `tests/chat/conftest.py`'s fake `cl` gained `Image` and `data` — additive only; no Phase 0
+  test was modified.
+- 38 new tests in `tests/chat/test_context.py` and `tests/chat/test_context_var.py`.
+  Suite: 909 passed / 2 skipped (from 869).
+- ContextVar propagation confirmed: it crosses `asyncio.create_task` and `asyncio.to_thread`,
+  but **not** a raw `threading.Thread`. `middleware.py` uses `loop.create_task`, so it is
+  covered; if that ever moves to a bare thread it needs an explicit `ctx`.
 
 ### Step 2 — Leaf modules (low risk, builds confidence) · M
 | File | Change |

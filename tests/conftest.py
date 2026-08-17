@@ -18,6 +18,125 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from includes.chat.local_storage_client import LocalStorageClient
 
 # ============================================================================
+# Chat Context Fixtures
+# ============================================================================
+# FakeChatContext lives here rather than in a tests/ module because a `tests`
+# package in site-packages shadows any `tests.*` import.
+
+
+class FakeMessageHandle:
+    """Records streaming/update/remove instead of performing them."""
+
+    def __init__(self, content="", *, actions=None, author=None, transient=False):
+        import uuid
+
+        self.id = str(uuid.uuid4())
+        self.content = content
+        self.actions = list(actions or [])
+        self.author = author
+        self.transient = transient
+        self.tokens: list[str] = []
+        self.updated = 0
+        self.removed = False
+        # Set by tests to simulate a dead socket.
+        self.fail_on_update = False
+
+    async def stream(self, token: str) -> None:
+        self.tokens.append(token)
+        self.content += token
+
+    async def update(self) -> None:
+        if self.fail_on_update:
+            raise RuntimeError("socket closed")
+        self.updated += 1
+
+    async def remove(self) -> None:
+        self.removed = True
+
+
+class FakeChatContext:
+    """In-memory ChatContext. Everything it is asked to do is recorded."""
+
+    def __init__(
+        self,
+        *,
+        thread_id="thread-abc",
+        user_email="tester@example.com",
+        agent="eagle",
+        state=None,
+        cancelled=False,
+    ):
+        self.thread_id = thread_id
+        self.user_email = user_email
+        self.agent = agent
+        self._state = dict(state or {})
+        self._cancelled = cancelled
+
+        self.messages: list[FakeMessageHandle] = []
+        self.images: list[tuple[str, str]] = []
+        self.dashboard_calls: list[tuple[str, dict | None]] = []
+        self.thread_names: list[str] = []
+
+    async def say(self, text, *, actions=None, author=None, transient=False):
+        handle = FakeMessageHandle(text, actions=actions, author=author, transient=transient)
+        self.messages.append(handle)
+        return handle
+
+    async def image(self, path: str, *, name: str) -> None:
+        self.images.append((path, name))
+
+    async def notify_dashboard(self, command: str, payload: dict | None = None) -> None:
+        self.dashboard_calls.append((command, payload))
+
+    async def rename_thread(self, name: str) -> None:
+        self.thread_names.append(name)
+
+    def get(self, key, default=None):
+        return self._state.get(key, default)
+
+    def set(self, key, value) -> None:
+        self._state[key] = value
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    def request_stop(self) -> None:
+        self._cancelled = True
+
+    # -- assertion helpers --
+
+    @property
+    def texts(self) -> list[str]:
+        return [m.content for m in self.messages]
+
+    @property
+    def action_names(self) -> list[str]:
+        return [a.name for m in self.messages for a in m.actions]
+
+
+@pytest.fixture
+def make_chat_ctx():
+    """Factory for FakeChatContext, so tests can vary thread_id/agent/etc."""
+    return FakeChatContext
+
+
+@pytest.fixture
+def chat_ctx():
+    """A transport-free ChatContext that records everything it is asked to do."""
+    return FakeChatContext()
+
+
+@pytest.fixture
+def bound_chat_ctx(chat_ctx):
+    """`chat_ctx`, also bound to the ContextVar for the duration of the test."""
+    from includes.chat.context import chat_context
+
+    with chat_context(chat_ctx):
+        yield chat_ctx
+
+
+# ============================================================================
 # Environment Detection
 # ============================================================================
 

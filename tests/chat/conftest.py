@@ -151,6 +151,8 @@ def _install_fake_cl(monkeypatch, module):
         user_session=user_session,
         context=context,
         Action=lambda **kw: SimpleNamespace(**kw),
+        Image=lambda **kw: SimpleNamespace(**kw),
+        data=SimpleNamespace(_data_layer=None),
     )
     monkeypatch.setattr(module, "cl", fake)
 
