@@ -332,6 +332,39 @@ When asked to create a prompt, plan, or task list, always:
   - Reason: superseded by a simpler approach in task #5.
   ```
 
+## Task Management (todo.vu MCP)
+
+Project tasks live in todo.vu, accessed via the `todo-vu-mcp` MCP server. When asked to find, create, or update a task for this project, use these defaults without asking:
+
+- **Workspace ID:** `mooball`
+- **Client ID:** `116` (Eagle Exports Operations Trust)
+- **Logged-in user ID:** `7`
+
+### Projects under client 116
+
+| ID | Project |
+|----|---------|
+| 1011 | EagleAgent (main) |
+| 1025 | EagleAgent: NetSuite |
+| 1026 | EagleAgent: RFQ Email |
+| 1027 | EagleAgent: Admin |
+| 1028 | EagleAgent: RFQ |
+| 1030 | EagleAgent: Supplier Research |
+| 1031 | EagleAgent: Feedback |
+| 1032 | EagleAgent: Quotation |
+| 1037 | EagleAgent: Gmail Plugin |
+
+Older/non-EagleAgent projects for the same client: 254 (Google Workspace support), 261 (Support), 279 (solutrans.com.au), 553 (eaglexp.com.au), 680 (Workshop360).
+
+Default to project `1011` for new tasks unless the work clearly belongs to one of the more specific projects above.
+
+### Usage notes
+- Key tools: `list_tasks`, `create_task`, `change_tasks`, `task_add_comment`, `list_comments_attachments_time_entries`, `list_projects`, `list_clients`, `list_labels`, `list_users`.
+- `list_tasks` defaults to `user_mode="assigned"`. Pass `only="active"`/`"completed"`/`"overdue"` to scope by dashboard section, and `search` for free-text lookup.
+- `list_projects` with `client_id` is not filtered strictly server-side — verify `client_id` on each returned project.
+- Task names come back HTML-escaped (`&amp;`, `&#x27;`); `details` is HTML.
+- **Creating or modifying tasks counts as a write action** — follow the same rule as code changes: propose first, wait for explicit approval.
+
 ## Git & Repository
 - Do not commit `.env`, `.venv`, secrets, or `__pycache__/`.
 - `pyproject.toml` is the single source of truth for dependencies.
