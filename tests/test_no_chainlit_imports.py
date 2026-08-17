@@ -7,6 +7,10 @@ undo the phase.
 
 Catches local imports inside functions too — `quote_tools.py` had four of those
 before Step 4, and `base.py` and `agent_bridge.py` one each.
+
+Also guards the import direction: `includes/` must never import `app`. That
+cycle (`rfq_actions` -> `app.main`) existed before Step 6 and is easy to
+recreate by accident.
 """
 
 import ast
@@ -44,23 +48,28 @@ def _python_files():
     yield REPO_ROOT / "main.py"
 
 
-def _imports_chainlit(path: Path) -> list[int]:
-    """Line numbers of any chainlit import, including inside functions."""
+def _imports_module(path: Path, target: str) -> list[int]:
+    """Line numbers importing *target*, including inside functions."""
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (SyntaxError, UnicodeDecodeError):  # pragma: no cover
         return []
 
+    prefix = target + "."
     hits = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            if any(a.name == "chainlit" or a.name.startswith("chainlit.") for a in node.names):
+            if any(a.name == target or a.name.startswith(prefix) for a in node.names):
                 hits.append(node.lineno)
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
-            if mod == "chainlit" or mod.startswith("chainlit."):
+            if node.level == 0 and (mod == target or mod.startswith(prefix)):
                 hits.append(node.lineno)
     return hits
+
+
+def _imports_chainlit(path: Path) -> list[int]:
+    return _imports_module(path, "chainlit")
 
 
 def _rel(path: Path) -> str:
@@ -134,3 +143,47 @@ def test_tools_and_agents_are_completely_clean():
             if "__pycache__" in path.parts:
                 continue
             assert not _imports_chainlit(path), f"{_rel(path)} imports chainlit"
+
+
+# ---------------------------------------------------------------------------
+# Import direction
+# ---------------------------------------------------------------------------
+
+def test_includes_never_imports_app():
+    """`app.py` is the adapter; it depends on `includes/`, never the reverse.
+
+    `rfq_actions` used to do `from app import main` inside a function, which made
+    the two mutually dependent and blocked the whole extraction.
+    """
+    offenders = {}
+    for path in (REPO_ROOT / "includes").rglob("*.py"):
+        if "__pycache__" in path.parts:
+            continue
+        lines = _imports_module(path, "app")
+        if lines:
+            offenders[_rel(path)] = lines
+
+    assert not offenders, (
+        "includes/ must not import app:\n"
+        + "\n".join(f"  {f} (lines {ls})" for f, ls in sorted(offenders.items()))
+    )
+
+
+@pytest.mark.parametrize(
+    "src,expected",
+    [
+        ("from app import main\n", [1]),
+        ("def f():\n    from app import main\n", [2]),
+        ("import app\n", [1]),
+        # Not the entry point — a package that merely starts with "app".
+        ("import application\n", []),
+        ("from apple import pie\n", []),
+        # Relative imports are within-package, not the root app.py.
+        ("from . import app\n", []),
+    ],
+)
+def test_app_import_detector_shapes(src, expected, tmp_path):
+    path = tmp_path / "sample.py"
+    path.write_text(src)
+    assert _imports_module(path, "app") == expected
+

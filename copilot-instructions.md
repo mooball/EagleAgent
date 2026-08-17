@@ -46,6 +46,7 @@ includes/
     research_agent.py       # ResearchAgent — Google Search grounding, optional RFQ tools
     sysadmin_agent.py       # SysAdminAgent — admin script/job management
     browser_agent.py        # BrowserAgent — web automation (disabled in main graph)
+    registry.py             # AGENTS — the single definition of each agent
   tools/                   # Tool definitions
     browser_tools.py        # Headless browser automation
     user_profile.py         # User profile management tools (remember/get/forget)
@@ -53,12 +54,16 @@ includes/
     job_tools.py            # Script execution tools (admin-only)
     product_tools.py        # Product/supplier database search tools
     quote_tools.py          # RFQ/quote workflow tools
-  chat/                    # Chainlit-specific modules
-    actions.py              # Action registry and dispatcher — replaces slash commands
-    commands.py             # Legacy command handlers (deleteall wipe logic)
+  chat/                    # Chat-transport modules
+    context.py              # ChatContext protocol + ContextVar — the Chainlit boundary
+    context_chainlit.py     # ChainlitChatContext — adapter, may import chainlit
+    runner.py               # run_turn() — owns the agent turn and the per-thread run lock
+    actions.py              # Action registry and dispatcher
+    rfq_actions.py          # RFQ_ACTIONS — (payload, ctx) handlers for dashboard buttons
+    streaming_logic.py      # Pure stream-decision helpers (checkpoint repair, repetition guard)
     document_processing.py  # PDF/image/text/audio processing for file attachments
     local_storage_client.py # LocalStorageClient — file attachments on local disk
-    job_progress.py         # Chainlit progress messages for background jobs
+    job_progress.py         # Progress messages for background jobs
   dashboard/               # FastAPI dashboard modules
     routes.py               # Full-page & HTMX partial routes (Suppliers, Products, RFQs, Users, Home)
     context.py              # In-memory store for current dashboard view per user
@@ -211,14 +216,68 @@ e.dispose()
 - Served to browser via Starlette `StaticFiles` mount at `/files`.
 - No cloud storage — files stay on the application host.
 
+## ⚠️ Chat Architecture — the Chainlit boundary
+
+**Chainlit is being removed.** Phase 1 of the chat migration decoupled all business logic from it. Two CI tests enforce the boundary (`tests/test_no_chainlit_imports.py`, `tests/test_action_coverage.py`), but they cannot catch every way of re-coupling. Follow these rules on any chat-related work.
+
+### 1. Never touch `cl.*` outside the adapter layer
+
+Business logic talks to the user through **`ChatContext`** (`includes/chat/context.py`):
+
+```python
+await ctx.say("text", author="EagleAgent", actions=[ActionSpec(...)])
+await ctx.image(path, name="Screenshot")
+await ctx.notify_dashboard("dashboard_refresh")
+await ctx.rename_thread("RFQ-1 — Acme")
+ctx.cancelled          # user pressed stop
+ctx.active_message     # the message currently streaming, if any
+```
+
+Deep tool calls that cannot take an argument use `get_chat_context()` (raises if unbound) or `try_get_chat_context()` (returns `None` — use when the current behaviour is a silent no-op outside a session).
+
+**The adapter layer is the only place allowed to import `chainlit`:**
+`app.py`, `main.py`, `includes/chat/context_chainlit.py`, `includes/chat/data_layer.py`, `includes/chat/local_storage_client.py`, `includes/agent_bridge.py`.
+
+> **Adding a file to that allowlist is a deliberate architectural decision, not a quick fix.** If you are tempted, the answer is almost always a new method on `ChatContext` instead.
+
+### 2. `includes/` must never import `app`
+
+`app.py` depends on `includes/`, never the reverse. A `from app import main` cycle used to exist and blocked the whole refactor. Enforced by CI.
+
+### 3. Every agent turn goes through `run_turn()`
+
+`includes/chat/runner.py` owns the turn: the stream loop, checkpoint repair, token footer, resilient persistence, and the **per-`thread_id` run lock**. Never call `graph.astream_events(...)` directly — you would bypass all of it and risk corrupting the checkpoint.
+
+- `on_busy="reject"` — user-typed messages.
+- `on_busy="wait"` — dashboard-initiated work that should queue.
+
+### 4. Action handlers are `(payload, ctx)` and live in a registry
+
+```python
+async def on_my_action(payload: dict, ctx: ChatContext) -> None: ...
+RFQ_ACTIONS = {"my_action": on_my_action, ...}   # includes/chat/rfq_actions.py
+```
+
+`app.py` adapts them onto `@cl.action_callback` in one loop. **Every button you emit must have a handler** — `tests/test_action_coverage.py` fails otherwise.
+
+### 5. Agents are defined once, in `includes/agents/registry.py`
+
+Adding or renaming an agent means editing `AGENTS` only — not chat profiles, graph selection, or resume handling.
+
+### 6. `ctx.get/set` is per-*session*, not per-*run*
+
+Two runs can be active on one thread (a dashboard button plus a typed message). Anything belonging to a single run belongs on the **context object** — as `active_message` does — or a concurrent run will clobber it. This has already caused one lost-output bug.
+
 ## Chainlit (`app.py`)
 
-- `@cl.set_chat_profiles`: Defines available profiles (Eagle Agent, Research Agent, Internal Agent).
-- `@cl.on_chat_start` / `@cl.on_chat_resume`: Set up thread ID, ensure user profile via `_ensure_user_profile()`, attach action buttons to welcome message.
-- `@cl.action_callback`: Handles action button clicks (`new_conversation`, `delete_all_data`, `confirm_delete_all`, `cancel_delete_all`).
-- `@cl.on_message` (`main()`): Intercepts help keywords via `is_help_request()`, processes file attachments, invokes graph with streaming.
+`app.py` is a **thin adapter**. It builds a `ChainlitChatContext`, calls into `includes/`, and owns the Chainlit lifecycle hooks. Business logic does not belong here.
+
+- `@cl.set_chat_profiles`: Built from `includes/agents/registry.py`.
+- `@cl.on_chat_start` / `@cl.on_chat_resume`: Thread ID, user profile via `_ensure_user_profile()`, graph selection via `resolve_agent(...)`.
+- `@cl.action_callback`: Lifecycle actions only (`new_conversation`, `cancel_job`, `stop_agent`, `cancel_run_script`). RFQ actions are registered by adapting `RFQ_ACTIONS`.
+- `@cl.on_message` (`main()`): Normalises the message, processes attachments, resolves intent, then delegates to `run_turn()`.
 - `setup_globals()`: Builds the LangGraph `StateGraph` (Supervisor + agent nodes), initializes PostgreSQL connections.
-- Keep handlers thin — delegate to agents, prompts module, and document processing.
+
 
 ## Dashboard (`main.py`, `includes/dashboard/`)
 
@@ -232,20 +291,22 @@ The FastAPI dashboard serves HTML pages for managing suppliers, products, RFQs, 
 
 ## Action Buttons (`includes/chat/actions.py`)
 
-Actions replace the old `/` slash commands with Chainlit-native action buttons and LangGraph tools.
+Actions replace the old `/` slash commands with action buttons and LangGraph tools.
 
-- **Registry**: `@register_action(name, label, description, icon, admin_only)` decorator registers a handler.
-- **Dispatcher**: `dispatch_action(name)` checks the user's role before executing admin-only actions.
+- **Registry**: `@register_action(name, label, description, icon, admin_only)` decorator registers a handler. Handlers take `(ctx, **kwargs)`.
+- **Dispatcher**: `dispatch_action(name, ctx)` checks the user's role before executing admin-only actions. `ctx` defaults to the bound `ChatContext`.
 - **Filtering**: `get_actions_for_user(user_id)` returns actions visible to the given user's role.
 - **Discovery**: Users can type `help`, `actions`, `menu`, `commands`, or `show actions` to see buttons mid-conversation.
-- **LangGraph tools**: `includes/tools/action_tools.py` exposes `list_available_actions`, `start_new_conversation`, and `delete_all_user_data` so the agent can invoke them via natural language.
+- **LangGraph tools**: `includes/tools/action_tools.py` exposes `list_available_actions` and `start_new_conversation` so the agent can invoke them via natural language.
 - **System prompt**: `build_system_prompt()` dynamically includes a list of available actions based on the user's role.
 
 **To add a new action:**
-1. In `includes/chat/actions.py`, add a `@register_action(...)` decorated async handler.
-2. In `app.py`, add a `@cl.action_callback("your_action_name")` that calls `dispatch_action("your_action_name")`.
+1. In `includes/chat/actions.py`, add a `@register_action(...)` decorated async handler taking `(ctx, **kwargs)`.
+2. In `app.py`, add a `@cl.action_callback("your_action_name")` that calls `dispatch_action("your_action_name", ChainlitChatContext.from_session())`.
 3. Optionally add a LangGraph tool wrapper in `includes/tools/action_tools.py`.
 4. If admin-only, add the tool name to `ADMIN_ONLY_TOOLS` in `includes/graph.py`.
+
+> **RFQ buttons are different** — they go in `RFQ_ACTIONS` in `includes/chat/rfq_actions.py` as `(payload, ctx)` handlers. `app.py` registers them in one loop; do not add a decorator per button.
 
 ## Prompts (`includes/prompts.py`)
 - `build_system_prompt()` is the primary prompt builder — dynamic, role-aware, profile-aware.
@@ -262,7 +323,7 @@ Admin users can run registered scripts from the chat. See `docs/SERVER_SCRIPTS.m
 - **JobRunner** (`includes/job_runner.py`): Spawns scripts as async subprocesses, tracks status in memory, captures output (200-line ring buffer), reaper polls every 2s, SIGTERM/SIGINT handlers for graceful shutdown.
 - **Progress** (`includes/chat/job_progress.py`): Posts Chainlit messages on start (with Cancel button), every 30s, and on completion/failure.
 - **LangGraph tools** (`includes/tools/job_tools.py`): `run_script` (confirmation flow), `list_scripts`, `list_jobs`, `get_job_status` (by ID or script name), `cancel_job`. All admin-only.
-- **Confirmation flow**: `run_script` tool sends Run/Cancel buttons. Actual execution happens in `@cl.action_callback("confirm_run_script")` in `app.py`.
+- **Confirmation flow**: `run_script` tool sends Run/Cancel buttons. ⚠️ **The Run button currently has no handler** — `confirm_run_script` is emitted but never dispatched, so the script never starts (todo.vu #32818). Allow-listed in `tests/test_action_coverage.py::KNOWN_ORPHANS`.
 
 **To add a new script:** Add an entry to `SCRIPT_REGISTRY` in `config/scripts.py`. That's it.
 
