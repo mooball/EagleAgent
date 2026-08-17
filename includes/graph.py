@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Tool access control
 # ---------------------------------------------------------------------------
-ADMIN_ONLY_TOOLS = ["delete_all_user_data"]
+# Empty since delete_all_user_data was removed. Kept as the registration point
+# for future admin-only tools — see includes/tools/job_tools.py.
+ADMIN_ONLY_TOOLS: list[str] = []
 
 # ---------------------------------------------------------------------------
 # PostgreSQL connection pool (opened lazily in setup_globals)
@@ -81,11 +83,12 @@ class SupervisorState(TypedDict):
 # ---------------------------------------------------------------------------
 def create_model(agent_name: str) -> ChatGoogleGenerativeAI:
     """Create a model instance for a specific agent, using per-agent model overrides."""
+    # No frequency_penalty: Gemini rejects it on flash-lite models (400
+    # "Penalty is not enabled for this model"). See includes/chat repetition guard.
     return ChatGoogleGenerativeAI(
         model=config.get_agent_model(agent_name),
         temperature=config.DEFAULT_TEMPERATURE,
         max_output_tokens=config.DEFAULT_MAX_TOKENS,
-        frequency_penalty=config.FREQUENCY_PENALTY,
     )
 
 

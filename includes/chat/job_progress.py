@@ -1,15 +1,14 @@
 """
 Chat progress updates for background jobs.
 
-Sends Chainlit messages when a job starts, periodically while running,
+Sends messages when a job starts, periodically while running,
 and on completion or failure.  Attaches a Cancel action button.
 """
 
 import asyncio
 import logging
 
-import chainlit as cl
-
+from includes.chat.context import ActionSpec, ChatContext
 from includes.job_runner import Job, JobRunner
 
 logger = logging.getLogger(__name__)
@@ -18,27 +17,24 @@ logger = logging.getLogger(__name__)
 _PROGRESS_INTERVAL = 30
 
 
-async def monitor_job(runner: JobRunner, job: Job) -> None:
-    """Background task that posts Chainlit messages about a job's lifecycle.
+async def monitor_job(runner: JobRunner, job: Job, ctx: ChatContext) -> None:
+    """Background task that posts messages about a job's lifecycle.
 
-    Call via ``asyncio.create_task(monitor_job(runner, job))`` right after
-    starting a job.  Messages go to the thread stored in ``job.thread_id``.
+    Call via ``asyncio.create_task(monitor_job(runner, job, ctx))`` right after
+    starting a job.
     """
     # --- Start message with Cancel button ---
-    cancel_action = cl.Action(
+    cancel_action = ActionSpec(
         name="cancel_job",
         payload={"job_id": job.id},
         label="Cancel",
-        description=f"Cancel {job.script_name}",
+        tooltip=f"Cancel {job.script_name}",
     )
 
-    start_msg = cl.Message(
-        content=(
-            f"**Started** `{job.script_name}` — job `{job.id[:8]}`, pid {job.pid}"
-        ),
+    await ctx.say(
+        f"**Started** `{job.script_name}` — job `{job.id[:8]}`, pid {job.pid}",
         actions=[cancel_action],
     )
-    await start_msg.send()
 
     # --- Periodic progress ---
     last_output_len = 0
@@ -53,9 +49,7 @@ async def monitor_job(runner: JobRunner, job: Job) -> None:
         if current_len > last_output_len:
             tail = list(job.output)[-5:]
             snippet = "\n".join(tail)
-            await cl.Message(
-                content=f"**`{job.script_name}`** still running…\n```\n{snippet}\n```",
-            ).send()
+            await ctx.say(f"**`{job.script_name}`** still running…\n```\n{snippet}\n```")
             last_output_len = current_len
 
     # --- Completion / Failure message ---
@@ -68,22 +62,16 @@ async def monitor_job(runner: JobRunner, job: Job) -> None:
     if job.status == "completed":
         tail = list(job.output)[-3:]
         snippet = "\n".join(tail) if tail else "(no output)"
-        await cl.Message(
-            content=(
-                f"**Completed** `{job.script_name}` in {duration}.\n"
-                f"```\n{snippet}\n```"
-            ),
-        ).send()
+        await ctx.say(
+            f"**Completed** `{job.script_name}` in {duration}.\n"
+            f"```\n{snippet}\n```"
+        )
     elif job.status == "failed":
         tail = list(job.output)[-5:]
         snippet = "\n".join(tail) if tail else "(no output)"
-        await cl.Message(
-            content=(
-                f"**Failed** `{job.script_name}` (exit code {job.exit_code}) "
-                f"after {duration}.\n```\n{snippet}\n```"
-            ),
-        ).send()
+        await ctx.say(
+            f"**Failed** `{job.script_name}` (exit code {job.exit_code}) "
+            f"after {duration}.\n```\n{snippet}\n```"
+        )
     elif job.status == "cancelled":
-        await cl.Message(
-            content=f"**Cancelled** `{job.script_name}` after {duration}.",
-        ).send()
+        await ctx.say(f"**Cancelled** `{job.script_name}` after {duration}.")

@@ -6,10 +6,10 @@ list running/completed jobs, check job status, and cancel jobs.
 All tools delegate to the JobRunner instance.
 """
 
-import chainlit as cl
 from langchain_core.tools import tool
 
 from config.scripts import list_scripts as _list_scripts
+from includes.chat.context import ActionSpec, get_chat_context
 from includes.job_runner import JobRunner
 
 
@@ -49,28 +49,26 @@ def create_job_tools(runner: JobRunner):
         if script is None:
             return f"Error: Unknown script '{script_name}'. Use `list_scripts` to see available scripts."
 
-        confirm_action = cl.Action(
+        confirm_action = ActionSpec(
             name="confirm_run_script",
             payload={"script_name": script_name},
             label="Run",
-            description=f"Start {script_name}",
+            tooltip=f"Start {script_name}",
         )
-        cancel_action = cl.Action(
+        cancel_action = ActionSpec(
             name="cancel_run_script",
             payload={"script_name": script_name},
             label="Cancel",
-            description="Cancel this script run",
+            tooltip="Cancel this script run",
         )
 
-        await cl.Message(
-            content=(
-                f"**Ready to run** `{script_name}`\n\n"
-                f"_{script['description']}_\n\n"
-                f"Click **Run** to start or **Cancel** to abort."
-            ),
+        await get_chat_context().say(
+            f"**Ready to run** `{script_name}`\n\n"
+            f"_{script['description']}_\n\n"
+            f"Click **Run** to start or **Cancel** to abort.",
             actions=[confirm_action, cancel_action],
             author="EagleAgent",
-        ).send()
+        )
 
         return (
             f"Confirmation requested for `{script_name}`. "

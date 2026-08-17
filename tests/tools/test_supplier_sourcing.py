@@ -240,7 +240,39 @@ class TestMatchSuppliersToDb:
 
     @patch("includes.tools.quote_tools._verify_supplier_url")
     def test_db_matched_supplier_skips_url_verification(self, mock_verify, db_session):
-        """When a supplier is already in the DB, URL verification should be skipped."""
+        """A DB match on the same domain should not trigger a web lookup."""
+        sup = Supplier(
+            id=uuid.uuid4(),
+            name="BTPZZUnique Test Co",
+            url="https://btpzzunique.com.au",
+            country="AU",
+            contacts=[{"email": "info@btpzzunique.com.au"}],
+            source="netsuite",
+        )
+        db_session.add(sup)
+        db_session.flush()
+
+        suppliers = [{
+            "name": "BTPZZUnique Test Co",
+            "country": "AU",
+            "contacts": [{"url": "https://btpzzunique.com.au", "email": "info@btpzzunique.com.au"}],
+        }]
+
+        with patch("includes.dashboard.database.get_session", return_value=db_session):
+            _match_suppliers_to_db(suppliers)
+
+        assert suppliers[0].get("supplier_id") == str(sup.id)
+        # DB is authoritative — no web lookup needed
+        mock_verify.assert_not_called()
+
+    @patch("includes.tools.quote_tools._verify_supplier_url", return_value=None)
+    def test_domain_mismatch_rejects_name_match(self, mock_verify, db_session):
+        """A name match whose domain conflicts must not be accepted on trust.
+
+        match_supplier() gates name matches on corroborating domain/country, so a
+        conflicting URL falls through to web verification rather than silently
+        matching a different company with a similar name.
+        """
         sup = Supplier(
             id=uuid.uuid4(),
             name="BTPZZUnique Test Co",
@@ -261,10 +293,7 @@ class TestMatchSuppliersToDb:
         with patch("includes.dashboard.database.get_session", return_value=db_session):
             _match_suppliers_to_db(suppliers)
 
-        # DB match should have succeeded
-        assert suppliers[0].get("supplier_id") is not None
-        # URL verification should NOT have been called (DB is authoritative)
-        mock_verify.assert_not_called()
+        mock_verify.assert_called_once()
 
     @patch("includes.tools.quote_tools._verify_supplier_url", return_value=None)
     def test_empty_suppliers_list(self, mock_verify):

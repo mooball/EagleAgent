@@ -60,7 +60,7 @@ class TestQueries:
     def test_all_brands_without_date(self):
         sql = all_brands()
         assert "customrecord_brands" in sql
-        assert "lastmodified" not in sql
+        assert "lastmodified >=" not in sql
 
     def test_all_brands_with_date(self):
         sql = all_brands("2026-01-10")

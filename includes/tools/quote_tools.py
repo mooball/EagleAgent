@@ -10,8 +10,9 @@ import logging
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-import chainlit as cl
 from langchain_core.tools import tool
+
+from includes.chat.context import try_get_chat_context
 
 # Re-export everything from sub-modules so existing imports keep working
 from includes.tools.rfq_crud import (  # noqa: F401
@@ -647,25 +648,31 @@ def _enrich_supplier_pricing(suppliers: list[dict], product_id: str | None) -> N
 
 async def _notify_rfq_updated() -> None:
     """Notify the dashboard to refresh after RFQ data changes."""
-    from includes.agent_bridge import notify_dashboard
-    await notify_dashboard("dashboard_refresh")
+    await _notify("dashboard_refresh")
 
 
 async def _notify_agent_working(label: str) -> None:
     """Show the blue 'agent working' badge in the dashboard header."""
-    from includes.agent_bridge import notify_dashboard
-    await notify_dashboard("agent_working", {"label": label})
+    await _notify("agent_working", {"label": label})
+
+
+async def _notify(command: str, payload: dict | None = None) -> None:
+    ctx = try_get_chat_context()
+    if ctx is not None:
+        await ctx.notify_dashboard(command, payload)
 
 
 async def _stream_to_user(text: str) -> None:
-    """Stream text to the user's active Chainlit message (if available)."""
+    """Stream text to the user's active message, if there is one."""
     try:
-        import chainlit as cl
-        msg = cl.user_session.get("active_msg")
-        if msg and text:
-            await msg.stream_token(text)
+        from includes.chat.context import try_get_chat_context
+        ctx = try_get_chat_context()
+        if ctx is None or not text:
+            return
+        if ctx.active_message:
+            await ctx.active_message.stream(text)
     except Exception:
-        pass  # Not in Chainlit context or no active message
+        pass  # No chat context or no active message
 
 
 # ---------------------------------------------------------------------------
@@ -823,15 +830,10 @@ def create_quote_tools(user_id: str) -> list:
             except (json.JSONDecodeError, ValueError):
                 return f"Error: 'data' must be a JSON object, got unparseable string: {data[:100]}"
 
-        # For create: inject Chainlit's thread_id from the current session
-        if action == "create":
-            try:
-                import chainlit as cl
-                thread_id = cl.context.session.thread_id
-                if thread_id:
-                    data["thread_id"] = thread_id
-            except Exception:
-                pass
+        # For create: bind the RFQ to the conversation it was created from
+        ctx = try_get_chat_context()
+        if action == "create" and ctx is not None and ctx.thread_id:
+            data["thread_id"] = ctx.thread_id
 
         _ACTION_MAP = {
             "create": lambda: asyncio.to_thread(_create_rfq_sync, data, user_id),
@@ -884,18 +886,8 @@ def create_quote_tools(user_id: str) -> list:
             return result["error"]
 
         # Name the thread after RFQ creation
-        if action == "create" and isinstance(result, dict) and data.get("thread_id"):
-            try:
-                import chainlit as cl
-                data_layer = cl.data._data_layer
-                if data_layer:
-                    thread_name = f"{result.get('id', '')} — {result.get('customer', '')}"
-                    await data_layer.update_thread(
-                        thread_id=data["thread_id"],
-                        name=thread_name,
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to name thread: {e}")
+        if action == "create" and isinstance(result, dict) and data.get("thread_id") and ctx is not None:
+            await ctx.rename_thread(f"{result.get('id', '')} — {result.get('customer', '')}")
 
         await _notify_rfq_updated()
         return _render_rfq_brief_summary(result)

@@ -39,19 +39,9 @@ def _make_job(
 
 
 def _create_tools(runner):
-    """Import and create job tools bound to a runner, with Chainlit mocked."""
+    """Create job tools bound to a runner. No Chainlit involved any more."""
     import includes.tools.job_tools as mod
-    # Directly replace cl attributes on the module to avoid Chainlit lazy-load issues
-    original_cl = mod.cl
-    mock_cl = MagicMock()
-    mock_cl.user_session = MagicMock()
-    mock_cl.user_session.get.return_value = "thread-abc"
-    mod.cl = mock_cl
-    try:
-        tools = mod.create_job_tools(runner)
-    finally:
-        mod.cl = original_cl
-    return tools, mock_cl
+    return mod.create_job_tools(runner), None
 
 
 # ============================================================================
@@ -76,49 +66,30 @@ class TestCreateJobTools:
 # ============================================================================
 
 class TestRunScript:
-    async def test_run_script_sends_confirmation(self):
+    async def test_run_script_sends_confirmation(self, bound_chat_ctx):
         """run_script should send a confirmation message, not start the job."""
-        import includes.tools.job_tools as mod
         runner = MagicMock(spec=JobRunner)
-
-        mock_cl = MagicMock()
-        mock_cl.user_session = MagicMock()
-        mock_cl.user_session.get.return_value = "thread-abc"
-        mock_msg = MagicMock()
-        mock_msg.send = AsyncMock()
-        mock_cl.Message.return_value = mock_msg
-        mock_cl.Action = MagicMock()
-        original_cl = mod.cl
-        mod.cl = mock_cl
-        try:
-            tools = mod.create_job_tools(runner)
-            run_tool = next(t for t in tools if t.name == "run_script")
-            result = await run_tool.ainvoke({"script_name": "update_product_embeddings"})
-        finally:
-            mod.cl = original_cl
+        tools, _ = _create_tools(runner)
+        run_tool = next(t for t in tools if t.name == "run_script")
+        result = await run_tool.ainvoke({"script_name": "update_product_embeddings"})
 
         assert "Confirmation requested" in result
         assert "update_product_embeddings" in result
         # Job should NOT have been started
         runner.run_script.assert_not_called()
-        # A confirmation message should have been sent
-        mock_msg.send.assert_awaited_once()
-    async def test_run_script_unknown_script(self):
-        import includes.tools.job_tools as mod
-        runner = MagicMock(spec=JobRunner)
+        # A confirmation message with Run / Cancel should have been sent
+        assert len(bound_chat_ctx.messages) == 1
+        assert bound_chat_ctx.action_names == ["confirm_run_script", "cancel_run_script"]
 
-        mock_cl = MagicMock()
-        original_cl = mod.cl
-        mod.cl = mock_cl
-        try:
-            tools = mod.create_job_tools(runner)
-            run_tool = next(t for t in tools if t.name == "run_script")
-            result = await run_tool.ainvoke({"script_name": "nonexistent_script"})
-        finally:
-            mod.cl = original_cl
+    async def test_run_script_unknown_script(self, bound_chat_ctx):
+        runner = MagicMock(spec=JobRunner)
+        tools, _ = _create_tools(runner)
+        run_tool = next(t for t in tools if t.name == "run_script")
+        result = await run_tool.ainvoke({"script_name": "nonexistent_script"})
 
         assert "Error" in result
         assert "Unknown script" in result
+        assert bound_chat_ctx.messages == []
 
 
 # ============================================================================

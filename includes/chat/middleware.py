@@ -3,7 +3,7 @@
 import logging
 import urllib.parse
 
-import chainlit as cl
+from includes.chat.context import try_get_chat_context
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +91,13 @@ class GeminiRetryNotifier(logging.Handler):
     @staticmethod
     async def _send_notification() -> None:
         try:
-            await cl.Message(
-                content="\u23f3 Model temporarily overloaded — retrying automatically...",
+            ctx = try_get_chat_context()
+            if ctx is None:
+                return
+            await ctx.say(
+                "\u23f3 Model temporarily overloaded — retrying automatically...",
                 author="System",
-            ).send()
+                transient=True,
+            )
         except Exception:
             pass  # Never break the app for a UI notification

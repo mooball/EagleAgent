@@ -16,7 +16,6 @@ def create_action_tools(user_id: str):
     Returns a list of tools:
       - list_available_actions  (all users)
       - start_new_conversation  (all users)
-      - delete_all_user_data    (admin only — filtered out by GeneralAgent for non-admins)
     """
 
     @tool
@@ -53,18 +52,4 @@ def create_action_tools(user_id: str):
         await dispatch_action("new_conversation")
         return "A new conversation thread has been started."
 
-    @tool
-    async def delete_all_user_data() -> str:
-        """Permanently delete all of the user's stored data including preferences,
-        memories, and conversation history. This is an admin-only operation.
-
-        Call this when the user explicitly asks to erase/delete all their data.
-        A confirmation prompt with action buttons will be shown to the user.
-
-        Returns:
-            Confirmation that the deletion confirmation was sent.
-        """
-        await dispatch_action("delete_all_data")
-        return "A confirmation prompt has been sent. The user must click a button to confirm or cancel."
-
-    return [list_available_actions, start_new_conversation, delete_all_user_data]
+    return [list_available_actions, start_new_conversation]

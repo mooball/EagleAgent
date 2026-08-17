@@ -109,6 +109,35 @@ def clear_stop(session_id: str) -> None:
 # Agent → Dashboard helpers
 # ---------------------------------------------------------------------------
 
+# Concurrent workers on one session share a single "agent working" badge, so
+# the badge is reference-counted: the first worker turns it on, the last turns
+# it off. Without this, whichever finishes first clears it for everyone.
+_working_depth: Dict[str, int] = {}
+
+
+def _badge_should_emit(command: str) -> bool:
+    """Track agent_working/agent_done depth; emit only on the 0↔1 transitions."""
+    if command not in ("agent_working", "agent_done"):
+        return True
+    try:
+        import chainlit as cl
+        key = cl.context.session.id
+    except Exception:
+        return True
+
+    if command == "agent_working":
+        depth = _working_depth.get(key, 0)
+        _working_depth[key] = depth + 1
+        return depth == 0
+
+    depth = _working_depth.get(key, 0) - 1
+    if depth <= 0:
+        _working_depth.pop(key, None)
+        return True
+    _working_depth[key] = depth
+    return False
+
+
 async def notify_dashboard(command: str, payload: dict | None = None) -> None:
     """Send a command to the dashboard via the Chainlit iframe.
 
@@ -127,6 +156,9 @@ async def notify_dashboard(command: str, payload: dict | None = None) -> None:
         await notify_dashboard("agent_navigate", {"url": "/rfqs/RFQ-123"})
     """
     import chainlit as cl
+
+    if not _badge_should_emit(command):
+        return
 
     data: dict = {"type": command}
     if payload:
@@ -184,9 +216,27 @@ async def dispatch_action(
             import chainlit as cl
             cl.user_session.set("thread_id", target_thread_id)
 
+        # RFQ handlers are transport-neutral — call them directly rather than
+        # bouncing through Chainlit's decorator registry.
+        import includes.chat.rfq_actions as rfq_module
+
+        handler = rfq_module.RFQ_ACTIONS.get(action_name)
+        if handler:
+            try:
+                from includes.chat.context import chat_context
+                from includes.chat.context_chainlit import ChainlitChatContext
+
+                ctx = ChainlitChatContext.from_session()
+                with chat_context(ctx):
+                    await handler(payload, ctx)
+                return {"success": True}
+            except Exception as e:
+                logger.exception(f"[agent_bridge] Action {action_name} failed")
+                return {"error": str(e)}
+
         callback = config.code.action_callbacks.get(action_name)
         if callback:
-            # Native @cl.action_callback
+            # Native @cl.action_callback — lifecycle actions still live in app.py
             try:
                 action = Action(name=action_name, payload=payload)
                 await callback(action)
@@ -199,7 +249,10 @@ async def dispatch_action(
         from includes.chat.actions import dispatch_action as dispatch_custom_action, get_action
         if get_action(action_name):
             try:
-                await dispatch_custom_action(action_name, **payload)
+                from includes.chat.context_chainlit import ChainlitChatContext
+                await dispatch_custom_action(
+                    action_name, ChainlitChatContext.from_session(), **payload
+                )
                 return {"success": True}
             except Exception as e:
                 logger.exception(f"[agent_bridge] Action {action_name} failed")

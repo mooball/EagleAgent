@@ -2,14 +2,12 @@
 Supplier search menu — button builder and display helper.
 
 Used by both the procurement agent (via show_supplier_search_options tool)
-and the Chainlit action callbacks (rfq_actions.py) to re-show the menu
-after each search completes.
+and the RFQ action callbacks to re-show the menu after each search completes.
 """
 
 import logging
-from typing import Optional
 
-import chainlit as cl
+from includes.chat.context import ActionSpec, ChatContext, get_chat_context
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +21,7 @@ def build_menu_actions(
     user_id: str,
     line_filter: list[int] | None = None,
     viable_types: list[str] | None = None,
-) -> list[cl.Action]:
+) -> list[ActionSpec]:
     """Build the action buttons for the supplier search menu.
 
     Args:
@@ -41,42 +39,42 @@ def build_menu_actions(
     actions = []
 
     if viable_types is None or "SEARCH_PREVIOUS" in viable_types:
-        actions.append(cl.Action(
+        actions.append(ActionSpec(
             name="rfq_pipeline_previous_suppliers",
             payload={**base_payload},
             label="📊 Previous Sales",
-            description="Search purchase history for suppliers of these parts",
+            tooltip="Search purchase history for suppliers of these parts",
         ))
 
     if viable_types is None or "SEARCH_BRAND" in viable_types:
-        actions.append(cl.Action(
+        actions.append(ActionSpec(
             name="rfq_pipeline_brand_suppliers",
             payload={**base_payload},
             label="🏷️ Brand Suppliers",
-            description="Find suppliers linked to these brands in our database",
+            tooltip="Find suppliers linked to these brands in our database",
         ))
 
     if viable_types is None or "SEARCH_WEB_AU" in viable_types:
-        actions.append(cl.Action(
+        actions.append(ActionSpec(
             name="rfq_pipeline_new_domestic",
             payload={**base_payload},
             label="🇦🇺 New Australian Suppliers",
-            description="Search the web for Australian suppliers",
+            tooltip="Search the web for Australian suppliers",
         ))
 
     if viable_types is None or "SEARCH_WEB_INTL" in viable_types:
-        actions.append(cl.Action(
+        actions.append(ActionSpec(
             name="rfq_pipeline_new_international",
             payload={**base_payload},
             label="🌐 New International Suppliers",
-            description="Search the web globally for suppliers",
+            tooltip="Search the web globally for suppliers",
         ))
 
-    actions.append(cl.Action(
+    actions.append(ActionSpec(
         name="rfq_pipeline_supplier_search_done",
         payload={**base_payload},
         label="✅ Done — Continue",
-        description="Finish supplier search and continue",
+        tooltip="Finish supplier search and continue",
     ))
 
     return actions
@@ -87,6 +85,7 @@ async def show_search_menu(
     user_id: str,
     summary: str = "",
     line_filter: list[int] | None = None,
+    ctx: ChatContext | None = None,
 ) -> None:
     """Display the supplier search menu with action buttons.
 
@@ -98,8 +97,11 @@ async def show_search_menu(
         user_id: The current user.
         summary: Optional summary to prepend (e.g. "✅ Previous Sales complete.").
         line_filter: If set, scope the menu to specific line numbers.
+        ctx: Where to send the menu. Defaults to the bound ChatContext.
     """
     from includes.tools.supplier_search_tools import get_viable_search_types
+
+    ctx = ctx or get_chat_context()
 
     # Determine which search types make sense for these items
     viable = get_viable_search_types(rfq_id, line_numbers=line_filter)
@@ -136,4 +138,4 @@ async def show_search_menu(
         message = intro
 
     actions = build_menu_actions(rfq_id, user_id, line_filter=line_filter, viable_types=viable_types)
-    await cl.Message(content=message, author="EagleAgent", actions=actions).send()
+    await ctx.say(message, author="EagleAgent", actions=actions)

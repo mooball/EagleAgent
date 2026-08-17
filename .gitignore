@@ -28,3 +28,8 @@ config/mcp_servers.yaml
 # Tailwind — generated CSS and standalone CLI binary
 public/tailwind.min.css
 tailwindcss
+# Coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml

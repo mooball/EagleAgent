@@ -25,9 +25,8 @@ class TestActionRegistry:
     """Test the action registry and lookup."""
 
     def test_builtin_actions_registered(self):
-        """Built-in new_conversation and delete_all_data should be present."""
+        """Built-in new_conversation should be present."""
         assert "new_conversation" in _registry
-        assert "delete_all_data" in _registry
 
     def test_get_action_returns_action(self):
         action = get_action("new_conversation")
@@ -38,8 +37,8 @@ class TestActionRegistry:
     def test_get_action_unknown_returns_none(self):
         assert get_action("nonexistent_action") is None
 
-    def test_delete_all_is_admin_only(self):
-        action = get_action("delete_all_data")
+    def test_research_actions_are_admin_only(self):
+        action = get_action("research_product_info")
         assert action is not None
         assert action.admin_only is True
 
@@ -57,7 +56,7 @@ class TestRoleFiltering:
         actions = get_actions_for_user("staff@example.com")
         names = [a.name for a in actions]
         assert "new_conversation" in names
-        assert "delete_all_data" not in names
+        assert "research_product_info" not in names
 
     @patch("includes.chat.actions.config")
     def test_admin_sees_all_actions(self, mock_config):
@@ -65,7 +64,7 @@ class TestRoleFiltering:
         actions = get_actions_for_user("admin@example.com")
         names = [a.name for a in actions]
         assert "new_conversation" in names
-        assert "delete_all_data" in names
+        assert "research_product_info" in names
 
     @patch("includes.chat.actions.config")
     def test_empty_user_id_sees_public_only(self, mock_config):
@@ -73,7 +72,7 @@ class TestRoleFiltering:
         actions = get_actions_for_user("")
         names = [a.name for a in actions]
         assert "new_conversation" in names
-        assert "delete_all_data" not in names
+        assert "research_product_info" not in names
 
 
 # ============================================================================
@@ -115,34 +114,35 @@ class TestDispatchAction:
         with pytest.raises(ValueError, match="Unknown action"):
             await dispatch_action("does_not_exist")
     @patch("includes.chat.actions.config")
-    async def test_dispatch_admin_action_denied_for_staff(self, mock_config):
+    async def test_dispatch_admin_action_denied_for_staff(self, mock_config, make_chat_ctx):
         mock_config.get_admin_emails.return_value = ["admin@example.com"]
+        ctx = make_chat_ctx(user_email="staff@example.com")
 
-        import includes.chat.actions as actions_mod
-        original_session = actions_mod.cl.user_session
+        await dispatch_action("research_product_info", ctx)
 
-        mock_session = MagicMock()
-        mock_session.get.return_value = "staff@example.com"
-        actions_mod.cl.user_session = mock_session
+        assert len(ctx.messages) == 1
+        assert "permission" in ctx.texts[0].lower()
+        assert ctx.get("intent_context") is None
 
-        sent_messages = []
-        original_message = actions_mod.cl.Message
+    @patch("includes.chat.actions.config")
+    async def test_dispatch_admin_action_allowed_for_admin(self, mock_config, make_chat_ctx):
+        mock_config.get_admin_emails.return_value = ["admin@example.com"]
+        ctx = make_chat_ctx(user_email="admin@example.com")
 
-        class FakeMessage:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
+        await dispatch_action("research_product_info", ctx)
 
-            async def send(self):
-                sent_messages.append(self.kwargs)
+        assert "permission" not in ctx.texts[0].lower()
+        assert ctx.get("intent_context")
 
-        actions_mod.cl.Message = FakeMessage
-        try:
-            await dispatch_action("delete_all_data")
-            assert len(sent_messages) == 1
-            assert "permission" in sent_messages[0].get("content", "").lower()
-        finally:
-            actions_mod.cl.user_session = original_session
-            actions_mod.cl.Message = original_message
+    async def test_dispatch_falls_back_to_the_bound_context(self, bound_chat_ctx):
+        await dispatch_action("new_conversation")
+        assert len(bound_chat_ctx.messages) == 1
+        assert "reset" in bound_chat_ctx.texts[0].lower()
+
+    async def test_new_conversation_sets_a_fresh_thread_id(self, chat_ctx):
+        await dispatch_action("new_conversation", chat_ctx)
+        new_thread = chat_ctx.get("thread_id")
+        assert new_thread and new_thread != chat_ctx.thread_id
 
 
 # ============================================================================
@@ -152,13 +152,11 @@ class TestDispatchAction:
 class TestActionTools:
     """Test the LangGraph tool wrappers."""
 
-    def test_create_action_tools_returns_three_tools(self):
+    def test_create_action_tools_returns_expected_tools(self):
         from includes.tools.action_tools import create_action_tools
         tools = create_action_tools("user@example.com")
         names = [t.name for t in tools]
-        assert "list_available_actions" in names
-        assert "start_new_conversation" in names
-        assert "delete_all_user_data" in names
+        assert names == ["list_available_actions", "start_new_conversation"]
     @patch("includes.chat.actions.config")
     async def test_list_available_actions_tool(self, mock_config):
         mock_config.get_admin_emails.return_value = []
