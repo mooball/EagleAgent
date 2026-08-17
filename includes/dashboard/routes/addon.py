@@ -816,9 +816,11 @@ def create_rfq(body: CreateRfqRequest, user: AddonUser):
         finally:
             session2.close()
 
-        # Spawn LLM extraction in background (non-blocking)
+        # Spawn LLM extraction in background (non-blocking).
+        # Pass rfq_number: we already created and linked the RFQ above, so the
+        # pipeline must skip its own creation stage rather than bail out.
         from includes.tools.rfq_creation_pipeline import trigger_rfq_creation_pipeline
-        trigger_rfq_creation_pipeline(tracking.id, user_id=user_ident)
+        trigger_rfq_creation_pipeline(tracking.id, user_id=user_ident, rfq_number=rfq_number)
 
         # Build updated context to return (matches ContextResponse format)
         updated_context = {

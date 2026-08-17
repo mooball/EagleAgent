@@ -295,6 +295,53 @@ class TestGuardChecks:
         # Should have attempted extraction
         mock_extract.assert_called_once_with(tracking.id)
 
+    def test_precreated_rfq_still_extracts_items(self, db_session):
+        """The Gmail add-on creates the RFQ itself, then triggers the pipeline.
+
+        rfq_token is therefore already set by the time the pipeline runs. It must
+        skip only the creation stage and still extract line items — previously it
+        bailed out entirely, producing RFQs with a title and opportunity but no
+        parts, and no result marker for the communications tab.
+        """
+        cust = _create_test_customer(db_session)
+        tracking = _create_test_email_tracking(db_session, customer_id=cust.id,
+                                                gmail_thread_id="test-thread-002",
+                                                rfq_token="RFQ-2026-1298")
+
+        with patch("includes.tools.rfq_creation_pipeline._get_session", return_value=db_session), \
+             patch("includes.tools.rfq_crud._create_rfq_sync") as mock_create, \
+             patch("includes.tools.rfq_creation_pipeline._extract_rfq_items_sync") as mock_extract:
+
+            mock_extract.return_value = ([], None)
+
+            from includes.tools.rfq_creation_pipeline import _run_rfq_creation_pipeline
+            _run_rfq_creation_pipeline(tracking.id, "test-user", rfq_number="RFQ-2026-1298")
+
+        # Stage 2 skipped — the caller already created and linked it
+        mock_create.assert_not_called()
+        # ...but extraction still ran
+        mock_extract.assert_called_once_with(tracking.id)
+
+    def test_matched_to_existing_rfq_still_skips(self, db_session):
+        """Without rfq_number, a linked email was matched to a pre-existing RFQ.
+
+        Extracting items into that RFQ would be wrong, so the guard must hold.
+        """
+        cust = _create_test_customer(db_session)
+        tracking = _create_test_email_tracking(db_session, customer_id=cust.id,
+                                                gmail_thread_id="test-thread-003",
+                                                rfq_token="RFQ-2026-0500")
+
+        with patch("includes.tools.rfq_creation_pipeline._get_session", return_value=db_session), \
+             patch("includes.tools.rfq_crud._create_rfq_sync") as mock_create, \
+             patch("includes.tools.rfq_creation_pipeline._extract_rfq_items_sync") as mock_extract:
+
+            from includes.tools.rfq_creation_pipeline import _run_rfq_creation_pipeline
+            _run_rfq_creation_pipeline(tracking.id, "test-user")
+
+        mock_create.assert_not_called()
+        mock_extract.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # _now_iso / _now_dt

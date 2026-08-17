@@ -95,12 +95,19 @@ def _deduplicate_items(items: list) -> list:
 # Trigger (public entry point)
 # ---------------------------------------------------------------------------
 
-def trigger_rfq_creation_pipeline(email_tracking_id: int, user_id: str = "system") -> None:
+def trigger_rfq_creation_pipeline(
+    email_tracking_id: int,
+    user_id: str = "system",
+    rfq_number: str | None = None,
+) -> None:
     """Run the RFQ creation pipeline for an email.
 
     Called from:
       - POST /api/addon/create-rfq (Gmail add-on)
       - Dashboard "Create RFQ" button (future)
+
+    Pass ``rfq_number`` when the caller has already created the RFQ itself, so
+    stage 2 is skipped but the email is still processed for line items.
 
     Runs in a background daemon thread to avoid blocking the caller.
     Failures are logged but don't propagate.
@@ -108,7 +115,7 @@ def trigger_rfq_creation_pipeline(email_tracking_id: int, user_id: str = "system
     def _run() -> None:
         try:
             logger.info(f"[rfq-creation] #{email_tracking_id}: thread started")
-            _run_rfq_creation_pipeline(email_tracking_id, user_id)
+            _run_rfq_creation_pipeline(email_tracking_id, user_id, rfq_number)
         except Exception:
             logger.exception(f"[rfq-creation] #{email_tracking_id}: unhandled error")
             try:
@@ -129,8 +136,16 @@ def trigger_rfq_creation_pipeline(email_tracking_id: int, user_id: str = "system
 # Pipeline
 # ---------------------------------------------------------------------------
 
-def _run_rfq_creation_pipeline(email_tracking_id: int, user_id: str) -> None:
-    """Execute the full RFQ creation pipeline."""
+def _run_rfq_creation_pipeline(
+    email_tracking_id: int,
+    user_id: str,
+    rfq_number: str | None = None,
+) -> None:
+    """Execute the full RFQ creation pipeline.
+
+    ``rfq_number`` means the caller already created and linked the RFQ, so
+    stage 2 is skipped and processing continues at item extraction.
+    """
 
     # ---------- Guard Checks ----------
     session = _get_session()
@@ -145,9 +160,10 @@ def _run_rfq_creation_pipeline(email_tracking_id: int, user_id: str) -> None:
             _save_error(email_tracking_id, "No customer linked to this email. Link a customer first.")
             return
 
-        # Skip if RFQ already created (e.g., synchronously by the addon endpoint).
-        # Don't log as an error — this is an expected path.
-        if tracking.rfq_token or tracking.rfq_id:
+        # An RFQ is already linked to this email. If the caller created it and told
+        # us so, carry on — the items still need extracting into it. Otherwise the
+        # email was matched to a pre-existing RFQ and there is nothing to extract.
+        if (tracking.rfq_token or tracking.rfq_id) and not rfq_number:
             logger.info(
                 f"[rfq-creation] #{email_tracking_id}: RFQ already linked "
                 f"({tracking.rfq_token or tracking.rfq_id}), skipping"
@@ -197,51 +213,59 @@ def _run_rfq_creation_pipeline(email_tracking_id: int, user_id: str) -> None:
         customer = session.query(Customer).get(customer_id)
         customer_name = customer.companyname if customer else "Unknown"
 
-        rfq = _create_rfq_sync(
-            data={
-                "customer": customer_name,
-                "customer_id": str(customer.id),
-                "status": "in_progress",
-                "assigned_to": user_email,
-                "reference": subject,
-            },
-            user_id=user_id,
-        )
-        if isinstance(rfq, str):
-            _save_error(email_tracking_id, rfq)
-            return
+        if rfq_number:
+            # Caller already created and linked the RFQ, and created the
+            # opportunity, so only the extraction stages are left.
+            logger.info(
+                f"[rfq-creation] #{email_tracking_id}: {rfq_number} pre-created by caller, "
+                f"skipping stage 2"
+            )
+        else:
+            rfq = _create_rfq_sync(
+                data={
+                    "customer": customer_name,
+                    "customer_id": str(customer.id),
+                    "status": "in_progress",
+                    "assigned_to": user_email,
+                    "reference": subject,
+                },
+                user_id=user_id,
+            )
+            if isinstance(rfq, str):
+                _save_error(email_tracking_id, rfq)
+                return
 
-        rfq_number = rfq["rfq_number"]
-        logger.info(f"[rfq-creation] #{email_tracking_id}: created {rfq_number} for {customer_name}")
+            rfq_number = rfq["rfq_number"]
+            logger.info(f"[rfq-creation] #{email_tracking_id}: created {rfq_number} for {customer_name}")
 
-        # Link entire email thread to the new RFQ immediately
-        session.execute(
-            text(
-                "UPDATE email_tracking SET rfq_token = :token, match_type = 'manual' "
-                "WHERE gmail_thread_id = :tid"
-            ),
-            {"token": rfq_number, "tid": gmail_thread_id},
-        )
-        session.commit()
-        logger.info(f"[rfq-creation] #{email_tracking_id}: linked email thread to {rfq_number}")
+            # Link entire email thread to the new RFQ immediately
+            session.execute(
+                text(
+                    "UPDATE email_tracking SET rfq_token = :token, match_type = 'manual' "
+                    "WHERE gmail_thread_id = :tid"
+                ),
+                {"token": rfq_number, "tid": gmail_thread_id},
+            )
+            session.commit()
+            logger.info(f"[rfq-creation] #{email_tracking_id}: linked email thread to {rfq_number}")
 
-        # Auto-create NetSuite Opportunity if customer has a netsuite_id
-        if customer.netsuite_id:
-            try:
-                from includes.netsuite.records.opportunity import create_and_link_opportunity
-                opp_result = create_and_link_opportunity(rfq_number)
-                if opp_result.success:
-                    logger.info(
-                        f"[rfq-creation] #{email_tracking_id}: auto-created opportunity {opp_result.tran_id}"
+            # Auto-create NetSuite Opportunity if customer has a netsuite_id
+            if customer.netsuite_id:
+                try:
+                    from includes.netsuite.records.opportunity import create_and_link_opportunity
+                    opp_result = create_and_link_opportunity(rfq_number)
+                    if opp_result.success:
+                        logger.info(
+                            f"[rfq-creation] #{email_tracking_id}: auto-created opportunity {opp_result.tran_id}"
+                        )
+                    else:
+                        logger.info(
+                            f"[rfq-creation] #{email_tracking_id}: skipped opportunity creation — {opp_result.error}"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"[rfq-creation] #{email_tracking_id}: opportunity creation failed (non-fatal): {e}"
                     )
-                else:
-                    logger.info(
-                        f"[rfq-creation] #{email_tracking_id}: skipped opportunity creation — {opp_result.error}"
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"[rfq-creation] #{email_tracking_id}: opportunity creation failed (non-fatal): {e}"
-                )
 
     except Exception as e:
         session.rollback()
