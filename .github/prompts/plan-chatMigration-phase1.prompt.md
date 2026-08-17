@@ -538,9 +538,27 @@ single-slot shared state.
 > busy-policy table assumed all callbacks would reach `run_turn`; they do not. Tracked as
 > **todo.vu #32823**, to be done after Phase 1 ships.
 
-### Step 7 — `includes/agents/registry.py` · S
-Single source of truth replacing logic spread across `@cl.set_chat_profiles` (app.py:237),
-`on_chat_start` (313–315), `on_chat_resume` (411–428) and `embedded.js`:
+### ~~Step 7 — `includes/agents/registry.py`~~ ✅ · S
+- ~~Single source of truth replacing logic spread across `@cl.set_chat_profiles` (app.py:237),
+  `on_chat_start` (313–315), `on_chat_resume` (411–428) and `embedded.js`.~~
+- `AgentSpec` is frozen, with `graph()` reading `includes.graph` **late** — those globals mutate
+  after `setup_globals()`, so an eagerly-bound graph would be stale. Pinned by a test.
+- `resolve()` accepts a key, a display label, or a legacy name, and falls back to the default —
+  matching the old `else: graph()` branches exactly.
+- Three if/elif chains on `chat_profile_name` collapsed to `resolve_agent(...).graph()`.
+  `_research_graph()` and `_internal_graph()` in `app.py` became dead and were deleted.
+- `ChainlitChatContext.from_session()` now maps profile → agent key through `resolve()` instead
+  of its own `_PROFILE_TO_AGENT` dict, so the Step 1 duplicate is gone.
+- **One subtlety:** the old resume code only rewrote `chat_profile` for the two legacy names.
+  Normalising unconditionally would have set a profile where there was none, which changes the
+  `find_supplier` intent default in `main()`. The rewrite is guarded so an absent profile
+  stays absent.
+- 24 tests in `tests/agents/test_registry.py`. Suite: 1008 passed / 2 skipped.
+
+> **Not done:** `embedded.js` and `base.html` still hardcode `'Eagle Agent'` for the
+> RFQ-binding check. `allows_rfq_binding` exists on the spec for it, but wiring the frontend
+> to the registry needs an endpoint or a template variable — Phase 2 territory.
+
 
 ```python
 @dataclass(frozen=True)

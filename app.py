@@ -23,6 +23,7 @@ from includes.chat.streaming_logic import (
 )
 from includes.graph import setup_globals
 import includes.graph as _graph_module  # for live access to mutable globals
+from includes.agents.registry import AGENTS, resolve as resolve_agent
 import asyncio
 
 # SQL-based RFQ helpers (BaseStore lock no longer needed — PostgreSQL handles concurrency)
@@ -85,12 +86,6 @@ def _store():
 
 def _graph():
     return _graph_module.graph
-
-def _research_graph():
-    return _graph_module.research_graph
-
-def _internal_graph():
-    return _graph_module.internal_graph
 
 
 # ---------------------------------------------------------------------------
@@ -227,26 +222,15 @@ def _command_to_intent_name(command_label: str) -> str | None:
 @cl.set_chat_profiles
 async def chat_profile(current_user: cl.User):
     """Define available chat profiles."""
-    profiles = [
+    return [
         cl.ChatProfile(
-            name="Eagle Agent",
-            markdown_description="Supplier lookup agent — search our supplier database by name, brand, or description.",
-            icon="/public/avatars/EagleAgent.png",
-            default=True,
-        ),
-        cl.ChatProfile(
-            name="Research Agent",
-            markdown_description="Search the web for information and research topics.",
-            icon="/public/avatars/EagleAgent.png",
-        ),
-        cl.ChatProfile(
-            name="Internal Agent",
-            markdown_description="Search the internal database for products, suppliers, and purchase history.",
-            icon="/public/avatars/EagleAgent.png",
-        ),
+            name=spec.label,
+            markdown_description=spec.description,
+            icon=spec.icon,
+            default=spec.is_default,
+        )
+        for spec in AGENTS.values()
     ]
-
-    return profiles
 
 
 @cl.on_chat_start
@@ -297,12 +281,8 @@ async def start():
     
     # Select graph based on chosen chat profile
     chat_profile_name = cl.user_session.get("chat_profile")
-    if chat_profile_name == "Research Agent":
-        cl.user_session.set("active_graph", _research_graph())
-    elif chat_profile_name == "Internal Agent":
-        cl.user_session.set("active_graph", _internal_graph())
-    else:
-        cl.user_session.set("active_graph", _graph())
+    agent_spec = resolve_agent(chat_profile_name)
+    cl.user_session.set("active_graph", agent_spec.graph())
     
     # Personalized welcome message
     if chat_profile_name == "Research Agent":
@@ -397,18 +377,14 @@ async def on_chat_resume(thread: ThreadDict):
 
     # Normalize legacy chat profile names (EagleAgent → Eagle Agent, System Admin → Eagle Agent)
     chat_profile_name = cl.user_session.get("chat_profile")
-    if chat_profile_name in ("EagleAgent", "System Admin"):
-        chat_profile_name = "Eagle Agent"
+    agent_spec = resolve_agent(chat_profile_name)
+    # Only rewrite a name that was actually set — an absent profile stays absent.
+    if chat_profile_name and chat_profile_name != agent_spec.label:
+        chat_profile_name = agent_spec.label
         cl.user_session.set("chat_profile", chat_profile_name)
 
     # Select graph based on chat profile (persisted with thread)
-    chat_profile_name = cl.user_session.get("chat_profile")
-    if chat_profile_name == "Research Agent":
-        cl.user_session.set("active_graph", _research_graph())
-    elif chat_profile_name == "Internal Agent":
-        cl.user_session.set("active_graph", _internal_graph())
-    else:
-        cl.user_session.set("active_graph", _graph())
+    cl.user_session.set("active_graph", agent_spec.graph())
     
     # Log for debugging
     print(f"Resuming conversation with thread_id: {thread_id} (profile: {chat_profile_name})")

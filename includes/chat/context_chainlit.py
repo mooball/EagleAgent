@@ -20,15 +20,6 @@ from includes.chat.context import ActionSpec
 
 logger = logging.getLogger(__name__)
 
-# Chat profile label -> agent key. Superseded by includes/agents/registry.py.
-_PROFILE_TO_AGENT = {
-    "Eagle Agent": "eagle",
-    "EagleAgent": "eagle",
-    "System Admin": "eagle",
-    "Research Agent": "research",
-    "Internal Agent": "internal",
-}
-
 
 class ChainlitMessageHandle:
     """Wraps a ``cl.Message`` behind the ``MessageHandle`` protocol."""
@@ -146,10 +137,12 @@ class ChainlitChatContext:
         session = cl.context.session
         thread_id = cl.user_session.get("thread_id") or getattr(session, "thread_id", "") or ""
         profile = cl.user_session.get("chat_profile")
+        from includes.agents.registry import resolve
+
         return cls(
             thread_id=thread_id,
             user_email=cl.user_session.get("user_id", "") or "",
-            agent=_PROFILE_TO_AGENT.get(profile, "eagle"),
+            agent=resolve(profile).key,
             session=session,
         )
 
