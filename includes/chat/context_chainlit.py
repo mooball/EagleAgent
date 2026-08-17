@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import chainlit as cl
@@ -32,8 +33,9 @@ _PROFILE_TO_AGENT = {
 class ChainlitMessageHandle:
     """Wraps a ``cl.Message`` behind the ``MessageHandle`` protocol."""
 
-    def __init__(self, message: Any) -> None:
+    def __init__(self, message: Any, thread_id: str = "") -> None:
         self._message = message
+        self._thread_id = thread_id
 
     @property
     def id(self) -> str:
@@ -42,6 +44,14 @@ class ChainlitMessageHandle:
     @property
     def content(self) -> str:
         return getattr(self._message, "content", "")
+
+    @content.setter
+    def content(self, value: str) -> None:
+        self._message.content = value
+
+    @property
+    def author(self) -> str | None:
+        return getattr(self._message, "author", None)
 
     @property
     def raw(self) -> Any:
@@ -56,6 +66,57 @@ class ChainlitMessageHandle:
 
     async def remove(self) -> None:
         await self._message.remove()
+
+    async def save(self) -> None:
+        """Update the message, falling back to a direct data-layer write.
+
+        ``update()`` both persists to the DB and emits over the WebSocket. If
+        the user navigated away the emit fails, but the reply must still reach
+        the thread history — so write the step directly instead.
+        """
+        try:
+            await self._message.update()
+        except Exception as update_err:
+            logger.warning(
+                f"[resilient-persist] msg.update() failed (user likely navigated away): {update_err}"
+            )
+            try:
+                from chainlit.data import get_data_layer as _get_dl
+
+                _dl = _get_dl()
+                if _dl and self._message.content.strip():
+                    from chainlit.step import StepDict
+
+                    _now = datetime.now(timezone.utc).isoformat()
+                    created = getattr(self._message, "created_at", None) or _now
+                    fallback_step: StepDict = {
+                        "id": self._message.id,
+                        "threadId": self._thread_id,
+                        "name": self._message.author or "EagleAgent",
+                        "type": "assistant_message",
+                        "output": self._message.content,
+                        "createdAt": created,
+                        "start": created,
+                        "end": _now,
+                        "streaming": False,
+                        "metadata": {},
+                        "tags": None,
+                        "input": "",
+                        "isError": False,
+                        "parentId": None,
+                        "language": None,
+                        "showInput": None,
+                        "generation": None,
+                        "defaultOpen": None,
+                        "autoCollapse": None,
+                    }
+                    await _dl.create_step(fallback_step)
+                    logger.info(
+                        f"[resilient-persist] Persisted response to data layer "
+                        f"for thread {self._thread_id[:8]}..."
+                    )
+            except Exception as persist_err:
+                logger.error(f"[resilient-persist] Fallback persistence also failed: {persist_err}")
 
 
 class ChainlitChatContext:
@@ -143,7 +204,7 @@ class ChainlitChatContext:
         with self._pinned():
             message = cl.Message(**kwargs)
             await message.send()
-        return ChainlitMessageHandle(message)
+        return ChainlitMessageHandle(message, self.thread_id)
 
     async def image(self, path: str, *, name: str) -> None:
         element = cl.Image(path=path, name=name, display="inline")

@@ -52,12 +52,17 @@ class MessageHandle(Protocol):
 
     id: str
     content: str
+    author: str | None
 
     async def stream(self, token: str) -> None: ...
 
     async def update(self) -> None: ...
 
     async def remove(self) -> None: ...
+
+    async def save(self) -> None:
+        """Persist the message, even if the client connection has died."""
+        ...
 
 
 @runtime_checkable

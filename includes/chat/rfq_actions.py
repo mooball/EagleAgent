@@ -655,9 +655,9 @@ async def _resume_pipeline_from(rfq_id: str, user_id: str, start_stage: str) -> 
     try:
         # Set up an active streaming message so _stream_to_user works
         # and pipeline output appears before gate buttons
-        active_msg = cl.Message(content="", author="EagleAgent")
-        await active_msg.send()
-        cl.user_session.set("active_msg", active_msg)
+        ctx = _ctx()
+        active_msg = await ctx.say("", author="EagleAgent")
+        ctx.set("active_msg", active_msg)
 
         # Create a minimal ProcurementAgent instance to call the stage dispatcher
         model = ChatGoogleGenerativeAI(model=Config.DEFAULT_MODEL, temperature=0)
@@ -670,7 +670,7 @@ async def _resume_pipeline_from(rfq_id: str, user_id: str, start_stage: str) -> 
 
         # Finalise the streaming message
         await active_msg.update()
-        cl.user_session.set("active_msg", None)
+        ctx.set("active_msg", None)
 
     except Exception as e:
         logger.exception(f"Error resuming pipeline for {rfq_id} from '{start_stage}'")

@@ -38,6 +38,7 @@ class FakeMessageHandle:
         self.tokens: list[str] = []
         self.updated = 0
         self.removed = False
+        self.persisted = False
         # Set by tests to simulate a dead socket.
         self.fail_on_update = False
 
@@ -52,6 +53,12 @@ class FakeMessageHandle:
 
     async def remove(self) -> None:
         self.removed = True
+
+    async def save(self) -> None:
+        try:
+            await self.update()
+        except RuntimeError:
+            self.persisted = True
 
 
 class FakeChatContext:

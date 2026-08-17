@@ -285,13 +285,40 @@ Strictly leaf-first, so each step ships independently and green.
 > rule to assert every emitted action name has a registered handler.
 
 
-### Step 3 — `includes/chat/runner.py` · L
-Extract the stream loop from `on_message` (app.py:701–1290), consuming the pure helpers
-Phase 0 already extracted into `streaming_logic.py`. Emits transport-neutral events.
-`app.py` becomes the adapter. **Phase 0's tests 5.3–5.5 must still pass unchanged** —
-that is the proof this step is behaviour-preserving.
+### ~~Step 3 — `includes/chat/runner.py`~~ ✅ · L
+- ~~Extract the stream loop from `on_message` (app.py:701–1290), consuming the pure helpers
+  Phase 0 already extracted into `streaming_logic.py`. Emits transport-neutral events.
+  `app.py` becomes the adapter. **Phase 0's tests 5.3–5.5 must still pass unchanged** —
+  that is the proof this step is behaviour-preserving.~~
+- ~~**Also add the per-`thread_id` run lock here**, not in the Phase 2 API layer.~~
+- **All 16 Phase 0 stream-loop tests pass unmodified.** `app.py` dropped from 1,289 to ~790
+  lines; `main()` is now ~90 lines of adapter.
+- `run_turn(text, ctx, *, graph, files, file_metadata, intent_context, dashboard_context,
+  on_busy, busy_timeout)`. The `graph` is passed in rather than resolved internally —
+  Step 7's registry takes that over.
+- The lock lives in a `_RunLock` async context manager wrapping `_run_turn_locked()`, so
+  release-on-exception is structural rather than a `finally` that can be edited away.
+- **The adapter kept the stop-agent task registry.** `clear_stop` / `register_task` /
+  `unregister_task` key off the Chainlit `session_id`, not `thread_id`, so they stay in
+  `app.py` around the `run_turn()` call. Inside the loop, `is_stop_requested(session_id)`
+  became `ctx.cancelled`.
+- **`MessageHandle` grew `author`, a settable `content`, and `save()`.** `save()` holds the
+  resilient-persistence fallback (data-layer write when the socket is dead), which is
+  Chainlit-specific and therefore belongs in `ChainlitMessageHandle`, not the runner.
+- **`active_msg` is now a `MessageHandle`, not a raw `cl.Message`.** That would have silently
+  broken `quote_tools._stream_to_user` (`.stream_token()` → `.stream()`), so its conversion
+  was pulled forward from Step 4, along with the matching producer in
+  `rfq_actions._resume_pipeline_from`. Leaving them inconsistent for a step was the worse option.
+- **Mutation-tested the lock**, per the Phase 0 discipline. Disabling the reject branch fails
+  1 test; making the lock non-shared fails 3, including the `max_concurrent == 1` assertion.
+  Both reverted; suite 941 passed / 2 skipped.
+- Not done here: `_main_pinned` and `from app import main` still exist in `rfq_actions.py`.
+  They are deleted in Step 6, which is where the callback that uses them gets converted.
 
-**Also add the per-`thread_id` run lock here**, not in the Phase 2 API layer:
+**Busy policy as implemented:** `on_message` passes `on_busy="reject"` and answers a rejected
+run with "Still working on the previous message — one moment." Action callbacks will pass
+`"wait"` when they are converted in Step 6. `/api/stop-agent` never calls `run_turn()`, so it
+bypasses the lock automatically.
 
 ```python
 # includes/chat/runner.py

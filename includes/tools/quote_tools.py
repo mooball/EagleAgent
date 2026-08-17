@@ -658,14 +658,17 @@ async def _notify_agent_working(label: str) -> None:
 
 
 async def _stream_to_user(text: str) -> None:
-    """Stream text to the user's active Chainlit message (if available)."""
+    """Stream text to the user's active message, if there is one."""
     try:
-        import chainlit as cl
-        msg = cl.user_session.get("active_msg")
-        if msg and text:
-            await msg.stream_token(text)
+        from includes.chat.context import try_get_chat_context
+        ctx = try_get_chat_context()
+        if ctx is None or not text:
+            return
+        msg = ctx.get("active_msg")
+        if msg:
+            await msg.stream(text)
     except Exception:
-        pass  # Not in Chainlit context or no active message
+        pass  # No chat context or no active message
 
 
 # ---------------------------------------------------------------------------
