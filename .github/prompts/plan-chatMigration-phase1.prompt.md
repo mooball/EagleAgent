@@ -595,19 +595,31 @@ Suite: 1014 passed / 2 skipped.
 
 
 ### Step 9 — CI rule · S
-```python
-# tests/test_no_chainlit_imports.py
-ALLOWED = {"app.py", "includes/chat/context_chainlit.py",
-           "includes/chat/data_layer.py", "includes/chat/local_storage_client.py",
-           "includes/agent_bridge.py"}  # bridge removed from this list in Phase 5
+### ~~Step 9 — CI rule~~ ✅ · S
+- ~~`tests/test_no_chainlit_imports.py` — offenders outside `ALLOWED`.~~
+- ~~Must catch **local imports inside functions** too.~~
+- Uses an **AST walk**, not a text grep, so `import chainlit`, `import chainlit.server as x`,
+  `from chainlit.types import …` and function-local imports are all caught, while
+  `chainlit_extras` / `chainlitish` are not. Every shape is unit-tested.
+- **Mutation-tested:** a function-local `import chainlit` planted in
+  `includes/tools/product_tools.py` failed 2 tests and reported the exact line. Reverted.
+- `main.py` had to be added to `ALLOWED` — it calls `mount_chainlit()`, which the plan's
+  sketch missed because it only listed files known to import `cl` directly.
+- Two extra guards beyond the plan: `test_the_allowlist_does_not_rot` (every allowed file must
+  exist and must still import chainlit) and `test_tools_and_agents_are_completely_clean`
+  (asserts the two packages this phase set out to free, by name).
 
-def test_no_chainlit_outside_adapter():
-    offenders = [p for p in Path(".").rglob("*.py")
-                 if str(p) not in ALLOWED and _imports_chainlit(p)]
-    assert not offenders, f"chainlit imported outside the adapter layer: {offenders}"
-```
-Must catch **local imports inside functions** too — `quote_tools.py` has four, and
-`base.py` and `agent_bridge.py` one each.
+**Also added: `tests/test_action_coverage.py`** — the inverse rule discussed while triaging
+todo.vu #32818. It ASTs out every literal `ActionSpec(name=…)` / `cl.Action(name=…)` in the
+tree and asserts something is prepared to dispatch it (`RFQ_ACTIONS`, the `actions.py`
+registry, or a Chainlit callback).
+
+> On first run it found exactly one orphan — **`confirm_run_script`**, the known bug in #32818,
+> and nothing else. That is the proof the rule bites. It is recorded in `KNOWN_ORPHANS` with
+> its ticket rather than fixed here, and two further tests make the entry self-cleaning: one
+> fails when the orphan gains a handler, the other when the button stops being emitted.
+
+Suite: 1031 passed / 2 skipped.
 
 ### Step 10 — Ship and bake · S
 Deploy to production on Chainlit. Let it run before starting Phase 2.
@@ -654,17 +666,52 @@ Then the full suite before commit.
 
 ## 8. Definition of done
 
-- [ ] `includes/chat/context.py` + Chainlit/Fake implementations
-- [ ] `includes/chat/runner.py` owns the turn; `app.py` is a thin adapter
-- [ ] Per-`thread_id` run lock inside `run_turn()`, covering both Chainlit and (later) HTTP paths
-- [ ] All 21 RFQ callbacks converted; `RFQ_ACTIONS` registry in place
-- [ ] `_pin_thread` / `_thread_swap` / `_send_pinned` / `_main_pinned` **deleted**
-- [ ] `from app import main` no longer appears anywhere under `includes/`
-- [ ] `includes/agents/registry.py` is the only place agents are defined
-- [ ] `import chainlit` gone from `includes/tools/`, `includes/agents/`, and all of `includes/chat/` except the adapter files
-- [ ] `tests/test_no_chainlit_imports.py` green
-- [ ] Full suite green; **every Phase 0 test unmodified**
+- [x] `includes/chat/context.py` + Chainlit/Fake implementations
+- [x] `includes/chat/runner.py` owns the turn; `app.py` is a thin adapter
+- [x] Per-`thread_id` run lock inside `run_turn()`, covering both Chainlit and (later) HTTP paths
+- [x] All 21 RFQ callbacks converted; `RFQ_ACTIONS` registry in place
+- [x] `_pin_thread` / `_thread_swap` / `_send_pinned` / `_main_pinned` **deleted**
+- [x] `from app import main` no longer appears anywhere under `includes/`
+- [x] `includes/agents/registry.py` is the only place agents are defined
+- [x] `import chainlit` gone from `includes/tools/`, `includes/agents/`, and all of `includes/chat/` except the adapter files
+- [x] `tests/test_no_chainlit_imports.py` green
+- [x] Full suite green — 1031 passed / 2 skipped (from 869 at the end of Phase 0)
+- [ ] **Every Phase 0 test unmodified** — *two files changed, assertions preserved; see below*
 - [ ] Shipped to production and baked
+
+### Phase 0 test changes — the exceptions, stated plainly
+
+Two Phase 0 files changed. In both cases the **call convention or the fixture** changed and
+**no assertion did**. Both were anticipated by Phase 0 itself.
+
+| File | What changed | Why |
+| --- | --- | --- |
+| `test_rfq_action_callbacks.py` | Handlers called as `on_x(payload, ctx)` instead of `on_x(action)`; fixture uses `FakeChatContext` instead of a fake `cl` | Step 6 changed the handler signature. That file's own docstring predicted it. |
+| `test_bridge_dispatch.py` | Fixture also patches `RFQ_ACTIONS` and sets the real `context_var` | Step 8 changed which registry the bridge consults. All 9 original tests pass **unmodified**. |
+
+`test_stream_loop.py` — the file most at risk, since Step 3 moved the entire loop it exercises —
+**passed all 16 unmodified throughout.**
+
+### Behaviour changes shipped by this phase
+
+Three, all deliberate:
+
+1. **The per-`thread_id` run lock.** Two concurrent runs on one thread previously corrupted the
+   checkpoint silently; they now reject (`on_message`) or queue (`on_busy="wait"`).
+2. **`active_message` is per-run.** Concurrent workers no longer destroy each other's streaming
+   handle. Fixes a real lost-output bug found in testing.
+3. **The "agent working" badge is reference-counted.** The last worker out clears it, not the
+   first.
+
+### Carried forward, not fixed here
+
+| Issue | Ticket |
+| --- | --- |
+| `confirm_run_script` has no handler — Run button dead, `monitor_job()` unreachable | #32818 |
+| `rfq_find_all_suppliers` has no `rfq_id` guard — sends the agent `"???"` | #32822 |
+| Chat message does not interrupt in-flight button work; concurrent supplier writes overwrite each other | #32823 |
+| `embedded.js` / `base.html` still hardcode `'Eagle Agent'` for RFQ binding | Phase 2 |
+
 
 ## 9. Gate
 
