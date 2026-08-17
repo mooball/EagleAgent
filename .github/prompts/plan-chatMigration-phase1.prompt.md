@@ -388,14 +388,26 @@ disappear in this phase. It is deleted in Phase 5 regardless.
 corruption. Adding the lock changes that to a clean reject-or-wait. That is a deliberate
 behaviour change, and the one exception to this phase's "no behaviour change" rule.
 
-### Step 4 — `includes/tools/quote_tools.py` · M
+### ~~Step 4 — `includes/tools/quote_tools.py`~~ ✅ · M
 | Site | Line | Change |
 | --- | --- | --- |
-| `_stream_to_user` | 858–866 | `cl.user_session.get("active_msg")` → `get_chat_context()` |
-| `manage_rfq` create | 829–833 | `cl.context.session.thread_id` → `ctx.thread_id` |
-| `manage_rfq` post-create | 891–899 | data-layer rename → `ctx.rename_thread(name)` |
-| `_notify_rfq_updated` | 851–855 | → `ctx.notify_dashboard("dashboard_refresh")` |
-| Local `import chainlit` | 13, 663, 829, 889 | **remove all four** |
+| ~~`_stream_to_user`~~ | ~~858–866~~ | ~~`cl.user_session.get("active_msg")` → `get_chat_context()`~~ — done early in Step 3 |
+| ~~`manage_rfq` create~~ | ~~829–833~~ | ~~`cl.context.session.thread_id` → `ctx.thread_id`~~ |
+| ~~`manage_rfq` post-create~~ | ~~891–899~~ | ~~data-layer rename → `ctx.rename_thread(name)`~~ |
+| ~~`_notify_rfq_updated`~~ | ~~851–855~~ | ~~→ `ctx.notify_dashboard("dashboard_refresh")`~~ |
+| ~~Local `import chainlit`~~ | ~~13, 663, 829, 889~~ | ~~**remove all four**~~ |
+
+- **`quote_tools.py` now has zero `chainlit` references** — verified by grep, not just the import line.
+- `_notify_rfq_updated` / `_notify_agent_working` share a `_notify()` helper that prefers the
+  bound context and **falls back to `agent_bridge.notify_dashboard`**. The fallback is needed
+  because `supplier_search_tools` reaches these from the RFQ action callbacks, which do not
+  bind the ContextVar yet. Delete the fallback in Step 6 once every path binds.
+- The create path swapped two silent `try/except Exception: pass` blocks for explicit
+  `ctx is not None` guards. Same behaviour outside a session, but a real failure now surfaces
+  instead of being swallowed.
+- 5 new tests in `tests/tools/test_quote_tools.py` covering thread binding on create, the
+  thread rename, the no-context path, and the dashboard notification. Suite: 945 passed / 2 skipped.
+
 
 ### Step 5 — `includes/chat/actions.py` · M
 `dispatch_action(name, ctx, **kwargs)`. Intent handlers write via `ctx.set("intent_context", …)`.

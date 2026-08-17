@@ -148,6 +148,34 @@ class TestManageRfqCreate:
         assert items[0].match == "unmatched"
         assert items[1].line == 2
 
+    async def test_create_binds_the_rfq_to_the_current_thread(
+        self, manage, db_session, bound_chat_ctx
+    ):
+        """The RFQ records the conversation it was created from."""
+        await _create_sample_rfq(manage, db_session)
+        rfq = _get_rfq_from_db(db_session)
+        assert rfq.thread_id == bound_chat_ctx.thread_id
+
+    async def test_create_renames_the_thread_after_the_rfq(
+        self, manage, db_session, bound_chat_ctx
+    ):
+        await _create_sample_rfq(manage, db_session)
+        rfq = _get_rfq_from_db(db_session)
+        assert bound_chat_ctx.thread_names == [f"{rfq.rfq_number} — Acme Construction"]
+
+    async def test_create_without_a_chat_context_skips_thread_binding(
+        self, manage, db_session
+    ):
+        """Creating an RFQ outside a conversation must still work."""
+        result = await _create_sample_rfq(manage, db_session)
+        assert "RFQ-" in result
+        rfq = _get_rfq_from_db(db_session)
+        assert rfq.thread_id is None
+
+    async def test_create_notifies_the_dashboard(self, manage, db_session, bound_chat_ctx):
+        await _create_sample_rfq(manage, db_session)
+        assert ("dashboard_refresh", None) in bound_chat_ctx.dashboard_calls
+
 
 # ===========================================================================
 # manage_rfq — update_item
