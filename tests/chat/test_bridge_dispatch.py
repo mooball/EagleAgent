@@ -37,20 +37,32 @@ def fake_chainlit(monkeypatch):
     import chainlit.config
     import chainlit.session
 
+    import includes.chat.rfq_actions as rfq_module
+
     context_mod = sys.modules["chainlit.context"]
     user_session_mod = sys.modules["chainlit.user_session"]
 
     sessions: dict = {}
     callbacks: dict = {}
+    rfq_handlers: dict = {}
     session_writes: dict = {}
     contexts: list = []
+
+    def _init_ws_context(s):
+        contexts.append(s)
+        # The real one sets the context var; do the same so cl.context.session
+        # resolves for anything the handler builds. Scoped to the test's own
+        # task context, so it does not leak between tests.
+        context_mod.context_var.set(SimpleNamespace(session=s))
 
     monkeypatch.setattr(
         chainlit.session.WebsocketSession, "get_by_id",
         staticmethod(lambda sid: sessions.get(sid)),
     )
-    monkeypatch.setattr(context_mod, "init_ws_context", lambda s: contexts.append(s))
+    monkeypatch.setattr(context_mod, "init_ws_context", _init_ws_context)
     monkeypatch.setattr(chainlit.config.config.code, "action_callbacks", callbacks)
+    # Empty by default so each test decides which path it is exercising.
+    monkeypatch.setattr(rfq_module, "RFQ_ACTIONS", rfq_handlers)
     monkeypatch.setattr(
         user_session_mod.UserSession, "set",
         lambda self, k, v: session_writes.__setitem__(k, v),
@@ -64,9 +76,10 @@ def fake_chainlit(monkeypatch):
         sessions[sid] = SimpleNamespace(id=sid, thread_id=thread_id)
         return sessions[sid]
 
-    return SimpleNamespace(
+    yield SimpleNamespace(
         sessions=sessions,
         callbacks=callbacks,
+        rfq_handlers=rfq_handlers,
         session_writes=session_writes,
         contexts=contexts,
         add_session=add_session,
@@ -156,6 +169,99 @@ class TestCallbackDispatch:
         fake_chainlit.add_session()
         result = await bridge.dispatch_action("sess-1", "no_such_action", {})
         assert "Unknown action" in result["error"]
+
+
+class TestRfqHandlerDispatch:
+    """Phase 1 Step 8: RFQ handlers are called directly, not via Chainlit."""
+
+    async def test_handler_receives_the_payload_and_a_context(self, fake_chainlit):
+        fake_chainlit.add_session()
+        received = {}
+
+        async def _handler(payload, ctx):
+            received["payload"] = payload
+            received["thread_id"] = ctx.thread_id
+
+        fake_chainlit.rfq_handlers["rfq_refresh"] = _handler
+
+        result = await bridge.dispatch_action(
+            "sess-1", "rfq_refresh", {"rfq_id": "RFQ-1", "_thread_id": "thread-target"}
+        )
+
+        assert result == {"success": True}
+        assert received["payload"]["rfq_id"] == "RFQ-1"
+        assert received["thread_id"] == "thread-target"
+
+    async def test_the_context_var_is_bound_for_deep_tool_calls(self, fake_chainlit):
+        """Tools below the handler read the ContextVar rather than an argument."""
+        from includes.chat.context import try_get_chat_context
+
+        fake_chainlit.add_session()
+        seen = {}
+
+        async def _handler(payload, ctx):
+            seen["bound"] = try_get_chat_context() is ctx
+
+        fake_chainlit.rfq_handlers["rfq_refresh"] = _handler
+
+        await bridge.dispatch_action("sess-1", "rfq_refresh", {})
+        assert seen["bound"] is True
+        assert try_get_chat_context() is None, "the bind must not leak"
+
+    async def test_handler_exception_becomes_an_error_result(self, fake_chainlit):
+        fake_chainlit.add_session()
+
+        async def _handler(payload, ctx):
+            raise ValueError("handler exploded")
+
+        fake_chainlit.rfq_handlers["rfq_find_suppliers"] = _handler
+
+        result = await bridge.dispatch_action("sess-1", "rfq_find_suppliers", {})
+        assert "handler exploded" in result["error"]
+
+    async def test_the_bind_unwinds_even_when_the_handler_raises(self, fake_chainlit):
+        from includes.chat.context import try_get_chat_context
+
+        fake_chainlit.add_session()
+
+        async def _handler(payload, ctx):
+            raise ValueError("boom")
+
+        fake_chainlit.rfq_handlers["rfq_refresh"] = _handler
+
+        await bridge.dispatch_action("sess-1", "rfq_refresh", {})
+        assert try_get_chat_context() is None
+
+    async def test_rfq_handlers_take_precedence_over_chainlit_callbacks(self, fake_chainlit):
+        """Both registries hold the name; the direct handler must win."""
+        fake_chainlit.add_session()
+        called: list[str] = []
+
+        async def _handler(payload, ctx):
+            called.append("handler")
+
+        async def _callback(action):
+            called.append("callback")
+
+        fake_chainlit.rfq_handlers["rfq_refresh"] = _handler
+        fake_chainlit.callbacks["rfq_refresh"] = _callback
+
+        await bridge.dispatch_action("sess-1", "rfq_refresh", {})
+        assert called == ["handler"]
+
+    async def test_non_rfq_actions_still_reach_the_chainlit_callback(self, fake_chainlit):
+        """Lifecycle actions (cancel_job, stop_agent, ...) stay in app.py."""
+        fake_chainlit.add_session()
+        called: list[str] = []
+
+        async def _callback(action):
+            called.append(action.name)
+
+        fake_chainlit.callbacks["cancel_job"] = _callback
+
+        result = await bridge.dispatch_action("sess-1", "cancel_job", {"job_id": "j1"})
+        assert result == {"success": True}
+        assert called == ["cancel_job"]
 
 
 class TestSessionLock:

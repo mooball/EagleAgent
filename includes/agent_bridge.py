@@ -216,9 +216,27 @@ async def dispatch_action(
             import chainlit as cl
             cl.user_session.set("thread_id", target_thread_id)
 
+        # RFQ handlers are transport-neutral — call them directly rather than
+        # bouncing through Chainlit's decorator registry.
+        import includes.chat.rfq_actions as rfq_module
+
+        handler = rfq_module.RFQ_ACTIONS.get(action_name)
+        if handler:
+            try:
+                from includes.chat.context import chat_context
+                from includes.chat.context_chainlit import ChainlitChatContext
+
+                ctx = ChainlitChatContext.from_session()
+                with chat_context(ctx):
+                    await handler(payload, ctx)
+                return {"success": True}
+            except Exception as e:
+                logger.exception(f"[agent_bridge] Action {action_name} failed")
+                return {"error": str(e)}
+
         callback = config.code.action_callbacks.get(action_name)
         if callback:
-            # Native @cl.action_callback
+            # Native @cl.action_callback — lifecycle actions still live in app.py
             try:
                 action = Action(name=action_name, payload=payload)
                 await callback(action)

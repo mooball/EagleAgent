@@ -573,11 +573,26 @@ AGENTS: dict[str, AgentSpec] = {...}
 LEGACY_NAMES = {"EagleAgent": "eagle", "System Admin": "eagle"}
 ```
 
-### Step 8 — `includes/agent_bridge.py` · M
-`dispatch_action` builds a `ChainlitChatContext` from the resolved session and calls the
-handler from `RFQ_ACTIONS` **directly**, instead of going through
-`config.code.action_callbacks`. `WebsocketSession` / `init_ws_context` stay for now
-(deleted in Phase 5) but are confined to one function.
+### ~~Step 8 — `includes/agent_bridge.py`~~ ✅ · M
+- ~~`dispatch_action` builds a `ChainlitChatContext` from the resolved session and calls the
+  handler from `RFQ_ACTIONS` **directly**, instead of going through
+  `config.code.action_callbacks`.~~
+- `RFQ_ACTIONS` is consulted **first**; `config.code.action_callbacks` remains as the fallback
+  for the lifecycle actions that legitimately still live in `app.py` (`cancel_job`,
+  `stop_agent`, `new_conversation`, `cancel_run_script`). Precedence is pinned by a test.
+- The handler runs inside `chat_context(ctx)`, so tools below it read the ContextVar. The bind
+  unwinds even when the handler raises — also pinned.
+- `WebsocketSession` / `init_ws_context` / the `_thread_id` session pinning **stay** (deleted in
+  Phase 5), but are now confined to the lookup at the top of the function.
+
+> **Phase 0 tests: fixture changed, assertions untouched.** `test_bridge_dispatch.py`'s
+> `fake_chainlit` fixture now also patches `RFQ_ACTIONS` (to `{}` by default, so each test
+> declares which path it exercises) and makes its fake `init_ws_context` set the real
+> `context_var`, as the production one does. All 9 original tests pass **unmodified**.
+> 6 new tests cover the direct-dispatch path.
+
+Suite: 1014 passed / 2 skipped.
+
 
 ### Step 9 — CI rule · S
 ```python
