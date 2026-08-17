@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 
 # ---------------------------------------------------------------------------
@@ -293,3 +295,109 @@ class TestApplyQuoteData:
         actions = _apply_quote_data("RFQ-001", "Acme Corp", quote_data, "test@test.com")
         mock_update.assert_not_called()
         mock_add.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _extract_email_content_sync — placeholder self-heal
+# ---------------------------------------------------------------------------
+
+class TestExtractEmailContentSelfHeal:
+    """Content-less placeholder rows must be backfilled from Gmail before
+    extraction instead of returning "No content found in email".
+
+    Regression: RFQ-2026-1321 (email #52411) was created by the Gmail add-on
+    from a placeholder row created by the sync's Tier-3 match. The RFQ
+    creation pipeline had no self-heal (only the quote classify stage did),
+    so extraction returned an empty-bundle error and the RFQ was created
+    with 0 items even though the email had a body and item-table image.
+    """
+
+    @pytest.fixture
+    def db_session(self):
+        """DB session with SAVEPOINT so helper commits don't end the outer
+        transaction — everything rolls back at the end."""
+        from includes.dashboard.database import _sync_url
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        from sqlalchemy import event
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _make_placeholder(self, db_session) -> int:
+        from includes.dashboard.models import EmailTracking
+        import uuid
+        tracking = EmailTracking(
+            gmail_thread_id=f"thread-{uuid.uuid4().hex[:8]}",
+            gmail_message_id=f"msg-{uuid.uuid4().hex[:8]}",
+            user_email="test@eagle-exports.com",
+            direction="received",
+            subject="Quote request",
+            sender_email="customer@test.com",
+            # Placeholder: no body, no attachments
+            body_markdown=None,
+            body_html=None,
+            attachments_json=None,
+        )
+        db_session.add(tracking)
+        db_session.flush()
+        return tracking.id
+
+    def test_placeholder_row_is_backfilled(self, db_session):
+        tracking_id = self._make_placeholder(db_session)
+
+        def fake_backfill(session, tracking):
+            tracking.body_markdown = "Please quote 2x M16 bolts"
+            return True
+
+        with patch("includes.tools.supplier_quote_pipeline._get_session", return_value=db_session), \
+             patch("includes.tools.supplier_quote_pipeline._backfill_email_content_from_gmail",
+                   side_effect=fake_backfill) as mock_backfill:
+
+            from includes.tools.supplier_quote_pipeline import _extract_email_content_sync
+            bundle = _extract_email_content_sync(tracking_id)
+
+        mock_backfill.assert_called_once()
+        assert "Error: No content found" not in bundle
+        assert "Please quote 2x M16 bolts" in bundle
+
+    def test_placeholder_backfill_failure_keeps_error(self, db_session):
+        tracking_id = self._make_placeholder(db_session)
+
+        with patch("includes.tools.supplier_quote_pipeline._get_session", return_value=db_session), \
+             patch("includes.tools.supplier_quote_pipeline._backfill_email_content_from_gmail",
+                   return_value=False) as mock_backfill:
+
+            from includes.tools.supplier_quote_pipeline import _extract_email_content_sync
+            bundle = _extract_email_content_sync(tracking_id)
+
+        mock_backfill.assert_called_once()
+        assert bundle.startswith("Error: No content found")
+
+    def test_row_with_content_skips_backfill(self, db_session):
+        tracking_id = self._make_placeholder(db_session)
+        from includes.dashboard.models import EmailTracking
+        db_session.query(EmailTracking).filter(
+            EmailTracking.id == tracking_id
+        ).update({"body_markdown": "Already has content"})
+        db_session.flush()
+
+        with patch("includes.tools.supplier_quote_pipeline._get_session", return_value=db_session), \
+             patch("includes.tools.supplier_quote_pipeline._backfill_email_content_from_gmail") as mock_backfill:
+
+            from includes.tools.supplier_quote_pipeline import _extract_email_content_sync
+            bundle = _extract_email_content_sync(tracking_id)
+
+        mock_backfill.assert_not_called()
+        assert "Already has content" in bundle

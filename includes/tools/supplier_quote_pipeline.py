@@ -388,6 +388,13 @@ def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[
         if not tracking:
             return "Error: Email not found"
 
+        # Self-heal content-less placeholder rows (e.g. created by the Gmail
+        # add-on or the sync's Tier-3 match before content was fetched). Fetch
+        # body + attachments from Gmail so extraction sees the real email
+        # instead of returning "No content found".
+        if not (tracking.body_markdown or tracking.body_html) and not tracking.attachments_json:
+            _backfill_email_content_from_gmail(session, tracking)
+
         parts = []
 
         # Email body — restructure forwarded emails to surface the original request
