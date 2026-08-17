@@ -447,9 +447,7 @@
                             .then(r => r.json())
                             .then(data => {
                                 if (data.thread_id) {
-                                    const iframe = document.getElementById('agent-iframe');
-                                    if (iframe) {
-                                        iframe.src = '/chat/thread/' + data.thread_id;
+                                    if (this._setIframeSrc('/chat/thread/' + data.thread_id)) {
                                         this._activeThreadId = data.thread_id;
                                     }
                                 }
@@ -535,6 +533,19 @@
                         .catch(err => console.warn('[stopAgent] failed:', err));
                 },
 
+                // Single choke point for chat navigation. Reloading the iframe tears
+                // down the Chainlit websocket, which invalidates the client-held session
+                // id that /project/file needs — so callers must decide whether a reload
+                // is warranted before calling. Do not dedupe on the src attribute here:
+                // it only records what we last set and does not follow navigation inside
+                // the iframe, so it goes stale as soon as the user switches threads.
+                _setIframeSrc(src) {
+                    const iframe = document.getElementById('agent-iframe');
+                    if (!iframe) return null;
+                    iframe.src = src;
+                    return iframe;
+                },
+
                 updateContext() {
                     // Read context from a data attribute on #main-content or its first child
                     const el = document.querySelector('[data-dashboard-context]');
@@ -547,46 +558,56 @@
                             this._lastContextJson = newJson;
                             this.currentContext = newCtx;
 
-                            // Switch the chat iframe to the RFQ's bound thread
-                            if (newCtx.thread_id && newCtx.thread_id !== this._activeThreadId) {
-                                const iframe = document.getElementById('agent-iframe');
-                                if (iframe) {
-                                    iframe.src = '/chat/thread/' + newCtx.thread_id;
-                                    this._activeThreadId = newCtx.thread_id;
-                                    // Flag: we expect the iframe to load this specific thread.
-                                    // If Chainlit reports a different thread_id back, it means
-                                    // the bound thread couldn't be resumed (stale/deleted).
-                                    this._expectingBoundThread = newCtx.thread_id;
-                                }
-                                // Track which RFQ owns this thread
-                                this._activeThreadRfqId = newCtx.id;
-                                // Auto-open the agent panel
-                                if (this.agentState === 'closed') {
-                                    this.agentState = 'panel';
-                                }
-                            }
-                            // No thread bound yet for this RFQ — create one on demand
-                            if (newCtx.view === 'rfq_detail' && newCtx.id && !newCtx.thread_id) {
-                                // If the active thread belongs to a different RFQ, don't reuse it
-                                if (this._activeThreadId && this._activeThreadRfqId && this._activeThreadRfqId !== newCtx.id) {
-                                    // Start a fresh thread for this new RFQ
-                                    console.log('[bind] Active thread belongs to', this._activeThreadRfqId, '— starting fresh for', newCtx.id);
-                                    this._activeThreadId = null;
-                                    this._activeThreadRfqId = null;
-                                }
-                                if (this._activeThreadId) {
-                                    this._ensureRfqBound();
-                                } else {
-                                    this._pendingRfqBind = newCtx.id;
-                                    // Track whether this is a brand-new blank RFQ
-                                    this._pendingNewRfq = !newCtx.customer;
-                                    const iframe = document.getElementById('agent-iframe');
+                            // Thread routing keys off identity only. The RFQ context also
+                            // carries status/item_count/specific_count, which change on every
+                            // agent mutation — and _notify_rfq_updated() fires a
+                            // dashboard_refresh after each one. Re-running the routing on that
+                            // churn reloaded the iframe mid-conversation, dropping the chat
+                            // session and producing "Failed to upload X: Session not found".
+                            const identity = JSON.stringify([
+                                newCtx.view, newCtx.entity, newCtx.id, newCtx.thread_id,
+                            ]);
+                            const identityChanged = identity !== this._lastContextIdentity;
+                            this._lastContextIdentity = identity;
+
+                            if (identityChanged) {
+                                // Switch the chat iframe to the RFQ's bound thread
+                                if (newCtx.thread_id && newCtx.thread_id !== this._activeThreadId) {
+                                    const iframe = this._setIframeSrc('/chat/thread/' + newCtx.thread_id);
                                     if (iframe) {
-                                        iframe.src = '/chat';
+                                        this._activeThreadId = newCtx.thread_id;
+                                        // Flag: we expect the iframe to load this specific thread.
+                                        // If Chainlit reports a different thread_id back, it means
+                                        // the bound thread couldn't be resumed (stale/deleted).
+                                        this._expectingBoundThread = newCtx.thread_id;
+                                    }
+                                    // Track which RFQ owns this thread
+                                    this._activeThreadRfqId = newCtx.id;
+                                    // Auto-open the agent panel
+                                    if (this.agentState === 'closed') {
+                                        this.agentState = 'panel';
                                     }
                                 }
-                                if (this.agentState === 'closed') {
-                                    this.agentState = 'panel';
+                                // No thread bound yet for this RFQ — create one on demand
+                                if (newCtx.view === 'rfq_detail' && newCtx.id && !newCtx.thread_id) {
+                                    // If the active thread belongs to a different RFQ, don't reuse it
+                                    if (this._activeThreadId && this._activeThreadRfqId && this._activeThreadRfqId !== newCtx.id) {
+                                        // Start a fresh thread for this new RFQ
+                                        console.log('[bind] Active thread belongs to', this._activeThreadRfqId, '— starting fresh for', newCtx.id);
+                                        this._activeThreadId = null;
+                                        this._activeThreadRfqId = null;
+                                    }
+                                    if (this._activeThreadId) {
+                                        this._ensureRfqBound();
+                                    } else {
+                                        this._pendingRfqBind = newCtx.id;
+                                        // Track whether this is a brand-new blank RFQ
+                                        this._pendingNewRfq = !newCtx.customer;
+                                        this._setIframeSrc('/chat');
+                                    }
+                                    if (this.agentState === 'closed') {
+                                        this.agentState = 'panel';
+                                    }
                                 }
                             }
                         } catch (e) {
@@ -656,10 +677,7 @@
                                 // Thread is already bound to another RFQ — start a fresh thread
                                 console.log('[bind] Thread already bound to another RFQ, starting fresh');
                                 this._activeThreadId = null;
-                                const iframe = document.getElementById('agent-iframe');
-                                if (iframe) {
-                                    iframe.src = '/chat';
-                                }
+                                this._setIframeSrc('/chat');   // deliberately a fresh session
                                 // The new thread_id message from the iframe will trigger _ensureRfqBound again
                             }
                         }).catch(() => {});
