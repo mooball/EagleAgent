@@ -235,20 +235,55 @@ Strictly leaf-first, so each step ships independently and green.
   but **not** a raw `threading.Thread`. `middleware.py` uses `loop.create_task`, so it is
   covered; if that ever moves to a bare thread it needs an explicit `ctx`.
 
-### Step 2 — Leaf modules (low risk, builds confidence) · M
+### ~~Step 2 — Leaf modules (low risk, builds confidence)~~ ✅ · M
 | File | Change |
 | --- | --- |
-| [includes/chat/supplier_search_gate.py](includes/chat/supplier_search_gate.py) | `build_menu_actions() -> list[ActionSpec]`; `show_search_menu(ctx)` |
-| [includes/chat/job_progress.py](includes/chat/job_progress.py) | `monitor_job(..., ctx)` — 4 sites |
-| [includes/tools/job_tools.py](includes/tools/job_tools.py) | L52–69 → `get_chat_context().say(..., actions=[...])` |
-| [includes/tools/browser_tools.py](includes/tools/browser_tools.py) | L180–192 → `ctx.image(path, name=...)` |
-| [includes/agents/base.py](includes/agents/base.py) | L132–136 `_notify_retry` → `ctx.say(..., transient=True)` |
-| [includes/chat/middleware.py](includes/chat/middleware.py) | L97–100 `GeminiRetryNotifier` → same |
-| [includes/chat/commands.py](includes/chat/commands.py) | L19 → **delete the file** (dropped at parity) |
+| ~~[includes/chat/supplier_search_gate.py](includes/chat/supplier_search_gate.py)~~ | ~~`build_menu_actions() -> list[ActionSpec]`; `show_search_menu(ctx)`~~ |
+| ~~[includes/chat/job_progress.py](includes/chat/job_progress.py)~~ | ~~`monitor_job(..., ctx)` — 4 sites~~ |
+| ~~[includes/tools/job_tools.py](includes/tools/job_tools.py)~~ | ~~L52–69 → `get_chat_context().say(..., actions=[...])`~~ |
+| ~~[includes/tools/browser_tools.py](includes/tools/browser_tools.py)~~ | ~~L180–192 → `ctx.image(path, name=...)`~~ |
+| ~~[includes/agents/base.py](includes/agents/base.py)~~ | ~~L132–136 `_notify_retry` → `ctx.say(..., transient=True)`~~ |
+| ~~[includes/chat/middleware.py](includes/chat/middleware.py)~~ | ~~L97–100 `GeminiRetryNotifier` → same~~ |
+| ~~[includes/chat/commands.py](includes/chat/commands.py)~~ | ~~L19 → **delete the file** (dropped at parity)~~ — already deleted in `f600998` |
 
-> `middleware.py` and `base.py` fire from **logging handlers / retry paths**, which may
+> ~~`middleware.py` and `base.py` fire from **logging handlers / retry paths**, which may
 > run on a different task. Confirm the ContextVar propagates; if not, they take an
-> explicit `ctx` captured at construction.
+> explicit `ctx` captured at construction.~~
+> **Resolved:** `GeminiRetryNotifier` uses `loop.create_task`, which snapshots the
+> context — propagation confirmed by `test_context_var.py`. No explicit `ctx` needed.
+
+- **The ContextVar had to be bound a step early.** Step 3 was supposed to own binding, but
+  `job_tools` / `browser_tools` / `base.py` / `middleware.py` all read it from inside a run,
+  so they would have been dead on arrival. `app.py:main()` now calls
+  `bind_chat_context(ChainlitChatContext.from_session())`. No reset: Chainlit runs each
+  `on_message` in its own task, so the binding is already turn-scoped. `runner.py` takes
+  this over in Step 3.
+- `show_search_menu` takes `ctx=None` and falls back to `get_chat_context()`. The four
+  callers in `rfq_actions.py` pass `ctx=_ctx()`, a temporary `ChainlitChatContext.from_session()`
+  helper that Step 6 deletes.
+- `_notify_retry` and `GeminiRetryNotifier` use `try_get_chat_context()`, preserving today's
+  silent no-op when there is no session rather than raising.
+- **Also removed an unused `import chainlit` from
+  [includes/tools/supplier_search_tools.py](includes/tools/supplier_search_tools.py)** —
+  not in the plan's scope table, and never referenced. Free win for the Step 9 CI rule.
+- Migrated the ad-hoc `mod.cl` swapping in `tests/test_job_tools.py` to the `bound_chat_ctx`
+  fixture — one of the items Phase 0 deferred to this phase.
+- `tests/chat/conftest.py`'s `_install_fake_cl` now also patches
+  `includes.chat.context_chainlit.cl` with the **same** fake, so `main()` and the context
+  share one session store. Without this, 15 Phase 0 stream-loop tests failed on a real
+  `cl.context` lookup — a test-harness gap, not a behaviour change, and no Phase 0 test
+  file was edited.
+- Both 0%-coverage modules now have tests: `tests/chat/test_job_progress.py` (8) and
+  `tests/chat/test_supplier_search_gate.py` (16). Suite: 933 passed / 2 skipped (from 909),
+  plus 13 browser-agent tests green.
+
+> ⚠️ **Pre-existing bug found, not fixed:** there is no `@cl.action_callback("confirm_run_script")`
+> anywhere, so the **Run** button on the `run_script` confirmation does nothing, and
+> `monitor_job()` is never called by production code. That is why `job_progress.py` measured
+> 0% coverage in Phase 0. Out of scope for a decoupling phase — tracked as **todo.vu #32818**
+> (EagleAgent: Admin). Fix once Step 5/6 land the handler registry, and widen the Step 9 CI
+> rule to assert every emitted action name has a registered handler.
+
 
 ### Step 3 — `includes/chat/runner.py` · L
 Extract the stream loop from `on_message` (app.py:701–1290), consuming the pure helpers

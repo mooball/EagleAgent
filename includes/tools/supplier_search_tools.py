@@ -17,7 +17,6 @@ import asyncio
 import logging
 from typing import Optional
 
-import chainlit as cl
 from langchain_core.tools import tool
 
 from includes.tools.rfq_crud import (

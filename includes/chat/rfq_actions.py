@@ -95,6 +95,12 @@ def _should_stop() -> bool:
         return False
 
 
+def _ctx():
+    """Build a ChatContext for the current session. Removed in Step 6."""
+    from includes.chat.context_chainlit import ChainlitChatContext
+    return ChainlitChatContext.from_session()
+
+
 async def _handle_stop(pinned_tid: str) -> None:
     """Send a stopped message and clean up when stop is detected."""
     await _send_pinned("⏹ *Stopped by user.*", pinned_tid, author="EagleAgent")
@@ -887,7 +893,7 @@ async def on_rfq_pipeline_previous_suppliers(action: cl.Action) -> None:
     try:
         result = await asyncio.to_thread(run_previous_suppliers_sync, rfq_id, user_id, line_filter)
         await notify_dashboard("dashboard_refresh")
-        await show_search_menu(rfq_id, user_id, summary=f"✅ {result}", line_filter=line_filter)
+        await show_search_menu(rfq_id, user_id, summary=f"✅ {result}", line_filter=line_filter, ctx=_ctx())
     except Exception as e:
         logger.exception(f"Error in previous suppliers for {rfq_id}")
         await cl.Message(content=f"Error: {e}", author="EagleAgent").send()
@@ -914,7 +920,7 @@ async def on_rfq_pipeline_brand_suppliers(action: cl.Action) -> None:
     try:
         result = await asyncio.to_thread(run_brand_suppliers_sync, rfq_id, user_id, line_filter)
         await notify_dashboard("dashboard_refresh")
-        await show_search_menu(rfq_id, user_id, summary=f"✅ {result}", line_filter=line_filter)
+        await show_search_menu(rfq_id, user_id, summary=f"✅ {result}", line_filter=line_filter, ctx=_ctx())
     except Exception as e:
         logger.exception(f"Error in brand suppliers for {rfq_id}")
         await cl.Message(content=f"Error: {e}", author="EagleAgent").send()
@@ -943,7 +949,7 @@ async def on_rfq_pipeline_new_domestic(action: cl.Action) -> None:
             run_web_search_suppliers_sync, rfq_id, user_id, True, line_filter
         )
         await notify_dashboard("dashboard_refresh")
-        await show_search_menu(rfq_id, user_id, summary=f"✅ {result}", line_filter=line_filter)
+        await show_search_menu(rfq_id, user_id, summary=f"✅ {result}", line_filter=line_filter, ctx=_ctx())
     except Exception as e:
         logger.exception(f"Error in domestic web search for {rfq_id}")
         await cl.Message(content=f"Error: {e}", author="EagleAgent").send()
@@ -972,7 +978,7 @@ async def on_rfq_pipeline_new_international(action: cl.Action) -> None:
             run_web_search_suppliers_sync, rfq_id, user_id, False, line_filter
         )
         await notify_dashboard("dashboard_refresh")
-        await show_search_menu(rfq_id, user_id, summary=f"✅ {result}", line_filter=line_filter)
+        await show_search_menu(rfq_id, user_id, summary=f"✅ {result}", line_filter=line_filter, ctx=_ctx())
     except Exception as e:
         logger.exception(f"Error in international web search for {rfq_id}")
         await cl.Message(content=f"Error: {e}", author="EagleAgent").send()

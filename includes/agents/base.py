@@ -127,13 +127,17 @@ def _strip_thought_signatures(messages: list) -> list:
 
 
 async def _notify_retry(agent_name: str, attempt: int, max_retries: int, delay: int) -> None:
-    """Send a Chainlit status message to the user on transient API retries."""
+    """Send a status message to the user on transient API retries."""
     try:
-        import chainlit as cl
-        await cl.Message(
-            content=f"\u23f3 LLM temporarily unavailable \u2014 retrying ({attempt}/{max_retries})...",
+        from includes.chat.context import try_get_chat_context
+        ctx = try_get_chat_context()
+        if ctx is None:
+            return
+        await ctx.say(
+            f"\u23f3 LLM temporarily unavailable \u2014 retrying ({attempt}/{max_retries})...",
             author="System",
-        ).send()
+            transient=True,
+        )
     except Exception:
         pass  # Don't let notification failures break the retry loop
 

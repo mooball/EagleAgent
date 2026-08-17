@@ -10,6 +10,8 @@ import logging
 from dotenv import load_dotenv
 from config import config
 from includes.chat.actions import dispatch_action, get_actions_for_user, is_help_request, send_action_buttons
+from includes.chat.context import bind_chat_context
+from includes.chat.context_chainlit import ChainlitChatContext
 from includes.chat.document_processing import process_file, create_multimodal_content
 from includes.chat.local_storage_client import LocalStorageClient
 from includes.chat.data_layer import FixedSQLAlchemyDataLayer
@@ -659,6 +661,10 @@ async def main(message: cl.Message):
     # Use the session ID as the thread ID to maintain conversation history
     thread_id = cl.user_session.get("thread_id")
     user_id = cl.user_session.get("user_id", "")
+
+    # Bind the ChatContext for this turn. Chainlit runs each on_message in its
+    # own task, so the ContextVar is scoped to this turn without needing a reset.
+    bind_chat_context(ChainlitChatContext.from_session())
 
     # Show action buttons when the user asks for help / actions
     if is_help_request(message.content):

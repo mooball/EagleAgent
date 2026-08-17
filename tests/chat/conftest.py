@@ -156,6 +156,11 @@ def _install_fake_cl(monkeypatch, module):
     )
     monkeypatch.setattr(module, "cl", fake)
 
+    # ChainlitChatContext reads the same session, so keep both on one fake.
+    import includes.chat.context_chainlit as _ctx_mod
+    if module is not _ctx_mod:
+        monkeypatch.setattr(_ctx_mod, "cl", fake)
+
     recorder.module = fake
     return recorder
 

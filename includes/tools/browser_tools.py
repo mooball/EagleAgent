@@ -10,10 +10,10 @@ import logging
 import json
 import os
 import re
-import chainlit as cl
 from typing import List, Optional
 from langchain_core.tools import tool
 from config import config
+from includes.chat.context import get_chat_context
 
 logger = logging.getLogger(__name__)
 
@@ -176,19 +176,10 @@ async def browser(command: str) -> str:
                     logger.info("Screenshot path exists, proceeding to UI injection.")
                     
                     try:
-                        # Send it directly to the UI
-                        image_element = cl.Image(
-                            path=screenshot_path,
-                            name="Browser Screenshot",
-                            display="inline"
+                        await get_chat_context().image(
+                            screenshot_path, name="Browser Screenshot"
                         )
-                        
-                        # Wait, we can natively await cl.Message from within the tool context!
-                        await cl.Message(
-                            content="📸", # Minimal text to ensure rendering
-                            elements=[image_element]
-                        ).send()
-                        
+
                         logger.info(f"Screenshot sent to UI from {screenshot_path}")
                         output = f"{output}\n\n[System Note: The screenshot has been automatically shown in the chat UI as a standalone message. Acknowledge this, but strictly DO NOT attempt to display or link the image yourself using Markdown.]"
                     except Exception as e:
