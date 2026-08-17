@@ -150,7 +150,7 @@ async def _run_turn_locked(
     await ctx.notify_dashboard("agent_working", {"label": "Agent working..."})
 
     msg = await ctx.say("")
-    ctx.set("active_msg", msg)
+    ctx.active_message = msg
 
     request_start = time.monotonic()
     active_agent = "GeneralAgent"
@@ -316,7 +316,7 @@ async def _run_turn_locked(
         except Exception as fb_err:
             logger.debug(f"State fallback failed: {fb_err}")
 
-    ctx.set("active_msg", None)
+    ctx.active_message = None
 
     # Strip trailing whitespace so the footer sits cleanly against content
     if msg.content:

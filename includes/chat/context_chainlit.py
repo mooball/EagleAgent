@@ -133,6 +133,7 @@ class ChainlitChatContext:
         self.thread_id = thread_id
         self.user_email = user_email
         self.agent = agent
+        self.active_message = None
         self._session = session
 
     @classmethod
@@ -244,3 +245,11 @@ class ChainlitChatContext:
             return is_stop_requested(self._session.id)
         except Exception:
             return False
+
+    def reset_cancel(self) -> None:
+        from includes.agent_bridge import clear_stop
+
+        try:
+            clear_stop(self._session.id)
+        except Exception:
+            pass

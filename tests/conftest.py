@@ -76,6 +76,7 @@ class FakeChatContext:
         self.thread_id = thread_id
         self.user_email = user_email
         self.agent = agent
+        self.active_message = None
         self._state = dict(state or {})
         self._cancelled = cancelled
 
@@ -110,6 +111,9 @@ class FakeChatContext:
 
     def request_stop(self) -> None:
         self._cancelled = True
+
+    def reset_cancel(self) -> None:
+        self._cancelled = False
 
     # -- assertion helpers --
 

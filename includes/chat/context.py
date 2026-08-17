@@ -73,6 +73,10 @@ class ChatContext(Protocol):
     user_email: str
     agent: str  # "eagle" | "research" | "internal"
 
+    # The message currently being streamed into, if any. Per-context, NOT shared
+    # session state — two runs on one thread must not clobber each other's.
+    active_message: "MessageHandle | None"
+
     async def say(
         self,
         text: str,
@@ -95,6 +99,10 @@ class ChatContext(Protocol):
 
     @property
     def cancelled(self) -> bool: ...
+
+    def reset_cancel(self) -> None:
+        """Clear a stale stop flag so this conversation can accept new work."""
+        ...
 
 
 _current: contextvars.ContextVar["ChatContext | None"] = contextvars.ContextVar(

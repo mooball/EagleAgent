@@ -657,14 +657,9 @@ async def _notify_agent_working(label: str) -> None:
 
 
 async def _notify(command: str, payload: dict | None = None) -> None:
-    # The RFQ action callbacks reach these helpers without a bound context;
-    # they bind one in Step 6, after which the fallback can go.
     ctx = try_get_chat_context()
     if ctx is not None:
         await ctx.notify_dashboard(command, payload)
-        return
-    from includes.agent_bridge import notify_dashboard
-    await notify_dashboard(command, payload)
 
 
 async def _stream_to_user(text: str) -> None:
@@ -674,9 +669,8 @@ async def _stream_to_user(text: str) -> None:
         ctx = try_get_chat_context()
         if ctx is None or not text:
             return
-        msg = ctx.get("active_msg")
-        if msg:
-            await msg.stream(text)
+        if ctx.active_message:
+            await ctx.active_message.stream(text)
     except Exception:
         pass  # No chat context or no active message
 

@@ -169,7 +169,7 @@ From the audit, `cl.user_session` holds exactly these:
 | --- | --- |
 | `thread_id`, `user_id`, `user`, `chat_profile` | **Promoted to `ChatContext` fields** (`thread_id`, `user_email`, `agent`) |
 | `active_graph` | Stays in `app.py` — a Chainlit-lifecycle concern, not business logic |
-| `active_msg` | Becomes the `MessageHandle` returned by `ctx.say()`; `_stream_to_user` uses `ctx` |
+| `active_msg` | **Promoted to a `ChatContext` field** (`ctx.active_message`), not `ctx.get/set` — see Step 6b |
 | `intent_context` | `ctx.get/set` |
 | `total_tokens_used` | `ctx.get/set` |
 | `pipeline_fixes_{rfq_id}` | `ctx.get/set` |
@@ -430,10 +430,43 @@ behaviour change, and the one exception to this phase's "no behaviour change" ru
 > `includes/agents/` are completely clean.
 
 
-### Step 6 — `includes/chat/rfq_actions.py` · **XL** — the big one
-Delete the 4 pinning helpers. Convert all 21 callbacks to
-`async def on_x(payload: dict, ctx: ChatContext)`. Registration moves to a plain dict
-so `app.py` owns the `@cl.action_callback` decorators:
+### ~~Step 6 — `includes/chat/rfq_actions.py`~~ ✅ · **XL** — the big one
+- ~~Delete the 4 pinning helpers. Convert all 21 callbacks to
+  `async def on_x(payload: dict, ctx: ChatContext)`. Registration moves to a plain dict
+  so `app.py` owns the `@cl.action_callback` decorators.~~
+- `_pin_thread`, `_thread_swap`, `_send_pinned`, `_main_pinned` and `_should_stop` are all
+  **deleted**. `from app import main` no longer appears anywhere under `includes/` — the
+  import cycle is gone.
+- `rfq_actions.py` has **zero** Chainlit references outside two docstring mentions.
+- `_user_id(payload, ctx)` replaces the repeated
+  `payload.get("user_id") or cl.user_session.get("user_id", "unknown")`, preserving the
+  payload-wins-then-session-then-`"unknown"` order that Phase 0 pinned.
+- `on_rfq_find_all_suppliers` now calls `run_turn(..., on_busy="wait")` directly. No synthetic
+  `cl.Message`, no `_main_pinned`.
+- **Removed a dead local**: `internal_summary_lines` in `on_rfq_find_suppliers` was built and
+  never read.
+
+> ⚠️ **A Phase 0 test file changed — justification.** `tests/chat/test_rfq_action_callbacks.py`
+> called handlers as `on_x(action)`; the new signature is `on_x(payload, ctx)`, so the call
+> convention and the fixture had to change. **Every assertion is unchanged.** This was
+> anticipated by Phase 0 itself — that file's docstring says "Phase 1 converts these to take an
+> explicit ChatContext and deletes the thread-pinning helpers". All 16 still pass.
+
+**Also pulled forward, because Step 6 is what made them correct:**
+- `_make_chainlit_adapter` **binds** the ContextVar as well as passing `ctx`, so tools reached
+  deeper down (`supplier_search_tools` → `_notify_rfq_updated`) see it. Uses the
+  `chat_context()` context manager, so the bind unwinds even on exception.
+- With that in place, the temporary `agent_bridge.notify_dashboard` fallback added to
+  `quote_tools._notify` in Step 4 was **deleted**.
+
+New tests: `tests/chat/test_rfq_action_registry.py` (26) — no name lost against the 21 former
+decorators, every handler is an async `(payload, ctx)` callable, handlers are distinct, the
+`app.py` adapter loop registers all 21 with Chainlit, and every button the supplier-search menu
+emits has a handler. Suite: 974 passed / 2 skipped.
+
+> **`rfq_find_all_suppliers` still has no `rfq_id` guard** — left as-is deliberately, since
+> changing it would mean editing a Phase 0 assertion mid-refactor. Tracked as **todo.vu #32822**.
+
 
 ```python
 # includes/chat/rfq_actions.py
@@ -480,6 +513,30 @@ async def on_rfq_find_all_suppliers(payload: dict, ctx: ChatContext) -> None:
 No synthetic message, no `from app import main`, no pinning. Convert it **immediately
 before** `rfq_pipeline_web_search` so the two riskiest conversions are adjacent and get
 the same scrutiny.
+
+### ~~Step 6b — Concurrent-run output fixes~~ ✅ · S — *added mid-phase*
+
+Not in the original plan. Found by hand-testing Step 6: clicking an RFQ button and then
+typing a chat message runs two workers on one thread, and they fought over two pieces of
+single-slot shared state.
+
+- **`active_msg` was a shared session key.** `run_turn` set it on entry and nulled it on exit,
+  so a second run silently stole and then destroyed the first run's streaming handle — the
+  button's later output went nowhere. It is now `ctx.active_message`, an attribute of the
+  **context instance**. Each turn and each callback builds its own context, so runs cannot
+  clobber each other. This also deletes a session key rather than merely renaming it.
+- **The "agent working" badge was single-slot.** Every handler ends with
+  `notify_dashboard("agent_done")`, so whichever worker finished first cleared the badge for
+  everyone. `notify_dashboard` now reference-counts `agent_working`/`agent_done` per session
+  and emits only the 0↔1 transitions. Unbalanced `agent_done` calls cannot drive it negative.
+- 10 tests in `tests/chat/test_concurrent_runs.py`. **Mutation-tested both:** disabling the
+  ref-count fails 3 tests; reverting `active_message` to the session key fails the
+  two-runs-one-thread streaming test. Suite: 984 passed / 2 skipped.
+
+> **Not fixed here:** a chat message still does not interrupt in-flight button work, because
+> 20 of the 21 handlers never call `run_turn` and so never take the per-thread lock. The plan's
+> busy-policy table assumed all callbacks would reach `run_turn`; they do not. Tracked as
+> **todo.vu #32823**, to be done after Phase 1 ships.
 
 ### Step 7 — `includes/agents/registry.py` · S
 Single source of truth replacing logic spread across `@cl.set_chat_profiles` (app.py:237),

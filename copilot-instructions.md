@@ -360,6 +360,7 @@ Default to project `1011` for new tasks unless the work clearly belongs to one o
 
 ### Usage notes
 - Key tools: `list_tasks`, `create_task`, `change_tasks`, `task_add_comment`, `list_comments_attachments_time_entries`, `list_projects`, `list_clients`, `list_labels`, `list_users`.
+- **Task `details` must be markdown or plain text — HTML does not render.** Do not send `<p>` / `<strong>` tags.
 - `list_tasks` defaults to `user_mode="assigned"`. Pass `only="active"`/`"completed"`/`"overdue"` to scope by dashboard section, and `search` for free-text lookup.
 - `list_projects` with `client_id` is not filtered strictly server-side — verify `client_id` on each returned project.
 - Task names come back HTML-escaped (`&amp;`, `&#x27;`); `details` is HTML.

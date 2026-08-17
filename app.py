@@ -10,7 +10,7 @@ import logging
 from dotenv import load_dotenv
 from config import config
 from includes.chat.actions import dispatch_action, get_actions_for_user, is_help_request, send_action_buttons
-from includes.chat.context import bind_chat_context
+from includes.chat.context import bind_chat_context, chat_context
 from includes.chat.context_chainlit import ChainlitChatContext
 from includes.chat.document_processing import process_file
 from includes.chat.local_storage_client import LocalStorageClient
@@ -29,9 +29,6 @@ import asyncio
 from includes.tools.quote_tools import (
     _clear_suppliers_sync, _get_rfq_dict_sync,
 )
-
-# Import RFQ action callbacks so Chainlit registers them
-import includes.chat.rfq_actions  # noqa: F401
 
 # Set up Chainlit server reference for middleware patching
 import chainlit.server as cl_server
@@ -633,9 +630,21 @@ async def on_action_stop_agent(action: cl.Action):
     await notify_dashboard("agent_done")
 
 
-# RFQ action callbacks are registered via @cl.action_callback decorators
-# in rfq_actions — importing the module is enough.
-import includes.chat.rfq_actions  # noqa: F401 — registers Chainlit callbacks
+# RFQ action handlers are transport-neutral; adapt each onto a Chainlit callback.
+from includes.chat.rfq_actions import RFQ_ACTIONS
+
+
+def _make_chainlit_adapter(handler):
+    async def _adapter(action: cl.Action) -> None:
+        ctx = ChainlitChatContext.from_session()
+        # Bound as well as passed: tools reached deeper down read the ContextVar.
+        with chat_context(ctx):
+            await handler(action.payload or {}, ctx)
+    return _adapter
+
+
+for _name, _handler in RFQ_ACTIONS.items():
+    cl.action_callback(_name)(_make_chainlit_adapter(_handler))
 
 
 @cl.on_message

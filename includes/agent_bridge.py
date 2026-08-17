@@ -109,6 +109,35 @@ def clear_stop(session_id: str) -> None:
 # Agent → Dashboard helpers
 # ---------------------------------------------------------------------------
 
+# Concurrent workers on one session share a single "agent working" badge, so
+# the badge is reference-counted: the first worker turns it on, the last turns
+# it off. Without this, whichever finishes first clears it for everyone.
+_working_depth: Dict[str, int] = {}
+
+
+def _badge_should_emit(command: str) -> bool:
+    """Track agent_working/agent_done depth; emit only on the 0↔1 transitions."""
+    if command not in ("agent_working", "agent_done"):
+        return True
+    try:
+        import chainlit as cl
+        key = cl.context.session.id
+    except Exception:
+        return True
+
+    if command == "agent_working":
+        depth = _working_depth.get(key, 0)
+        _working_depth[key] = depth + 1
+        return depth == 0
+
+    depth = _working_depth.get(key, 0) - 1
+    if depth <= 0:
+        _working_depth.pop(key, None)
+        return True
+    _working_depth[key] = depth
+    return False
+
+
 async def notify_dashboard(command: str, payload: dict | None = None) -> None:
     """Send a command to the dashboard via the Chainlit iframe.
 
@@ -127,6 +156,9 @@ async def notify_dashboard(command: str, payload: dict | None = None) -> None:
         await notify_dashboard("agent_navigate", {"url": "/rfqs/RFQ-123"})
     """
     import chainlit as cl
+
+    if not _badge_should_emit(command):
+        return
 
     data: dict = {"type": command}
     if payload:
