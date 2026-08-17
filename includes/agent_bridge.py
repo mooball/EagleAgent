@@ -199,7 +199,10 @@ async def dispatch_action(
         from includes.chat.actions import dispatch_action as dispatch_custom_action, get_action
         if get_action(action_name):
             try:
-                await dispatch_custom_action(action_name, **payload)
+                from includes.chat.context_chainlit import ChainlitChatContext
+                await dispatch_custom_action(
+                    action_name, ChainlitChatContext.from_session(), **payload
+                )
                 return {"success": True}
             except Exception as e:
                 logger.exception(f"[agent_bridge] Action {action_name} failed")

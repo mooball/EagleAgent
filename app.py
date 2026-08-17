@@ -579,7 +579,7 @@ async def on_stop():
 @cl.action_callback("new_conversation")
 async def on_action_new_conversation(action: cl.Action):
     """Handle the New Conversation action button."""
-    await dispatch_action("new_conversation")
+    await dispatch_action("new_conversation", ChainlitChatContext.from_session())
 
 
 @cl.action_callback("cancel_run_script")
@@ -664,7 +664,7 @@ async def main(message: cl.Message):
 
     # Show action buttons when the user asks for help / actions
     if is_help_request(message.content):
-        await send_action_buttons(user_id)
+        await send_action_buttons(user_id, ctx)
         return
 
     # Process file attachments if present

@@ -409,8 +409,26 @@ behaviour change, and the one exception to this phase's "no behaviour change" ru
   thread rename, the no-context path, and the dashboard notification. Suite: 945 passed / 2 skipped.
 
 
-### Step 5 — `includes/chat/actions.py` · M
-`dispatch_action(name, ctx, **kwargs)`. Intent handlers write via `ctx.set("intent_context", …)`.
+### ~~Step 5 — `includes/chat/actions.py`~~ ✅ · M
+- ~~`dispatch_action(name, ctx, **kwargs)`. Intent handlers write via `ctx.set("intent_context", …)`.~~
+- `ctx` is the second positional parameter and defaults to `get_chat_context()`, so tool-side
+  callers (`action_tools.start_new_conversation`) need no change while explicit callers stay explicit.
+- Every registered handler now takes `ctx` as its first argument — `dispatch_action` passes it
+  positionally, so a handler that forgets it fails loudly rather than silently.
+- The permission check reads `ctx.user_email` instead of `cl.user_session.get("user_id")`.
+- **`agent_bridge.dispatch_action` had to be updated in the same step.** Its custom-action
+  fallback path calls `dispatch_custom_action(name, **payload)`; without an explicit ctx it
+  would have raised `RuntimeError: No ChatContext bound`, because the bridge never binds the
+  ContextVar. It now passes `ChainlitChatContext.from_session()`. Step 8 revisits this properly.
+- Migrated the ad-hoc `actions_mod.cl` monkeypatching in `tests/test_actions.py` to the shared
+  fixtures — the last of the mocks Phase 0 deferred. Added coverage for the admin-allowed path,
+  the ContextVar fallback, and the new-thread id, which the old test did not have.
+- Suite: 948 passed / 2 skipped.
+
+> **`import chainlit` now survives in only 4 files:** `app.py`, `context_chainlit.py`,
+> `rfq_actions.py` (Step 6) and `agent_bridge.py` (Phase 5). `includes/tools/` and
+> `includes/agents/` are completely clean.
+
 
 ### Step 6 — `includes/chat/rfq_actions.py` · **XL** — the big one
 Delete the 4 pinning helpers. Convert all 21 callbacks to

@@ -114,34 +114,35 @@ class TestDispatchAction:
         with pytest.raises(ValueError, match="Unknown action"):
             await dispatch_action("does_not_exist")
     @patch("includes.chat.actions.config")
-    async def test_dispatch_admin_action_denied_for_staff(self, mock_config):
+    async def test_dispatch_admin_action_denied_for_staff(self, mock_config, make_chat_ctx):
         mock_config.get_admin_emails.return_value = ["admin@example.com"]
+        ctx = make_chat_ctx(user_email="staff@example.com")
 
-        import includes.chat.actions as actions_mod
-        original_session = actions_mod.cl.user_session
+        await dispatch_action("research_product_info", ctx)
 
-        mock_session = MagicMock()
-        mock_session.get.return_value = "staff@example.com"
-        actions_mod.cl.user_session = mock_session
+        assert len(ctx.messages) == 1
+        assert "permission" in ctx.texts[0].lower()
+        assert ctx.get("intent_context") is None
 
-        sent_messages = []
-        original_message = actions_mod.cl.Message
+    @patch("includes.chat.actions.config")
+    async def test_dispatch_admin_action_allowed_for_admin(self, mock_config, make_chat_ctx):
+        mock_config.get_admin_emails.return_value = ["admin@example.com"]
+        ctx = make_chat_ctx(user_email="admin@example.com")
 
-        class FakeMessage:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
+        await dispatch_action("research_product_info", ctx)
 
-            async def send(self):
-                sent_messages.append(self.kwargs)
+        assert "permission" not in ctx.texts[0].lower()
+        assert ctx.get("intent_context")
 
-        actions_mod.cl.Message = FakeMessage
-        try:
-            await dispatch_action("research_product_info")
-            assert len(sent_messages) == 1
-            assert "permission" in sent_messages[0].get("content", "").lower()
-        finally:
-            actions_mod.cl.user_session = original_session
-            actions_mod.cl.Message = original_message
+    async def test_dispatch_falls_back_to_the_bound_context(self, bound_chat_ctx):
+        await dispatch_action("new_conversation")
+        assert len(bound_chat_ctx.messages) == 1
+        assert "reset" in bound_chat_ctx.texts[0].lower()
+
+    async def test_new_conversation_sets_a_fresh_thread_id(self, chat_ctx):
+        await dispatch_action("new_conversation", chat_ctx)
+        new_thread = chat_ctx.get("thread_id")
+        assert new_thread and new_thread != chat_ctx.thread_id
 
 
 # ============================================================================
