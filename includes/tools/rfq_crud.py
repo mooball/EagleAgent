@@ -6,7 +6,9 @@ All public names are re-exported from quote_tools.py for backward compatibility.
 
 import datetime
 import logging
+import threading
 
+from functools import wraps
 from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -14,6 +16,38 @@ from sqlalchemy.exc import SQLAlchemyError
 from includes.tools.product_tools import normalize_part_number
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Per-RFQ write serialization
+# ---------------------------------------------------------------------------
+# The quote tools run these sync helpers in parallel threads (LangGraph
+# gathers tool calls, each helper runs in its own thread + transaction).
+# Two concurrent writers on the same RFQ deadlocked on Postgres row locks
+# and silently lost read-modify-write history updates. Serialize writes
+# per RFQ so different RFQs stay parallel but one RFQ never has two
+# concurrent writers.
+_rfq_write_locks: dict[str, "threading.RLock"] = {}
+_rfq_write_locks_guard = threading.Lock()
+
+
+def _rfq_write_lock(rfq_number: str) -> "threading.RLock":
+    with _rfq_write_locks_guard:
+        lock = _rfq_write_locks.get(rfq_number)
+        if lock is None:
+            lock = threading.RLock()
+            _rfq_write_locks[rfq_number] = lock
+        return lock
+
+
+def _serialized_rfq_write(fn):
+    """Decorator: serialize a write helper per RFQ (first arg is rfq_number)."""
+    @wraps(fn)
+    def wrapper(rfq_number, *args, **kwargs):
+        with _rfq_write_lock(str(rfq_number)):
+            return fn(rfq_number, *args, **kwargs)
+    return wrapper
+
 
 # Common aliases LLMs use for the "line" parameter
 _LINE_ALIASES = ("line", "line_number", "item", "item_number")
@@ -311,6 +345,7 @@ def _enrich_suppliers_from_db(suppliers: list[dict], session) -> None:
                 sup["country"] = db_country
 
 
+@_serialized_rfq_write
 def _sort_rfq_suppliers_sync(rfq_number: str) -> dict | None:
     """Sort suppliers on every line item of an RFQ. Returns RFQ dict or None.
 
@@ -441,6 +476,7 @@ def _get_rfq_dict_sync(rfq_number: str) -> dict | None:
         session.close()
 
 
+@_serialized_rfq_write
 def _update_item_groups_sync(rfq_number: str, groups_data: dict, user_id: str) -> dict | str:
     """Update item_groups on an RFQ. Returns RFQ dict or error string."""
     rfq, session = _get_rfq_sync(rfq_number)
@@ -467,6 +503,7 @@ def _update_item_groups_sync(rfq_number: str, groups_data: dict, user_id: str) -
         session.close()
 
 
+@_serialized_rfq_write
 def _add_items_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Add multiple items to an existing RFQ. Returns RFQ dict or error."""
     from includes.dashboard.models import RFQ, RFQItem
@@ -541,6 +578,7 @@ def _list_rfqs_sync(assigned_to: str | None = None, status: str | None = None) -
         session.close()
 
 
+@_serialized_rfq_write
 def _update_rfq_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update RFQ header fields. Returns dict or error string."""
     from includes.dashboard.models import RFQ, Opportunity
@@ -664,6 +702,7 @@ def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
     return changes, line_item.line, reset_pipeline
 
 
+@_serialized_rfq_write
 def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update a single RFQ line item. Returns full RFQ dict or error string."""
     from includes.dashboard.models import RFQ, RFQItem
@@ -708,6 +747,7 @@ def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+@_serialized_rfq_write
 def _update_items_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update multiple RFQ line items in one transaction.
 
@@ -782,6 +822,7 @@ def _update_items_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict |
         session.close()
 
 
+@_serialized_rfq_write
 def _delete_item_sync(rfq_number: str, line_num: int, user_id: str) -> dict | str:
     """Delete a single RFQ line item and renumber remaining items.
     Returns full RFQ dict or error string."""
@@ -831,6 +872,7 @@ def _delete_item_sync(rfq_number: str, line_num: int, user_id: str) -> dict | st
         session.close()
 
 
+@_serialized_rfq_write
 def _delete_items_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Delete multiple RFQ line items in one transaction.
 
@@ -1072,6 +1114,7 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
     return added_names, updated_names, skipped_names, None
 
 
+@_serialized_rfq_write
 def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Add supplier(s) to a line item. Returns full RFQ dict or error string."""
     from includes.dashboard.models import RFQ, RFQItem
@@ -1132,6 +1175,7 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+@_serialized_rfq_write
 def _add_suppliers_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Add suppliers to multiple RFQ line items in one transaction.
 
@@ -1280,6 +1324,7 @@ def _select_quote_core(session, rfq, line_item, data):
     return action, name
 
 
+@_serialized_rfq_write
 def _select_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Mark a supplier's quote as selected on a line item.
 
@@ -1324,6 +1369,7 @@ def _select_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+@_serialized_rfq_write
 def _select_quotes_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Select suppliers across multiple RFQ lines in one transaction.
 
@@ -1381,6 +1427,7 @@ def _select_quotes_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict 
         session.close()
 
 
+@_serialized_rfq_write
 def _decline_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Mark a supplier's quote as declined and clear its price."""
     data = dict(data)
@@ -1389,6 +1436,7 @@ def _decline_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
     return _update_supplier_sync(rfq_number, data, user_id)
 
 
+@_serialized_rfq_write
 def _set_supplier_meta_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Write supplier-level metadata (shipping, notes, terms) to rfqs.supplier_meta."""
     from includes.dashboard.models import RFQ
@@ -1469,6 +1517,7 @@ def _update_supplier_core(session, rfq, line_item, data):
     return changes, name
 
 
+@_serialized_rfq_write
 def _update_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update a supplier on a line item. Returns full RFQ dict or error string."""
     from includes.dashboard.models import RFQ, RFQItem
@@ -1512,6 +1561,7 @@ def _update_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | s
         session.close()
 
 
+@_serialized_rfq_write
 def _update_quotes_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update quotation fields across multiple RFQ lines in one transaction.
 
@@ -1572,6 +1622,7 @@ def _update_quotes_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict 
         session.close()
 
 
+@_serialized_rfq_write
 def _clear_suppliers_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Clear suppliers from line item(s). Returns full RFQ dict or error string."""
     from includes.dashboard.models import RFQ, RFQItem
@@ -1619,6 +1670,7 @@ def _clear_suppliers_sync(rfq_number: str, data: dict, user_id: str) -> dict | s
         session.close()
 
 
+@_serialized_rfq_write
 def _assign_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     from includes.dashboard.models import RFQ
     assigned_to = data.get("assigned_to")
@@ -1646,6 +1698,7 @@ def _assign_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+@_serialized_rfq_write
 def _update_status_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     from includes.dashboard.models import RFQ
     new_status = data.get("status")
@@ -1674,6 +1727,7 @@ def _update_status_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
         session.close()
 
 
+@_serialized_rfq_write
 def _add_note_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     from includes.dashboard.models import RFQ
     note = data.get("note", "")
@@ -1702,6 +1756,7 @@ def _add_note_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+@_serialized_rfq_write
 def _link_external_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     from includes.dashboard.models import RFQ, Opportunity
     linked = []
@@ -1745,6 +1800,7 @@ def _link_external_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
         session.close()
 
 
+@_serialized_rfq_write
 def _create_opportunity_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Create a NetSuite Opportunity for the RFQ and link it locally.
 
@@ -1942,6 +1998,7 @@ def _group_rfq_items_sync(
     return result
 
 
+@_serialized_rfq_write
 def _validate_items_sync(
     rfq_number: str, items_to_validate: list, user_id: str,
 ) -> dict:
@@ -2433,6 +2490,7 @@ def _find_purchase_suppliers_sync(
     return {"added": total_added, "by_line": by_line}
 
 
+@_serialized_rfq_write
 def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
     """Find brand-linked suppliers for all items with a brand, add top Tier A to RFQ.
 
@@ -2541,6 +2599,7 @@ def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
     return {"added": total_added, "by_line": by_line}
 
 
+@_serialized_rfq_write
 def _cross_apply_suppliers_sync(rfq_number: str, user_id: str) -> dict:
     """Cross-apply suppliers within item groups so grouped items share suppliers.
 

@@ -475,6 +475,7 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
             )
             session.add(new_supplier)
             session.flush()
+            new_supplier_id = new_supplier.id
             logger.info(f"[supplier-create] Created new web supplier '{new_supplier.name}' (id={new_supplier.id})")
 
             # Write contacts to Contact table
@@ -492,9 +493,11 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                             isinactive=False,
                         ))
 
-            # AI categorization — close session first, then reopen
-            # (categorize_supplier makes its own Gemini API call)
-            session.flush()
+            # Commit BEFORE the slow Gemini categorization call — never hold
+            # row locks across a ~20s external API call (deadlock source).
+            session.commit()
+
+            # AI categorization (no open transaction during the LLM call)
             cat_data = None
             try:
                 from includes.supplier_categorization import (
@@ -506,10 +509,10 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                 _client = _genai.Client()
                 _taxonomy = load_taxonomy()
                 _cat_input = {
-                    "name": new_supplier.name,
-                    "url": new_supplier.url,
+                    "name": ref_sup.get("name", "").strip(),
+                    "url": sup_url,
                     "city": None,
-                    "country": new_supplier.country,
+                    "country": ref_sup.get("country"),
                     "purchase_count": 0,
                 }
                 cat_result = categorize_supplier(
@@ -536,8 +539,11 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                         "category": ref_sup["category"],
                     }
 
+            # Persist the categorization (or fallback) result
+            session.commit()
+
             for sup in sup_list:
-                sup["supplier_id"] = str(new_supplier.id)
+                sup["supplier_id"] = str(new_supplier_id)
                 if cat_data:
                     if cat_data.get("tier"):
                         sup["tier"] = cat_data["tier"]
