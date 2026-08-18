@@ -711,7 +711,18 @@ def create_quote_tools(user_id: str) -> list:
                           brand, quantity, uom}])
           update        — Update top-level RFQ properties. data keys: any of
                           customer, customer_contact, reference, title, notes,
-                          netsuite_opportunity, assigned_to
+                          netsuite_opportunity, assigned_to, quote_brand_id,
+                          quote_brand.
+                          Quote brand: the overall brand for this RFQ.
+                          Prefer quote_brand_id — pass the brand's NetSuite
+                          ID (or its internal UUID if you have it).
+                          Alternatively pass quote_brand with the EXACT
+                          brand name (case-insensitive) and the system will
+                          resolve it. Only brands already in the brands
+                          database can be set. If the brand cannot be
+                          found, report the error to the user — do NOT
+                          clear the field instead. Pass an empty string to
+                          clear.
           update_item   — Update an RFQ line item. data keys: line (required, int),
                           plus any of: input_description, input_code, part_number,
                           brand, product_id, quantity, uom, match, notes, sale_price.

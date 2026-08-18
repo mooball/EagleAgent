@@ -225,6 +225,8 @@ def _rfq_to_dict(rfq) -> dict:
         "netsuite_opportunity": rfq.netsuite_opportunity,
         "opportunity_id": str(rfq.opportunity_id) if rfq.opportunity_id else None,
         "hubspot_deal": rfq.hubspot_deal,
+        "quote_brand_id": str(rfq.quote_brand_id) if rfq.quote_brand_id else None,
+        "quote_brand": rfq.quote_brand or "",
         "created_by": rfq.created_by,
         "created_date": created_str,
         "created_display": created_display,
@@ -608,6 +610,64 @@ def _update_rfq_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                 else:
                     setattr(rfq, key, val)
                     changes.append(key)
+
+        # Quote brand — only settable via a reference that resolves in the
+        # brands table. Accepted references, in order of preference:
+        #   quote_brand_id: the brand's NetSuite ID or its internal UUID
+        #   quote_brand:    the exact brand name (case-insensitive match)
+        # The name snapshot is refreshed from the DB on every save. Unknown
+        # brands cannot be set.
+        if "quote_brand_id" in data or "quote_brand" in data:
+            from uuid import UUID as _UUID
+            from sqlalchemy import func as sa_func
+            from includes.dashboard.models import Brand
+            brand_id = data.get("quote_brand_id")
+            brand_name = data.get("quote_brand")
+
+            # Clear when both are explicitly empty
+            if (brand_id in ("", None)) and (brand_name in ("", None)):
+                rfq.quote_brand_id = None
+                rfq.quote_brand = None
+                changes.append("quote_brand")
+            else:
+                brand = None
+                if brand_id and isinstance(brand_id, str) and brand_id.strip():
+                    val = brand_id.strip()
+                    try:
+                        brand = session.get(Brand, _UUID(val))
+                    except ValueError:
+                        # Not a UUID — treat it as a NetSuite ID
+                        brand = (
+                            session.query(Brand)
+                            .filter(Brand.netsuite_id == val)
+                            .first()
+                        )
+                    if not brand:
+                        return f"Error: quote brand '{val}' not found in the brands database."
+                elif brand_name and isinstance(brand_name, str) and brand_name.strip():
+                    q = brand_name.strip()
+                    brand = (
+                        session.query(Brand)
+                        .filter(sa_func.lower(Brand.name) == q.lower())
+                        .filter(Brand.duplicate_of.is_(None))
+                        .order_by(Brand.name)
+                        .first()
+                    )
+                    if not brand:
+                        return (
+                            f"Error: quote brand '{q}' not found in the brands "
+                            f"database (an exact match is required)."
+                        )
+                else:
+                    return (
+                        "Error: invalid quote brand input — pass quote_brand_id "
+                        "(NetSuite ID or UUID) or quote_brand (exact name)."
+                    )
+
+                rfq.quote_brand_id = brand.id
+                rfq.quote_brand = brand.name
+                changes.append("quote_brand")
+
         if not changes:
             return f"Error: provide at least one of {', '.join(updatable)} to update."
 

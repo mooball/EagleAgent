@@ -85,6 +85,9 @@
                     {% if rfq.netsuite_opportunity %}
                     <span>NetSuite: {{ rfq.netsuite_opportunity }}{% if rfq.opportunity_id %} <svg class="inline w-3.5 h-3.5 text-green-500 -mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" title="Linked to opportunity record"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>{% endif %}</span>
                     {% endif %}
+                    {% if rfq.quote_brand %}
+                    <span>— Brand: {{ rfq.quote_brand }}</span>
+                    {% endif %}
                     {% if rfq.title %}
                     <span>— {{ rfq.title }}</span>
                     {% endif %}
@@ -152,10 +155,40 @@
                            class="mt-1 text-[11px] text-red-600 dark:text-red-400"
                            x-text="$store.rfqEdit.customerError"></p>
                     </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Title</label>
-                        <input type="text" name="title" value="{{ rfq.title or '' }}"
-                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                    <div x-data='rfqBrandSearch({{ (rfq.quote_brand or '') | tojson }}, {{ (rfq.quote_brand_id or '') | tojson }})'>
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Quote Brand</label>
+                        <div class="relative">
+                            <input type="text" x-model="search"
+                                   @input="$nextTick(() => doSearch())"
+                                   @keydown="onKeydown($event)"
+                                   placeholder="Search brands..."
+                                   autocomplete="off"
+                                   class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 pr-16">
+                            <button type="button" x-show="search" @click="clearAll()"
+                                    class="absolute right-8 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-400 hover:text-gray-600"
+                                    title="Clear">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                            </button>
+                            <input type="hidden" name="quote_brand_id" :value="selectedId">
+                            {# Dropdown #}
+                            <div x-show="results.length > 0" @click.outside="results = []"
+                                 class="absolute left-0 right-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 max-h-48 overflow-y-auto">
+                                <template x-for="(r, idx) in results" :key="r.id">
+                                    <button type="button" @click="select(r)" @mouseenter="activeIdx = idx"
+                                            :class="activeIdx === idx ? 'bg-blue-50 dark:bg-blue-900/30' : ''"
+                                            class="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-blue-900/30"
+                                            x-text="r.name"></button>
+                                </template>
+                            </div>
+                            {# Searching indicator #}
+                            <div x-show="searching" class="absolute right-2 top-1/2 -translate-y-1/2">
+                                <svg class="w-4 h-4 text-gray-400 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                            </div>
+                            {# Selected indicator #}
+                            <div x-show="selectedId" class="absolute right-2 top-1/2 -translate-y-1/2">
+                                <svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                            </div>
+                        </div>
                     </div>
                     <div x-data='rfqOppSearch({{ (rfq.netsuite_opportunity or '') | tojson }}, {{ (rfq.opportunity_id or '') | tojson }}, {{ 'true' if rfq.netsuite_opportunity else 'false' }})'>
                         <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">NetSuite Opportunity</label>
@@ -217,6 +250,11 @@
                             <option value="{{ u.email }}" {% if rfq.assigned_to == u.email %}selected{% endif %}>{{ u.name }} ({{ u.email }})</option>
                             {% endfor %}
                         </select>
+                    </div>
+                    <div class="sm:col-span-2">
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Title</label>
+                        <input type="text" name="title" value="{{ rfq.title or '' }}"
+                               class="w-full px-2.5 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
                     </div>
                 </div>
                 <div>

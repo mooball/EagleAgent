@@ -8,7 +8,15 @@ serialized per RFQ.
 
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
+from unittest.mock import patch
 
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from includes.dashboard.models import Brand, RFQ
 from includes.tools.rfq_crud import _rfq_write_lock, _serialized_rfq_write
 
 
@@ -64,3 +72,189 @@ class TestSerializedRfqWrite:
             return f"done-{rfq_number}"
 
         assert fake_write("RFQ-9") == "done-RFQ-9"
+
+
+# ---------------------------------------------------------------------------
+# Quote brand (custbodyquote_brand on the future NetSuite Quote)
+# ---------------------------------------------------------------------------
+
+class TestQuoteBrand:
+    @pytest.fixture
+    def db_session(self):
+        """DB session with SAVEPOINT so commits inside helpers don't end the
+        outer transaction — everything rolls back at the end."""
+        from includes.dashboard.database import _sync_url
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        from sqlalchemy import event
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _make_brand(self, session) -> Brand:
+        brand = Brand(
+            netsuite_id=f"NS-{uuid.uuid4().hex[:8]}",
+            name=f"Test Brand {uuid.uuid4().hex[:6]}",
+        )
+        session.add(brand)
+        session.flush()
+        return brand
+
+    def _make_rfq(self, session) -> RFQ:
+        rfq = RFQ(
+            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            customer="Test Customer",
+            created_by="tester",
+            created_date=datetime.now(timezone.utc),
+        )
+        session.add(rfq)
+        session.flush()
+        return rfq
+
+    def test_set_quote_brand(self, db_session):
+        brand = self._make_brand(db_session)
+        rfq = self._make_rfq(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _update_rfq_sync
+            result = _update_rfq_sync(
+                rfq.rfq_number,
+                {"quote_brand_id": str(brand.id)},
+                "tester",
+            )
+
+        assert not isinstance(result, str)
+        assert result["quote_brand_id"] == str(brand.id)
+        assert result["quote_brand"] == brand.name
+
+        db_session.expire_all()
+        stored = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        assert stored.quote_brand_id == brand.id
+        assert stored.quote_brand == brand.name
+
+    def test_clear_quote_brand(self, db_session):
+        brand = self._make_brand(db_session)
+        rfq = self._make_rfq(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _update_rfq_sync
+            _update_rfq_sync(rfq.rfq_number, {"quote_brand_id": str(brand.id)}, "tester")
+            result = _update_rfq_sync(rfq.rfq_number, {"quote_brand_id": ""}, "tester")
+
+        assert result["quote_brand_id"] is None
+        assert result["quote_brand"] == ""
+
+        db_session.expire_all()
+        stored = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        assert stored.quote_brand_id is None
+        assert stored.quote_brand is None
+
+    def test_set_quote_brand_by_netsuite_id(self, db_session):
+        brand = self._make_brand(db_session)
+        rfq = self._make_rfq(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _update_rfq_sync
+            result = _update_rfq_sync(
+                rfq.rfq_number,
+                {"quote_brand_id": brand.netsuite_id},
+                "tester",
+            )
+
+        assert not isinstance(result, str)
+        assert result["quote_brand_id"] == str(brand.id)
+        assert result["quote_brand"] == brand.name
+
+    def test_set_quote_brand_by_exact_name_case_insensitive(self, db_session):
+        brand = self._make_brand(db_session)
+        rfq = self._make_rfq(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _update_rfq_sync
+            result = _update_rfq_sync(
+                rfq.rfq_number,
+                {"quote_brand": brand.name.lower()},
+                "tester",
+            )
+
+        assert not isinstance(result, str)
+        assert result["quote_brand_id"] == str(brand.id)
+        assert result["quote_brand"] == brand.name  # canonical case
+
+    def test_brand_name_requires_exact_match(self, db_session):
+        brand = self._make_brand(db_session)
+        rfq = self._make_rfq(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _update_rfq_sync
+            result = _update_rfq_sync(
+                rfq.rfq_number,
+                {"quote_brand": brand.name[:6]},  # partial — must not match
+                "tester",
+            )
+
+        assert isinstance(result, str)
+        assert "exact match is required" in result
+
+    def test_unknown_netsuite_id_rejected(self, db_session):
+        rfq = self._make_rfq(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _update_rfq_sync
+            result = _update_rfq_sync(
+                rfq.rfq_number,
+                {"quote_brand_id": "NS-DOES-NOT-EXIST"},
+                "tester",
+            )
+
+        assert isinstance(result, str)
+        assert "not found" in result
+
+        db_session.expire_all()
+        stored = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        assert stored.quote_brand_id is None
+        assert stored.quote_brand is None
+
+    def test_unknown_brand_rejected(self, db_session):
+        rfq = self._make_rfq(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _update_rfq_sync
+            result = _update_rfq_sync(
+                rfq.rfq_number,
+                {"quote_brand_id": str(uuid.uuid4())},
+                "tester",
+            )
+
+        assert isinstance(result, str)
+        assert "not found" in result
+
+        db_session.expire_all()
+        stored = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        assert stored.quote_brand_id is None
+        assert stored.quote_brand is None
+
+    def test_unknown_netsuite_id_rejected_legacy_invalid_uuid(self, db_session):
+        rfq = self._make_rfq(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _update_rfq_sync
+            result = _update_rfq_sync(
+                rfq.rfq_number,
+                {"quote_brand_id": "not-a-uuid"},
+                "tester",
+            )
+
+        assert isinstance(result, str)
+        assert "not found" in result

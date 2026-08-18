@@ -1040,20 +1040,42 @@ async def partial_rfq_detail(request: Request, rfq_id: str,
     return _render_rfq_detail_partial_response(request, user, rfq, default_tab="items")
 
 
+@router.get("/api/brands/search")
+async def api_brand_search(request: Request, q: str = "", user: dict = Depends(require_user)):
+    """Search brands by name for the Quote Brand autocomplete. Returns {results: [{id, name}]}."""
+    if not q or len(q.strip()) < 2:
+        return JSONResponse({"results": []})
+
+    from includes.dashboard.models import Brand
+    session = _helpers.get_session()
+    try:
+        rows = (
+            session.query(Brand)
+            .filter(Brand.duplicate_of.is_(None))
+            .filter(Brand.name.ilike(f"%{q.strip()}%"))
+            .order_by(Brand.name)
+            .limit(10)
+            .all()
+        )
+        return JSONResponse({"results": [{"id": str(r.id), "name": r.name} for r in rows]})
+    finally:
+        session.close()
+
+
 @router.post("/partial/rfqs/{rfq_id}/update")
 async def partial_rfq_update(request: Request, rfq_id: str,
                              user: dict = Depends(require_user)):
     """Update RFQ header properties (customer, netsuite, hubspot, notes)."""
     form = await request.form()
     data = {}
-    updatable = ["customer", "customer_id", "opportunity_id", "assigned_to", "title", "notes", "netsuite_opportunity", "hubspot_deal"]
+    updatable = ["customer", "customer_id", "opportunity_id", "assigned_to", "title", "notes", "netsuite_opportunity", "hubspot_deal", "quote_brand_id"]
     for key in updatable:
         val = form.get(key)
         if val is not None:
             stripped = val.strip()
             if key == "customer" and not stripped:
                 continue
-            if key in ("customer_id", "opportunity_id") and not stripped:
+            if key in ("customer_id", "opportunity_id", "quote_brand_id") and not stripped:
                 data[key] = ""
                 continue
             data[key] = stripped if stripped else None
