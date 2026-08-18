@@ -6,7 +6,9 @@ All public names are re-exported from quote_tools.py for backward compatibility.
 
 import datetime
 import logging
+import threading
 
+from functools import wraps
 from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -14,6 +16,38 @@ from sqlalchemy.exc import SQLAlchemyError
 from includes.tools.product_tools import normalize_part_number
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Per-RFQ write serialization
+# ---------------------------------------------------------------------------
+# The quote tools run these sync helpers in parallel threads (LangGraph
+# gathers tool calls, each helper runs in its own thread + transaction).
+# Two concurrent writers on the same RFQ deadlocked on Postgres row locks
+# and silently lost read-modify-write history updates. Serialize writes
+# per RFQ so different RFQs stay parallel but one RFQ never has two
+# concurrent writers.
+_rfq_write_locks: dict[str, "threading.RLock"] = {}
+_rfq_write_locks_guard = threading.Lock()
+
+
+def _rfq_write_lock(rfq_number: str) -> "threading.RLock":
+    with _rfq_write_locks_guard:
+        lock = _rfq_write_locks.get(rfq_number)
+        if lock is None:
+            lock = threading.RLock()
+            _rfq_write_locks[rfq_number] = lock
+        return lock
+
+
+def _serialized_rfq_write(fn):
+    """Decorator: serialize a write helper per RFQ (first arg is rfq_number)."""
+    @wraps(fn)
+    def wrapper(rfq_number, *args, **kwargs):
+        with _rfq_write_lock(str(rfq_number)):
+            return fn(rfq_number, *args, **kwargs)
+    return wrapper
+
 
 # Common aliases LLMs use for the "line" parameter
 _LINE_ALIASES = ("line", "line_number", "item", "item_number")
@@ -191,6 +225,8 @@ def _rfq_to_dict(rfq) -> dict:
         "netsuite_opportunity": rfq.netsuite_opportunity,
         "opportunity_id": str(rfq.opportunity_id) if rfq.opportunity_id else None,
         "hubspot_deal": rfq.hubspot_deal,
+        "quote_brand_id": str(rfq.quote_brand_id) if rfq.quote_brand_id else None,
+        "quote_brand": rfq.quote_brand or "",
         "created_by": rfq.created_by,
         "created_date": created_str,
         "created_display": created_display,
@@ -311,6 +347,7 @@ def _enrich_suppliers_from_db(suppliers: list[dict], session) -> None:
                 sup["country"] = db_country
 
 
+@_serialized_rfq_write
 def _sort_rfq_suppliers_sync(rfq_number: str) -> dict | None:
     """Sort suppliers on every line item of an RFQ. Returns RFQ dict or None.
 
@@ -441,6 +478,7 @@ def _get_rfq_dict_sync(rfq_number: str) -> dict | None:
         session.close()
 
 
+@_serialized_rfq_write
 def _update_item_groups_sync(rfq_number: str, groups_data: dict, user_id: str) -> dict | str:
     """Update item_groups on an RFQ. Returns RFQ dict or error string."""
     rfq, session = _get_rfq_sync(rfq_number)
@@ -467,6 +505,7 @@ def _update_item_groups_sync(rfq_number: str, groups_data: dict, user_id: str) -
         session.close()
 
 
+@_serialized_rfq_write
 def _add_items_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Add multiple items to an existing RFQ. Returns RFQ dict or error."""
     from includes.dashboard.models import RFQ, RFQItem
@@ -541,6 +580,7 @@ def _list_rfqs_sync(assigned_to: str | None = None, status: str | None = None) -
         session.close()
 
 
+@_serialized_rfq_write
 def _update_rfq_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update RFQ header fields. Returns dict or error string."""
     from includes.dashboard.models import RFQ, Opportunity
@@ -570,6 +610,64 @@ def _update_rfq_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                 else:
                     setattr(rfq, key, val)
                     changes.append(key)
+
+        # Quote brand — only settable via a reference that resolves in the
+        # brands table. Accepted references, in order of preference:
+        #   quote_brand_id: the brand's NetSuite ID or its internal UUID
+        #   quote_brand:    the exact brand name (case-insensitive match)
+        # The name snapshot is refreshed from the DB on every save. Unknown
+        # brands cannot be set.
+        if "quote_brand_id" in data or "quote_brand" in data:
+            from uuid import UUID as _UUID
+            from sqlalchemy import func as sa_func
+            from includes.dashboard.models import Brand
+            brand_id = data.get("quote_brand_id")
+            brand_name = data.get("quote_brand")
+
+            # Clear when both are explicitly empty
+            if (brand_id in ("", None)) and (brand_name in ("", None)):
+                rfq.quote_brand_id = None
+                rfq.quote_brand = None
+                changes.append("quote_brand")
+            else:
+                brand = None
+                if brand_id and isinstance(brand_id, str) and brand_id.strip():
+                    val = brand_id.strip()
+                    try:
+                        brand = session.get(Brand, _UUID(val))
+                    except ValueError:
+                        # Not a UUID — treat it as a NetSuite ID
+                        brand = (
+                            session.query(Brand)
+                            .filter(Brand.netsuite_id == val)
+                            .first()
+                        )
+                    if not brand:
+                        return f"Error: quote brand '{val}' not found in the brands database."
+                elif brand_name and isinstance(brand_name, str) and brand_name.strip():
+                    q = brand_name.strip()
+                    brand = (
+                        session.query(Brand)
+                        .filter(sa_func.lower(Brand.name) == q.lower())
+                        .filter(Brand.duplicate_of.is_(None))
+                        .order_by(Brand.name)
+                        .first()
+                    )
+                    if not brand:
+                        return (
+                            f"Error: quote brand '{q}' not found in the brands "
+                            f"database (an exact match is required)."
+                        )
+                else:
+                    return (
+                        "Error: invalid quote brand input — pass quote_brand_id "
+                        "(NetSuite ID or UUID) or quote_brand (exact name)."
+                    )
+
+                rfq.quote_brand_id = brand.id
+                rfq.quote_brand = brand.name
+                changes.append("quote_brand")
+
         if not changes:
             return f"Error: provide at least one of {', '.join(updatable)} to update."
 
@@ -664,6 +762,7 @@ def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
     return changes, line_item.line, reset_pipeline
 
 
+@_serialized_rfq_write
 def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update a single RFQ line item. Returns full RFQ dict or error string."""
     from includes.dashboard.models import RFQ, RFQItem
@@ -708,6 +807,7 @@ def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+@_serialized_rfq_write
 def _update_items_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update multiple RFQ line items in one transaction.
 
@@ -782,6 +882,7 @@ def _update_items_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict |
         session.close()
 
 
+@_serialized_rfq_write
 def _delete_item_sync(rfq_number: str, line_num: int, user_id: str) -> dict | str:
     """Delete a single RFQ line item and renumber remaining items.
     Returns full RFQ dict or error string."""
@@ -831,6 +932,7 @@ def _delete_item_sync(rfq_number: str, line_num: int, user_id: str) -> dict | st
         session.close()
 
 
+@_serialized_rfq_write
 def _delete_items_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Delete multiple RFQ line items in one transaction.
 
@@ -1072,6 +1174,7 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
     return added_names, updated_names, skipped_names, None
 
 
+@_serialized_rfq_write
 def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Add supplier(s) to a line item. Returns full RFQ dict or error string."""
     from includes.dashboard.models import RFQ, RFQItem
@@ -1132,6 +1235,7 @@ def _add_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+@_serialized_rfq_write
 def _add_suppliers_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Add suppliers to multiple RFQ line items in one transaction.
 
@@ -1280,6 +1384,7 @@ def _select_quote_core(session, rfq, line_item, data):
     return action, name
 
 
+@_serialized_rfq_write
 def _select_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Mark a supplier's quote as selected on a line item.
 
@@ -1324,6 +1429,7 @@ def _select_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+@_serialized_rfq_write
 def _select_quotes_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Select suppliers across multiple RFQ lines in one transaction.
 
@@ -1381,6 +1487,7 @@ def _select_quotes_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict 
         session.close()
 
 
+@_serialized_rfq_write
 def _decline_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Mark a supplier's quote as declined and clear its price."""
     data = dict(data)
@@ -1389,6 +1496,7 @@ def _decline_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
     return _update_supplier_sync(rfq_number, data, user_id)
 
 
+@_serialized_rfq_write
 def _set_supplier_meta_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Write supplier-level metadata (shipping, notes, terms) to rfqs.supplier_meta."""
     from includes.dashboard.models import RFQ
@@ -1469,6 +1577,7 @@ def _update_supplier_core(session, rfq, line_item, data):
     return changes, name
 
 
+@_serialized_rfq_write
 def _update_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update a supplier on a line item. Returns full RFQ dict or error string."""
     from includes.dashboard.models import RFQ, RFQItem
@@ -1512,6 +1621,7 @@ def _update_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | s
         session.close()
 
 
+@_serialized_rfq_write
 def _update_quotes_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Update quotation fields across multiple RFQ lines in one transaction.
 
@@ -1572,6 +1682,7 @@ def _update_quotes_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict 
         session.close()
 
 
+@_serialized_rfq_write
 def _clear_suppliers_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Clear suppliers from line item(s). Returns full RFQ dict or error string."""
     from includes.dashboard.models import RFQ, RFQItem
@@ -1619,6 +1730,7 @@ def _clear_suppliers_sync(rfq_number: str, data: dict, user_id: str) -> dict | s
         session.close()
 
 
+@_serialized_rfq_write
 def _assign_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     from includes.dashboard.models import RFQ
     assigned_to = data.get("assigned_to")
@@ -1646,6 +1758,7 @@ def _assign_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+@_serialized_rfq_write
 def _update_status_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     from includes.dashboard.models import RFQ
     new_status = data.get("status")
@@ -1674,6 +1787,7 @@ def _update_status_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
         session.close()
 
 
+@_serialized_rfq_write
 def _add_note_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     from includes.dashboard.models import RFQ
     note = data.get("note", "")
@@ -1702,6 +1816,7 @@ def _add_note_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         session.close()
 
 
+@_serialized_rfq_write
 def _link_external_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     from includes.dashboard.models import RFQ, Opportunity
     linked = []
@@ -1745,6 +1860,7 @@ def _link_external_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
         session.close()
 
 
+@_serialized_rfq_write
 def _create_opportunity_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
     """Create a NetSuite Opportunity for the RFQ and link it locally.
 
@@ -1789,6 +1905,93 @@ def _create_opportunity_sync(rfq_number: str, data: dict, user_id: str) -> dict 
 # action callbacks (rfq_actions.py).  All are synchronous, run via
 # asyncio.to_thread.  No Chainlit dependencies.
 # =============================================================================
+
+@_serialized_rfq_write
+def _set_quote_brand_from_items_sync(rfq_number: str, user_id: str) -> str | None:
+    """Deterministically set the RFQ's quote brand from its item brands.
+
+    Called by the classify step (Step 2 of the quote-brand feature). Counts
+    non-empty item brands; when a single brand holds a strict majority AND
+    matches a brands-table row exactly (case-insensitive), sets
+    quote_brand_id + quote_brand and appends a history entry. Ties, and
+    majority brands missing from the brands database, are left for a human.
+    Never overwrites an existing quote brand.
+
+    Returns a short status string, or None when nothing changed.
+    """
+    from sqlalchemy import func as sa_func
+    from includes.dashboard.models import Brand, RFQ
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+        if rfq.quote_brand_id:
+            return None  # already set — never overwrite
+
+        counts: dict[str, int] = {}
+        display_names: dict[str, str] = {}
+        for item in rfq.items or []:
+            brand = (item.brand or "").strip()
+            if not brand or brand.lower() in ("other", "n/a", "na", "none", "unknown"):
+                continue
+            key = brand.lower()
+            counts[key] = counts.get(key, 0) + 1
+            display_names.setdefault(key, brand)
+
+        if not counts:
+            return None  # no item brands to infer from
+
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        top_key, top_count = ranked[0]
+        total = sum(counts.values())
+        tied = [k for k, c in ranked if c == top_count]
+        if len(tied) > 1:
+            names = ", ".join(display_names[k] for k in tied)
+            return (
+                f"Quote brand not auto-set — item brands tied ({names}); "
+                f"human decision needed."
+            )
+
+        brand_row = (
+            session.query(Brand)
+            .filter(sa_func.lower(Brand.name) == top_key)
+            .filter(Brand.duplicate_of.is_(None))
+            .order_by(Brand.name)
+            .first()
+        )
+        if not brand_row:
+            return (
+                f"Quote brand not auto-set — majority item brand "
+                f"'{display_names[top_key]}' is not in the brands database."
+            )
+
+        rfq.quote_brand_id = brand_row.id
+        rfq.quote_brand = brand_row.name
+        rfq.updated_at = _now_dt()
+        history = list(rfq.history or [])
+        history.append({
+            "date": _now_iso(),
+            "user": user_id,
+            "action": (
+                f"Auto-set quote brand to '{brand_row.name}' "
+                f"(majority item brand, {top_count}/{total} items)"
+            ),
+        })
+        rfq.history = history
+        session.commit()
+        session.refresh(rfq)
+        return (
+            f"Auto-set quote brand to '{brand_row.name}' "
+            f"(majority item brand, {top_count}/{total} items)."
+        )
+    except SQLAlchemyError:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
 
 def _classify_rfq_items_sync(
     rfq_number: str, user_id: str, search_db: bool = True,
@@ -1875,11 +2078,16 @@ def _classify_rfq_items_sync(
         if db_updates:
             _update_items_bulk_sync(rfq_number, {"items": db_updates}, user_id)
 
+    # Step 2: auto-set the quote brand from item brands (deterministic
+    # majority; ties and non-DB brands are left for a human).
+    quote_brand_result = _set_quote_brand_from_items_sync(rfq_number, user_id)
+
     return {
         "classified": classified,
         "db_matches": db_matches,
         "to_validate": to_validate,
         "unclassifiable": unclassifiable,
+        "quote_brand_result": quote_brand_result,
     }
 
 
@@ -1942,6 +2150,7 @@ def _group_rfq_items_sync(
     return result
 
 
+@_serialized_rfq_write
 def _validate_items_sync(
     rfq_number: str, items_to_validate: list, user_id: str,
 ) -> dict:
@@ -2433,6 +2642,7 @@ def _find_purchase_suppliers_sync(
     return {"added": total_added, "by_line": by_line}
 
 
+@_serialized_rfq_write
 def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
     """Find brand-linked suppliers for all items with a brand, add top Tier A to RFQ.
 
@@ -2541,6 +2751,7 @@ def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
     return {"added": total_added, "by_line": by_line}
 
 
+@_serialized_rfq_write
 def _cross_apply_suppliers_sync(rfq_number: str, user_id: str) -> dict:
     """Cross-apply suppliers within item groups so grouped items share suppliers.
 

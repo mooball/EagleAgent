@@ -63,6 +63,66 @@ class TestRfqRefresh:
         assert rfq.notifications == []
 
 
+class TestRfqIdentifyItemsQuoteBrand:
+    """The dashboard 'Classify & Validate' button must also auto-set the
+    quote brand (deterministic majority) once classify/validate finish."""
+
+    async def test_sets_quote_brand_after_validation(self, rfq, monkeypatch):
+        item_updates: list = []
+        quote_brand_calls: list = []
+
+        def _update_item(rfq_id, data, user_id):
+            item_updates.append((rfq_id, data, user_id))
+
+        def _set_quote_brand(rfq_id, user_id):
+            quote_brand_calls.append((rfq_id, user_id))
+            return "Auto-set quote brand to 'Komatsu' (majority item brand, 2/2 items)."
+
+        monkeypatch.setattr(rfq_actions, "_update_item_sync", _update_item)
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._set_quote_brand_from_items_sync",
+            _set_quote_brand,
+        )
+        monkeypatch.setattr(
+            "includes.tools.product_tools._find_product_by_code",
+            lambda pn, brand=None: None,  # nothing matched in the internal DB
+        )
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._validate_items_sync",
+            lambda rfq_id, web_items, user_id: {"validated": []},
+        )
+
+        await rfq_actions.on_rfq_identify_items(action(
+            rfq_id="RFQ-1",
+            items=[
+                {"line": 1, "description": "desc", "part_number": "PN1", "brand": "Komatsu"},
+                {"line": 2, "description": "desc2", "part_number": "PN2", "brand": "Komatsu"},
+            ],
+        ), rfq)
+
+        assert quote_brand_calls == [("RFQ-1", "tester@example.com")]
+        assert any("Auto-set quote brand" in m.content for m in rfq.messages)
+        assert ("dashboard_refresh", None) in rfq.notifications
+
+    async def test_skips_quote_brand_when_no_items(self, rfq, monkeypatch):
+        quote_brand_calls: list = []
+
+        def _set_quote_brand(rfq_id, user_id):
+            quote_brand_calls.append((rfq_id, user_id))
+            return None
+
+        monkeypatch.setattr(rfq_actions, "_update_item_sync", lambda *a: None)
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._set_quote_brand_from_items_sync",
+            _set_quote_brand,
+        )
+
+        await rfq_actions.on_rfq_identify_items(action(rfq_id="RFQ-1", items=[]), rfq)
+
+        assert quote_brand_calls == []
+        assert rfq.messages == []
+
+
 class TestRfqUpdateSupplier:
     """Dashboard-initiated write, then refresh and confirm."""
 

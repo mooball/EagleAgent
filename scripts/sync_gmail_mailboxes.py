@@ -132,7 +132,8 @@ def extract_message_metadata(service, message_id: str) -> dict | None:
         msg = service.users().messages().get(
             userId="me", id=message_id, format="metadata",
             metadataHeaders=["From", "To", "Cc", "Subject",
-                            "X-Eagle-RFQ", "X-Eagle-OP", "X-Eagle-Opportunity"],
+                            "X-Eagle-RFQ", "X-Eagle-OP", "X-Eagle-Opportunity",
+                            "In-Reply-To", "References"],
         ).execute()
         headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
 
@@ -162,6 +163,8 @@ def extract_message_metadata(service, message_id: str) -> dict | None:
             "x_eagle_rfq": headers.get("x-eagle-rfq"),
             "x_eagle_op": headers.get("x-eagle-op"),
             "x_eagle_opportunity": headers.get("x-eagle-opportunity"),
+            "in_reply_to": headers.get("in-reply-to"),
+            "references": headers.get("references"),
         }
     except Exception as e:
         # 404s are expected for messages deleted between history fetch and metadata fetch
@@ -677,24 +680,52 @@ def process_message(
                     existing_thread.sender_name = content["sender_name"]
                     existing_thread.all_recipients = content["all_recipients"]
             else:
-                # New message on tracked thread — create a new row inheriting the RFQ link
+                # New message on tracked thread. A genuine reply carries
+                # In-Reply-To/References headers and inherits the thread's RFQ
+                # link. A brand-new email that Gmail folded into this
+                # conversation by subject/recipient similarity has no reply
+                # headers — it must NOT inherit the RFQ link.
+                is_reply = bool(msg_meta.get("in_reply_to") or msg_meta.get("references"))
+
                 if direction == "received":
                     recipient = user_email
                 else:
                     recipient = extract_email_address(msg_meta.get("to", ""))
                 # Fetch body content
                 content = fetch_message_content(service, msg_meta["id"])
+
+                if is_reply:
+                    rfq_id = existing_thread.rfq_id
+                    rfq_token = existing_thread.rfq_token
+                    opportunity_id = existing_thread.opportunity_id
+                    supplier_id = existing_thread.supplier_id
+                    customer_id = existing_thread.customer_id
+                    match_type = existing_thread.match_type
+                else:
+                    logger.info(
+                        f"  [T1] New message (no reply headers) folded into tracked "
+                        f"thread {thread_id} — not inheriting RFQ link, re-matching "
+                        f"entities by contact"
+                    )
+                    rfq_id = None
+                    rfq_token = None
+                    opportunity_id = None
+                    contact_match = match_by_contact(session, external_addresses, domain_index)
+                    supplier_id = contact_match["supplier_id"]
+                    customer_id = contact_match["customer_id"]
+                    match_type = contact_match["match_type"]
+
                 tracking = EmailTracking(
                     gmail_thread_id=thread_id,
                     gmail_message_id=msg_meta["id"],
                     user_email=user_email,
                     sender_email=from_addr if direction == "received" else user_email,
-                    rfq_id=existing_thread.rfq_id,
-                    rfq_token=existing_thread.rfq_token,
-                    opportunity_id=existing_thread.opportunity_id,
-                    supplier_id=existing_thread.supplier_id,
-                    customer_id=existing_thread.customer_id,
-                    match_type=existing_thread.match_type,
+                    rfq_id=rfq_id,
+                    rfq_token=rfq_token,
+                    opportunity_id=opportunity_id,
+                    supplier_id=supplier_id,
+                    customer_id=customer_id,
+                    match_type=match_type,
                     direction=direction,
                     subject=subject,
                     recipient_email=recipient,

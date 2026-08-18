@@ -98,7 +98,10 @@ def main():
             max_retries = 10
             while True:
                 try:
-                    batch_embeddings = embeddings_model.embed_documents(texts_to_embed)
+                    # batch_size=1: the gemini-embedding-* models only accept one
+                    # content per embedContent call on Vertex AI (the SDK raises
+                    # 'only supports one content at a time' otherwise).
+                    batch_embeddings = embeddings_model.embed_documents(texts_to_embed, batch_size=1)
                     break
                 except Exception as e:
                     err_str = str(e).lower()

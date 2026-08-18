@@ -14,6 +14,43 @@ from includes.tools.quote_tools import (
     create_quote_tools, _notify_rfq_updated, _render_rfq_summary,
     _enrich_supplier_pricing, _render_rfq_list, _rfq_to_dict,
 )
+from includes.tools.rfq_render import _render_rfq_brief_summary
+
+
+# ===========================================================================
+# Renderers — quote brand surfacing
+# ===========================================================================
+
+class TestQuoteBrandRendering:
+    def _minimal_rfq(self, **overrides):
+        rfq = {
+            "id": "RFQ-2026-9999",
+            "customer": "Acme Construction",
+            "status": "in_progress",
+            "items": [],
+        }
+        rfq.update(overrides)
+        return rfq
+
+    def test_brief_summary_includes_quote_brand(self):
+        out = _render_rfq_brief_summary(
+            self._minimal_rfq(quote_brand="Komatsu")
+        )
+        assert "Quote Brand: Komatsu" in out
+
+    def test_brief_summary_omits_when_unset(self):
+        out = _render_rfq_brief_summary(self._minimal_rfq())
+        assert "Quote Brand" not in out
+
+    def test_full_summary_includes_quote_brand(self):
+        out = _render_rfq_summary(
+            self._minimal_rfq(quote_brand="Komatsu")
+        )
+        assert "Quote Brand: Komatsu" in out
+
+    def test_full_summary_omits_when_unset(self):
+        out = _render_rfq_summary(self._minimal_rfq())
+        assert "Quote Brand" not in out
 
 
 @pytest.fixture

@@ -35,11 +35,14 @@ def _render_rfq_summary(rfq: dict) -> str:
 
     if ref:
         lines.append(f"**Reference:** {ref}")
+    quote_brand = rfq.get("quote_brand", "")
     ext_links = []
     if netsuite:
         ext_links.append(f"NetSuite: {netsuite}")
     if hubspot:
         ext_links.append(f"HubSpot: {hubspot}")
+    if quote_brand:
+        ext_links.append(f"Quote Brand: {quote_brand}")
     if ext_links:
         lines.append(" | ".join(ext_links))
 
@@ -272,8 +275,10 @@ def _render_rfq_brief_summary(rfq: dict) -> str:
     items_summary = f"{total} items: {', '.join(counts)}" if counts else f"{total} items"
     supplier_summary = f"{with_suppliers} line(s) have suppliers" if with_suppliers else "no suppliers yet"
 
+    quote_brand = rfq.get("quote_brand") or ""
+    brand_part = f" | Quote Brand: {quote_brand}" if quote_brand else ""
     return (
         f"RFQ {rfq_id} — {customer} ({status}) | "
-        f"{items_summary} | {supplier_summary}"
+        f"{items_summary} | {supplier_summary}{brand_part}"
     )
     return "\n".join(lines)

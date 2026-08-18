@@ -267,6 +267,11 @@ class RFQ(Base):
     netsuite_opportunity = Column(String, nullable=True)
     opportunity_id = Column(UUID(as_uuid=True), ForeignKey('opportunities.id'), nullable=True, index=True)
     hubspot_deal = Column(String, nullable=True)
+    # Overall brand for the future NetSuite Quote (custbodyquote_brand).
+    # quote_brand_id is the authoritative link into the brands table (which
+    # holds the NetSuite IDs); quote_brand is a name snapshot for display.
+    quote_brand_id = Column(UUID(as_uuid=True), ForeignKey('brands.id'), nullable=True, index=True)
+    quote_brand = Column(String, nullable=True)
     created_by = Column(String, nullable=False)
     created_date = Column(DateTime(timezone=True), nullable=False)
     assigned_to = Column(String, nullable=True)

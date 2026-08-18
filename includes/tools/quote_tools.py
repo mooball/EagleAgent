@@ -475,6 +475,7 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
             )
             session.add(new_supplier)
             session.flush()
+            new_supplier_id = new_supplier.id
             logger.info(f"[supplier-create] Created new web supplier '{new_supplier.name}' (id={new_supplier.id})")
 
             # Write contacts to Contact table
@@ -492,9 +493,11 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                             isinactive=False,
                         ))
 
-            # AI categorization — close session first, then reopen
-            # (categorize_supplier makes its own Gemini API call)
-            session.flush()
+            # Commit BEFORE the slow Gemini categorization call — never hold
+            # row locks across a ~20s external API call (deadlock source).
+            session.commit()
+
+            # AI categorization (no open transaction during the LLM call)
             cat_data = None
             try:
                 from includes.supplier_categorization import (
@@ -506,10 +509,10 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                 _client = _genai.Client()
                 _taxonomy = load_taxonomy()
                 _cat_input = {
-                    "name": new_supplier.name,
-                    "url": new_supplier.url,
+                    "name": ref_sup.get("name", "").strip(),
+                    "url": sup_url,
                     "city": None,
-                    "country": new_supplier.country,
+                    "country": ref_sup.get("country"),
                     "purchase_count": 0,
                 }
                 cat_result = categorize_supplier(
@@ -536,8 +539,11 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                         "category": ref_sup["category"],
                     }
 
+            # Persist the categorization (or fallback) result
+            session.commit()
+
             for sup in sup_list:
-                sup["supplier_id"] = str(new_supplier.id)
+                sup["supplier_id"] = str(new_supplier_id)
                 if cat_data:
                     if cat_data.get("tier"):
                         sup["tier"] = cat_data["tier"]
@@ -705,7 +711,18 @@ def create_quote_tools(user_id: str) -> list:
                           brand, quantity, uom}])
           update        — Update top-level RFQ properties. data keys: any of
                           customer, customer_contact, reference, title, notes,
-                          netsuite_opportunity, assigned_to
+                          netsuite_opportunity, assigned_to, quote_brand_id,
+                          quote_brand.
+                          Quote brand: the overall brand for this RFQ.
+                          Prefer quote_brand_id — pass the brand's NetSuite
+                          ID (or its internal UUID if you have it).
+                          Alternatively pass quote_brand with the EXACT
+                          brand name (case-insensitive) and the system will
+                          resolve it. Only brands already in the brands
+                          database can be set. If the brand cannot be
+                          found, report the error to the user — do NOT
+                          clear the field instead. Pass an empty string to
+                          clear.
           update_item   — Update an RFQ line item. data keys: line (required, int),
                           plus any of: input_description, input_code, part_number,
                           brand, product_id, quantity, uom, match, notes, sale_price.
@@ -957,6 +974,13 @@ def create_quote_tools(user_id: str) -> list:
         with. If the user asks to find suppliers and items are still
         unmatched, refuse politely and call this tool first.
 
+        Also auto-sets the RFQ's quote brand when it is not already set:
+        item brands are counted and the strict majority wins, but only if
+        it matches a brand in the brands database exactly
+        (case-insensitive). Ties, or a majority brand missing from the
+        database, leave the quote brand unset for a human to decide — in
+        that case, report the outcome to the user.
+
         Returns a summary of what was classified and what still needs
         attention.
         """
@@ -992,6 +1016,9 @@ def create_quote_tools(user_id: str) -> list:
             parts.append(f"- 🔵 {len(classified['branded'])} branded (brand + description, no part number)")
         if classified["generic"]:
             parts.append(f"- 🟣 {len(classified['generic'])} generic (description only)")
+
+        if result.get("quote_brand_result"):
+            parts.append(f"\n🏷️ {result['quote_brand_result']}")
 
         if db_matches:
             parts.append(f"\n**Found in product database:**")
