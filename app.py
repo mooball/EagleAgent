@@ -15,7 +15,7 @@ from includes.chat.context_chainlit import ChainlitChatContext
 from includes.chat.document_processing import process_file
 from includes.chat.local_storage_client import LocalStorageClient
 from includes.chat.data_layer import FixedSQLAlchemyDataLayer
-from includes.chat.middleware import OAuthErrorRedirectMiddleware, GeminiRetryNotifier
+from includes.chat.middleware import OAuthErrorRedirectMiddleware, GeminiRetryNotifier, stale_chainlit_session_handler
 from includes.chat.runner import RunInProgress, run_turn
 from includes.chat.streaming_logic import (
     extract_ai_text as _extract_ai_text,
@@ -56,6 +56,9 @@ os.makedirs(os.path.join(config.DATA_DIR, "attachments"), exist_ok=True)
 if not getattr(cl_server.app, "_eagleagent_patched", False):
     cl_server.app._eagleagent_patched = True
     cl_server.app.add_middleware(OAuthErrorRedirectMiddleware)
+    # Chainlit-specific: turn stale-session action callbacks into a quiet 410
+    # instead of a 500 traceback. Remove together with the Chainlit deprecation.
+    cl_server.app.add_exception_handler(ValueError, stale_chainlit_session_handler)
 
 # Load environment variables (Vertex AI config, OAuth secrets, etc.)
 load_dotenv()

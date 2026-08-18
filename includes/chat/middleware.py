@@ -3,6 +3,8 @@
 import logging
 import urllib.parse
 
+from starlette.responses import JSONResponse
+
 from includes.chat.context import try_get_chat_context
 
 logger = logging.getLogger(__name__)
@@ -101,3 +103,34 @@ class GeminiRetryNotifier(logging.Handler):
             )
         except Exception:
             pass  # Never break the app for a UI notification
+
+
+def stale_chainlit_session_handler(request, exc: Exception):
+    """Map Chainlit's 'Session not found' ValueError to a quiet 410 Gone.
+
+    Chainlit keeps websocket sessions in memory, so a deploy (or proxy
+    reconnect) leaves browser tabs holding dead session ids. Clicking an
+    action then POSTs /chat/project/action with the stale id and Chainlit
+    raises ValueError("Session not found"), producing a noisy 500 with a
+    full traceback. A 410 tells the client its session is gone so it can
+    reload and reconnect.
+
+    Other exceptions (and other paths) are re-raised and keep their normal
+    500 handling.
+
+    Chainlit-specific: remove together with the Chainlit deprecation.
+    """
+    if (
+        isinstance(exc, ValueError)
+        and "Session not found" in str(exc)
+        and getattr(request, "url", None)
+        and request.url.path.startswith("/chat/project/action")
+    ):
+        logger.warning(
+            "Stale Chainlit session on %s — returning 410 Gone", request.url.path
+        )
+        return JSONResponse(
+            {"status": "error", "message": "Chat session expired — please reload the page."},
+            status_code=410,
+        )
+    raise exc
