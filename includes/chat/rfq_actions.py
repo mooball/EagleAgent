@@ -284,6 +284,18 @@ async def on_rfq_identify_items(payload: dict, ctx: ChatContext) -> None:
                 author="EagleAgent",
             )
 
+        # ---- Step C: Auto-set the quote brand (deterministic majority) ----
+        # Counts item brands; a strict majority that matches the brands
+        # database exactly wins. Ties and non-DB brands are left for a human.
+        if not ctx.cancelled:
+            from includes.tools.rfq_crud import _set_quote_brand_from_items_sync
+            quote_brand_result = await asyncio.to_thread(
+                _set_quote_brand_from_items_sync, rfq_id, user_id
+            )
+            if quote_brand_result:
+                await ctx.say(f"🏷️ {quote_brand_result}", author="EagleAgent")
+            await ctx.notify_dashboard("dashboard_refresh")
+
     finally:
         await ctx.notify_dashboard("agent_done")
 

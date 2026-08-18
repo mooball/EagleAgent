@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from includes.dashboard.models import Brand, RFQ
+from includes.dashboard.models import Brand, RFQ, RFQItem
 from includes.tools.rfq_crud import _rfq_write_lock, _serialized_rfq_write
 
 
@@ -258,3 +258,160 @@ class TestQuoteBrand:
 
         assert isinstance(result, str)
         assert "not found" in result
+
+
+# ---------------------------------------------------------------------------
+# Quote brand auto-set from item brands (classify step, Step 2)
+# ---------------------------------------------------------------------------
+
+class TestAutoQuoteBrand:
+    @pytest.fixture
+    def db_session(self):
+        """DB session with SAVEPOINT so commits inside helpers don't end the
+        outer transaction — everything rolls back at the end."""
+        from includes.dashboard.database import _sync_url
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        from sqlalchemy import event
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _make_brand(self, session, name: str) -> Brand:
+        brand = Brand(
+            netsuite_id=f"NS-{uuid.uuid4().hex[:8]}",
+            name=name,
+        )
+        session.add(brand)
+        session.flush()
+        return brand
+
+    def _make_rfq_with_items(self, session, brands: list[str], **rfq_overrides) -> RFQ:
+        rfq = RFQ(
+            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            customer="Test Customer",
+            created_by="tester",
+            created_date=datetime.now(timezone.utc),
+            **rfq_overrides,
+        )
+        session.add(rfq)
+        session.flush()
+        for line, brand in enumerate(brands, start=1):
+            session.add(RFQItem(
+                rfq_id=rfq.id,
+                line=line,
+                input_description=f"desc {line}",
+                brand=brand,
+            ))
+        session.flush()
+        return rfq
+
+    def test_majority_sets_quote_brand(self, db_session):
+        komatsu = self._make_brand(db_session, "Komatsu")
+        self._make_brand(db_session, "Hitachi")
+        rfq = self._make_rfq_with_items(
+            db_session, ["Komatsu", "Komatsu", "Hitachi"],
+        )
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _set_quote_brand_from_items_sync
+            result = _set_quote_brand_from_items_sync(rfq.rfq_number, "tester")
+
+        assert result is not None
+        assert "Auto-set quote brand to 'Komatsu'" in result
+
+        db_session.expire_all()
+        stored = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        assert stored.quote_brand_id == komatsu.id
+        assert stored.quote_brand == "Komatsu"
+        assert any(
+            "Auto-set quote brand to 'Komatsu'" in h.get("action", "")
+            for h in (stored.history or [])
+        )
+
+    def test_tie_skips(self, db_session):
+        self._make_brand(db_session, "Komatsu")
+        self._make_brand(db_session, "Hitachi")
+        rfq = self._make_rfq_with_items(
+            db_session, ["Komatsu", "Komatsu", "Hitachi", "Hitachi"],
+        )
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _set_quote_brand_from_items_sync
+            result = _set_quote_brand_from_items_sync(rfq.rfq_number, "tester")
+
+        assert "tied" in result
+        db_session.expire_all()
+        stored = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        assert stored.quote_brand_id is None
+        assert stored.quote_brand is None
+
+    def test_majority_not_in_db_skips(self, db_session):
+        self._make_brand(db_session, "Komatsu")
+        rfq = self._make_rfq_with_items(
+            db_session, ["Acme Widgets", "Acme Widgets", "Komatsu"],
+        )
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _set_quote_brand_from_items_sync
+            result = _set_quote_brand_from_items_sync(rfq.rfq_number, "tester")
+
+        assert "not in the brands database" in result
+        db_session.expire_all()
+        stored = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        assert stored.quote_brand_id is None
+        assert stored.quote_brand is None
+
+    def test_already_set_untouched(self, db_session):
+        komatsu = self._make_brand(db_session, "Komatsu")
+        self._make_brand(db_session, "Hitachi")
+        rfq = self._make_rfq_with_items(
+            db_session, ["Hitachi", "Hitachi", "Komatsu"],
+            quote_brand_id=komatsu.id,
+            quote_brand="Komatsu",
+        )
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _set_quote_brand_from_items_sync
+            result = _set_quote_brand_from_items_sync(rfq.rfq_number, "tester")
+
+        assert result is None
+        db_session.expire_all()
+        stored = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        assert stored.quote_brand == "Komatsu"  # unchanged despite Hitachi majority
+
+    def test_no_item_brands_skips(self, db_session):
+        rfq = self._make_rfq_with_items(db_session, ["", None, "Other"])
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            from includes.tools.rfq_crud import _set_quote_brand_from_items_sync
+            result = _set_quote_brand_from_items_sync(rfq.rfq_number, "tester")
+
+        assert result is None
+        db_session.expire_all()
+        stored = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        assert stored.quote_brand_id is None
+
+    def test_classify_invokes_quote_brand_step(self, db_session):
+        rfq = self._make_rfq_with_items(db_session, [None])  # one unmatched item
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session), \
+             patch("includes.tools.rfq_crud._set_quote_brand_from_items_sync",
+                   return_value="wired") as mock_set_brand:
+
+            from includes.tools.rfq_crud import _classify_rfq_items_sync
+            result = _classify_rfq_items_sync(rfq.rfq_number, "tester", search_db=False)
+
+        mock_set_brand.assert_called_once_with(rfq.rfq_number, "tester")
+        assert result["quote_brand_result"] == "wired"

@@ -1906,6 +1906,93 @@ def _create_opportunity_sync(rfq_number: str, data: dict, user_id: str) -> dict 
 # asyncio.to_thread.  No Chainlit dependencies.
 # =============================================================================
 
+@_serialized_rfq_write
+def _set_quote_brand_from_items_sync(rfq_number: str, user_id: str) -> str | None:
+    """Deterministically set the RFQ's quote brand from its item brands.
+
+    Called by the classify step (Step 2 of the quote-brand feature). Counts
+    non-empty item brands; when a single brand holds a strict majority AND
+    matches a brands-table row exactly (case-insensitive), sets
+    quote_brand_id + quote_brand and appends a history entry. Ties, and
+    majority brands missing from the brands database, are left for a human.
+    Never overwrites an existing quote brand.
+
+    Returns a short status string, or None when nothing changed.
+    """
+    from sqlalchemy import func as sa_func
+    from includes.dashboard.models import Brand, RFQ
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+        if rfq.quote_brand_id:
+            return None  # already set — never overwrite
+
+        counts: dict[str, int] = {}
+        display_names: dict[str, str] = {}
+        for item in rfq.items or []:
+            brand = (item.brand or "").strip()
+            if not brand or brand.lower() in ("other", "n/a", "na", "none", "unknown"):
+                continue
+            key = brand.lower()
+            counts[key] = counts.get(key, 0) + 1
+            display_names.setdefault(key, brand)
+
+        if not counts:
+            return None  # no item brands to infer from
+
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        top_key, top_count = ranked[0]
+        total = sum(counts.values())
+        tied = [k for k, c in ranked if c == top_count]
+        if len(tied) > 1:
+            names = ", ".join(display_names[k] for k in tied)
+            return (
+                f"Quote brand not auto-set — item brands tied ({names}); "
+                f"human decision needed."
+            )
+
+        brand_row = (
+            session.query(Brand)
+            .filter(sa_func.lower(Brand.name) == top_key)
+            .filter(Brand.duplicate_of.is_(None))
+            .order_by(Brand.name)
+            .first()
+        )
+        if not brand_row:
+            return (
+                f"Quote brand not auto-set — majority item brand "
+                f"'{display_names[top_key]}' is not in the brands database."
+            )
+
+        rfq.quote_brand_id = brand_row.id
+        rfq.quote_brand = brand_row.name
+        rfq.updated_at = _now_dt()
+        history = list(rfq.history or [])
+        history.append({
+            "date": _now_iso(),
+            "user": user_id,
+            "action": (
+                f"Auto-set quote brand to '{brand_row.name}' "
+                f"(majority item brand, {top_count}/{total} items)"
+            ),
+        })
+        rfq.history = history
+        session.commit()
+        session.refresh(rfq)
+        return (
+            f"Auto-set quote brand to '{brand_row.name}' "
+            f"(majority item brand, {top_count}/{total} items)."
+        )
+    except SQLAlchemyError:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 def _classify_rfq_items_sync(
     rfq_number: str, user_id: str, search_db: bool = True,
 ) -> dict:
@@ -1991,11 +2078,16 @@ def _classify_rfq_items_sync(
         if db_updates:
             _update_items_bulk_sync(rfq_number, {"items": db_updates}, user_id)
 
+    # Step 2: auto-set the quote brand from item brands (deterministic
+    # majority; ties and non-DB brands are left for a human).
+    quote_brand_result = _set_quote_brand_from_items_sync(rfq_number, user_id)
+
     return {
         "classified": classified,
         "db_matches": db_matches,
         "to_validate": to_validate,
         "unclassifiable": unclassifiable,
+        "quote_brand_result": quote_brand_result,
     }
 
 

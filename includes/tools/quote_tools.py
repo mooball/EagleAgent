@@ -974,6 +974,13 @@ def create_quote_tools(user_id: str) -> list:
         with. If the user asks to find suppliers and items are still
         unmatched, refuse politely and call this tool first.
 
+        Also auto-sets the RFQ's quote brand when it is not already set:
+        item brands are counted and the strict majority wins, but only if
+        it matches a brand in the brands database exactly
+        (case-insensitive). Ties, or a majority brand missing from the
+        database, leave the quote brand unset for a human to decide — in
+        that case, report the outcome to the user.
+
         Returns a summary of what was classified and what still needs
         attention.
         """
@@ -1009,6 +1016,9 @@ def create_quote_tools(user_id: str) -> list:
             parts.append(f"- 🔵 {len(classified['branded'])} branded (brand + description, no part number)")
         if classified["generic"]:
             parts.append(f"- 🟣 {len(classified['generic'])} generic (description only)")
+
+        if result.get("quote_brand_result"):
+            parts.append(f"\n🏷️ {result['quote_brand_result']}")
 
         if db_matches:
             parts.append(f"\n**Found in product database:**")
