@@ -29,6 +29,14 @@
     <style>
         [x-cloak] { display: none !important; }
         .border-l-3 { border-left-width: 3px; }
+        :root {
+            --cell-dirty-bg: #fefce8; /* amber-50 */
+            --cell-focus-bg: #eff6ff; /* blue-50 */
+        }
+        html.dark {
+            --cell-dirty-bg: #78350f; /* amber-900 */
+            --cell-focus-bg: #1e3a8a; /* blue-900 */
+        }
         .email-body { font-size: 12px; line-height: 1.5; color: #4b5563; }
         .email-body p { margin: 0.25em 0; }
         .email-body table { border-collapse: collapse; margin: 0.5em 0; font-size: 11px; }
