@@ -296,6 +296,18 @@ async def on_rfq_identify_items(payload: dict, ctx: ChatContext) -> None:
                 await ctx.say(f"🏷️ {quote_brand_result}", author="EagleAgent")
             await ctx.notify_dashboard("dashboard_refresh")
 
+        # ---- Step D: Auto-set item departments ----
+        # Product matches copy their department; remaining items without one
+        # go through a single batched LLM call with strict enum validation.
+        if not ctx.cancelled:
+            from includes.tools.rfq_crud import _set_item_departments_sync
+            department_result = await asyncio.to_thread(
+                _set_item_departments_sync, rfq_id, user_id
+            )
+            if department_result:
+                await ctx.say(f"🗂️ {department_result}", author="EagleAgent")
+            await ctx.notify_dashboard("dashboard_refresh")
+
     finally:
         await ctx.notify_dashboard("agent_done")
 

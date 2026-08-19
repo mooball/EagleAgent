@@ -35,7 +35,7 @@
         <span class="text-gray-400 dark:text-gray-500 select-none mx-1">—</span>
 
         <!-- Status toggle group -->
-        <span class="inline-flex rounded-full shadow-sm">
+        <span class="inline-flex rounded-full shadow-xs">
             <a hx-get="/partial/rfqs?mine={{ selected_owner }}&status=open{% if q %}&q={{ q }}{% endif %}"
                hx-target="#main-content" hx-push-url="/rfqs?mine={{ selected_owner }}&status=open{% if q %}&q={{ q }}{% endif %}"
                class="px-2.5 py-1 rounded-l-full cursor-pointer transition-colors border border-r-0

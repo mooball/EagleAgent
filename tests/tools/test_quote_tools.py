@@ -53,6 +53,47 @@ class TestQuoteBrandRendering:
         assert "Quote Brand" not in out
 
 
+class TestDepartmentRendering:
+    """The agent-facing full summary shows the department per line."""
+
+    def _minimal_rfq(self, **overrides):
+        rfq = {
+            "id": "RFQ-2026-9999",
+            "customer": "Acme Construction",
+            "status": "in_progress",
+            "items": [
+                {
+                    "line": 1, "input_description": "Brake pads",
+                    "input_code": "", "part_number": "BP-01",
+                    "brand": "Komatsu", "department_id": "5",
+                    "department": "Truck Parts", "quantity": 2,
+                    "uom": "ea", "match": "specific", "notes": "",
+                    "cost_price": None, "sale_price": None,
+                    "suppliers": [], "brand_suppliers": [],
+                },
+                {
+                    "line": 2, "input_description": "Oil filter",
+                    "input_code": "", "part_number": None, "brand": None,
+                    "department_id": None, "department": None,
+                    "quantity": None, "uom": "ea", "match": "unmatched",
+                    "notes": "", "cost_price": None, "sale_price": None,
+                    "suppliers": [], "brand_suppliers": [],
+                },
+            ],
+        }
+        rfq.update(overrides)
+        return rfq
+
+    def test_full_summary_shows_department_column(self):
+        out = _render_rfq_summary(self._minimal_rfq())
+        assert "| Dept |" in out
+        assert "| 1 | Brake pads | BP-01 | Komatsu | Truck Parts | 2 ea |" in out
+
+    def test_full_summary_uses_dash_when_unset(self):
+        out = _render_rfq_summary(self._minimal_rfq())
+        assert "| 2 | Oil filter | — | — | — |" in out
+
+
 @pytest.fixture
 def db_session():
     """Create a test DB session using the project's PostgreSQL database.
@@ -104,6 +145,28 @@ def manage(rfq_tools):
 @pytest.fixture
 def get(rfq_tools):
     return rfq_tools[1]
+
+
+# ===========================================================================
+# Department awareness in tool schemas (the model sees these descriptions)
+# ===========================================================================
+
+class TestManageRfqDepartmentAwareness:
+    """The full department taxonomy is visible on manage_rfq; classify_items
+    documents the batch auto-assignment path."""
+
+    def test_manage_rfq_description_includes_taxonomy(self, rfq_tools):
+        manage = rfq_tools[0]
+        desc = manage.description or ""
+        assert "| ID | Department | Description |" in desc
+        assert "Truck Parts" in desc
+        assert "Forklift Parts" in desc
+        assert "department_id" in desc
+
+    def test_classify_items_documents_batch_departments(self, rfq_tools):
+        classify = rfq_tools[2]
+        desc = classify.description or ""
+        assert "BATCH department" in desc
 
 
 # ---- helpers ----
@@ -269,6 +332,71 @@ class TestManageRfqUpdateItem:
                 "data": {"line_number": 1, "part_number": "DHP486Z", "match": "specific"},
             })
         assert "error" not in result.lower()
+
+    async def test_update_item_department_by_id(self, manage, db_session):
+        await _create_sample_rfq(manage, db_session)
+        rfq = _get_rfq_from_db(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = await manage.ainvoke({
+                "action": "update_item",
+                "rfq_id": rfq.rfq_number,
+                "data": {"line": 1, "department_id": "9"},
+            })
+        assert "error" not in result.lower()
+        db_session.expire_all()
+        item = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id, RFQItem.line == 1).first()
+        assert item.department_id == "9"
+
+    async def test_update_item_department_by_label_case_insensitive(self, manage, db_session):
+        await _create_sample_rfq(manage, db_session)
+        rfq = _get_rfq_from_db(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = await manage.ainvoke({
+                "action": "update_item",
+                "rfq_id": rfq.rfq_number,
+                "data": {"line": 1, "department": "truck parts"},
+            })
+        assert "error" not in result.lower()
+        db_session.expire_all()
+        item = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id, RFQItem.line == 1).first()
+        assert item.department_id == "5"
+
+    async def test_update_item_department_invalid_rejected(self, manage, db_session):
+        await _create_sample_rfq(manage, db_session)
+        rfq = _get_rfq_from_db(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = await manage.ainvoke({
+                "action": "update_item",
+                "rfq_id": rfq.rfq_number,
+                "data": {"line": 1, "department": "Aerospace"},
+            })
+        assert "error" in result.lower()
+        assert "Invalid department" in result
+        db_session.expire_all()
+        item = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id, RFQItem.line == 1).first()
+        assert item.department_id is None
+
+    async def test_update_items_bulk_department_mixed_inputs(self, manage, db_session):
+        await _create_sample_rfq(manage, db_session)
+        rfq = _get_rfq_from_db(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = await manage.ainvoke({
+                "action": "update_items_bulk",
+                "rfq_id": rfq.rfq_number,
+                "data": {"items": [
+                    {"line": 1, "department_id": "5"},
+                    {"line": 2, "department": "Tyres"},
+                ]},
+            })
+        assert "error" not in result.lower()
+        db_session.expire_all()
+        items = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).order_by(RFQItem.line).all()
+        assert items[0].department_id == "5"
+        assert items[1].department_id == "7"
 
 
 # ===========================================================================

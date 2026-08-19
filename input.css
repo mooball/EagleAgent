@@ -1,6 +1,32 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/* Explicit source scanning — the Docker build stage only contains a subset
+   of the repo, and local builds shouldn't wander into .venv etc. */
+@source "./templates";
+
+/* Class-based dark mode (v4 defaults to prefers-color-scheme) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Preline UI (vendored, see public/vendor/preline/VERSION) */
+@source "./public/vendor/preline/dist";
+@source "./public/probe.html"; /* dev probe page — remove with the probe */
+@import "./public/vendor/preline/variants.css";
+
+/* v3 parity — border utilities defaulted to gray-200 and buttons got
+   cursor: pointer from Preflight. Restore both. */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
 
 /* ---- Custom (non-Tailwind) styles ---- */
 

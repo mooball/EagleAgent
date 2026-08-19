@@ -6,7 +6,7 @@
     <title>{% block title %}EagleAgent{% endblock %}</title>
     <!-- Tailwind CSS: use pre-built file in prod, fall back to CDN for local dev -->
     <link rel="stylesheet" href="/public/tailwind.min.css?v={{ css_version | default('dev') }}"
-          onerror="if(!window.__twFallback){window.__twFallback=1;var s=document.createElement('script');s.src='https://cdn.tailwindcss.com';document.head.appendChild(s);var c=document.createElement('script');c.textContent='tailwind.config={darkMode:\u0022class\u0022}';document.head.appendChild(c)}">
+          onerror="if(!window.__twFallback){window.__twFallback=1;var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4';document.head.appendChild(s);var st=document.createElement('style');st.type='text/tailwindcss';st.textContent='@custom-variant dark (&:where(.dark, .dark *));';document.head.appendChild(st)}">
     <script>
         // Restore theme before paint to prevent flash
         if (localStorage.theme === 'dark' || (!localStorage.theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
@@ -19,6 +19,8 @@
     <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
     <!-- HTMX -->
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <!-- Preline UI JS (vendored, auto-init — powers data-hs-* components) -->
+    <script defer src="/public/vendor/preline/dist/preline.js?v={{ css_version | default('dev') }}"></script>
     <!-- Jodit (free rich text editor for in-app email compose) -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jodit@4.2.27/es2021/jodit.fat.min.css">
     <script src="https://cdn.jsdelivr.net/npm/jodit@4.2.27/es2021/jodit.fat.min.js"></script>
@@ -69,7 +71,7 @@
       x-data="dashboard()" x-init="init()">
 
     <!-- Header -->
-    <header class="h-14 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 shadow-sm relative z-50">
+    <header class="h-14 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 shadow-xs relative z-50">
         <div class="flex items-center gap-2">
             <a href="/" class="flex items-center gap-2 text-lg font-bold text-gray-800 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400">
                 <img src="/public/eagle-icon.png" alt="" class="w-7 h-7">
@@ -852,6 +854,7 @@
                 editAllMsg: '',
                 editAllError: false,
                 editAllDirtyCount: 0,
+                departments: [],
                 copySupplierModal: { open: false, sourceLine: null, supplierName: '', items: [] },
                 brandSuppliersModal: { open: false, line: null, brand: '', suppliers: [] },
                 rfqId: '',
@@ -870,6 +873,7 @@
                     this.emailModal.trackingId = this.trackingId;
                     this._allLines = data.allLines || [];
                     this._unmatchedItems = data.unmatched || [];
+                    this.departments = data.departments || [];
                     // Index items by line number for quick lookup
                     (data.items || []).forEach(i => this._items[i.line] = i);
                     // Auto-open header edit form for blank RFQs (no customer yet)
@@ -946,7 +950,8 @@
                                 input_description: src.input_description || '',
                                 brand: src.brand || '',
                                 quantity: src.quantity != null ? String(src.quantity) : '',
-                                uom: src.uom || ''
+                                uom: src.uom || '',
+                                department_id: src.department_id || ''
                             };
                             items.push(row);
                             originals[src.line] = {
@@ -954,7 +959,8 @@
                                 input_description: row.input_description,
                                 brand: row.brand,
                                 quantity: row.quantity,
-                                uom: row.uom
+                                uom: row.uom,
+                                department_id: row.department_id
                             };
                         }
                     });
@@ -979,7 +985,7 @@
                     this.editAllItems.forEach(item => {
                         var orig = self.editAllOriginals[item.line];
                         if (!orig) return;
-                        var fields = ['part_number', 'input_description', 'brand', 'quantity', 'uom'];
+                        var fields = ['part_number', 'input_description', 'brand', 'quantity', 'uom', 'department_id'];
                         for (var i = 0; i < fields.length; i++) {
                             if ((item[fields[i]] || '') !== (orig[fields[i]] || '')) { count++; break; }
                         }

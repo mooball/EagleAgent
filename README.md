@@ -2,13 +2,14 @@
 
 EagleAgent is a sophisticated AI agent built using LangGraph, integrated with a React-based conversational UI via Chainlit and a FastAPI dashboard for supplier/product management. With persistent memory and user profiles, EagleAgent supports multiple complex procurement, research, and administrative operations.
 
-The architecture uses a dual-app pattern: **FastAPI** (`main.py`) handles Google OAuth, session management, and serves the HTMX dashboard, while **Chainlit** (`app.py`) provides the chat UI with LangGraph multi-agent orchestration. Both share a single PostgreSQL database for checkpointing, memory, and application data.
+The architecture uses a dual-app pattern: **FastAPI** (`main.py`) handles Google OAuth, session management, and serves the HTMX dashboard (Tailwind CSS v4 + **Preline UI** components), while **Chainlit** (`app.py`) provides the chat UI with LangGraph multi-agent orchestration. Both share a single PostgreSQL database for checkpointing, memory, and application data.
 
 ## Key Features
 
 - 🧠 **Persistent Memory**: Uses PostgreSQL for maintaining cross-session memory, user profiles, and LangGraph state.
 - 🎨 **Web-based UI**: Powered by Chainlit for beautiful, interactive, and responsive chat.
 - 📊 **Dashboard**: FastAPI/HTMX dashboard for suppliers, products, RFQs, and user management.
+- 🧩 **Preline UI**: Vendored Tailwind-based component library (dropdowns, modals, toasts, chat bubbles…) — the default for new UI work, opt-in per component.
 - 🔐 **Authentication**: Google OAuth 2.0 via FastAPI, with session injection into Chainlit.
 - 🌐 **Web Interaction**: Headless Chromium (Playwright via agent-browser) for automated web browsing, scraping, and form-filling.
 - 🛠️ **MCP Tools**: Built-in support for Model Context Protocol (MCP) integrations using custom configs.
@@ -19,6 +20,8 @@ The architecture uses a dual-app pattern: **FastAPI** (`main.py`) handles Google
 ![Architecture Diagram](https://img.shields.io/badge/Architecture-Component_Overview-blue.svg)
 
 1. **FastAPI App (`main.py`)**: The ASGI entry point. Handles Google OAuth authentication, session middleware, serves the HTMX dashboard (suppliers, products, RFQs, users), and mounts Chainlit at `/chat`.
+
+   **Frontend conventions**: Jinja2 + HTMX + Alpine.js 3 + Tailwind CSS v4 (CSS-first, built with the standalone CLI — no Node). **Preline UI is vendored at `public/vendor/preline/` and is the default for new UI work** (especially the future bespoke chat UI). Existing UI adopts it opportunistically — see `copilot-instructions.md` → "Frontend / UI". A kitchen-sink probe page is served at `/public/probe.html`.
 2. **Chainlit UI (`app.py`)**: The chat interface where users interact with agents. Features real-time token streaming, chat profiles, and action buttons.
 3. **LangGraph Supervisor Pattern (Back-end Orchestration)**: A multi-agent architecture where a central `Supervisor` node evaluates user requests and routes them to specialized sub-agents:
    - **GeneralAgent**: Handles general conversation, context aggregation, memory retrieval, and MCP tool integration.

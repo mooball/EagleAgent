@@ -80,15 +80,28 @@ descriptions must version-control alongside matching logic).
 
 ## ✏️ Phase 2 — One-off backfill of existing products
 
-1. Extend `scripts/sync_netsuite_products.py` with a backfill mode (e.g.
-   `--since 1970-01-01` documented as the full backfill, or an explicit
-   `--full` flag). The `ORDER BY lastmodifieddate ASC` + resume pattern already
-   supports long runs; confirm pagination (`offset`) handles ~300k rows.
-2. Or a dedicated `scripts/backfill_product_departments.py` that walks products
-   missing `department_id`, fetches by NetSuite ID in batches, and writes the
-   column back. **Decision needed** — inline flag vs separate script.
-3. Run once locally (or via Railway job) and verify counts match the live
-   distribution table above.
+**Decision made 2026-08-19:** dedicated script — the inline `--full` flag is
+not viable.
+
+Live probe found the SuiteQL REST ``offset`` parameter is capped at **4995**
+(`INVALID_PARAMETER` beyond), so the existing offset-paginated
+`client.suiteql()` can never page the ~300k-row item table. The backfill
+therefore uses **keyset pagination** (`id > last_seen ORDER BY id ASC`,
+server order, 1000 rows/page) on a two-column query:
+
+```sql
+SELECT id, department FROM item WHERE department IS NOT NULL [AND id > '<last>'] ORDER BY id ASC
+```
+
+Implemented: `scripts/backfill_product_departments.py`
+
+- Streams pages; maps each row through `DEPARTMENT_BY_ID` (unknown IDs are
+  logged and left NULL).
+- Updates only `products.department_id IS NULL` rows (re-runnable,
+  shrinking); commits per page; `--dry-run` / `--max-pages N` for smoke
+  tests.
+- Run once locally (or via Railway job) and verify counts match the live
+  distribution table above.
 
 ## ✏️ Phase 3 — Department on RFQ item rows (store / edit / view)
 
@@ -104,10 +117,26 @@ descriptions must version-control alongside matching logic).
    server resolves and validates the value against the enum.
 5. **CSV export** — fill the existing empty `Department` column with the label.
 
-**Decisions needed:**
-- Show department as a new column in the item table, or a badge next to the
-  description?
-- Any department editable at any time, or only before suppliers are found?
+**Decisions (settled):**
+- **Badge**, not a column — small grey badge inline after the description;
+  hidden when empty. ✅
+- **Editable at any time** — no pipeline-stage restriction; clearing allowed.
+  ✅
+
+**Implemented (Phase 3 complete):**
+- `rfq_items.department_id` column + migration `w8x9y0z1a2b3`.
+- `_item_to_dict` → `department_id` + `department` label (unknown IDs keep the
+  ID, label `None`).
+- `_update_item_core` validates `department_id` against `DEPARTMENT_BY_ID`
+  before any mutation; invalid IDs raise `ValueError` → `_update_item_sync`
+  returns an error string, `_update_items_bulk_sync` skips the line and reports
+  it in history. Empty string clears.
+- `_add_items_sync` accepts and validates `department_id` per item.
+- Routes: `/partial/rfqs/{id}/update-item` + `/bulk-update-items` accept
+  `department_id`; `/export-items` CSV fills the Department column.
+- Templates: badge after description; `<select>` in the per-item edit form and
+  a Department column in the Edit All spreadsheet grid; `departments` options
+  injected via ctx (`_department_options()` in routes) and the `rfq-data` JSON.
 
 ## ✏️ Phase 4 — Agent tools to set / update item departments
 
@@ -123,6 +152,19 @@ descriptions must version-control alongside matching logic).
    verify what is set.
 4. Tests mirror the Quote Brand suite: set by ID, set by label, invalid value
    rejected, clear works, bulk path works.
+
+**Implemented (Phase 4 complete):**
+- `_resolve_department(data)` helper in `rfq_crud.py` — resolves
+  `department_id` or `department` (exact case-insensitive label) to the
+  canonical enum ID; empty clears; unknown ID/label or conflicting ID+label
+  raises `ValueError`. Used by `_update_item_core`, `_add_items_sync`, and
+  therefore both bulk paths.
+- `manage_rfq` docstrings document `department_id` / `department` for create,
+  update_item, add_items, and update_items_bulk.
+- `_render_rfq_summary` item table gained a `Dept` column (after Brand).
+- Tests: resolver unit tests, label/ID/clear/conflict paths, agent-level
+  `manage_rfq` tests (ID, case-insensitive label, invalid rejected, bulk
+  mixed inputs), and render tests for the `Dept` column.
 
 ## ✏️ Phase 5 — LLM department classification (no product match)
 
@@ -149,11 +191,32 @@ Implementation sketch:
   path and the dashboard `on_rfq_identify_items` action), the same way the
   Quote Brand auto-set is wired, and report results in the tool summary.
 
-**Decisions needed:**
-- Should LLM classification run automatically inside classify & validate, or as
-  a separate opt-in tool/button?
-- Batch all unmatched items in one LLM call (cheaper) vs per item (more
-  reliable)? Recommend one call with strict JSON validation.
+**Decisions (settled):**
+- **Auto-run** inside classify & validate (agent `classify_items` tool and
+  dashboard `on_rfq_identify_items`), wired like the Quote Brand auto-set. ✅
+- **One batched LLM call** for all unmatched items, strict JSON validation. ✅
+
+**Implemented (Phase 5 complete):**
+- `config/prompts/rfq_item_departments.md` — prompt with a
+  `{{DEPARTMENT_TABLE}}` placeholder, filled from `department_prompt_table()`.
+  Instructs the LLM to omit unsure items and never default to Other Parts.
+- `_set_item_departments_sync(rfq_number, user_id)` in `rfq_crud.py`:
+  pass 1 copies `products.department_id` onto product-matched lines
+  (no LLM, never overwrites an existing department); pass 2 runs one batched
+  LLM call for the remainder, accepts only enum IDs for lines in the input,
+  skips unknown/hallucinated lines, and applies via `_update_items_bulk_sync`.
+  Returns a status string ("N from product match, M by LLM, K skipped").
+- `_classify_rfq_items_sync` calls it (Step 3) and returns
+  `department_result`; the `classify_items` tool docstring documents it.
+- `on_rfq_identify_items` runs it as Step D after quote brand and posts the
+  result to the chat.
+- `manage_rfq` tool description now embeds `department_prompt_table()` so the
+  agent sees the full ID + name + description taxonomy and can discuss and
+  set departments per item; `classify_items` documents the batch
+  auto-assignment path.
+- Tests: product-copy, never-overwrite, LLM validation/skip/omit, LLM
+  failure and bad-JSON handling, classify wiring, dashboard action wiring,
+  tool-description taxonomy visibility.
 
 ## Out of scope (until a later phase)
 

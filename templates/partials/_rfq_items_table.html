@@ -1,16 +1,26 @@
 {# Reusable items table — expects: table_items (list), rfq (dict), show_add_row (bool) #}
 <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-visible">
-    <table class="w-full text-sm">
+    <table class="w-full text-sm table-fixed">
+        <colgroup>
+            <col style="width: 40px;">
+            <col style="width: 160px;">
+            <col>
+            <col style="width: 150px;">
+            <col style="width: 70px;">
+            <col style="width: 70px;">
+            <col style="width: 70px;">
+            <col style="width: 200px;">
+        </colgroup>
         <thead class="bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700">
             <tr>
-                <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-10">#</th>
+                <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400">#</th>
                 <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Part Number</th>
                 <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Description</th>
                 <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Brand</th>
-                <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Qty</th>
-                <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-16">UoM</th>
-                <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-16">Match</th>
-                <th class="text-right px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Action</th>
+                <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400">Qty</th>
+                <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400">UoM</th>
+                <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400">Match</th>
+                <th class="text-right px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400">Action</th>
             </tr>
         </thead>
         <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
@@ -23,12 +33,12 @@
                 class="cursor-pointer transition-colors group"
                 :class="expanded[{{ item.line }}] ? 'bg-blue-50 dark:bg-blue-950' : ('{{ item.match }}' === 'discrepancy' ? 'bg-red-50 dark:bg-red-950/30' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50')"
                 @click="toggle({{ item.line }})">
-                <td class="px-3 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
-                <td class="px-3 py-2.5 font-mono whitespace-nowrap">
-                    <span class="inline-flex items-center gap-1">
-                        {{ item.part_number or '—' }}
+                <td class="px-2 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
+                <td class="px-3 py-2.5 font-mono whitespace-nowrap overflow-hidden" title="{{ item.part_number or '' }}">
+                    <span class="inline-flex items-center gap-1 max-w-full">
+                        <span class="block truncate">{{ item.part_number or '—' }}</span>
                         {% if item.product_id %}
-                        <svg class="inline w-3 h-3 text-blue-500 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="In database"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"/></svg>
+                        <svg class="w-3 h-3 text-blue-500 dark:text-blue-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="In database"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"/></svg>
                         {% endif %}
                     </span>
                 </td>
@@ -40,7 +50,11 @@
                         {% else %}
                         <span class="w-3.5 shrink-0"></span>
                         {% endif %}
-                        <span>{{ item.input_description or '—' }}</span>
+                        <span class="min-w-0 break-words">{{ item.input_description or '—' }}</span>
+                        {% if item.department %}
+                        <span class="ml-2 inline-flex items-center shrink-0 h-[13px] px-1 rounded-full text-[9px] leading-none font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-600"
+                              title="Department: {{ item.department }}">{{ item.department }}</span>
+                        {% endif %}
                     </div>
                 </td>
                 <td class="px-3 py-2.5 text-left">
@@ -54,9 +68,9 @@
                     {{ item.brand or '—' }}
                     {% endif %}
                 </td>
-                <td class="px-3 py-2.5 text-center">{{ item.quantity or '—' }}</td>
-                <td class="px-3 py-2.5 text-center text-xs text-gray-500">{{ item.uom or '' }}</td>
-                <td class="px-3 py-2.5 text-center">
+                <td class="px-2 py-2.5 text-center">{{ item.quantity or '—' }}</td>
+                <td class="px-2 py-2.5 text-center text-xs text-gray-500">{{ item.uom or '' }}</td>
+                <td class="px-2 py-2.5 text-center">
                     {% if item.match == 'specific' %}
                     <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-green-500" data-tip="Specific — part number + description (brand discoverable)"></span>
                     {% elif item.match == 'branded' %}
@@ -69,7 +83,7 @@
                     <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-gray-400" data-tip="Unmatched — not yet classified"></span>
                     {% endif %}
                 </td>
-                <td class="px-3 py-2.5 text-right whitespace-nowrap">
+                <td class="px-2 py-2.5 text-right whitespace-nowrap">
                     <div class="flex items-center justify-end gap-1">
                         {% if suppliers %}
                         <span class="tabular-nums text-xs text-gray-500">{{ active_suppliers | length }} suppliers</span>
@@ -94,7 +108,7 @@
             </tr>
             <!-- Item row (edit mode) -->
             <tr x-show="editingItem === {{ item.line }}" x-cloak class="bg-amber-50 dark:bg-amber-950">
-                <td class="px-3 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
+                <td class="px-2 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
                 <td class="px-3 py-2.5 whitespace-nowrap">
                     <input type="text" name="part_number" value="{{ item.part_number or '' }}" form="edit-item-{{ item.line }}"
                            class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 font-mono">
@@ -102,24 +116,33 @@
                 <td class="pl-1.5 pr-3 py-2.5">
                     <form id="edit-item-{{ item.line }}" hx-post="/partial/rfqs/{{ rfq.id }}/update-item" hx-target="#main-content">
                         <input type="hidden" name="line" value="{{ item.line }}">
-                        <input type="text" name="input_description" value="{{ item.input_description or '' }}"
-                               class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
+                        <div class="flex items-center gap-1.5">
+                            <input type="text" name="input_description" value="{{ item.input_description or '' }}"
+                                   class="flex-1 min-w-0 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
+                            <select name="department_id"
+                                    class="w-32 shrink-0 px-2 py-1 text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
+                                <option value="">— Department —</option>
+                                {% for d in departments | default([]) %}
+                                <option value="{{ d.id }}" {% if item.department_id == d.id %}selected{% endif %}>{{ d.label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
                     </form>
                 </td>
                 <td class="px-3 py-2.5">
                     <input type="text" name="brand" value="{{ item.brand or '' }}" form="edit-item-{{ item.line }}"
                            class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
                 </td>
-                <td class="px-3 py-2.5 text-center">
+                <td class="px-2 py-2.5 text-center">
                     <input type="text" name="quantity" value="{{ item.quantity or '' }}" form="edit-item-{{ item.line }}"
                            class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 text-center">
                 </td>
-                <td class="px-3 py-2.5 text-center">
+                <td class="px-2 py-2.5 text-center">
                     <input type="text" name="uom" value="{{ item.uom or '' }}" form="edit-item-{{ item.line }}"
-                           class="w-20 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 text-center"
+                           class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 text-center"
                            placeholder="ea">
                 </td>
-                <td colspan="2" class="px-3 py-2.5 text-center">
+                <td colspan="2" class="px-2 py-2.5 text-center">
                     <div class="flex items-center justify-center gap-1">
                         <button type="button"
                                 hx-delete="/partial/rfqs/{{ rfq.id }}/delete-item/{{ item.line }}"
@@ -138,7 +161,7 @@
             {% set brand_sups = item.brand_suppliers or [] %}
             <tr x-show="expanded[{{ item.line }}]" x-cloak class="border-b-2 border-gray-300 dark:border-gray-600">
                 <td class="bg-gray-50 dark:bg-gray-800"></td>
-                <td colspan="8" class="py-2 pl-8 pr-4 bg-gray-50 dark:bg-gray-800">
+                <td colspan="7" class="py-2 pl-8 pr-4 bg-gray-50 dark:bg-gray-800">
                     <div class="flex items-center gap-3 mb-2">
                         <span class="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-medium">Suppliers</span>
                         {% if brand_sups %}
@@ -407,7 +430,7 @@
             {% if show_add_row %}
             <!-- Add item row -->
             <tr x-show="addingItem" x-cloak class="bg-green-50 dark:bg-green-950">
-                <td class="px-3 py-2.5 text-center font-mono text-xs text-gray-400">+</td>
+                <td class="px-2 py-2.5 text-center font-mono text-xs text-gray-400">+</td>
                 <td class="px-3 py-2.5">
                     <input type="text" name="part_number" placeholder="Part #" form="add-item-form"
                            class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 font-mono">
@@ -422,15 +445,15 @@
                     <input type="text" name="brand" placeholder="Brand" form="add-item-form"
                            class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500">
                 </td>
-                <td class="px-3 py-2.5 text-center">
+                <td class="px-2 py-2.5 text-center">
                     <input type="text" name="quantity" placeholder="1" form="add-item-form"
                            class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 text-center">
                 </td>
-                <td class="px-3 py-2.5 text-center">
+                <td class="px-2 py-2.5 text-center">
                     <input type="text" name="uom" placeholder="ea" form="add-item-form"
-                           class="w-20 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 text-center">
+                           class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 text-center">
                 </td>
-                <td colspan="2" class="px-3 py-2.5 text-center">
+                <td colspan="2" class="px-2 py-2.5 text-center">
                     <div class="flex items-center justify-center gap-1">
                         <button type="submit" form="add-item-form"
                                 class="px-2.5 py-1 text-xs font-medium rounded bg-green-600 text-white hover:bg-green-700">Add</button>

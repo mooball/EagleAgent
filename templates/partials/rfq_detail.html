@@ -19,7 +19,8 @@
     "items": items,
     "supplierLines": items | selectattr('suppliers') | map(attribute='line') | list,
     "allLines": items | map(attribute='line') | list,
-    "unmatched": items | selectattr('match', 'equalto', 'unmatched') | list
+    "unmatched": items | selectattr('match', 'equalto', 'unmatched') | list,
+    "departments": departments | default([])
 } | tojson }}</script>
 <div data-dashboard-context='{{ ctx | tojson }}' class="pt-6"
      x-data="rfqDetail()"
@@ -450,6 +451,7 @@
                     <col style="width: 40px;">
                     <col style="width: 140px;">
                     <col>
+                    <col style="width: 130px;">
                     <col style="width: 140px;">
                     <col style="width: 70px;">
                     <col style="width: 70px;">
@@ -459,6 +461,7 @@
                         <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">#</th>
                         <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Part Number</th>
                         <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Description</th>
+                        <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Department</th>
                         <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Brand</th>
                         <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Qty</th>
                         <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db;">UoM</th>
@@ -481,6 +484,17 @@
                                        @focus="$el.style.backgroundColor='var(--cell-focus-bg)'" @blur="$el.style.backgroundColor='transparent'"
                                        @input="updateDirtyCount()"
                                        @keydown.escape="cancelEditAll()">
+                            </td>
+                            <td :style="'padding: 0; border-right: 1px solid #e5e7eb;' + (isEditAllDirty(item.line, 'department_id') ? ' background: var(--cell-dirty-bg);' : '')">
+                                <select x-model="item.department_id"
+                                        style="width: 100%; padding: 8px; font-size: 0.875rem; border: none; background: transparent; outline: none;"
+                                        @focus="$el.style.backgroundColor='var(--cell-focus-bg)'" @blur="$el.style.backgroundColor='transparent'"
+                                        @change="updateDirtyCount()">
+                                    <option value="">—</option>
+                                    <template x-for="d in departments" :key="d.id">
+                                        <option :value="d.id" x-text="d.label"></option>
+                                    </template>
+                                </select>
                             </td>
                             <td :style="'padding: 0; border-right: 1px solid #e5e7eb;' + (isEditAllDirty(item.line, 'brand') ? ' background: var(--cell-dirty-bg);' : '')">
                                 <input type="text" x-model="item.brand"
@@ -797,6 +811,167 @@
                                         <div class="font-medium text-purple-700 dark:text-purple-300">Feedback</div>
                                         <div x-text="pd.feedback.text"></div>
                                         <div class="text-[10px] text-gray-400 mt-0.5" x-text="pd.feedback.submitted_at ? (pd.feedback.user || '') + ' · ' + new Date(pd.feedback.submitted_at).toLocaleString() : ''"></div>
+                                    </div>
+                                </template>
+                                <template x-if="feedbackOpen">
+                                    <div class="space-y-1.5">
+                                        <textarea x-model="feedbackText" rows="3" placeholder="What went wrong?"
+                                                  class="w-full text-xs px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 focus:ring-1 focus:ring-purple-400"></textarea>
+                                        <div class="flex items-center gap-2">
+                                            <button @click="submitFeedback()" :disabled="feedbackSubmitting || !feedbackText.trim()"
+                                                    class="px-2.5 py-1 text-xs font-medium rounded bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50">
+                                                Submit
+                                            </button>
+                                            <button @click="feedbackOpen = false" class="text-xs text-gray-500 dark:text-gray-400 hover:underline">Cancel</button>
+                                            <span x-show="feedbackMsg" class="text-[10px]" :class="feedbackError ? 'text-red-500' : 'text-green-600'" x-text="feedbackMsg"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- RFQ Creation Pipeline Detail Modal -->
+    <div x-data="{ showRfqPipeline: false, rd: {}, feedbackOpen: false, feedbackText: '', feedbackSubmitting: false, feedbackMsg: '', feedbackError: false,
+                   submitFeedback() {
+                       if (!this.rd.email_id || !this.feedbackText.trim()) return;
+                       this.feedbackSubmitting = true;
+                       this.feedbackMsg = '';
+                       fetch('/api/emails/' + this.rd.email_id + '/feedback', {
+                           method: 'POST',
+                           headers: { 'Content-Type': 'application/json' },
+                           body: JSON.stringify({ text: this.feedbackText.trim() })
+                       })
+                       .then(r => r.json().then(d => ({ ok: r.ok, d })))
+                       .then(res => {
+                           this.feedbackSubmitting = false;
+                           if (res.ok && res.d.status === 'ok') {
+                               this.rd.feedback = res.d.feedback;
+                               this.feedbackOpen = false;
+                               this.feedbackText = '';
+                               this.feedbackMsg = 'Saved';
+                               this.feedbackError = false;
+                           } else {
+                               this.feedbackMsg = res.d.message || 'Failed to save';
+                               this.feedbackError = true;
+                           }
+                       })
+                       .catch(() => {
+                           this.feedbackSubmitting = false;
+                           this.feedbackMsg = 'Network error';
+                           this.feedbackError = true;
+                       });
+                   } }"
+         @show-rfq-pipeline-detail.window="rd = $event.detail; showRfqPipeline = true; feedbackOpen = false; feedbackText = ''; feedbackMsg = ''"
+         @keydown.escape.window="showRfqPipeline = false">
+        <template x-if="showRfqPipeline">
+            <div class="fixed inset-0 z-[60] flex items-center justify-center" @click.self="showRfqPipeline = false">
+                <div class="fixed inset-0 bg-black/40"></div>
+                <div class="relative z-10 bg-white dark:bg-gray-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-md mx-4 max-h-[80vh] overflow-y-auto">
+                    <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                        <h3 class="font-semibold text-gray-900 dark:text-gray-100 text-sm">RFQ Creation Pipeline</h3>
+                        <button @click="showRfqPipeline = false" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
+                    </div>
+                    <div class="px-4 py-3 text-sm space-y-3">
+                        <!-- Status -->
+                        <div>
+                            <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Status</span>
+                            <div class="mt-0.5">
+                                <span x-show="rd.status === 'complete'" class="px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">Complete</span>
+                                <span x-show="rd.status === 'partial'" class="px-2 py-0.5 text-xs rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">Partial</span>
+                                <span x-show="rd.status === 'error'" class="px-2 py-0.5 text-xs rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">Error</span>
+                            </div>
+                        </div>
+
+                        <!-- RFQ & Customer -->
+                        <div class="flex gap-4 text-xs">
+                            <template x-if="rd.rfq_number">
+                                <div><span class="font-medium text-gray-500 dark:text-gray-400">RFQ:</span> <a x-bind:href="'/rfqs/' + rd.rfq_number" class="text-blue-600 hover:underline" x-text="rd.rfq_number"></a></div>
+                            </template>
+                            <template x-if="rd.customer">
+                                <div><span class="font-medium text-gray-500 dark:text-gray-400">Customer:</span> <span x-text="rd.customer"></span></div>
+                            </template>
+                        </div>
+
+                        <!-- Title -->
+                        <template x-if="rd.title">
+                            <div class="text-xs">
+                                <span class="font-medium text-gray-500 dark:text-gray-400">Title:</span>
+                                <span class="text-gray-700 dark:text-gray-300" x-text="rd.title"></span>
+                            </div>
+                        </template>
+
+                        <!-- Items Extracted -->
+                        <div class="text-xs">
+                            <span class="font-medium text-gray-500 dark:text-gray-400">Items Extracted:</span>
+                            <span x-text="rd.items_extracted || 0"></span>
+                            <span x-show="rd.extraction_method" class="text-gray-400 ml-1" x-text="'via ' + rd.extraction_method"></span>
+                        </div>
+
+                        <!-- Warnings -->
+                        <template x-if="rd.warnings && rd.warnings.length > 0">
+                            <div>
+                                <span class="text-xs font-medium text-amber-600 dark:text-amber-400 uppercase">Warnings</span>
+                                <ul class="mt-1 space-y-0.5 text-xs text-amber-700 dark:text-amber-300">
+                                    <template x-for="w in rd.warnings" :key="w">
+                                        <li class="pl-2 border-l-2 border-amber-300 dark:border-amber-700" x-text="w"></li>
+                                    </template>
+                                </ul>
+                            </div>
+                        </template>
+
+                        <!-- Actions Taken -->
+                        <template x-if="rd.actions && rd.actions.length > 0">
+                            <div>
+                                <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Actions</span>
+                                <ul class="mt-1 space-y-0.5 text-xs text-gray-700 dark:text-gray-300">
+                                    <template x-for="a in rd.actions" :key="a">
+                                        <li class="pl-2 border-l-2 border-green-300 dark:border-green-700" x-text="a"></li>
+                                    </template>
+                                </ul>
+                            </div>
+                        </template>
+
+                        <!-- Customer Notes -->
+                        <template x-if="rd.customer_notes">
+                            <div class="text-xs">
+                                <span class="font-medium text-gray-500 dark:text-gray-400">Customer Notes:</span>
+                                <span class="text-gray-700 dark:text-gray-300" x-text="rd.customer_notes"></span>
+                            </div>
+                        </template>
+
+                        <!-- Error -->
+                        <template x-if="rd.error">
+                            <div class="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded px-2 py-1">
+                                <span class="font-medium">Error:</span> <span x-text="rd.error"></span>
+                            </div>
+                        </template>
+
+                        <!-- Processed at -->
+                        <template x-if="rd.processed_at">
+                            <div class="text-[10px] text-gray-400 dark:text-gray-500 pt-1 border-t border-gray-100 dark:border-gray-700" x-text="'Processed: ' + new Date(rd.processed_at).toLocaleString()"></div>
+                        </template>
+
+                        <!-- Feedback -->
+                        <template x-if="rd.email_id">
+                            <div class="border-t border-gray-100 dark:border-gray-700 pt-2">
+                                <template x-if="!feedbackOpen && !rd.feedback">
+                                    <button @click="feedbackOpen = true"
+                                            class="text-xs font-medium text-purple-600 dark:text-purple-400 hover:underline">
+                                        Provide feedback
+                                    </button>
+                                </template>
+                                <template x-if="rd.feedback">
+                                    <div class="text-xs bg-purple-50 dark:bg-purple-900/20 border border-purple-100 dark:border-purple-800 rounded px-2 py-1.5">
+                                        <div class="font-medium text-purple-700 dark:text-purple-300">Feedback</div>
+                                        <div x-text="rd.feedback.text"></div>
+                                        <div class="text-[10px] text-gray-400 mt-0.5" x-text="rd.feedback.submitted_at ? (rd.feedback.user || '') + ' · ' + new Date(rd.feedback.submitted_at).toLocaleString() : ''"></div>
                                     </div>
                                 </template>
                                 <template x-if="feedbackOpen">

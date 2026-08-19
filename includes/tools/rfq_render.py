@@ -75,13 +75,14 @@ def _render_rfq_summary(rfq: dict) -> str:
             "discrepancy": "🟠 Discrepancy",
             "unmatched": "⬜ Unmatched",
         }
-        lines.append("| # | Description | Part Number | Brand | Qty | Cost (AUD) | Sale | Match | Notes | Suppliers |")
-        lines.append("|---|------------|-------------|-------|-----|------------|------|--------|-------|-----------|")
+        lines.append("| # | Description | Part Number | Brand | Dept | Qty | Cost (AUD) | Sale | Match | Notes | Suppliers |")
+        lines.append("|---|------------|-------------|-------|------|-----|------------|------|--------|-------|-----------|")
         for item in items:
             line_num = item.get("line", "")
             desc = item.get("input_description", "")
             pn = item.get("part_number") or item.get("input_code") or "—"
             brand = item.get("brand") or "—"
+            dept = item.get("department") or "—"
             qty = item.get("quantity", "")
             uom = item.get("uom", "")
             qty_str = f"{qty} {uom}".strip() if qty else "—"
@@ -154,7 +155,7 @@ def _render_rfq_summary(rfq: dict) -> str:
             else:
                 sup_str = "—"
             lines.append(
-                f"| {line_num} | {desc} | {pn} | {brand} | {qty_str} | {cost_str} | {sale_str} | {status} | {item_notes} | {sup_str} |"
+                f"| {line_num} | {desc} | {pn} | {brand} | {dept} | {qty_str} | {cost_str} | {sale_str} | {status} | {item_notes} | {sup_str} |"
             )
 
         lines.append("")

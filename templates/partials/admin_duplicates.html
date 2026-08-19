@@ -12,7 +12,7 @@
             <h1 class="text-xl font-bold text-gray-900 dark:text-gray-100">Supplier Deduplication</h1>
             <p class="text-sm text-gray-500 dark:text-gray-400 mt-1 max-w-sm">Find and merge duplicate suppliers. Run internal scan first, then NetSuite scan.</p>
         </div>
-        <div class="flex items-center gap-3 flex-shrink-0">
+        <div class="flex items-center gap-3 shrink-0">
             <input type="text" name="name_filter" placeholder="Filter by name..."
                    class="px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-48">
             <form hx-post="/admin/duplicates/scan" hx-target="#dedup-results" hx-swap="innerHTML" hx-indicator="#scan-spinner" hx-include="[name='name_filter']">

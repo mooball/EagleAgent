@@ -71,6 +71,8 @@ class TestQueries:
         sql = products_updated_since("2026-06-01")
         assert "1/6/2026" in sql
         assert "InvtPart" in sql
+        # Department is synced for the RFQ department classification
+        assert "i.department" in sql
 
     def test_sales_orders_updated_since(self):
         sql = sales_orders_updated_since("2026-02-28")
@@ -90,6 +92,60 @@ class TestQueries:
                    sales_orders_updated_since, quotes_updated_since):
             sql = fn("2026-01-01")
             assert "ORDER BY" in sql
+
+
+class TestMapItemToProductDepartment:
+    """Phase 1 — the product sync must carry the NetSuite department ID."""
+
+    def _map(self, row):
+        from scripts.sync_netsuite_products import map_item_to_product
+        return map_item_to_product(row)
+
+    def test_known_department_id_kept(self):
+        out = self._map({"id": "123", "itemid": "ABC", "department": "5"})
+        assert out["department_id"] == "5"
+
+    def test_unknown_department_id_skipped(self):
+        out = self._map({"id": "123", "itemid": "ABC", "department": "999"})
+        assert out["department_id"] is None
+
+    def test_missing_department_is_none(self):
+        out = self._map({"id": "123", "itemid": "ABC"})
+        assert out["department_id"] is None
+
+    def test_numeric_department_normalised_to_string(self):
+        out = self._map({"id": "123", "itemid": "ABC", "department": 11})
+        assert out["department_id"] == "11"
+
+
+class TestBackfillProductDepartments:
+    """Phase 2 — keyset-paginated backfill helpers."""
+
+    def _build(self, last_id):
+        from scripts.backfill_product_departments import build_page_query
+        return build_page_query(last_id)
+
+    def _valid(self, raw):
+        from scripts.backfill_product_departments import valid_department_id
+        return valid_department_id(raw)
+
+    def test_first_page_has_no_keyset_filter(self):
+        sql = self._build(None)
+        assert "id >" not in sql
+        assert "department IS NOT NULL" in sql
+        assert "ORDER BY id ASC" in sql
+
+    def test_keyset_filter_quotes_last_id(self):
+        sql = self._build("540381")
+        assert "id > '540381'" in sql
+
+    def test_known_department_valid(self):
+        assert self._valid("5") == "5"
+        assert self._valid(11) == "11"
+
+    def test_unknown_department_invalid(self):
+        assert self._valid("999") is None
+        assert self._valid(None) is None
 
 
 # ── Auth ─────────────────────────────────────────────────────────
