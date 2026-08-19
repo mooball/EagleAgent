@@ -191,7 +191,9 @@
                                        {% elif rcr_status == 'partial' %}bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300
                                        {% else %}bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300{% endif %}"
                                       data-rfq-result='{{ msg.rfq_creation_result | tojson }}'
-                                      @click.stop="$dispatch('show-rfq-pipeline-detail', JSON.parse($el.dataset.rfqResult))">
+                                      data-email-id='{{ msg.id }}'
+                                      data-feedback='{{ (msg.feedback or none) | tojson }}'
+                                      @click.stop="$dispatch('show-rfq-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.rfqResult), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">
                                     {{ 'RFQ' if rcr_status == 'complete' else 'RFQ*' if rcr_status == 'partial' else 'RFQ!' }}
                                 </span>
                                 {% endif %}
