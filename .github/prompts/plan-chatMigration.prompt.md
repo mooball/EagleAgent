@@ -21,11 +21,12 @@ Two headline findings:
 > the call stack. Removing Chainlit means giving that code an explicit context
 > object. That refactor is the single biggest de-risking move available.
 
-> **2. The frontend choice does not have to be made now — and should not be.**
-> Phases 0–2 (decouple, then build the API) are frontend-agnostic and are required
-> under every option. Only after they land do we need to pick between a bespoke
-> Alpine/HTMX chat and assistant-ui. The plan is therefore **bespoke-first with
-> assistant-ui as a documented contingency**, decided at the Phase 3 gate.
+> **2. Frontend decision made (2026-08-19): bespoke, built on Preline UI.**
+> Phases 0–2 (decouple, then build the API) remain frontend-agnostic as before.
+> At the Phase 3 gate the chat UI is built bespoke — Alpine/HTMX, `EventSource`
+> streaming — on top of **Preline UI** components (already vendored in the repo,
+> see `public/vendor/preline/`). assistant-ui is no longer under consideration;
+> the Option B sections below are kept as historical analysis only.
 
 ---
 
@@ -104,7 +105,8 @@ Be honest — Chainlit gives a lot for free:
 | 23 locale translation files | **Negligible** | All stock, unused. |
 | Chainlit's built-in auth flow | **Negligible** | FastAPI already owns auth. |
 | Feedback (thumbs) adapter | **Low** | `feedbacks` table exists but appears unused. Note: `AssistantTransport` does **not** expose speech/dictation/feedback/suggestion adapters — drop to `ExternalStoreRuntime` if we later want them. |
-| **Pure-Python repo** | **Medium-High** *(Option B only)* | The real cost of choosing assistant-ui: Node/Vite/React/TypeScript is a permanent second toolchain, a Docker build stage, and a new dependency/security surface in a repo that today has zero `package.json`. **Option A avoids this entirely** — see "Frontend: decision deferred". |
+| **Pure-Python repo** | **Medium-High** *(Option B only)* | The real cost of choosing assistant-ui: Node/Vite/React/TypeScript is a permanent second toolchain, a Docker build stage, and a new dependency/security surface in a repo that today has zero `package.json`. **Option A avoids this entirely** — see "Frontend:
+decided — bespoke with Preline UI". |
 
 ### 3. The dashboard↔chat bridge — preserve or improve?
 
@@ -387,20 +389,22 @@ Do it *after* cutover, if at all.
 
 ## Recommended architecture (to-be)
 
-### Frontend: decision deferred to the Phase 3 gate
+### Frontend: decided — bespoke with Preline UI (2026-08-19)
 
-Phases 0–2 are frontend-agnostic. Two candidates, decided once the API exists:
+Decision recorded: **bespoke Alpine/HTMX chat, styled with Preline UI components**
+(vendored v4.2.0 — dropdowns, modals, toasts, tooltips, chat bubbles). assistant-ui
+is removed from the options; the comparison below is kept for the record.
 
-| | **Option A — bespoke (default)** | **Option B — assistant-ui (contingency)** |
+| | **Option A — bespoke (chosen)** | **Option B — assistant-ui (superseded)** |
 | --- | --- | --- |
-| Stack | Alpine + `marked` (already loaded) + `EventSource` + DaisyUI | React 19 + Vite + TypeScript + Tailwind v4 |
+| Stack | Alpine + `marked` (already loaded) + `EventSource` + **Preline UI** | React 19 + Vite + TypeScript + Tailwind v4 |
 | New toolchain | **none** | `package.json`, Vite, Node build stage, `npm audit` |
-| Tailwind | one major (v3) | **two majors on one page** |
+| Tailwind | one (v4, already migrated) | **two majors on one page** |
 | Polish | ~6 medium tasks, ours to own | largely solved |
 | Agent-authored rich UI | Jinja partials pushed over SSE | `push_ui_message()` → `makeAssistantDataUI` |
 | Ongoing cost | same idioms as the rest of the repo | permanent second ecosystem |
 
-**Default to A.** The Chainlit surface actually in use is remarkably shallow —
+**Chosen: A.** The Chainlit surface actually in use is remarkably shallow —
 `cot = "hidden"`, no `cl.Step`, no `TaskList`, no custom elements, no `AskFileMessage`.
 The whole thing is: message in → streamed markdown out → action buttons → file upload
 → thread list → a transient "using tool" line → one `cl.Image`. Combined with
@@ -420,7 +424,12 @@ much narrower than it first appears — while the toolchain cost is permanent.
 - Guard incremental markdown against unterminated fences (append a closing ``` before
   parsing when the count is odd).
 
-#### DaisyUI — attractive, but a *separate* project
+#### DaisyUI — superseded by Preline UI
+
+> **Superseded 2026-08-19.** Preline UI (vendored, Tailwind-v4-native, no Node
+> build, data-attribute components — no `.btn`-style class collisions) replaces
+> DaisyUI as the component library for the chat. Analysis below kept for the
+> record.
 
 DaisyUI is a pure-CSS Tailwind plugin (no JS, no React) that ships a **`chat`
 component** — `chat`, `chat-start`/`chat-end`, `chat-bubble`, `chat-header`,
@@ -448,7 +457,7 @@ Two obstacles:
 **Therefore: do DaisyUI standalone and first, or not at all.** Do not bundle a
 whole-dashboard restyle into the chat migration.
 
-### If we choose Option B — runtime choice
+### If we choose Option B — runtime choice *(superseded — kept as historical analysis)*
 
 | Candidate | Verdict |
 | --- | --- |
@@ -787,16 +796,14 @@ Sizes are relative effort, not time: **S** < **M** < **L** < **XL**.
 - [ ] Endpoint tests with `TestClient`.
 - [ ] **Gate:** full conversation drivable end-to-end with `curl` — no frontend at all.
 
-### Phase 3 — Frontend bake-off · **M**
+### Phase 3 — Bespoke chat UI with Preline · **M**
 
-> Build the **same narrow slice twice** on the Phase 2 API: thread list + streaming +
-> one tool card + file upload. Decide from two working prototypes, not from argument.
+> Frontend already decided (bespoke + Preline UI — see "Frontend" above). Build the
+> chat once on the Phase 2 API: thread list + streaming + one tool card + file upload.
 
-- [ ] **Option A (bespoke):** Alpine component + `EventSource` + `marked`; `htmx-ext-sse` for the non-streaming partials; DaisyUI `chat-bubble` if adopted.
-- [ ] **Option B (assistant-ui):** `frontend/` Vite + React 19 + TS, `@assistant-ui/react` + `@assistant-ui/react-langgraph` (converter/accumulator only); `assistant-stream` on the Python side; Dockerfile Node stage; scoped Tailwind v4 pipeline.
-- [ ] Both mounted behind a flag at `<div id="eagle-chat-root">`, alongside the existing iframe on a dev-only route.
-- [ ] **Kill criteria, set in advance:** abandon B if Tailwind isolation needs shadow DOM or a class prefix hack; abandon A if streaming/scroll behaviour isn't solid within the timebox.
-- [ ] **Gate:** pick one. Record the reason. The other becomes the documented contingency.
+- [ ] **Bespoke build:** Alpine component + `EventSource` + `marked`; `htmx-ext-sse` for the non-streaming partials; **Preline UI** components for dropdowns, modals, tooltips, toasts and chat bubbles.
+- [ ] Mounted at `<div id="eagle-chat-root">`, alongside the existing iframe on a dev-only route.
+- [ ] **Gate:** streaming/scroll behaviour solid; component adoption reviewed. Record any Preline caveats for later phases.
 
 ### Phase 4 — Feature parity · **XL**
 
@@ -845,7 +852,7 @@ Do not proceed past a gate without an explicit go/no-go:
 | After **Phase 0** | ~~Is the parity checklist small enough to be finishable?~~ **Passed 2026-08-16.** 25 of 28 actions in scope, 94 tests, mutations verified. |
 | After **Phase 1** | Did decoupling alone solve enough of the pain? **A legitimate stopping point.** |
 | After **Phase 2** | Does SSE survive the Railway proxy under real load, on HTTP/2? |
-| After **Phase 3** | Which frontend won, and why? Record it. |
+| After **Phase 3** | ~~Which frontend won, and why? Record it.~~ **Decided in advance (2026-08-19): bespoke + Preline UI.** Verify the Preline-based chat meets the parity bar instead. |
 | After **Phase 4** | Genuine parity, or are we shipping a downgrade? |
 
 ---
@@ -856,7 +863,7 @@ Do not proceed past a gate without an explicit go/no-go:
 2. **Two tabs on the same thread** — accept "manual refresh" for v1, or build the fan-out up front? (The `events.py` seam makes the second cheap.)
 3. **Thumbs-up/down feedback** — the `feedbacks` table exists but looks unused. Keep, or drop?
 4. **Multi-replica** — will the web process ever scale beyond one? If yes, the run lock, cancellation **and** the event fan-out all need Postgres `LISTEN`/`NOTIFY` rather than in-process state. Decide once.
-5. **DaisyUI** — adopt it standalone first (with the `btn` rename), or leave the dashboard styling alone?
+5. **DaisyUI** — ~~adopt it standalone first (with the `btn` rename), or leave the dashboard styling alone?~~ **Resolved:** Preline UI chosen instead (2026-08-19); DaisyUI not adopted.
 6. **Track A vs Track B persistence** — keep Chainlit's table shapes for the cutover (recommended), or migrate to a clean schema up front?
 7. **Server-push scope** — build only the `events.py` seam (recommended), or commit to the collaboration feature and `RFQ.version` write-conflict checks now?
 8. **Appetite check** — Phase 1 alone is a large piece of work with real benefit and no frontend risk. Commit to Phases 2–6 up front, or ship Phase 1 and re-evaluate?
