@@ -84,6 +84,10 @@ class TestRfqIdentifyItemsQuoteBrand:
             _set_quote_brand,
         )
         monkeypatch.setattr(
+            "includes.tools.rfq_crud._set_item_departments_sync",
+            lambda rfq_id, user_id: "Departments auto-set: 2 by LLM.",
+        )
+        monkeypatch.setattr(
             "includes.tools.product_tools._find_product_by_code",
             lambda pn, brand=None: None,  # nothing matched in the internal DB
         )
@@ -116,11 +120,53 @@ class TestRfqIdentifyItemsQuoteBrand:
             "includes.tools.rfq_crud._set_quote_brand_from_items_sync",
             _set_quote_brand,
         )
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._set_item_departments_sync",
+            lambda rfq_id, user_id: None,
+        )
 
         await rfq_actions.on_rfq_identify_items(action(rfq_id="RFQ-1", items=[]), rfq)
 
         assert quote_brand_calls == []
         assert rfq.messages == []
+
+    async def test_sets_item_departments_after_quote_brand(self, rfq, monkeypatch):
+        """Step D runs after quote brand: departments are auto-set and the
+        result is reported to the user."""
+        dept_calls: list = []
+
+        def _set_departments(rfq_id, user_id):
+            dept_calls.append((rfq_id, user_id))
+            return "Departments auto-set: 1 from product match, 1 by LLM."
+
+        monkeypatch.setattr(rfq_actions, "_update_item_sync", lambda *a: None)
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._set_quote_brand_from_items_sync",
+            lambda rfq_id, user_id: None,
+        )
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._set_item_departments_sync",
+            _set_departments,
+        )
+        monkeypatch.setattr(
+            "includes.tools.product_tools._find_product_by_code",
+            lambda pn, brand=None: None,
+        )
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._validate_items_sync",
+            lambda rfq_id, web_items, user_id: {"validated": []},
+        )
+
+        await rfq_actions.on_rfq_identify_items(action(
+            rfq_id="RFQ-1",
+            items=[
+                {"line": 1, "description": "desc", "part_number": "PN1", "brand": "Komatsu"},
+            ],
+        ), rfq)
+
+        assert dept_calls == [("RFQ-1", "tester@example.com")]
+        assert any("Departments auto-set" in m.content for m in rfq.messages)
+        assert ("dashboard_refresh", None) in rfq.notifications
 
 
 class TestRfqUpdateSupplier:

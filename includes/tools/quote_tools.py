@@ -36,6 +36,7 @@ from includes.tools.rfq_crud import (  # noqa: F401
 from includes.tools.rfq_render import (  # noqa: F401
     _render_rfq_summary, _render_rfq_list, _render_rfq_brief_summary,
 )
+from includes.netsuite.departments import department_prompt_table
 from config.settings import Config
 
 logger = logging.getLogger(__name__)
@@ -708,7 +709,11 @@ def create_quote_tools(user_id: str) -> list:
                           customer_contact ({name, email, phone}), reference,
                           title, notes, netsuite_opportunity,
                           items ([{input_description, input_code, part_number,
-                          brand, quantity, uom}])
+                          brand, quantity, uom, department_id, department}])
+                          Department: optional NetSuite department for each
+                          item — pass department_id (internal ID, e.g. '5'
+                          for Truck Parts) or department (exact label,
+                          case-insensitive). Leave unset when unsure.
           update        — Update top-level RFQ properties. data keys: any of
                           customer, customer_contact, reference, title, notes,
                           netsuite_opportunity, assigned_to, quote_brand_id,
@@ -725,7 +730,12 @@ def create_quote_tools(user_id: str) -> list:
                           clear.
           update_item   — Update an RFQ line item. data keys: line (required, int),
                           plus any of: input_description, input_code, part_number,
-                          brand, product_id, quantity, uom, match, notes, sale_price.
+                          brand, product_id, quantity, uom, match, notes, sale_price,
+                          department_id, department.
+                          Department: optional NetSuite department for this
+                          item — pass department_id (internal ID, e.g. '5'
+                          for Truck Parts) or department (exact label,
+                          case-insensitive). Pass an empty string to clear.
                           Item match values: unmatched, specific, branded,
                           generic, discrepancy (problem found — part number
                           mismatch or cannot be verified).
@@ -736,7 +746,8 @@ def create_quote_tools(user_id: str) -> list:
                           💡 For multiple lines, use delete_items_bulk instead.
           add_items     — Add multiple line items to an existing RFQ. data keys:
                           items (required, list of dicts with input_description,
-                          input_code, part_number, brand, quantity, uom).
+                          input_code, part_number, brand, quantity, uom,
+                          department_id or department — same as update_item).
                           ⚠️ ALWAYS pass ALL items in ONE call — never call
                           this once per item.
           add_supplier  — Add supplier candidate(s) to a line item. data keys:
@@ -811,9 +822,11 @@ def create_quote_tools(user_id: str) -> list:
                           {"line": 3, "name": "WidgetCo", "price": 45.50}]}
           update_items_bulk — Update fields on multiple line items. data keys:
                           items (required, list of dicts with line plus any
-                          updatable fields from update_item).
+                          updatable fields from update_item, including
+                          department_id / department).
                           Example: {"items": [{"line": 1, "quantity": 10},
-                          {"line": 2, "brand": "Makita"}]}
+                          {"line": 2, "brand": "Makita"},
+                          {"line": 3, "department": "Truck Parts"}]}
           update_quotes_bulk — Update quotation fields across multiple lines.
                           data keys: quotes (required, list of dicts with line,
                           name, plus any updatable quote fields).
@@ -909,6 +922,19 @@ def create_quote_tools(user_id: str) -> list:
         await _notify_rfq_updated()
         return _render_rfq_brief_summary(result)
 
+    # Make the department taxonomy fully visible to the model so it can
+    # discuss the choices with the user and set departments per item.
+    # (classify_items remains the batch auto-classification path.)
+    manage_rfq.description = (
+        (manage_rfq.description or "")
+        + "\n\nDepartments — NetSuite IDs and what each covers:\n"
+        + department_prompt_table()
+        + "\n\nWhen setting an item's department, pass department_id (the ID "
+        "string) or department (the exact label, case-insensitive). The "
+        "Description column is the classification guidance — when unsure "
+        "about an item's department, leave it unset rather than guessing."
+    )
+
     @tool
     async def get_rfq(
         rfq_id: Optional[str] = None,
@@ -980,6 +1006,12 @@ def create_quote_tools(user_id: str) -> list:
         (case-insensitive). Ties, or a majority brand missing from the
         database, leave the quote brand unset for a human to decide — in
         that case, report the outcome to the user.
+
+        Also auto-sets item departments — use this tool for BATCH department
+        assignment: items matched to a product copy that product's
+        department; remaining items are classified by the LLM in one
+        batched call (strict validation against the canonical department
+        list — unsure items stay empty). Report the result to the user.
 
         Returns a summary of what was classified and what still needs
         attention.

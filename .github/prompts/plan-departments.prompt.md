@@ -153,6 +153,19 @@ Implemented: `scripts/backfill_product_departments.py`
 4. Tests mirror the Quote Brand suite: set by ID, set by label, invalid value
    rejected, clear works, bulk path works.
 
+**Implemented (Phase 4 complete):**
+- `_resolve_department(data)` helper in `rfq_crud.py` — resolves
+  `department_id` or `department` (exact case-insensitive label) to the
+  canonical enum ID; empty clears; unknown ID/label or conflicting ID+label
+  raises `ValueError`. Used by `_update_item_core`, `_add_items_sync`, and
+  therefore both bulk paths.
+- `manage_rfq` docstrings document `department_id` / `department` for create,
+  update_item, add_items, and update_items_bulk.
+- `_render_rfq_summary` item table gained a `Dept` column (after Brand).
+- Tests: resolver unit tests, label/ID/clear/conflict paths, agent-level
+  `manage_rfq` tests (ID, case-insensitive label, invalid rejected, bulk
+  mixed inputs), and render tests for the `Dept` column.
+
 ## ✏️ Phase 5 — LLM department classification (no product match)
 
 Precedence, strongest first:
@@ -178,11 +191,32 @@ Implementation sketch:
   path and the dashboard `on_rfq_identify_items` action), the same way the
   Quote Brand auto-set is wired, and report results in the tool summary.
 
-**Decisions needed:**
-- Should LLM classification run automatically inside classify & validate, or as
-  a separate opt-in tool/button?
-- Batch all unmatched items in one LLM call (cheaper) vs per item (more
-  reliable)? Recommend one call with strict JSON validation.
+**Decisions (settled):**
+- **Auto-run** inside classify & validate (agent `classify_items` tool and
+  dashboard `on_rfq_identify_items`), wired like the Quote Brand auto-set. ✅
+- **One batched LLM call** for all unmatched items, strict JSON validation. ✅
+
+**Implemented (Phase 5 complete):**
+- `config/prompts/rfq_item_departments.md` — prompt with a
+  `{{DEPARTMENT_TABLE}}` placeholder, filled from `department_prompt_table()`.
+  Instructs the LLM to omit unsure items and never default to Other Parts.
+- `_set_item_departments_sync(rfq_number, user_id)` in `rfq_crud.py`:
+  pass 1 copies `products.department_id` onto product-matched lines
+  (no LLM, never overwrites an existing department); pass 2 runs one batched
+  LLM call for the remainder, accepts only enum IDs for lines in the input,
+  skips unknown/hallucinated lines, and applies via `_update_items_bulk_sync`.
+  Returns a status string ("N from product match, M by LLM, K skipped").
+- `_classify_rfq_items_sync` calls it (Step 3) and returns
+  `department_result`; the `classify_items` tool docstring documents it.
+- `on_rfq_identify_items` runs it as Step D after quote brand and posts the
+  result to the chat.
+- `manage_rfq` tool description now embeds `department_prompt_table()` so the
+  agent sees the full ID + name + description taxonomy and can discuss and
+  set departments per item; `classify_items` documents the batch
+  auto-assignment path.
+- Tests: product-copy, never-overwrite, LLM validation/skip/omit, LLM
+  failure and bad-JSON handling, classify wiring, dashboard action wiring,
+  tool-description taxonomy visibility.
 
 ## Out of scope (until a later phase)
 

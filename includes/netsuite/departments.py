@@ -65,7 +65,9 @@ _DESCRIPTIONS: dict[Department, str] = {
     Department.ENGINE_PARTS: (
         "Components specific to an engine's internal or fuel/air/cooling "
         "systems (pistons, gaskets, filters, injectors, belts, turbos), "
-        "regardless of what machine the engine sits in."
+        "regardless of what machine the engine sits in. Use only when the "
+        "item is specifically part of the engine assembly — parts outside "
+        "the engine assembly are most often Machine Parts."
     ),
     Department.TRUCK_PARTS: (
         "Parts specific to a truck's body, chassis, cab, or drivetrain (not "

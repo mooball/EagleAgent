@@ -72,6 +72,42 @@ def _is_empty_part_number(pn) -> bool:
     return str(pn).strip().lower() in _EMPTY_PART_NUMBERS
 
 
+def _resolve_department(data: dict) -> str | None:
+    """Resolve department input to a canonical enum ID.
+
+    Accepts ``department_id`` (NetSuite internal ID, e.g. '5') and/or
+    ``department`` (exact case-insensitive label, e.g. 'Truck Parts').
+    Empty values clear. Returns None to clear, or the canonical ID string.
+    Raises ValueError on unknown IDs/labels or conflicting inputs.
+    """
+    from includes.netsuite.departments import DEPARTMENT_BY_ID, DEPARTMENT_BY_LABEL
+
+    raw_id = data.get("department_id")
+    raw_label = data.get("department")
+    dept_id = None
+    if raw_id not in (None, ""):
+        dept_id = str(raw_id).strip()
+        if dept_id not in DEPARTMENT_BY_ID:
+            raise ValueError(
+                f"Invalid department_id '{dept_id}' — must be one of: "
+                f"{', '.join(DEPARTMENT_BY_ID)}"
+            )
+    if raw_label not in (None, ""):
+        resolved = DEPARTMENT_BY_LABEL.get(str(raw_label).strip().lower())
+        if resolved is None:
+            raise ValueError(
+                f"Invalid department '{raw_label}' — must be one of: "
+                f"{', '.join(d.label for d in DEPARTMENT_BY_ID.values())}"
+            )
+        if dept_id is not None and resolved.value != dept_id:
+            raise ValueError(
+                f"Conflicting department inputs: id '{dept_id}' vs "
+                f"label '{raw_label}'"
+            )
+        dept_id = resolved.value
+    return dept_id
+
+
 def _now_iso() -> str:
     """Return current AEST (UTC+10) timestamp in ISO format."""
     return datetime.datetime.now(
@@ -533,18 +569,14 @@ def _add_items_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             RFQItem.rfq_id == rfq.id
         ).scalar() or 0
 
-        from includes.netsuite.departments import DEPARTMENT_BY_ID
         for idx, raw in enumerate(raw_items, start=max_line + 1):
-            department_id = raw.get("department_id")
-            if department_id not in (None, ""):
-                department_id = str(department_id).strip()
-                if department_id not in DEPARTMENT_BY_ID:
-                    return (
-                        f"Error: item {raw.get('input_description') or idx} has "
-                        f"invalid department_id '{department_id}'."
-                    )
-            else:
-                department_id = None
+            try:
+                department_id = _resolve_department(raw)
+            except ValueError as e:
+                return (
+                    f"Error: item {raw.get('input_description') or idx} has "
+                    f"invalid department — {e}"
+                )
             item = RFQItem(
                 rfq_id=rfq.id,
                 line=idx,
@@ -758,24 +790,13 @@ def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
     """
     changes = []
     # Department is validated against the canonical enum before storing.
-    # Empty clears it (departments are editable at any time). Unknown IDs
-    # raise — storing a NetSuite ID that isn't in the enum would silently
-    # break classification and the NetSuite push later.
-    if "department_id" in data:
-        from includes.netsuite.departments import DEPARTMENT_BY_ID
-        new_val = data["department_id"]
-        if new_val in (None, ""):
-            line_item.department_id = None
-            changes.append("department_id")
-        else:
-            new_val = str(new_val).strip()
-            if new_val not in DEPARTMENT_BY_ID:
-                valid = ", ".join(DEPARTMENT_BY_ID)
-                raise ValueError(
-                    f"Invalid department_id '{new_val}' — must be one of: {valid}"
-                )
-            line_item.department_id = new_val
-            changes.append("department_id")
+    # Accepts department_id (NetSuite string ID) or department (exact
+    # case-insensitive label). Empty clears it (departments are editable at
+    # any time). Unknown IDs/labels raise — storing something not in the
+    # enum would silently break classification and the NetSuite push later.
+    if "department_id" in data or "department" in data:
+        line_item.department_id = _resolve_department(data)
+        changes.append("department_id")
 
     updatable = [
         "input_description", "input_code", "part_number", "brand",
@@ -2042,6 +2063,165 @@ def _set_quote_brand_from_items_sync(rfq_number: str, user_id: str) -> str | Non
         session.close()
 
 
+def _set_item_departments_sync(rfq_number: str, user_id: str) -> str | None:
+    """Auto-set item departments after classify & validate.
+
+    Precedence, strongest first:
+      1. Existing department — never overwrite.
+      2. Product match — copy ``products.department_id`` onto the line
+         (deterministic, no LLM).
+      3. LLM fallback — one batched call for the remaining items with no
+         product match. Output is strictly validated against the enum;
+         uncertain/unknown assignments are skipped, leaving NULL.
+
+    Returns a short status string, or None when nothing changed.
+    """
+    import json
+    from includes.dashboard.models import Product
+    from includes.netsuite.departments import (
+        DEPARTMENT_BY_ID, department_prompt_table,
+    )
+
+    rfq_dict = _get_rfq_dict_sync(rfq_number)
+    if not rfq_dict:
+        return f"Error: RFQ '{rfq_number}' not found."
+    items = rfq_dict.get("items", [])
+    if not items:
+        return None
+
+    # ── Pass 1: product matches (no LLM) ──────────────────────────────
+    product_lines: dict[int, str] = {}
+    for item in items:
+        if item.get("department_id") or not item.get("product_id"):
+            continue
+        product_lines[item["line"]] = item["product_id"]
+
+    product_updates: list[dict] = []
+    if product_lines:
+        session = _get_session()
+        try:
+            rows = (
+                session.query(Product.id, Product.department_id)
+                .filter(Product.id.in_(list(product_lines.values())))
+                .all()
+            )
+        finally:
+            session.close()
+        dept_by_pid = {str(r.id): r.department_id for r in rows}
+        for line, pid in product_lines.items():
+            dept_id = dept_by_pid.get(pid)
+            if dept_id and dept_id in DEPARTMENT_BY_ID:
+                product_updates.append({"line": line, "department_id": dept_id})
+
+    if product_updates:
+        result = _update_items_bulk_sync(
+            rfq_number, {"items": product_updates}, user_id,
+        )
+        if isinstance(result, str):
+            return f"Error applying product departments: {result}"
+
+    # ── Pass 2: LLM fallback for the rest ─────────────────────────────
+    done_lines = {u["line"] for u in product_updates}
+    remaining = [
+        {
+            "line": item["line"],
+            "input_description": item.get("input_description", ""),
+            "part_number": item.get("part_number"),
+            "brand": item.get("brand"),
+        }
+        for item in items
+        if not item.get("department_id") and item["line"] not in done_lines
+    ]
+    if not remaining:
+        if product_updates:
+            return (
+                f"Departments auto-set: {len(product_updates)} from product "
+                f"match."
+            )
+        return None
+
+    from google import genai as _genai
+    from google.genai import types as _types
+    from config.settings import Config
+    from includes.prompts import load_prompt
+
+    prompt = load_prompt("rfq_item_departments").replace(
+        "{{DEPARTMENT_TABLE}}", department_prompt_table(),
+    )
+    payload = json.dumps({"items": remaining}, indent=2)
+    full_prompt = (
+        f"{prompt}\n\n---\n\n"
+        f"## Items to classify\n\n"
+        f"```json\n{payload}\n```\n\n"
+        f"Return ONLY the JSON object specified in section 4."
+    )
+
+    try:
+        client = _genai.Client(http_options={"timeout": 120000})
+        response = client.models.generate_content(
+            model=Config.get_agent_model("procurement"),
+            contents=full_prompt,
+            config=_types.GenerateContentConfig(
+                temperature=0.2,
+                max_output_tokens=4096,
+            ),
+        )
+        raw_text = (response.text or "").strip()
+    except Exception as e:
+        return f"Department LLM call failed: {e}"
+
+    cleaned = raw_text
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        lines = [ln for ln in lines if not ln.strip().startswith("```")]
+        cleaned = "\n".join(lines).strip()
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        return f"Failed to parse department LLM response as JSON: {e}"
+
+    assignments = parsed.get("departments", {}) if isinstance(parsed, dict) else {}
+    if not isinstance(assignments, dict):
+        return "Failed to parse department LLM response: 'departments' must be an object."
+
+    remaining_lines = {item["line"] for item in remaining}
+    llm_updates: list[dict] = []
+    skipped: list[str] = []
+    for line_key, dept_val in assignments.items():
+        try:
+            line = int(line_key)
+        except (TypeError, ValueError):
+            skipped.append(str(line_key))
+            continue
+        if line not in remaining_lines:
+            skipped.append(f"line {line} (not in input)")
+            continue
+        dept_id = str(dept_val).strip()
+        if dept_id not in DEPARTMENT_BY_ID:
+            skipped.append(f"line {line} (unknown department '{dept_val}')")
+            continue
+        llm_updates.append({"line": line, "department_id": dept_id})
+
+    if llm_updates:
+        result = _update_items_bulk_sync(
+            rfq_number, {"items": llm_updates}, user_id,
+        )
+        if isinstance(result, str):
+            return f"Error applying LLM departments: {result}"
+
+    parts = []
+    if product_updates:
+        parts.append(f"{len(product_updates)} from product match")
+    if llm_updates:
+        parts.append(f"{len(llm_updates)} by LLM")
+    if skipped:
+        parts.append(f"{len(skipped)} skipped")
+    if not parts:
+        return None
+    return f"Departments auto-set: {', '.join(parts)}."
+
+
 def _classify_rfq_items_sync(
     rfq_number: str, user_id: str, search_db: bool = True,
 ) -> dict:
@@ -2131,12 +2311,17 @@ def _classify_rfq_items_sync(
     # majority; ties and non-DB brands are left for a human).
     quote_brand_result = _set_quote_brand_from_items_sync(rfq_number, user_id)
 
+    # Step 3: auto-set item departments — product match first, then one
+    # batched LLM call for the remainder (strict enum validation).
+    department_result = _set_item_departments_sync(rfq_number, user_id)
+
     return {
         "classified": classified,
         "db_matches": db_matches,
         "to_validate": to_validate,
         "unclassifiable": unclassifiable,
         "quote_brand_result": quote_brand_result,
+        "department_result": department_result,
     }
 
 
