@@ -17,6 +17,12 @@ When you identify a bug or feature:
 Do not run INSERT/UPDATE/DELETE on the production database without explicit approval.
 Stop at diagnosis and ask. Read-only queries are fine.
 
+## 4. Preline UI Adoption Prompts
+**When adding or modifying UI, proactively flag Preline adoption opportunities.**
+New UI work should use Preline components by default. When a task touches existing UI,
+tell the user if it would be a good moment to migrate that area to Preline —
+even if it adds a little effort — and let them decide. See "Frontend / UI" below.
+
 ---
 
 # Copilot Instructions for EagleAgent
@@ -289,10 +295,22 @@ The FastAPI dashboard serves HTML pages for managing suppliers, products, RFQs, 
 - **Models** (`includes/dashboard/models.py`): SQLAlchemy ORM models — `Supplier`, `Product`, `Brand`, `SupplierBrand`, `Transaction`, etc.
 - **Agent Bridge** (`includes/agent_bridge.py`): Bidirectional communication — dashboard can dispatch messages to the agent, agent can notify dashboard to refresh via `cl.send_window_message`.
 
+## Frontend / UI (Jinja2 + HTMX + Alpine + Tailwind v4 + Preline)
+
+- Stack: Jinja2 templates in `templates/`, HTMX partials, Alpine.js 3, Tailwind CSS **v4** (CSS-first config in `input.css`, built with the standalone CLI — **no Node**), and **Preline UI** (vendored in `public/vendor/preline/`, see its `VERSION` file).
+- **Preline is the default for all NEW UI work** — especially the new chat UI (Chainlit migration Phase 3+). Use its `data-hs-*` components (dropdowns, modals, overlays, toasts, tooltips, tabs, chat bubbles, etc.) instead of hand-rolling markup + JS.
+- **When updating existing UI**, proactively flag Preline adoption opportunities to the user — e.g. "this change would be a good moment to switch this modal to a Preline overlay" — even if it adds a little effort. Let the user decide; do not silently do a big-bang restyle.
+- Preline is opt-in per component and additive: its JS only activates elements carrying `data-hs-*` attributes; its CSS variants only emit when a template uses them. HTMX-swapped fragments auto-initialise (MutationObserver), same as Alpine.
+- **Never mix Alpine and Preline JS on the same element tree** — a dropdown is either Alpine's or Preline's, not both.
+- `@tailwindcss/forms` is intentionally omitted (legacy plugin; the standalone v4 CLI cannot load it vendored) — style form controls with utilities as today.
+- Custom component CSS lives at the bottom of `input.css` (`.btn`, `.tip`, etc.).
+- Rebuild CSS after any class/template change with the standalone v4 CLI: `tailwindcss -i input.css -o public/tailwind.min.css --minify` (binary at `/tmp/tailwindcss4` locally; the Dockerfile downloads the same version at deploy). `public/tailwind.min.css` is untracked.
+- Preline kitchen-sink probe: `/public/probe.html` (with its `@source` line in `input.css` — remove both together when retiring it).
+- v4 gotchas: `flex-shrink-0`→`shrink-0`, `outline-none`→`outline-hidden`, `shadow-sm`→`shadow-xs`; bare `ring` is 1px/currentColor; Preflight no longer gives buttons `cursor: pointer` (restored in `input.css` base layer).
+
 ## Action Buttons (`includes/chat/actions.py`)
 
 Actions replace the old `/` slash commands with action buttons and LangGraph tools.
-
 - **Registry**: `@register_action(name, label, description, icon, admin_only)` decorator registers a handler. Handlers take `(ctx, **kwargs)`.
 - **Dispatcher**: `dispatch_action(name, ctx)` checks the user's role before executing admin-only actions. `ctx` defaults to the bound `ChatContext`.
 - **Filtering**: `get_actions_for_user(user_id)` returns actions visible to the given user's role.
