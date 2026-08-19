@@ -248,12 +248,20 @@ def _rfq_to_dict(rfq) -> dict:
 
 def _item_to_dict(item) -> dict:
     """Convert an RFQItem ORM object to a plain dict."""
+    from includes.netsuite.departments import DEPARTMENT_BY_ID
+
+    department_id = item.department_id or None
+    department = None
+    if department_id and department_id in DEPARTMENT_BY_ID:
+        department = DEPARTMENT_BY_ID[department_id].label
     return {
         "line": item.line,
         "input_description": item.input_description or "",
         "input_code": item.input_code or "",
         "part_number": item.part_number,
         "brand": item.brand,
+        "department_id": department_id,
+        "department": department,
         "product_id": str(item.product_id) if item.product_id else None,
         "quantity": item.quantity,
         "uom": item.uom or "ea",
@@ -525,7 +533,18 @@ def _add_items_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
             RFQItem.rfq_id == rfq.id
         ).scalar() or 0
 
+        from includes.netsuite.departments import DEPARTMENT_BY_ID
         for idx, raw in enumerate(raw_items, start=max_line + 1):
+            department_id = raw.get("department_id")
+            if department_id not in (None, ""):
+                department_id = str(department_id).strip()
+                if department_id not in DEPARTMENT_BY_ID:
+                    return (
+                        f"Error: item {raw.get('input_description') or idx} has "
+                        f"invalid department_id '{department_id}'."
+                    )
+            else:
+                department_id = None
             item = RFQItem(
                 rfq_id=rfq.id,
                 line=idx,
@@ -533,6 +552,7 @@ def _add_items_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
                 input_code=raw.get("input_code", ""),
                 part_number=raw.get("part_number") or raw.get("input_code") or None,
                 brand=raw.get("brand"),
+                department_id=department_id,
                 product_id=raw.get("product_id"),
                 quantity=raw.get("quantity"),
                 uom=raw.get("uom", "ea"),
@@ -736,13 +756,33 @@ def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
       - reset_pipeline: True if identifying fields changed and
         pipeline_stage should be reset to 'unprocessed'
     """
+    changes = []
+    # Department is validated against the canonical enum before storing.
+    # Empty clears it (departments are editable at any time). Unknown IDs
+    # raise — storing a NetSuite ID that isn't in the enum would silently
+    # break classification and the NetSuite push later.
+    if "department_id" in data:
+        from includes.netsuite.departments import DEPARTMENT_BY_ID
+        new_val = data["department_id"]
+        if new_val in (None, ""):
+            line_item.department_id = None
+            changes.append("department_id")
+        else:
+            new_val = str(new_val).strip()
+            if new_val not in DEPARTMENT_BY_ID:
+                valid = ", ".join(DEPARTMENT_BY_ID)
+                raise ValueError(
+                    f"Invalid department_id '{new_val}' — must be one of: {valid}"
+                )
+            line_item.department_id = new_val
+            changes.append("department_id")
+
     updatable = [
         "input_description", "input_code", "part_number", "brand",
         "product_id", "quantity", "uom", "match", "notes",
         "sale_price",
     ]
     _no_clear = {"product_id", "match"}
-    changes = []
     for key in updatable:
         if key in data:
             new_val = data[key]
@@ -782,9 +822,14 @@ def _update_item_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
         if not line_item:
             return f"Error: line {line_num} not found in {rfq_number}."
 
-        changes, _line_num, reset_pipeline = _update_item_core(
-            session, rfq, line_item, data, user_id,
-        )
+        try:
+            changes, _line_num, reset_pipeline = _update_item_core(
+                session, rfq, line_item, data, user_id,
+            )
+        except ValueError as e:
+            # Validation raises before any mutation, so nothing to roll back —
+            # the caller's session.close() discards the open transaction.
+            return f"Error: {e}"
 
         # Rfq-level side effects
         if changes:
@@ -845,9 +890,13 @@ def _update_items_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict |
                 results.append(f"Skipped: line {line_num} not found")
                 continue
 
-            changes, ln, reset_pipeline = _update_item_core(
-                session, rfq, line_item, item_data, user_id,
-            )
+            try:
+                changes, ln, reset_pipeline = _update_item_core(
+                    session, rfq, line_item, item_data, user_id,
+                )
+            except ValueError as e:
+                results.append(f"Skipped line {line_num}: {e}")
+                continue
             if changes:
                 any_changes = True
                 results.append(f"Line {ln}: {', '.join(changes)}")

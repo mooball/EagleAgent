@@ -117,10 +117,26 @@ Implemented: `scripts/backfill_product_departments.py`
    server resolves and validates the value against the enum.
 5. **CSV export** — fill the existing empty `Department` column with the label.
 
-**Decisions needed:**
-- Show department as a new column in the item table, or a badge next to the
-  description?
-- Any department editable at any time, or only before suppliers are found?
+**Decisions (settled):**
+- **Badge**, not a column — small grey badge inline after the description;
+  hidden when empty. ✅
+- **Editable at any time** — no pipeline-stage restriction; clearing allowed.
+  ✅
+
+**Implemented (Phase 3 complete):**
+- `rfq_items.department_id` column + migration `w8x9y0z1a2b3`.
+- `_item_to_dict` → `department_id` + `department` label (unknown IDs keep the
+  ID, label `None`).
+- `_update_item_core` validates `department_id` against `DEPARTMENT_BY_ID`
+  before any mutation; invalid IDs raise `ValueError` → `_update_item_sync`
+  returns an error string, `_update_items_bulk_sync` skips the line and reports
+  it in history. Empty string clears.
+- `_add_items_sync` accepts and validates `department_id` per item.
+- Routes: `/partial/rfqs/{id}/update-item` + `/bulk-update-items` accept
+  `department_id`; `/export-items` CSV fills the Department column.
+- Templates: badge after description; `<select>` in the per-item edit form and
+  a Department column in the Edit All spreadsheet grid; `departments` options
+  injected via ctx (`_department_options()` in routes) and the `rfq-data` JSON.
 
 ## ✏️ Phase 4 — Agent tools to set / update item departments
 

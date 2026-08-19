@@ -334,6 +334,9 @@ class RFQItem(Base):
     input_code = Column(String, nullable=True)
     part_number = Column(String, nullable=True)
     brand = Column(String, nullable=True)
+    # NetSuite department internal ID — maps to Department enum values
+    # in includes/netsuite/departments.py (e.g. '5' = Truck Parts)
+    department_id = Column(String, nullable=True)
     product_id = Column(UUID(as_uuid=True), ForeignKey('products.id'), nullable=True)
     quantity = Column(Integer, nullable=True)
     uom = Column(String, nullable=True, default='ea')

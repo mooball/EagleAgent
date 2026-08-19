@@ -318,10 +318,15 @@ class TestAutoQuoteBrand:
         return rfq
 
     def test_majority_sets_quote_brand(self, db_session):
-        komatsu = self._make_brand(db_session, "Komatsu")
-        self._make_brand(db_session, "Hitachi")
+        # Unique names — a real synced brand named "Komatsu" now exists in the
+        # dev DB and would otherwise win the exact-name lookup.
+        suffix = uuid.uuid4().hex[:6]
+        komatsu_name = f"Komatsu Test {suffix}"
+        hitachi_name = f"Hitachi Test {suffix}"
+        komatsu = self._make_brand(db_session, komatsu_name)
+        self._make_brand(db_session, hitachi_name)
         rfq = self._make_rfq_with_items(
-            db_session, ["Komatsu", "Komatsu", "Hitachi"],
+            db_session, [komatsu_name, komatsu_name, hitachi_name],
         )
 
         with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
@@ -329,14 +334,14 @@ class TestAutoQuoteBrand:
             result = _set_quote_brand_from_items_sync(rfq.rfq_number, "tester")
 
         assert result is not None
-        assert "Auto-set quote brand to 'Komatsu'" in result
+        assert "Auto-set quote brand to" in result
 
         db_session.expire_all()
         stored = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
         assert stored.quote_brand_id == komatsu.id
-        assert stored.quote_brand == "Komatsu"
+        assert stored.quote_brand == komatsu_name
         assert any(
-            "Auto-set quote brand to 'Komatsu'" in h.get("action", "")
+            "Auto-set quote brand to" in h.get("action", "")
             for h in (stored.history or [])
         )
 
@@ -415,3 +420,179 @@ class TestAutoQuoteBrand:
 
         mock_set_brand.assert_called_once_with(rfq.rfq_number, "tester")
         assert result["quote_brand_result"] == "wired"
+
+
+# ---------------------------------------------------------------------------
+# Item departments (Phase 3) — store / edit / validate against the enum
+# ---------------------------------------------------------------------------
+
+class TestItemDepartment:
+    """Department on RFQ line items: dict plumbing and CRUD validation."""
+
+    @pytest.fixture
+    def db_session(self):
+        """DB session with SAVEPOINT so commits inside helpers don't end the
+        outer transaction — everything rolls back at the end."""
+        from includes.dashboard.database import _sync_url
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        from sqlalchemy import event
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _make_rfq(self, session, with_items=1) -> RFQ:
+        rfq = RFQ(
+            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            customer="Test Customer",
+            created_by="tester",
+            created_date=datetime.now(timezone.utc),
+        )
+        session.add(rfq)
+        session.flush()
+        for line in range(1, with_items + 1):
+            session.add(RFQItem(
+                rfq_id=rfq.id, line=line,
+                input_description=f"Item {line}",
+            ))
+        session.flush()
+        return rfq
+
+    # -- Dict plumbing --------------------------------------------------
+
+    def test_item_to_dict_surfaces_department(self):
+        from includes.tools.rfq_crud import _item_to_dict
+        item = RFQItem(line=1, input_description="Filter", department_id="5")
+        out = _item_to_dict(item)
+        assert out["department_id"] == "5"
+        assert out["department"] == "Truck Parts"
+
+    def test_item_to_dict_unknown_id_keeps_id_but_no_label(self):
+        from includes.tools.rfq_crud import _item_to_dict
+        item = RFQItem(line=1, input_description="Filter", department_id="999")
+        out = _item_to_dict(item)
+        assert out["department_id"] == "999"
+        assert out["department"] is None
+
+    def test_item_to_dict_no_department(self):
+        from includes.tools.rfq_crud import _item_to_dict
+        item = RFQItem(line=1, input_description="Filter")
+        out = _item_to_dict(item)
+        assert out["department_id"] is None
+        assert out["department"] is None
+
+    # -- Single item update --------------------------------------------
+
+    def test_update_item_sets_valid_department(self, db_session):
+        from includes.tools.rfq_crud import _update_item_sync
+        rfq = self._make_rfq(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = _update_item_sync(rfq.rfq_number, {"line": 1, "department_id": "9"}, "tester")
+
+        assert not isinstance(result, str)
+        item = result["items"][0]
+        assert item["department_id"] == "9"
+        assert item["department"] == "4WD Parts"
+
+        db_session.expire_all()
+        stored = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id, RFQItem.line == 1).first()
+        assert stored.department_id == "9"
+
+    def test_update_item_clears_department(self, db_session):
+        from includes.tools.rfq_crud import _update_item_sync
+        rfq = self._make_rfq(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            _update_item_sync(rfq.rfq_number, {"line": 1, "department_id": "5"}, "tester")
+            result = _update_item_sync(rfq.rfq_number, {"line": 1, "department_id": ""}, "tester")
+
+        assert not isinstance(result, str)
+        assert result["items"][0]["department_id"] is None
+
+    def test_update_item_rejects_invalid_department(self, db_session):
+        from includes.tools.rfq_crud import _update_item_sync
+        rfq = self._make_rfq(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            # Commit a valid department first so we can prove the invalid
+            # update leaves it untouched (the error path rolls back the
+            # transaction, so an uncommitted baseline would be lost).
+            _update_item_sync(rfq.rfq_number, {"line": 1, "department_id": "5"}, "tester")
+            result = _update_item_sync(rfq.rfq_number, {"line": 1, "department_id": "999"}, "tester")
+
+        assert isinstance(result, str)
+        assert "Invalid department_id" in result
+        db_session.expire_all()
+        stored = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id, RFQItem.line == 1).first()
+        assert stored.department_id == "5"  # unchanged
+
+    # -- Bulk update ----------------------------------------------------
+
+    def test_bulk_update_skips_invalid_department(self, db_session):
+        from includes.tools.rfq_crud import _update_items_bulk_sync
+        rfq = self._make_rfq(db_session, with_items=2)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = _update_items_bulk_sync(rfq.rfq_number, {
+                "items": [
+                    {"line": 1, "department_id": "5"},
+                    {"line": 2, "department_id": "999"},
+                ],
+            }, "tester")
+
+        assert not isinstance(result, str)
+        by_line = {i["line"]: i for i in result["items"]}
+        assert by_line[1]["department"] == "Truck Parts"
+        assert by_line[2]["department_id"] is None
+        history_actions = " | ".join(h["action"] for h in result["history"])
+        assert "Skipped line 2" in history_actions
+
+    # -- Add items ------------------------------------------------------
+
+    def test_add_items_stores_valid_department(self, db_session):
+        from includes.tools.rfq_crud import _add_items_sync
+        rfq = self._make_rfq(db_session, with_items=0)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = _add_items_sync(rfq.rfq_number, {
+                "items": [
+                    {"input_description": "Brake pads", "department_id": "5"},
+                    {"input_description": "No department"},
+                ],
+            }, "tester")
+
+        assert not isinstance(result, str)
+        by_line = {i["line"]: i for i in result["items"]}
+        assert by_line[1]["department"] == "Truck Parts"
+        assert by_line[2]["department_id"] is None
+
+    def test_add_items_rejects_invalid_department(self, db_session):
+        from includes.tools.rfq_crud import _add_items_sync
+        rfq = self._make_rfq(db_session, with_items=0)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            # Commit one valid item first; the invalid call rolls back, so we
+            # prove nothing extra was added by comparing against it.
+            _add_items_sync(rfq.rfq_number, {"items": [{"input_description": "Kept"}]}, "tester")
+            result = _add_items_sync(rfq.rfq_number, {
+                "items": [{"input_description": "Mystery part", "department_id": "999"}],
+            }, "tester")
+
+        assert isinstance(result, str)
+        assert "invalid department_id" in result
+        db_session.expire_all()
+        stored = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()
+        assert len(stored) == 1  # nothing extra added
+

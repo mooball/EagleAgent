@@ -11,9 +11,15 @@ from sqlalchemy import func as sa_func
 
 from includes.dashboard.models import Supplier, Transaction, EmailTracking, Contact
 from includes.tools.product_tools import normalize_part_number
+from includes.netsuite.departments import Department
 from . import _helpers
 from ._helpers import router, templates, require_user, _render, _is_htmx
 from .api import _lookup_rfq_thread_id
+
+
+def _department_options() -> list[dict]:
+    """Department enum options for template selects (id + display label)."""
+    return [{"id": d.netsuite_id, "label": d.label} for d in Department]
 
 RFQ_PAGE_SIZE = 25
 RFQ_ALLOWED_TABS = {"items", "suppliers", "communications", "quotation", "quotation-old"}
@@ -399,6 +405,7 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
         "rfq_thread_id": _lookup_rfq_thread_id(rfq["id"], user.get("email", "")),
         "active_tab": _normalize_rfq_tab(active_tab),
         "all_users": _get_all_user_emails(),
+        "departments": _department_options(),
     }
     if ctx["active_tab"] == "suppliers":
         ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
@@ -720,6 +727,7 @@ async def rfq_new(request: Request, user: dict = Depends(require_user)):
         "rfq_thread_id": None,
         "active_tab": "items",
         "all_users": _get_all_user_emails(),
+        "departments": _department_options(),
         "header_auto_edit": True,
     })
     response.headers["HX-Push-Url"] = f"/rfqs/{rfq_id}"
@@ -774,6 +782,7 @@ async def rfq_detail(request: Request, rfq_id: str,
         "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
         "active_tab": "items",
         "all_users": _get_all_user_emails(),
+        "departments": _department_options(),
     }
     return _render(request, "rfq_detail.html", "partials/rfq_detail.html", ctx, user)
 
@@ -824,7 +833,7 @@ async def rfq_export_items(request: Request, rfq_id: str,
 
         sell_str = str(sell_price) if sell_price is not None else ""
 
-        writer.writerow([part_no, desc, qty, purchase_price, sell_str, vendor_name, brand, ""])
+        writer.writerow([part_no, desc, qty, purchase_price, sell_str, vendor_name, brand, item.get("department") or ""])
 
     csv_content = output.getvalue()
     filename = f"{rfq_id}_items.csv"
@@ -1193,7 +1202,7 @@ async def partial_rfq_update_item(request: Request, rfq_id: str,
         return HTMLResponse("<p>Invalid line number.</p>", status_code=400)
 
     data = {"line": line_num}
-    updatable = ["input_description", "part_number", "brand", "quantity", "uom"]
+    updatable = ["input_description", "part_number", "brand", "quantity", "uom", "department_id"]
     for key in updatable:
         val = form.get(key)
         if val is not None:
@@ -1239,7 +1248,7 @@ async def partial_rfq_bulk_update_items(request: Request, rfq_id: str,
         return JSONResponse({"status": "error", "message": "No items provided."}, status_code=400)
 
     # Sanitise each item
-    updatable = ["input_description", "part_number", "brand", "quantity", "uom"]
+    updatable = ["input_description", "part_number", "brand", "quantity", "uom", "department_id"]
     clean_items = []
     for raw in items_data:
         try:
@@ -1354,6 +1363,7 @@ async def partial_rfq_clear_suppliers(request: Request, rfq_id: str,
     return templates.TemplateResponse(request, "partials/rfq_detail.html", {
         "user": user, "rfq": rfq,
         "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
+        "departments": _department_options(),
     })
 
 

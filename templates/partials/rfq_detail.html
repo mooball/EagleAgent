@@ -19,7 +19,8 @@
     "items": items,
     "supplierLines": items | selectattr('suppliers') | map(attribute='line') | list,
     "allLines": items | map(attribute='line') | list,
-    "unmatched": items | selectattr('match', 'equalto', 'unmatched') | list
+    "unmatched": items | selectattr('match', 'equalto', 'unmatched') | list,
+    "departments": departments | default([])
 } | tojson }}</script>
 <div data-dashboard-context='{{ ctx | tojson }}' class="pt-6"
      x-data="rfqDetail()"
@@ -450,6 +451,7 @@
                     <col style="width: 40px;">
                     <col style="width: 140px;">
                     <col>
+                    <col style="width: 130px;">
                     <col style="width: 140px;">
                     <col style="width: 70px;">
                     <col style="width: 70px;">
@@ -459,6 +461,7 @@
                         <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">#</th>
                         <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Part Number</th>
                         <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Description</th>
+                        <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Department</th>
                         <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Brand</th>
                         <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Qty</th>
                         <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db;">UoM</th>
@@ -481,6 +484,17 @@
                                        @focus="$el.style.backgroundColor='var(--cell-focus-bg)'" @blur="$el.style.backgroundColor='transparent'"
                                        @input="updateDirtyCount()"
                                        @keydown.escape="cancelEditAll()">
+                            </td>
+                            <td :style="'padding: 0; border-right: 1px solid #e5e7eb;' + (isEditAllDirty(item.line, 'department_id') ? ' background: var(--cell-dirty-bg);' : '')">
+                                <select x-model="item.department_id"
+                                        style="width: 100%; padding: 8px; font-size: 0.875rem; border: none; background: transparent; outline: none;"
+                                        @focus="$el.style.backgroundColor='var(--cell-focus-bg)'" @blur="$el.style.backgroundColor='transparent'"
+                                        @change="updateDirtyCount()">
+                                    <option value="">—</option>
+                                    <template x-for="d in departments" :key="d.id">
+                                        <option :value="d.id" x-text="d.label"></option>
+                                    </template>
+                                </select>
                             </td>
                             <td :style="'padding: 0; border-right: 1px solid #e5e7eb;' + (isEditAllDirty(item.line, 'brand') ? ' background: var(--cell-dirty-bg);' : '')">
                                 <input type="text" x-model="item.brand"

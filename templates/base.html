@@ -852,6 +852,7 @@
                 editAllMsg: '',
                 editAllError: false,
                 editAllDirtyCount: 0,
+                departments: [],
                 copySupplierModal: { open: false, sourceLine: null, supplierName: '', items: [] },
                 brandSuppliersModal: { open: false, line: null, brand: '', suppliers: [] },
                 rfqId: '',
@@ -870,6 +871,7 @@
                     this.emailModal.trackingId = this.trackingId;
                     this._allLines = data.allLines || [];
                     this._unmatchedItems = data.unmatched || [];
+                    this.departments = data.departments || [];
                     // Index items by line number for quick lookup
                     (data.items || []).forEach(i => this._items[i.line] = i);
                     // Auto-open header edit form for blank RFQs (no customer yet)
@@ -946,7 +948,8 @@
                                 input_description: src.input_description || '',
                                 brand: src.brand || '',
                                 quantity: src.quantity != null ? String(src.quantity) : '',
-                                uom: src.uom || ''
+                                uom: src.uom || '',
+                                department_id: src.department_id || ''
                             };
                             items.push(row);
                             originals[src.line] = {
@@ -954,7 +957,8 @@
                                 input_description: row.input_description,
                                 brand: row.brand,
                                 quantity: row.quantity,
-                                uom: row.uom
+                                uom: row.uom,
+                                department_id: row.department_id
                             };
                         }
                     });
@@ -979,7 +983,7 @@
                     this.editAllItems.forEach(item => {
                         var orig = self.editAllOriginals[item.line];
                         if (!orig) return;
-                        var fields = ['part_number', 'input_description', 'brand', 'quantity', 'uom'];
+                        var fields = ['part_number', 'input_description', 'brand', 'quantity', 'uom', 'department_id'];
                         for (var i = 0; i < fields.length; i++) {
                             if ((item[fields[i]] || '') !== (orig[fields[i]] || '')) { count++; break; }
                         }
