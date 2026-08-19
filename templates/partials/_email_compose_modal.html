@@ -58,7 +58,7 @@
             <div>
                 <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">To</label>
                 <input type="email" x-model="emailModal.recipientEmail"
-                       class="w-full text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                       class="w-full text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-hidden focus:ring-1 focus:ring-blue-500">
             </div>
             <div>
                 <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Subject</label>
@@ -67,7 +67,7 @@
                           x-text="emailModal.trackingId ? '[' + emailModal.trackingId + ']' : ''"
                           x-show="emailModal.trackingId"></span>
                     <input type="text" x-model="emailModal.subject"
-                           class="flex-1 text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                           class="flex-1 text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-hidden focus:ring-1 focus:ring-blue-500">
                 </div>
             </div>
             <div :class="emailModal.isExpanded ? 'flex-1 min-h-0' : ''"

@@ -61,7 +61,7 @@
                         {{ name | truncate(14, true, '…') }}
                         {% if has_meta %}
                         <button @click.stop="$dispatch('show-supplier-meta', {name: '{{ name | replace("'", "\\'") }}', lead: '{{ lead_times | join("; ") | replace("'", "\\'") }}', terms: '{{ (sm.get("terms") or "") | replace("'", "\\'") }}', notes: '{{ (sm.get("notes") or "") | replace("'", "\\'") }}', rect: JSON.stringify($el.getBoundingClientRect())})"
-                                class="text-blue-400 hover:text-blue-600 dark:text-blue-500 dark:hover:text-blue-300 focus:outline-none" title="Supplier notes">
+                                class="text-blue-400 hover:text-blue-600 dark:text-blue-500 dark:hover:text-blue-300 focus:outline-hidden" title="Supplier notes">
                             <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path></svg>
                         </button>
                         {% endif %}

@@ -6,7 +6,7 @@
     <title>{% block title %}EagleAgent{% endblock %}</title>
     <!-- Tailwind CSS: use pre-built file in prod, fall back to CDN for local dev -->
     <link rel="stylesheet" href="/public/tailwind.min.css?v={{ css_version | default('dev') }}"
-          onerror="if(!window.__twFallback){window.__twFallback=1;var s=document.createElement('script');s.src='https://cdn.tailwindcss.com';document.head.appendChild(s);var c=document.createElement('script');c.textContent='tailwind.config={darkMode:\u0022class\u0022}';document.head.appendChild(c)}">
+          onerror="if(!window.__twFallback){window.__twFallback=1;var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4';document.head.appendChild(s);var st=document.createElement('style');st.type='text/tailwindcss';st.textContent='@custom-variant dark (&:where(.dark, .dark *));';document.head.appendChild(st)}">
     <script>
         // Restore theme before paint to prevent flash
         if (localStorage.theme === 'dark' || (!localStorage.theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
@@ -69,7 +69,7 @@
       x-data="dashboard()" x-init="init()">
 
     <!-- Header -->
-    <header class="h-14 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 shadow-sm relative z-50">
+    <header class="h-14 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 shadow-xs relative z-50">
         <div class="flex items-center gap-2">
             <a href="/" class="flex items-center gap-2 text-lg font-bold text-gray-800 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400">
                 <img src="/public/eagle-icon.png" alt="" class="w-7 h-7">
