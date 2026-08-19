@@ -83,6 +83,7 @@ def products_updated_since(since_date: str) -> str:
     return (
         "SELECT i.id, i.itemid, i.description, "
         "i.custitem_brand, BUILTIN.DF(i.custitem_brand) AS brand_name, "
+        "i.department, "
         "i.weight, "
         "i.lastmodifieddate "
         "FROM item i "

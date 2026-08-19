@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import logging
 import re
 from datetime import datetime, timedelta
 
@@ -27,7 +28,10 @@ from sqlalchemy.orm import sessionmaker
 from config.settings import Config
 from includes.dashboard.models import Brand, Product
 from includes.netsuite.client import NetSuiteClient
+from includes.netsuite.departments import DEPARTMENT_BY_ID
 from includes.netsuite.queries import products_updated_since
+
+logger = logging.getLogger(__name__)
 
 
 def parse_since(value: str) -> str:
@@ -89,12 +93,28 @@ def map_item_to_product(row: dict) -> dict:
     if netsuite_brand_id:
         netsuite_brand_id = str(netsuite_brand_id).strip()
 
+    # Department is a NetSuite internal ID that must be one of the known
+    # Department enum values. Unknown IDs are logged and skipped — a new
+    # NetSuite department should fail loudly instead of polluting the column.
+    department_id = row.get("department")
+    if department_id:
+        department_id = str(department_id).strip()
+        if department_id not in DEPARTMENT_BY_ID:
+            logger.warning(
+                "Unknown NetSuite department ID '%s' for item %s — storing NULL",
+                department_id, row.get("id"),
+            )
+            department_id = None
+    else:
+        department_id = None
+
     return {
         "netsuite_id": str(row.get("id", "")).strip(),
         "part_number": (row.get("itemid") or "").strip(),
         "description": description or None,
         "brand": row.get("brand_name"),
         "netsuite_brand_id": netsuite_brand_id,
+        "department_id": department_id,
         "weight_kg": safe_float(row.get("weight")),
         "netsuite_last_modified": parse_netsuite_date(row.get("lastmodifieddate")),
     }
@@ -102,7 +122,8 @@ def map_item_to_product(row: dict) -> dict:
 
 # Fields that NetSuite owns — these get overwritten on sync
 NETSUITE_OWNED_FIELDS = {
-    "part_number", "description", "brand", "brand_id", "weight_kg", "netsuite_last_modified",
+    "part_number", "description", "brand", "brand_id", "weight_kg", "department_id",
+    "netsuite_last_modified",
 }
 
 
@@ -221,6 +242,7 @@ def main():
                         description=mapped["description"],
                         brand=mapped["brand"],
                         brand_id=mapped["brand_id"],
+                        department_id=mapped["department_id"],
                         weight_kg=mapped["weight_kg"],
                         netsuite_last_modified=mapped["netsuite_last_modified"],
                     )

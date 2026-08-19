@@ -81,6 +81,9 @@ class Product(Base):
     description = Column(Text, nullable=True)
     brand = Column(String, nullable=True)
     brand_id = Column(UUID(as_uuid=True), ForeignKey('brands.id'), nullable=True, index=True)
+    # NetSuite item department internal ID — maps to Department enum values
+    # in includes/netsuite/departments.py (e.g. '5' = Truck Parts)
+    department_id = Column(String, nullable=True)
     weight_kg = Column(Float, nullable=True)
     length_m = Column(Float, nullable=True)
     product_type = Column(String, nullable=True)

@@ -80,15 +80,28 @@ descriptions must version-control alongside matching logic).
 
 ## ✏️ Phase 2 — One-off backfill of existing products
 
-1. Extend `scripts/sync_netsuite_products.py` with a backfill mode (e.g.
-   `--since 1970-01-01` documented as the full backfill, or an explicit
-   `--full` flag). The `ORDER BY lastmodifieddate ASC` + resume pattern already
-   supports long runs; confirm pagination (`offset`) handles ~300k rows.
-2. Or a dedicated `scripts/backfill_product_departments.py` that walks products
-   missing `department_id`, fetches by NetSuite ID in batches, and writes the
-   column back. **Decision needed** — inline flag vs separate script.
-3. Run once locally (or via Railway job) and verify counts match the live
-   distribution table above.
+**Decision made 2026-08-19:** dedicated script — the inline `--full` flag is
+not viable.
+
+Live probe found the SuiteQL REST ``offset`` parameter is capped at **4995**
+(`INVALID_PARAMETER` beyond), so the existing offset-paginated
+`client.suiteql()` can never page the ~300k-row item table. The backfill
+therefore uses **keyset pagination** (`id > last_seen ORDER BY id ASC`,
+server order, 1000 rows/page) on a two-column query:
+
+```sql
+SELECT id, department FROM item WHERE department IS NOT NULL [AND id > '<last>'] ORDER BY id ASC
+```
+
+Implemented: `scripts/backfill_product_departments.py`
+
+- Streams pages; maps each row through `DEPARTMENT_BY_ID` (unknown IDs are
+  logged and left NULL).
+- Updates only `products.department_id IS NULL` rows (re-runnable,
+  shrinking); commits per page; `--dry-run` / `--max-pages N` for smoke
+  tests.
+- Run once locally (or via Railway job) and verify counts match the live
+  distribution table above.
 
 ## ✏️ Phase 3 — Department on RFQ item rows (store / edit / view)
 
