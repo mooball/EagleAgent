@@ -7,6 +7,11 @@
 /* Class-based dark mode (v4 defaults to prefers-color-scheme) */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Preline UI (vendored, see public/vendor/preline/VERSION) */
+@source "./public/vendor/preline/dist";
+@source "./public/probe.html"; /* dev probe page — remove with the probe */
+@import "./public/vendor/preline/variants.css";
+
 /* v3 parity — border utilities defaulted to gray-200 and buttons got
    cursor: pointer from Preflight. Restore both. */
 @layer base {
