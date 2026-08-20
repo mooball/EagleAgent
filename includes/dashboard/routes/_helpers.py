@@ -42,6 +42,18 @@ def _format_currency(value):
 templates.env.filters["currency"] = _format_currency
 
 
+def _department_label(value) -> str:
+    """Map a NetSuite department internal ID to its display label."""
+    if not value:
+        return ""
+    from includes.netsuite.departments import DEPARTMENT_BY_ID
+    dept = DEPARTMENT_BY_ID.get(str(value))
+    return dept.label if dept else ""
+
+
+templates.env.filters["department_label"] = _department_label
+
+
 # Cache-busting hash for static assets (computed once at startup)
 def _css_hash() -> str:
     css_path = os.path.join("public", "tailwind.min.css")
@@ -120,11 +132,26 @@ def _is_htmx(request: Request) -> bool:
     return request.headers.get("hx-request") == "true"
 
 
+def _is_history_restore(request: Request) -> bool:
+    """True when htmx is refetching a page to restore back/forward history.
+
+    htmx sends HX-History-Restore-Request: true when its history cache misses
+    (cache is disabled via htmx.config.historyCacheSize = 0) and it re-requests
+    the URL via XHR. It swaps the response into the whole <body>, so we must
+    return the full page rather than a partial.
+    """
+    return request.headers.get("hx-history-restore-request") == "true"
+
+
 def _render(request: Request, full_template: str, partial_template: str,
             context: dict, user: dict):
-    """Return a partial if HTMX, else the full page."""
+    """Return a partial if HTMX, else the full page.
+
+    History-restore requests look like HTMX requests (HX-Request: true) but
+    their response replaces the entire <body>, so they always get the full page.
+    """
     context["user"] = user
-    if _is_htmx(request):
+    if _is_htmx(request) and not _is_history_restore(request):
         response = templates.TemplateResponse(request, partial_template, context)
     else:
         response = templates.TemplateResponse(request, full_template, context)
