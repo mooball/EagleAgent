@@ -1,4 +1,5 @@
 <div data-dashboard-context='{"view": "product_detail", "entity": "product", "id": "{{ product.part_number }}", "db_id": "{{ product.id }}"}' class="pt-6">
+    {% set dept_label = product.department_id | department_label %}
     <!-- Breadcrumb -->
     <nav class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 mb-4">
         <a hx-get="/partial/products" hx-target="#main-content" hx-push-url="/products"
@@ -23,6 +24,10 @@
                     {% if product.brand %}
                     <dt class="text-gray-500 dark:text-gray-400">Brand</dt>
                     <dd>{{ product.brand }}</dd>
+                    {% endif %}
+                    {% if dept_label %}
+                    <dt class="text-gray-500 dark:text-gray-400">Department</dt>
+                    <dd>{{ dept_label }}</dd>
                     {% endif %}
                     {% if product.supplier_code %}
                     <dt class="text-gray-500 dark:text-gray-400">Supplier Code</dt>

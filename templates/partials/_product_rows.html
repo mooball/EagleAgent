@@ -1,10 +1,19 @@
 {% for p in products %}
 {% set types = p._match_types or [] %}
+{% set dept = p.department_id | department_label %}
 <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
     hx-get="/partial/products/{{ p.id }}" hx-target="#main-content" hx-push-url="/products/{{ p.id }}">
     <td class="px-4 py-3 font-mono text-gray-900 dark:text-gray-100">{{ p.part_number }}</td>
     <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{{ p.brand or '—' }}</td>
-    <td class="px-4 py-3 text-gray-600 dark:text-gray-400 max-w-md truncate">{{ p.description or '—' }}</td>
+    <td class="px-4 py-3 text-gray-600 dark:text-gray-400 max-w-md">
+        <div class="flex items-center">
+            <span class="min-w-0 truncate">{{ p.description or '—' }}</span>
+            {% if dept %}
+            <span class="ml-2 inline-flex items-center shrink-0 h-[13px] px-1 rounded-full text-[9px] leading-none font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-600"
+                  title="Department: {{ dept }}">{{ dept }}</span>
+            {% endif %}
+        </div>
+    </td>
     <td class="px-4 py-3 text-center">
         {% if types %}
         <span class="inline-flex items-center gap-0.5">

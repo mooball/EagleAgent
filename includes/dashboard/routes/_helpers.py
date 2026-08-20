@@ -42,6 +42,18 @@ def _format_currency(value):
 templates.env.filters["currency"] = _format_currency
 
 
+def _department_label(value) -> str:
+    """Map a NetSuite department internal ID to its display label."""
+    if not value:
+        return ""
+    from includes.netsuite.departments import DEPARTMENT_BY_ID
+    dept = DEPARTMENT_BY_ID.get(str(value))
+    return dept.label if dept else ""
+
+
+templates.env.filters["department_label"] = _department_label
+
+
 # Cache-busting hash for static assets (computed once at startup)
 def _css_hash() -> str:
     css_path = os.path.join("public", "tailwind.min.css")
