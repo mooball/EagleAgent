@@ -1,0 +1,211 @@
+{# Quotation final-prep tab — readiness review before pushing items to the NetSuite Opportunity #}
+{% set items = rfq.get('items', []) %}
+{% if items %}
+<div id="quotation-final-container">
+    <!-- Summary / legend -->
+    <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div class="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400 flex-wrap">
+            <span class="font-medium text-gray-700 dark:text-gray-200">{{ items | length }} items</span>
+            <span>·</span>
+            {% if sync_can_sync %}
+            <span class="text-green-600 dark:text-green-400 font-medium">✓ All items ready to sync</span>
+            {% else %}
+            <span class="text-amber-600 dark:text-amber-400 font-medium">{{ sync_ready }}/{{ sync_total }} ready to sync</span>
+            {% endif %}
+        </div>
+        <div class="flex items-center gap-3 text-[11px] text-gray-500 dark:text-gray-400">
+            <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500"></span> Ready</span>
+            <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-500"></span> Missing requirements</span>
+            {% if rfq.opportunity_id %}
+            <span class="inline-flex items-center gap-2">
+                {% if sync_can_sync %}
+                <button type="button" @click="syncOpportunity()"
+                        class="px-2.5 py-1 rounded-md text-xs font-medium bg-green-600 text-white hover:bg-green-700 transition-colors"
+                        title="Push RFQ items and prices to the linked NetSuite Opportunity">
+                    Update Opportunity
+                </button>
+                {% else %}
+                <button type="button" disabled
+                        title="All items must be linked to a NetSuite item before syncing"
+                        class="px-2.5 py-1 rounded-md text-xs font-medium bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400 cursor-not-allowed">
+                    Update Opportunity ({{ sync_ready }}/{{ sync_total }} ready)
+                </button>
+                {% endif %}
+                <span x-show="syncMsg" x-cloak class="text-[11px] text-blue-600 dark:text-blue-400" x-text="syncMsg"></span>
+            </span>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-x-auto">
+        <table class="w-full text-sm table-auto">
+            <thead class="bg-gray-50 dark:bg-gray-700 border-b-2 border-gray-200 dark:border-gray-600 sticky top-0 z-10">
+                <tr>
+                    <th class="px-3 py-2.5 text-center font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap w-10">#</th>
+                    <th class="px-3 py-2.5 text-left font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">Description</th>
+                    <th class="px-3 py-2.5 text-left font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">Brand</th>
+                    <th class="px-3 py-2.5 text-center font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap w-16">Qty</th>
+                    <th class="px-3 py-2.5 text-right font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">Cost</th>
+                    <th class="px-3 py-2.5 text-right font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">Sale</th>
+                    <th class="px-3 py-2.5 text-left font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">Supplier</th>
+                    <th class="px-3 py-2.5 text-left font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">Sync status</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+                {% for item in items %}
+                {% set qty = item.quantity or 0 %}
+                <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 align-top">
+                    <td class="px-3 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
+
+                    {# Description + part number + missing-info callouts #}
+                    <td class="px-3 py-2.5 min-w-[240px] max-w-md">
+                        <div class="flex items-center gap-2">
+                            {% if item.part_number %}
+                            <span class="font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">{{ item.part_number }}</span>
+                            {% else %}
+                            <span class="font-mono text-xs text-red-500 dark:text-red-400 whitespace-nowrap">missing part number</span>
+                            {% endif %}
+                            {% if item.input_description %}
+                            <span class="min-w-0 break-words text-gray-900 dark:text-gray-100">{{ item.input_description }}</span>
+                            {% else %}
+                            <span class="min-w-0 break-words text-red-500 dark:text-red-400">Missing description</span>
+                            {% endif %}
+                            {% if item.department %}
+                            <span class="ml-2 inline-flex items-center shrink-0 h-[13px] px-1 rounded-full text-[9px] leading-none font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-600"
+                                  title="Department: {{ item.department }}">{{ item.department }}</span>
+                            {% elif item.missing_department %}
+                            <span class="ml-2 inline-flex items-center shrink-0 h-[13px] px-1 rounded-full text-[9px] leading-none font-medium bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400 border border-red-200 dark:border-red-800"
+                                  title="Department not set — choose one from the known list on the Items tab">missing department</span>
+                            {% endif %}
+                        </div>
+                    </td>
+
+                    <td class="px-3 py-2.5 whitespace-nowrap">
+                        {% if item.brand %}
+                        {{ item.brand }}
+                        {% else %}
+                        <span class="text-red-500 dark:text-red-400 font-medium">Missing</span>
+                        {% endif %}
+                    </td>
+
+                    <td class="px-3 py-2.5 text-center whitespace-nowrap">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
+
+                    {# Cost (read-only) #}
+                    <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap">
+                        {% if item.cost_price is not none %}
+                        {{ item.cost_price | currency }}
+                        {% else %}
+                        <span class="text-red-500 dark:text-red-400">—</span>
+                        {% endif %}
+                    </td>
+
+                    {# Sale (editable) #}
+                    <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap" @click.stop>
+                        <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right"
+                              @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{% if item.sale_price is not none %}{{ item.sale_price | currency }}{% else %}<span class="text-red-500 dark:text-red-400">—</span>{% endif %}</span>
+                        <input type="text" inputmode="decimal"
+                               class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                               value="{{ item.sale_price if item.sale_price is not none else '' }}"
+                               placeholder="0.00"
+                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'sale_price', $el.value).then(function(){ refreshQuotationTab(); })"
+                               @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
+                    </td>
+
+                    {# Selected supplier #}
+                    <td class="px-3 py-2.5 whitespace-nowrap">
+                        {% set sel = item.selected_supplier %}
+                        {% if sel %}
+                        <span class="inline-flex items-center gap-1">
+                            <span>{{ sel.name }}</span>
+                            {% if not sel.ns_linked %}
+                            <span class="text-[10px] text-amber-600 dark:text-amber-400"
+                                  title="Supplier has no NetSuite vendor linked — vendor will be omitted from the line">not linked</span>
+                            {% endif %}
+                        </span>
+                        {% else %}
+                        <span class="text-red-500 dark:text-red-400">not selected</span>
+                        {% endif %}
+                    </td>
+
+                    {# Sync status — clickable dot with requirements modal #}
+                    <td class="px-3 py-2.5 text-center">
+                        {% if item.sync_status == 'ready' %}
+                        <button type="button" @click.stop="openSyncStatus({{ item.line }})"
+                                class="inline-block w-3 h-3 rounded-full bg-green-500 hover:ring-2 hover:ring-green-300 transition-shadow cursor-pointer"
+                                title="Ready to sync — click for details"></button>
+                        {% else %}
+                        <button type="button" @click.stop="openSyncStatus({{ item.line }})"
+                                class="inline-block w-3 h-3 rounded-full bg-red-500 hover:ring-2 hover:ring-red-300 transition-shadow cursor-pointer"
+                                title="Missing requirements — click for details"></button>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+
+            {# Totals row #}
+            <tfoot class="border-t-2 border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700">
+                {% set ns = namespace(total_cost=0, total_sale=0) %}
+                {% for item in items %}
+                    {% set qty = item.quantity or 0 %}
+                    {% if item.cost_price %}
+                        {% set ns.total_cost = ns.total_cost + (qty * (item.cost_price | float)) %}
+                    {% endif %}
+                    {% if item.sale_price %}
+                        {% set ns.total_sale = ns.total_sale + (qty * (item.sale_price | float)) %}
+                    {% endif %}
+                {% endfor %}
+                <tr>
+                    <td colspan="4" class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200">Totals</td>
+                    <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200">{{ ns.total_cost | currency }}</td>
+                    <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200">{{ ns.total_sale | currency }}</td>
+                    <td colspan="2"></td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+
+    <!-- Sync requirements modal -->
+    <div x-show="syncModal.open" x-cloak
+         class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50"
+         @click.self="closeSyncStatus()"
+         @keydown.escape.window="closeSyncStatus()">
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-md mx-4 overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Sync requirements — line <span x-text="syncModal.line"></span></h3>
+                <button type="button" @click="closeSyncStatus()"
+                        class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="px-5 py-4 space-y-2.5">
+                <template x-if="syncModal.item">
+                    <div>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                            <span class="font-mono" x-text="syncModal.item.part_number || '—'"></span> — <span x-text="syncModal.item.input_description || 'No description'"></span>
+                        </p>
+                        <template x-for="check in syncChecks" :key="check.key">
+                            <div class="flex items-start gap-2 text-sm">
+                                <template x-if="syncIssue(syncModal.item, check.key)">
+                                    <span class="text-red-500 shrink-0 font-semibold">✕</span>
+                                </template>
+                                <template x-if="!syncIssue(syncModal.item, check.key)">
+                                    <span class="text-green-500 shrink-0 font-semibold">✓</span>
+                                </template>
+                                <template x-if="syncIssue(syncModal.item, check.key)">
+                                    <span class="text-red-600 dark:text-red-400" x-text="syncIssueLabel(syncModal.item, check.key)"></span>
+                                </template>
+                                <template x-if="!syncIssue(syncModal.item, check.key)">
+                                    <span class="text-gray-700 dark:text-gray-200" x-text="check.label"></span>
+                                </template>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+</div>
+{% else %}
+<p class="text-sm text-gray-500 dark:text-gray-400">No items on this RFQ yet.</p>
+{% endif %}
