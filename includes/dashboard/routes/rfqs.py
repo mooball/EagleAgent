@@ -9,7 +9,7 @@ from fastapi import File, Request, Depends, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from sqlalchemy import func as sa_func
 
-from includes.dashboard.models import Supplier, Transaction, EmailTracking, Contact
+from includes.dashboard.models import Supplier, Transaction, EmailTracking, Contact, Product
 from includes.tools.product_tools import normalize_part_number
 from includes.netsuite.departments import Department
 from . import _helpers
@@ -22,7 +22,7 @@ def _department_options() -> list[dict]:
     return [{"id": d.netsuite_id, "label": d.label} for d in Department]
 
 RFQ_PAGE_SIZE = 25
-RFQ_ALLOWED_TABS = {"items", "suppliers", "communications", "quotation", "quotation-old"}
+RFQ_ALLOWED_TABS = {"items", "suppliers", "communications", "selection", "quotation", "quotation-old"}
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ def _normalize_rfq_suppliers(rfq: dict) -> None:
 def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
     """Back-fill missing supplier contacts, terms, and tier from the DB."""
     from includes.dashboard.database import (
-        match_supplier_by_name,
+        match_suppliers_by_names,
         merge_supplier_contacts,
     )
 
@@ -155,19 +155,39 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                         sup["is_new"] = True
 
         if by_name:
+            # Batch all name matches + contacts + transaction lookups (was N×3 queries)
+            matches = match_suppliers_by_names(list(by_name.keys()), session=session)
+            matched_ids = [m.id for m in matches.values() if m is not None]
+
+            contacts_by_sid: dict[str, list[dict]] = {}
+            if matched_ids:
+                contact_rows = session.query(Contact).filter(
+                    Contact.supplier_id.in_(matched_ids),
+                    Contact.isinactive == False,
+                ).all()
+                for c in contact_rows:
+                    contacts_by_sid.setdefault(str(c.supplier_id), []).append({
+                        "name": c.fullname,
+                        "email": c.email,
+                        "phone": c.phone,
+                        "label": c.label,
+                    })
+
+            used_ids: set[str] = set()
+            if matched_ids:
+                used_ids = {
+                    str(r[0])
+                    for r in session.query(Transaction.supplier_id)
+                    .filter(Transaction.supplier_id.in_(matched_ids))
+                    .distinct()
+                    .all()
+                }
+
             for name_lower, sup_list in by_name.items():
-                matched = match_supplier_by_name(name_lower, session=session)
+                matched = matches.get(name_lower)
                 if matched:
                     scp = matched.supply_chain_position or {}
-                    # Fetch authoritative contacts from Contact table
-                    matched_ct = session.query(Contact).filter(
-                        Contact.supplier_id == matched.id,
-                        Contact.isinactive == False,
-                    ).all()
-                    matched_contacts = [
-                        {"name": c.fullname, "email": c.email, "phone": c.phone, "label": c.label}
-                        for c in matched_ct
-                    ]
+                    matched_contacts = contacts_by_sid.get(str(matched.id), [])
                     for sup in sup_list:
                         if matched_contacts:
                             merge_supplier_contacts(sup, matched_contacts)
@@ -186,10 +206,7 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                         if matched.source:
                             sup["source"] = matched.source
                         if sup.get("supplier_id"):
-                            has_txn = session.query(Transaction.id).filter(
-                                Transaction.supplier_id == sup["supplier_id"]
-                            ).first()
-                            if not has_txn:
+                            if str(matched.id) not in used_ids:
                                 sup["is_new"] = True
 
         for item in rfq.get("items", []):
@@ -398,6 +415,122 @@ def _get_all_user_emails() -> list[dict]:
         session.close()
 
 
+def _rfq_sync_readiness(rfq: dict) -> dict:
+    """Compute per-item NetSuite sync readiness for the Quotation tab (read-only).
+
+    Enriches each item dict with:
+      - product_ns_id        — NetSuite internal ID of the linked product's item
+      - product_part_number  — linked product's part number
+      - sync_status          — 'ready' | 'needs_item' | 'no_match'
+      - selected_supplier    — the supplier dict with quote_status == 'selected'
+      - missing_department / missing_cost / missing_sale / missing_supplier
+
+    Returns header-level sync summary fields for the template.
+    """
+    session = _helpers.get_session()
+    try:
+        items = rfq.get("items", [])
+
+        product_ids = [i.get("product_id") for i in items if i.get("product_id")]
+        products = {}
+        if product_ids:
+            rows = session.query(Product).filter(Product.id.in_(product_ids)).all()
+            products = {str(p.id): p for p in rows}
+
+        supplier_ids = set()
+        for item in items:
+            for sup in (item.get("suppliers") or []):
+                if sup.get("supplier_id"):
+                    supplier_ids.add(sup["supplier_id"])
+        suppliers = {}
+        if supplier_ids:
+            rows = session.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()
+            suppliers = {str(s.id): s for s in rows}
+
+        ready_count = 0
+        for item in items:
+            product = None
+            if item.get("product_id"):
+                product = products.get(str(item["product_id"]))
+            item["product_ns_id"] = product.netsuite_id if product else None
+            item["product_part_number"] = product.part_number if product else None
+
+            selected = next(
+                (s for s in (item.get("suppliers") or []) if s.get("quote_status") == "selected"),
+                None,
+            )
+            item["selected_supplier"] = selected
+            if selected is not None:
+                selected["ns_linked"] = False
+                if selected.get("supplier_id"):
+                    sup = suppliers.get(str(selected["supplier_id"]))
+                    if sup is not None:
+                        selected["netsuite_id"] = sup.netsuite_id
+                        selected["ns_linked"] = bool(sup.netsuite_id)
+
+            # Mandatory-for-sync rules (UI-enforced even if NetSuite doesn't require them).
+            # Item match is temporary — lifted once the system auto-creates parts.
+            from includes.netsuite.departments import DEPARTMENT_BY_ID
+            issues = []
+            if not item.get("product_id") or not product:
+                issues.append({
+                    "key": "item",
+                    "label": "No matching product — classify the line against an inventory item",
+                })
+            elif not product.netsuite_id:
+                issues.append({
+                    "key": "item",
+                    "label": "Product not in NetSuite — push it to NetSuite first",
+                })
+            if not (item.get("brand") or "").strip():
+                issues.append({
+                    "key": "brand",
+                    "label": "Brand not set — set a brand or 'Other' on the Items tab",
+                })
+            if str(item.get("department_id") or "").strip() not in DEPARTMENT_BY_ID:
+                issues.append({
+                    "key": "department",
+                    "label": "Department not set — choose one from the known list on the Items tab",
+                })
+            if item.get("cost_price") is None:
+                issues.append({
+                    "key": "cost",
+                    "label": "Cost price not set — enter it on the Selection tab",
+                })
+            if selected is None:
+                issues.append({
+                    "key": "supplier",
+                    "label": "Supplier not selected — choose one on the Selection tab",
+                })
+            if item.get("sale_price") is None:
+                issues.append({
+                    "key": "sale",
+                    "label": "Sale price not set — enter it here",
+                })
+
+            item["sync_issues"] = issues
+            item["sync_status"] = "ready" if not issues else "missing"
+            if not issues:
+                ready_count += 1
+
+            item["missing_department"] = any(i["key"] == "department" for i in issues)
+            item["missing_brand"] = any(i["key"] == "brand" for i in issues)
+            item["missing_cost"] = any(i["key"] == "cost" for i in issues)
+            item["missing_sale"] = any(i["key"] == "sale" for i in issues)
+            item["missing_supplier"] = any(i["key"] == "supplier" for i in issues)
+
+        total = len(items)
+        has_opp = bool(rfq.get("opportunity_id"))
+        return {
+            "sync_total": total,
+            "sync_ready": ready_count,
+            "sync_has_opportunity": has_opp,
+            "sync_can_sync": has_opp and total > 0 and ready_count == total,
+        }
+    finally:
+        session.close()
+
+
 def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
     ctx = {
         "user": user,
@@ -407,6 +540,7 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
         "all_users": _get_all_user_emails(),
         "departments": _department_options(),
     }
+    ctx.update(_rfq_sync_readiness(rfq))
     if ctx["active_tab"] == "suppliers":
         ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
     if ctx["active_tab"] == "communications":
@@ -776,14 +910,8 @@ async def rfq_detail(request: Request, rfq_id: str,
         return RedirectResponse("/rfqs")
     _enrich_rfq_supplier_contacts(rfq)
 
-    ctx = {
-        "rfq": rfq,
-        "active_nav": "rfqs",
-        "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
-        "active_tab": "items",
-        "all_users": _get_all_user_emails(),
-        "departments": _department_options(),
-    }
+    ctx = _rfq_detail_context(rfq, user, "items")
+    ctx["active_nav"] = "rfqs"
     return _render(request, "rfq_detail.html", "partials/rfq_detail.html", ctx, user)
 
 

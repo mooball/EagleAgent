@@ -854,6 +854,7 @@
                 editAllMsg: '',
                 editAllError: false,
                 editAllDirtyCount: 0,
+                syncMsg: '',
                 departments: [],
                 copySupplierModal: { open: false, sourceLine: null, supplierName: '', items: [] },
                 brandSuppliersModal: { open: false, line: null, brand: '', suppliers: [] },
@@ -1348,12 +1349,48 @@
                 // ── Quotation tab methods ──
 
                 updateItemPricing(line, field, value) {
-                    fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/pricing', {
+                    return fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/pricing', {
                         method: 'PATCH',
                         headers: {'Content-Type': 'application/json'},
                         credentials: 'same-origin',
                         body: JSON.stringify({[field]: parseFloat(value) || null})
                     });
+                },
+
+                refreshQuotationTab() {
+                    htmx.ajax('GET', '/partial/rfqs/' + this.rfqId + '/quotation',
+                        {target: '#main-content'});
+                },
+
+                syncOpportunity() {
+                    // Phase 2 will POST /partial/rfqs/{id}/sync-opportunity — inert for now
+                    this.syncMsg = 'Opportunity sync is coming soon.';
+                    var self = this;
+                    clearTimeout(this._syncMsgTimer);
+                    this._syncMsgTimer = setTimeout(function() { self.syncMsg = ''; }, 4000);
+                },
+
+                syncChecks: [
+                    {key: 'item', label: 'Matching NetSuite item'},
+                    {key: 'brand', label: 'Brand set'},
+                    {key: 'department', label: 'Department set'},
+                    {key: 'cost', label: 'Cost price set'},
+                    {key: 'supplier', label: 'Supplier selected'},
+                    {key: 'sale', label: 'Sale price set'},
+                ],
+                syncModal: { open: false, line: null, item: null },
+                openSyncStatus(line) {
+                    this.syncModal = { open: true, line: line, item: this._items[line] || null };
+                },
+                closeSyncStatus() {
+                    this.syncModal = { open: false, line: null, item: null };
+                },
+                syncIssue(item, key) {
+                    return ((item && item.sync_issues) || []).some(function(i) { return i.key === key; });
+                },
+                syncIssueLabel(item, key) {
+                    var iss = ((item && item.sync_issues) || []).find(function(i) { return i.key === key; });
+                    return iss ? iss.label : '';
                 },
 
                 updateSupplierQuote(line, supplierName, field, value, isSelected) {
@@ -1376,12 +1413,12 @@
                                 credentials: 'same-origin',
                                 body: JSON.stringify({cost_price: parseFloat(value) || null})
                             }).then(function() {
-                                htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                                htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/selection',
                                     {target: '#main-content'});
                                 self._restoreScroll(sx);
                             });
                         } else if (field === 'quote_cost') {
-                            htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                            htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/selection',
                                 {target: '#main-content'});
                             self._restoreScroll(sx);
                         }
@@ -1400,7 +1437,7 @@
                         credentials: 'same-origin',
                         body: JSON.stringify(body)
                     }).then(function() {
-                        htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                        htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation-old',
                             {target: '#main-content'});
                         self._restoreScroll(sx);
                     });
@@ -1417,7 +1454,7 @@
                         credentials: 'same-origin',
                         body: JSON.stringify({supplier_name: supplierName})
                     }).then(function() {
-                        htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                        htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/selection',
                             {target: '#main-content'});
                         self._restoreScroll(sx);
                     });
@@ -1438,7 +1475,7 @@
                         credentials: 'same-origin',
                         body: JSON.stringify(body)
                     }).then(function() {
-                        htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation',
+                        htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/selection',
                             {target: '#main-content'});
                         self._restoreScroll(sx);
                     });

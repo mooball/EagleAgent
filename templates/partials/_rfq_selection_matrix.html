@@ -79,34 +79,34 @@
                          :style="'transform: translateX(' + scrollX + 'px)'">{{ item.line }}</div>
                 </td>
                 <td class="!p-0">
-                    <div class="px-3 py-2.5 truncate relative z-10 freeze-cell freeze-shadow"
+                    <div class="px-3 py-2.5 truncate relative z-10 freeze-cell freeze-shadow text-gray-900 dark:text-gray-100"
                          :style="'max-width: 350px; transform: translateX(' + scrollX + 'px)'" title="{{ item.input_description or '' }}">{{ item.input_description or '—' }}</div>
                 </td>
-                <td class="px-3 py-2.5 font-mono text-xs whitespace-nowrap">{{ item.part_number or '—' }}</td>
+                <td class="px-3 py-2.5 font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">{{ item.part_number or '—' }}</td>
                 <td class="px-3 py-2.5 whitespace-nowrap">{{ item.brand or '—' }}</td>
                 <td class="px-3 py-2.5 text-center whitespace-nowrap">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
 
                 {# Cost (editable) #}
                 <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col" @click.stop>
                     <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right"
-                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ item.cost_price | currency }}</span>
+                          @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ item.cost_price | currency }}</span>
                     <input type="text" inputmode="decimal"
                            class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                            value="{{ item.cost_price if item.cost_price is not none else '' }}"
                            placeholder="0.00"
-                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'cost_price', $el.value)"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'cost_price', $el.value)"
                            @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
                 </td>
 
                 {# Sale (editable) #}
                 <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col" @click.stop>
                     <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right"
-                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ item.sale_price | currency }}</span>
+                          @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ item.sale_price | currency }}</span>
                     <input type="text" inputmode="decimal"
                            class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                            value="{{ item.sale_price if item.sale_price is not none else '' }}"
                            placeholder="0.00"
-                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'sale_price', $el.value)"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'sale_price', $el.value)"
                            @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
                 </td>
 
@@ -147,12 +147,12 @@
                             <span class="px-1.5 py-0.5 -my-0.5 -mx-1 inline-block min-w-[50px] text-right text-gray-400 dark:text-gray-500">{{ price_str if ns.quote_cost is not none else '—' }}{% if ns.quote_currency and ns.quote_currency != 'AUD' %} <span class="text-[10px] opacity-60">{{ ns.quote_currency }}</span>{% endif %}</span>
                             {% else %}
                             <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1.5 py-0.5 -my-0.5 -mx-1 inline-block min-w-[50px] text-right"
-                                  @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ price_str if ns.quote_cost is not none else '—' }}{% if ns.quote_currency and ns.quote_currency != 'AUD' %} <span class="text-[10px] opacity-60">{{ ns.quote_currency }}</span>{% endif %}</span>
+                                  @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ price_str if ns.quote_cost is not none else '—' }}{% if ns.quote_currency and ns.quote_currency != 'AUD' %} <span class="text-[10px] opacity-60">{{ ns.quote_currency }}</span>{% endif %}</span>
                             <input type="text" inputmode="decimal"
                                    class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                                    value="{{ ns.quote_cost if ns.quote_cost is not none else '' }}"
                                    placeholder="0.00"
-                                   @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierQuote({{ item.line }}, '{{ name | replace("'", "\\'") }}', 'quote_cost', $el.value, {{ 'true' if ns.quote_status == 'selected' else 'false' }})"
+                                   @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierQuote({{ item.line }}, '{{ name | replace("'", "\\'") }}', 'quote_cost', $el.value, {{ 'true' if ns.quote_status == 'selected' else 'false' }})"
                                    @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
                             {% endif %}
                         </span>
@@ -192,22 +192,22 @@
                 {# Freight Cost (visual only) #}
                 <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col" @click.stop>
                     <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right text-gray-400"
-                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">—</span>
+                          @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">—</span>
                     <input type="text" inputmode="decimal"
                            class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                            placeholder="0.00"
-                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'"
                            @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
                 </td>
 
                 {# Freight Sale (visual only) #}
                 <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col" @click.stop>
                     <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right text-gray-400"
-                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">—</span>
+                          @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">—</span>
                     <input type="text" inputmode="decimal"
                            class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                            placeholder="0.00"
-                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'"
                            @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
                 </td>
 
@@ -217,12 +217,12 @@
                     {% set shipping_cost = sm.get('shipping_cost') %}
                 <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap border-l border-gray-100 dark:border-gray-700" @click.stop>
                     <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right text-gray-400"
-                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ shipping_cost | currency }}</span>
+                          @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ shipping_cost | currency }}</span>
                     <input type="text" inputmode="decimal"
                            class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                            value="{{ shipping_cost if shipping_cost is not none else '' }}"
                            placeholder="0.00"
-                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierMeta('{{ name | replace("'", "\\'") }}', 'shipping_cost', $el.value)"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierMeta('{{ name | replace("'", "\\'") }}', 'shipping_cost', $el.value)"
                            @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
                 </td>
                 {% endfor %}
