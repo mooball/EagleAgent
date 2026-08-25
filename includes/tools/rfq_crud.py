@@ -2384,6 +2384,49 @@ def _group_rfq_items_sync(
     return result
 
 
+def _apply_validation_results(validated: list, rfq_number: str) -> None:
+    """Write validation outcomes back to RFQ items.
+
+    - discrepancy: match='discrepancy' (blocked pending human review)
+    - multi_brand: match='specific' — the part is a valid cross-brand
+      designation; record the equivalent-manufacturer findings in notes
+    """
+    from includes.dashboard.models import RFQ, RFQItem
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return
+        for v in validated:
+            status = v.get("status")
+            if status not in ("discrepancy", "multi_brand"):
+                continue
+            item = (
+                session.query(RFQItem)
+                .filter(RFQItem.rfq_id == rfq.id, RFQItem.line == v.get("line"))
+                .first()
+            )
+            if not item:
+                continue
+            findings = v.get("findings", "")
+            if status == "discrepancy":
+                item.match = "discrepancy"
+                item.notes = findings
+                if v.get("correct_part_number") and v["correct_part_number"] != item.part_number:
+                    item.notes += f" (Correct PN: {v['correct_part_number']})"
+            else:  # multi_brand — valid as-is, supplier search can proceed
+                item.match = "specific"
+                if findings:
+                    item.notes = findings
+        session.commit()
+    except SQLAlchemyError as e:
+        logger.warning(f"Failed to update validation results: {e}")
+        session.rollback()
+    finally:
+        session.close()
+
+
 @_serialized_rfq_write
 def _validate_items_sync(
     rfq_number: str, items_to_validate: list, user_id: str,
@@ -2429,8 +2472,13 @@ def _validate_items_sync(
     research_prompt = f"""You are validating part numbers for a purchase order. For each item below, search the web to verify:
 1. Is the part number real and active?
 2. Does the description match what the manufacturer says?
-3. Is the brand correct?
+3. Is the brand correct (if a brand is given)?
 4. If the part number is wrong, what is the correct one?
+
+Important: some part numbers are standard industry designations used across
+many manufacturers (e.g. belt size codes like 'B82', hydraulic fitting and
+bearing codes). These are VALID without any brand — report the equivalent
+manufacturers instead of flagging them as wrong.
 
 Items to validate:
 {items_text}
@@ -2485,7 +2533,7 @@ Research findings:
 
 For each item, produce a JSON object with:
 - "line": the line number (integer)
-- "status": "confirmed" if everything matches, "discrepancy" if something is wrong, "not_found" if the part number doesn't exist online
+- "status": "confirmed" if everything matches, "multi_brand" if the part number is a standard industry designation valid across multiple manufacturers (no single brand to confirm), "discrepancy" if something is wrong, "not_found" if the part number doesn't exist online
 - "findings": a brief 1-2 sentence summary of what was found
 - "correct_part_number": the correct part number if a typo was found (otherwise same as original)
 
@@ -2528,30 +2576,8 @@ Return ONLY a valid JSON array, no other text."""
 
         validated = json.loads(raw_text)
 
-        # Update RFQ items if discrepancies found
-        session = _get_session()
-        try:
-            from includes.dashboard.models import RFQ, RFQItem
-            rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
-            if rfq:
-                for v in validated:
-                    if v.get("status") == "discrepancy":
-                        item = (
-                            session.query(RFQItem)
-                            .filter(RFQItem.rfq_id == rfq.id, RFQItem.line == v["line"])
-                            .first()
-                        )
-                        if item:
-                            item.match = "discrepancy"
-                            item.notes = v.get("findings", "")
-                            if v.get("correct_part_number") and v["correct_part_number"] != item.part_number:
-                                item.notes += f" (Correct PN: {v['correct_part_number']})"
-            session.commit()
-        except SQLAlchemyError as e:
-            logger.warning(f"Failed to update discrepancy status: {e}")
-            session.rollback()
-        finally:
-            session.close()
+        # Write outcomes back to the items (discrepancy / multi_brand)
+        _apply_validation_results(validated, rfq_number)
 
         return {"validated": validated}
     except Exception as e:

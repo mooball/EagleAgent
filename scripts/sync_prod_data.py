@@ -27,6 +27,8 @@ load_dotenv()
 TABLES = [
     "brands",
     "suppliers",
+    "supplier_match_keys",
+    "supplier_duplicate_candidates",
     "products",
     "supplier_brands",
     "product_suppliers",

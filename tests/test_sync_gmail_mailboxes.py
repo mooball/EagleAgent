@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from includes.dashboard.models import Customer, EmailTracking
+from includes.dashboard.models import Customer, EmailTracking, RFQ
 
 
 @pytest.fixture
@@ -104,6 +104,19 @@ def _make_customer(session, customer_id=CUSTOMER_ID):
     session.add(customer)
     session.flush()
     return customer
+
+
+def _make_rfq(session, rfq_number="RFQ-2026-1275", netsuite_opportunity=None):
+    rfq = RFQ(
+        rfq_number=rfq_number,
+        customer="Test Customer",
+        created_by="test",
+        created_date=datetime.now(timezone.utc),
+        netsuite_opportunity=netsuite_opportunity,
+    )
+    session.add(rfq)
+    session.flush()
+    return rfq
 
 
 class TestExtractMessageMetadata:
@@ -217,3 +230,83 @@ class TestThreadMatchRfqInheritance:
         assert row.match_type == "domain"
         # Content still captured (no placeholder row)
         assert row.body_markdown == "Please quote 1 Cap Fuel-Filler-304-3885"
+
+    def test_folded_message_with_rfq_number_in_subject_links_rfq(self, db_session):
+        """Supplier emails a fresh message (no reply headers) quoting the
+        RFQ number in the subject — should still link to that RFQ."""
+        _make_customer(db_session)
+        _make_rfq(db_session, rfq_number="RFQ-2026-1275")
+        thread_row = _make_thread_row(db_session)
+        msg_meta = _make_msg_meta(
+            threadId=thread_row.gmail_thread_id,
+            subject="Quotation for RFQ-2026-1275",
+        )
+
+        result = self._run_process(
+            db_session, msg_meta, thread_row,
+            {"match_type": "domain", "supplier_id": None, "customer_id": CUSTOMER_ID},
+        )
+
+        assert result == "tier1"
+        row = db_session.query(EmailTracking).filter(
+            EmailTracking.gmail_message_id == msg_meta["id"]
+        ).first()
+        assert row is not None
+        assert row.rfq_token == "RFQ-2026-1275"
+        assert row.rfq_id == "RFQ-2026-1275"
+        # Entities still re-matched by contact
+        assert row.customer_id == CUSTOMER_ID
+        assert row.match_type == "domain"
+        assert row.body_markdown == "Please quote 1 Cap Fuel-Filler-304-3885"
+
+    def test_folded_message_with_op_number_in_subject_links_rfq(self, db_session):
+        """Fresh message quoting the NetSuite Opportunity number links to the
+        RFQ that carries that opportunity (even a different one than the
+        thread's own RFQ)."""
+        _make_customer(db_session)
+        _make_rfq(db_session, rfq_number="RFQ-2026-3000", netsuite_opportunity="OP72655")
+        thread_row = _make_thread_row(db_session)
+        msg_meta = _make_msg_meta(
+            threadId=thread_row.gmail_thread_id,
+            subject="Quote for OP72655",
+        )
+
+        result = self._run_process(
+            db_session, msg_meta, thread_row,
+            {"match_type": "domain", "supplier_id": None, "customer_id": CUSTOMER_ID},
+        )
+
+        assert result == "tier1"
+        row = db_session.query(EmailTracking).filter(
+            EmailTracking.gmail_message_id == msg_meta["id"]
+        ).first()
+        assert row is not None
+        assert row.rfq_token == "RFQ-2026-3000"
+        assert row.rfq_id == "RFQ-2026-3000"
+        assert row.opportunity_id == "OP72655"
+        assert row.customer_id == CUSTOMER_ID
+        assert row.match_type == "domain"
+
+    def test_folded_message_with_unresolvable_subject_number_not_linked(self, db_session):
+        """RFQ number in subject but no matching RFQ row exists — no link
+        (safety: never fabricate a link)."""
+        _make_customer(db_session)
+        thread_row = _make_thread_row(db_session)
+        msg_meta = _make_msg_meta(
+            threadId=thread_row.gmail_thread_id,
+            subject="Quotation for RFQ-2026-9999",
+        )
+
+        result = self._run_process(
+            db_session, msg_meta, thread_row,
+            {"match_type": "domain", "supplier_id": None, "customer_id": CUSTOMER_ID},
+        )
+
+        assert result == "tier1"
+        row = db_session.query(EmailTracking).filter(
+            EmailTracking.gmail_message_id == msg_meta["id"]
+        ).first()
+        assert row is not None
+        assert row.rfq_token is None
+        assert row.rfq_id is None
+        assert row.customer_id == CUSTOMER_ID

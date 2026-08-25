@@ -25,7 +25,6 @@ from includes.dashboard.database import get_session
 from includes.dashboard.models import (
     EmailTracking,
     MailboxScanConfig,
-    RFQ,
 )
 from includes.gmail import get_gmail_client
 from includes.gmail.matching import (
@@ -35,6 +34,7 @@ from includes.gmail.matching import (
     match_by_contact,
     match_by_id,
     match_by_subject,
+    resolve_rfq_from_subject,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -702,18 +702,38 @@ def process_message(
                     customer_id = existing_thread.customer_id
                     match_type = existing_thread.match_type
                 else:
-                    logger.info(
-                        f"  [T1] New message (no reply headers) folded into tracked "
-                        f"thread {thread_id} — not inheriting RFQ link, re-matching "
-                        f"entities by contact"
-                    )
-                    rfq_id = None
-                    rfq_token = None
-                    opportunity_id = None
+                    # No reply headers — Gmail folded a brand-new email into
+                    # this thread, so the thread's RFQ link is NOT inherited.
+                    # Secondary check: if the subject carries an RFQ or OP
+                    # number, link to that RFQ — genuine supplier emails that
+                    # start a fresh conversation often still quote the number.
                     contact_match = match_by_contact(session, external_addresses, domain_index)
                     supplier_id = contact_match["supplier_id"]
                     customer_id = contact_match["customer_id"]
                     match_type = contact_match["match_type"]
+
+                    subject_rfq, subject_rfq_number, subject_op_number = resolve_rfq_from_subject(
+                        session, subject
+                    )
+                    if subject_rfq:
+                        rfq_id = subject_rfq_number
+                        rfq_token = subject_rfq_number
+                        opportunity_id = subject_op_number
+                        logger.info(
+                            f"  [T1] New message (no reply headers) in thread "
+                            f"{thread_id} — subject references "
+                            f"{subject_rfq_number or subject_op_number}; "
+                            f"linking to that RFQ"
+                        )
+                    else:
+                        logger.info(
+                            f"  [T1] New message (no reply headers) folded into tracked "
+                            f"thread {thread_id} — no RFQ/OP in subject; not "
+                            f"inheriting RFQ link, re-matching entities by contact"
+                        )
+                        rfq_id = None
+                        rfq_token = None
+                        opportunity_id = None
 
                 tracking = EmailTracking(
                     gmail_thread_id=thread_id,
@@ -752,18 +772,9 @@ def process_message(
         rfq_number = subject_match.get("rfq_number")
         op_number = subject_match.get("opportunity_number")
 
-        # Verify RFQ exists in DB (rfq_number in DB is 'RFQ-2026-0032' format)
-        rfq = None
-        full_rfq_number = None
-        if rfq_number:
-            full_rfq_number = f"RFQ-{rfq_number}" if not rfq_number.upper().startswith("RFQ-") else rfq_number
-            rfq = session.query(RFQ).filter(RFQ.rfq_number == full_rfq_number).first()
-
-        # If no RFQ found by number, try matching by NetSuite Opportunity ID
-        if not rfq and op_number:
-            rfq = session.query(RFQ).filter(RFQ.netsuite_opportunity == op_number).first()
-            if rfq:
-                full_rfq_number = rfq.rfq_number
+        # Resolve the RFQ: by rfq_number first, then by NetSuite Opportunity
+        # number (shared with the Tier-1 subject fallback above).
+        rfq, full_rfq_number, _resolved_op = resolve_rfq_from_subject(session, subject)
 
         if rfq or op_number:
             # Also run Tier 3 contact matching to identify supplier/customer

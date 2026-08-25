@@ -97,6 +97,16 @@
                                 @click.stop="identifyItem({{ item.line }})">
                             Classify &amp; Validate
                         </button>
+                        {% elif item.match == 'discrepancy' %}
+                        <form hx-post="/partial/rfqs/{{ rfq.id }}/update-item" hx-target="#main-content" hx-swap="innerHTML">
+                            <input type="hidden" name="line" value="{{ item.line }}">
+                            <input type="hidden" name="match" value="specific">
+                            <button type="submit" class="btn-sm"
+                                    @click.stop
+                                    title="Part number is acceptable as-is — mark it specific so suppliers can be found.">
+                                Use as-is
+                            </button>
+                        </form>
                         {% endif %}
                         <button class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
                                 @click.stop="editingItem = {{ item.line }}"

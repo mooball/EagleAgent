@@ -1214,6 +1214,12 @@ async def partial_rfq_update_item(request: Request, rfq_id: str,
                     val = None
             data[key] = val if val else None
 
+    # match is only settable to known states — used by the item table's
+    # "Use as-is" action to accept a discrepancy line
+    match_val = (form.get("match") or "").strip()
+    if match_val in {"specific", "branded", "generic", "unmatched", "discrepancy"}:
+        data["match"] = match_val
+
     from includes.tools.quote_tools import _update_item_sync
     user_ident = user.get("identifier", "dashboard")
     result = await asyncio.to_thread(_update_item_sync, rfq_id, data, user_ident)
