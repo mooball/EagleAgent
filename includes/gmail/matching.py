@@ -18,6 +18,7 @@ from includes.dashboard.models import (
     Contact,
     Customer,
     EmailTracking,
+    RFQ,
     Supplier,
 )
 
@@ -414,6 +415,50 @@ def match_by_subject(subject: str) -> dict:
         result['opportunity_number'] = f"OP{op_match.group(1)}"
 
     return result
+
+
+def resolve_rfq_from_subject(
+    session: Session, subject: str
+) -> tuple[Optional["RFQ"], Optional[str], Optional[str]]:
+    """Resolve an RFQ row from the subject line (Tier 2 logic).
+
+    Extracts the RFQ/Opportunity number from the subject and looks up the
+    RFQ: by rfq_number first, then by NetSuite Opportunity number.
+
+    Shared by the Tier-2 subject match and the Tier-1 fallback for
+    no-reply-header messages folded into a tracked thread.
+
+    Returns:
+        (rfq, full_rfq_number, op_number)
+        - rfq: the RFQ row or None
+        - full_rfq_number: 'RFQ-2026-0032'-formatted number or None
+        - op_number: 'OP12345'-formatted opportunity number or None
+    """
+    subject_match = match_by_subject(subject)
+    if not subject_match:
+        return None, None, None
+
+    rfq_number = subject_match.get("rfq_number")
+    op_number = subject_match.get("opportunity_number")
+
+    # Verify the RFQ exists (rfq_number in DB is 'RFQ-2026-0032' format)
+    rfq = None
+    full_rfq_number = None
+    if rfq_number:
+        full_rfq_number = (
+            f"RFQ-{rfq_number}"
+            if not rfq_number.upper().startswith("RFQ-")
+            else rfq_number
+        )
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == full_rfq_number).first()
+
+    # If no RFQ found by number, try matching by NetSuite Opportunity ID
+    if not rfq and op_number:
+        rfq = session.query(RFQ).filter(RFQ.netsuite_opportunity == op_number).first()
+        if rfq:
+            full_rfq_number = rfq.rfq_number
+
+    return rfq, full_rfq_number, op_number
 
 
 def match_by_contact(
