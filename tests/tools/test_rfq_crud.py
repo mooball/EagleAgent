@@ -122,6 +122,47 @@ class TestQuoteBrand:
         session.flush()
         return rfq
 
+    def test_apply_validation_results_multi_brand_keeps_specific(self, db_session):
+        from includes.tools.rfq_crud import _apply_validation_results
+
+        rfq = self._make_rfq(db_session)
+        item = RFQItem(rfq_id=rfq.id, line=1, input_description="V-belt",
+                       part_number="B82", match="specific")
+        db_session.add(item)
+        db_session.flush()
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            _apply_validation_results([
+                {"line": 1, "status": "multi_brand",
+                 "findings": "B82 is a standard belt size (Gates, Bando, ...)."},
+            ], rfq.rfq_number)
+
+        db_session.expire_all()
+        stored = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).first()
+        assert stored.match == "specific"
+        assert "standard belt size" in (stored.notes or "")
+
+    def test_apply_validation_results_discrepancy_blocks(self, db_session):
+        from includes.tools.rfq_crud import _apply_validation_results
+
+        rfq = self._make_rfq(db_session)
+        item = RFQItem(rfq_id=rfq.id, line=1, input_description="V-belt",
+                       part_number="B82", match="specific")
+        db_session.add(item)
+        db_session.flush()
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            _apply_validation_results([
+                {"line": 1, "status": "discrepancy",
+                 "findings": "Part number looks wrong.",
+                 "correct_part_number": "B84"},
+            ], rfq.rfq_number)
+
+        db_session.expire_all()
+        stored = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).first()
+        assert stored.match == "discrepancy"
+        assert "B84" in (stored.notes or "")
+
     def test_set_quote_brand(self, db_session):
         brand = self._make_brand(db_session)
         rfq = self._make_rfq(db_session)

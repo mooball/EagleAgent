@@ -169,6 +169,42 @@ class TestRfqIdentifyItemsQuoteBrand:
         assert ("dashboard_refresh", None) in rfq.notifications
 
 
+class TestRfqIdentifyItemsMultiBrand:
+    """A standard cross-brand part number (belt size codes etc.) must not
+    block the RFQ: multi_brand results are reported, not flagged."""
+
+    async def test_multi_brand_findings_reported(self, rfq, monkeypatch):
+        monkeypatch.setattr(rfq_actions, "_update_item_sync", lambda *a: None)
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._set_quote_brand_from_items_sync",
+            lambda *a: None,
+        )
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._set_item_departments_sync",
+            lambda *a: None,
+        )
+        monkeypatch.setattr(
+            "includes.tools.product_tools._find_product_by_code",
+            lambda pn, brand=None: None,
+        )
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._validate_items_sync",
+            lambda rfq_id, web_items, user_id: {
+                "validated": [
+                    {"line": 1, "status": "multi_brand",
+                     "findings": "B82 is a standard belt size used by Gates, Bando, etc."}
+                ]
+            },
+        )
+
+        await rfq_actions.on_rfq_identify_items(action(
+            rfq_id="RFQ-1",
+            items=[{"line": 1, "description": "V-belt", "part_number": "B82", "brand": ""}],
+        ), rfq)
+
+        assert any("multi-brand" in m.content for m in rfq.messages)
+
+
 class TestRfqUpdateSupplier:
     """Dashboard-initiated write, then refresh and confirm."""
 

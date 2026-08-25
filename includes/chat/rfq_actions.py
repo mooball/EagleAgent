@@ -267,9 +267,20 @@ async def on_rfq_identify_items(payload: dict, ctx: ChatContext) -> None:
                 if validated_web:
                     lines_out = []
                     for v in validated_web:
-                        status_icon = "✅" if v.get("status") == "confirmed" else "🟠"
-                        lines_out.append(f"  {status_icon} Line {v['line']}: {v.get('findings', '')}")
-                        if v.get("correct_part_number") and v.get("status") == "discrepancy":
+                        status = v.get("status")
+                        if status == "multi_brand":
+                            status_icon = "🔵"
+                            suffix = " (multi-brand — no single manufacturer)"
+                        elif status == "confirmed":
+                            status_icon = "✅"
+                            suffix = ""
+                        else:
+                            status_icon = "🟠"
+                            suffix = ""
+                        lines_out.append(
+                            f"  {status_icon} Line {v['line']}: {v.get('findings', '')}{suffix}"
+                        )
+                        if v.get("correct_part_number") and status == "discrepancy":
                             lines_out.append(f"    Correct part number: {v['correct_part_number']}")
                     await ctx.say("\n".join(lines_out), author="EagleAgent")
                 elif validation_result.get("error"):
