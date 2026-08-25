@@ -27,6 +27,12 @@ SCRIPT_REGISTRY: dict[str, dict] = {
         "args_allowed": [],
         "long_running": True,
     },
+    "scan_supplier_duplicates": {
+        "command": ["uv", "run", "python", "-m", "scripts.scan_supplier_duplicates"],
+        "description": "Scan all suppliers for duplicate candidates (--report prints a histogram and writes nothing)",
+        "args_allowed": ["--report", "--dry-run", "--min-confidence", "--trigram-floor"],
+        "long_running": True,
+    },
     "sync_netsuite_suppliers": {
         "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_suppliers"],
         "description": "Sync suppliers from NetSuite API (--since YYYY-MM-DD or Nd e.g. 7d; default: 30d)",

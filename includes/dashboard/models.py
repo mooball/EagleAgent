@@ -33,6 +33,9 @@ class Supplier(Base):
     source = Column(String(20), nullable=True, default='netsuite')  # 'netsuite' | 'web' | 'manual'
     alt_names = Column(JSONB, nullable=True)                   # ["Variant Name 1", "Variant 2"]
     alt_domains = Column(JSONB, nullable=True)                 # ["example.com.au", "example.au"]
+    # Superseded record — points at the supplier to use instead. Never deleted
+    # while this row exists in NetSuite (see supplier_dedup.merge_suppliers).
+    use_instead = Column(UUID(as_uuid=True), ForeignKey('suppliers.id'), nullable=True, index=True)
 
     # 256 dimensions for Gemini embedding-2-preview (notes only)
     embedding = Column(Vector(256), nullable=True)
@@ -56,6 +59,53 @@ class SupplierBrand(Base):
 
     def __repr__(self):
         return f"<SupplierBrand(supplier_id='{self.supplier_id}', brand_id='{self.brand_id}')>"
+
+
+class SupplierMatchKey(Base):
+    """One row per searchable key per supplier (normalised names, domain keys).
+
+    Populated by includes.dashboard.supplier_matching.rebuild_match_keys() and
+    the backfill_supplier_match_keys script. Matching reads only this table.
+    """
+    __tablename__ = 'supplier_match_keys'
+    __table_args__ = (
+        UniqueConstraint('supplier_id', 'key_type', 'key_value', name='uq_supplier_match_key'),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    supplier_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id', ondelete='CASCADE'), nullable=False, index=True)
+    key_type = Column(String(10), nullable=False)   # 'name' | 'domain'
+    key_value = Column(String, nullable=False)
+
+    def __repr__(self):
+        return f"<SupplierMatchKey({self.key_type}='{self.key_value}')>"
+
+
+class SupplierDuplicateCandidate(Base):
+    """Human review queue: a proposed (primary, duplicate) supplier pair.
+
+    source: 'auto' (scan) | 'manual' (user nomination)
+    status: 'proposed' | 'merged' | 'rejected'
+    """
+    __tablename__ = 'supplier_duplicate_candidates'
+    __table_args__ = (
+        UniqueConstraint('primary_id', 'duplicate_id', name='uq_dup_candidate_pair'),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    primary_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id', ondelete='CASCADE'), nullable=False)
+    duplicate_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id', ondelete='CASCADE'), nullable=False)
+    source = Column(String(10), nullable=False, default='auto')   # 'auto' | 'manual'
+    status = Column(String(10), nullable=False, default='proposed')
+    confidence = Column(Float, nullable=True)
+    reasons = Column(JSONB, nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=True)
+    decided_by = Column(String, nullable=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self):
+        return f"<SupplierDuplicateCandidate(primary='{self.primary_id}', duplicate='{self.duplicate_id}', status='{self.status}')>"
 
 
 class Brand(Base):
