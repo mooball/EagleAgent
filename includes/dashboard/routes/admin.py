@@ -311,7 +311,13 @@ def _dedup_queue_ctx(session, tier: str, page: int, flash=None) -> dict:
     rows = (
         session.query(SupplierDuplicateCandidate)
         .filter(SupplierDuplicateCandidate.status == "proposed")
-        .order_by(SupplierDuplicateCandidate.confidence.desc().nulls_last())
+        # id asc breaks confidence ties — without it, rows at the same
+        # confidence shuffle between queries (after writes) and candidates
+        # jump pages, appearing to vanish after a swap.
+        .order_by(
+            SupplierDuplicateCandidate.confidence.desc().nulls_last(),
+            SupplierDuplicateCandidate.id.asc(),
+        )
         .all()
     )
     classified = []
