@@ -75,7 +75,8 @@ def _login(client, email="admin@eagle.com", name="Test Admin"):
 # ============================================================================
 
 def _make_supplier(id=1, name="Acme Corp", country="AU", city="Brisbane",
-                   contacts=None, notes=None, embedding=None):
+                   contacts=None, notes=None, embedding=None, use_instead=None,
+                   url=None):
     s = MagicMock()
     s.id = id
     s.name = name
@@ -84,6 +85,9 @@ def _make_supplier(id=1, name="Acme Corp", country="AU", city="Brisbane",
     s.contacts = contacts
     s.notes = notes
     s.embedding = embedding
+    s.use_instead = use_instead
+    s.url = url
+    s.supply_chain_position = {}
     return s
 
 
@@ -339,6 +343,55 @@ class TestSupplierRoutes:
             resp = client.get("/suppliers/1")
             assert resp.status_code == 200
             assert "Acme Corp" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_supplier_list_marks_duplicates(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        dup = _make_supplier(id=1, name="The Billiard Shop", use_instead="2")
+        normal = _make_supplier(id=2, name="Billiard Shop")
+
+        with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
+            session = MagicMock()
+            qm = session.query.return_value.outerjoin.return_value.group_by.return_value
+            qm.count.return_value = 2
+            qm.order_by.return_value.offset.return_value.limit.return_value.all.return_value = [
+                (dup, 5), (normal, 3)
+            ]
+            mock_gs.return_value = session
+
+            resp = client.get("/suppliers")
+            assert resp.status_code == 200
+            assert "duplicate" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_supplier_detail_shows_use_instead_banner(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        target = _make_supplier(id=1, name="Billiard Shop")
+        dup = _make_supplier(id=2, name="The Billiard Shop", use_instead="1")
+
+        with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
+            session = MagicMock()
+            # First .first(): the requested supplier; second: the use_instead target
+            session.query.return_value.filter.return_value.first.side_effect = [dup, target]
+
+            # Brands query
+            brand_query = session.query.return_value.join.return_value.filter.return_value
+            brand_query.filter.return_value.order_by.return_value.all.return_value = []
+
+            # Purchases query
+            purchase_query = session.query.return_value.join.return_value.filter.return_value
+            purchase_query.order_by.return_value.limit.return_value.all.return_value = []
+
+            mock_gs.return_value = session
+
+            resp = client.get("/suppliers/2")
+            assert resp.status_code == 200
+            assert "This supplier is a duplicate." in resp.text
+            assert "Billiard Shop" in resp.text
 
 
 # ============================================================================

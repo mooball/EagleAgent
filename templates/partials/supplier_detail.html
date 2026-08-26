@@ -8,6 +8,23 @@
         <span class="text-gray-900 dark:text-gray-100">{{ supplier.name }}</span>
     </nav>
 
+    {% if supplier.use_instead %}
+    <div class="mb-4 flex items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/30 dark:border-amber-700 px-4 py-3">
+        <svg class="w-5 h-5 shrink-0 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+        <div class="text-sm">
+            <span class="font-semibold text-amber-900 dark:text-amber-200">This supplier is a duplicate.</span>
+            <span class="text-amber-800 dark:text-amber-300">Please use this supplier instead:</span>
+        </div>
+        {% if use_instead_supplier %}
+        <a hx-get="/partial/suppliers/{{ use_instead_supplier.id }}" hx-target="#main-content" hx-push-url="/suppliers/{{ use_instead_supplier.id }}"
+           class="ml-auto shrink-0 inline-flex items-center gap-1 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-3 py-1.5 cursor-pointer">
+            {{ use_instead_supplier.name }}
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </a>
+        {% endif %}
+    </div>
+    {% endif %}
+
     <div class="flex items-start justify-between mb-6">
         <div class="flex items-center gap-3 min-w-0">
             <h1 class="text-2xl font-bold">{{ supplier.name }}</h1>
