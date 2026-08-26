@@ -1,6 +1,10 @@
 """Admin routes: user management, system admin, job runner, NetSuite status."""
 
+import asyncio
 import logging
+import math
+import uuid
+from datetime import datetime, timezone
 
 from fastapi import Request, Depends
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -9,6 +13,8 @@ from sqlalchemy import text
 from . import _helpers
 from ._helpers import router, templates, require_admin, _render
 from .rfqs import _get_store
+from includes.dashboard.models import Supplier, SupplierDuplicateCandidate
+from includes.dashboard.supplier_dedup import MergeConfig, merge_suppliers
 
 logger = logging.getLogger(__name__)
 
@@ -258,9 +264,114 @@ async def partial_netsuite_status(request: Request, user: dict = require_admin) 
 # Supplier Deduplication
 # ---------------------------------------------------------------------------
 
+_DEDUP_PER_PAGE = 50
+
+
+def _dedup_status_html(kind: str, message: str) -> str:
+    if kind == "error":
+        cls = ("bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 "
+               "border-red-200 dark:border-red-800")
+    else:
+        cls = ("bg-green-50 text-green-800 dark:bg-green-900/30 dark:text-green-300 "
+               "border-green-200 dark:border-green-800")
+    return (f'<div class="px-4 py-3 rounded-lg text-sm {cls} '
+            f'border mb-3">{message}</div>')
+
+
+def _dedup_supplier_card(sup) -> dict | None:
+    if not sup:
+        return None
+    return {
+        "id": str(sup.id),
+        "name": sup.name,
+        "netsuite_id": sup.netsuite_id,
+        "url": sup.url,
+        "country": sup.country,
+        "source": sup.source,
+    }
+
+
+def _dedup_queue_ctx(session, tier: str, page: int, flash=None) -> dict:
+    """Build the review queue context: proposed candidates, tiered, paginated."""
+    from scripts.scan_supplier_duplicates import candidate_tier
+
+    rows = (
+        session.query(SupplierDuplicateCandidate)
+        .filter(SupplierDuplicateCandidate.status == "proposed")
+        .order_by(SupplierDuplicateCandidate.confidence.desc().nulls_last())
+        .all()
+    )
+    classified = []
+    for cand in rows:
+        t = candidate_tier(cand.confidence, cand.reasons)
+        if tier in ("all", t):
+            classified.append((cand, t))
+
+    count_certain = sum(1 for _c, t in classified if t == "certain")
+    total = len(classified)
+    pages = max(1, math.ceil(total / _DEDUP_PER_PAGE))
+    page = max(1, min(page, pages))
+    window = classified[(page - 1) * _DEDUP_PER_PAGE: page * _DEDUP_PER_PAGE]
+
+    supplier_ids = []
+    for cand, _t in window:
+        supplier_ids.extend([cand.primary_id, cand.duplicate_id])
+    suppliers = {}
+    if supplier_ids:
+        suppliers = {
+            s.id: s
+            for s in session.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()
+        }
+
+    items = []
+    for cand, t in window:
+        created_label, _ = _humanize_timestamp(
+            cand.created_at.isoformat() if cand.created_at else None
+        )
+        items.append({
+            "id": str(cand.id),
+            "tier": t,
+            "confidence_pct": round((cand.confidence or 0) * 100),
+            "reasons": cand.reasons or [],
+            "created_label": created_label,
+            "primary": _dedup_supplier_card(suppliers.get(cand.primary_id)),
+            "duplicate": _dedup_supplier_card(suppliers.get(cand.duplicate_id)),
+        })
+
+    return {
+        "items": items,
+        "page": page,
+        "pages": pages,
+        "total": total,
+        "count_certain": count_certain,
+        "count_review": total - count_certain,
+        "tier": tier,
+        "flash": flash,
+    }
+
+
+def _dedup_form_state(form) -> tuple[str, int]:
+    tier = form.get("tier", "all")
+    try:
+        page = int(form.get("page", "1"))
+    except (TypeError, ValueError):
+        page = 1
+    return tier, page
+
+
+def _merge_summary(result) -> str:
+    kept = "kept + use_instead set" if result.use_instead_set else "duplicate deleted"
+    return (
+        f"Merged ({kept}) — {result.counts.get('rfq_items', 0)} RFQ item row(s), "
+        f"{result.counts.get('email_tracking', 0)} email(s), "
+        f"{result.counts.get('contacts', 0)} contact(s), "
+        f"{result.counts.get('transactions', 0)} transaction(s)."
+    )
+
+
 @router.get("/admin/duplicates")
 async def admin_duplicates(request: Request, user: dict = require_admin) -> HTMLResponse:
-    ctx = {"active_nav": "admin", "duplicates": None, "scanned": False}
+    ctx = {"active_nav": "admin"}
     return _render(request, "admin_duplicates.html", "partials/admin_duplicates.html", ctx, user)
 
 
@@ -269,118 +380,162 @@ async def partial_admin_duplicates(request: Request, user: dict = require_admin)
     return templates.TemplateResponse(request, "partials/admin_duplicates.html", {
         "user": user,
         "active_nav": "admin",
-        "duplicates": None,
-        "scanned": False,
     })
+
+
+@router.get("/partial/admin/duplicates/list")
+async def partial_admin_duplicates_list(request: Request, user: dict = require_admin) -> HTMLResponse:
+    tier = request.query_params.get("tier", "all")
+    try:
+        page = int(request.query_params.get("page", "1"))
+    except (TypeError, ValueError):
+        page = 1
+
+    session = _helpers.get_session()
+    try:
+        ctx = _dedup_queue_ctx(session, tier, page)
+    finally:
+        session.close()
+    ctx["user"] = user
+    return templates.TemplateResponse(request, "partials/_admin_dedup_queue.html", ctx)
 
 
 @router.post("/admin/duplicates/scan")
 async def admin_duplicates_scan(request: Request, user: dict = require_admin) -> HTMLResponse:
-    import asyncio
-    from scripts.find_duplicate_suppliers import scan_duplicates, scan_internal_duplicates
-
-    form = await request.form()
-    scan_mode = form.get("scan_mode", "netsuite")
-    name_filter = (form.get("name_filter", "") or "").strip() or None
+    """Kick off the background all-pairs scan (no synchronous wait)."""
+    from includes.graph import job_runner
     try:
-        result_limit = int(form.get("limit", "20"))
-    except (TypeError, ValueError):
-        result_limit = 20
+        job = await job_runner.run_script("scan_supplier_duplicates", [])
+    except ValueError as e:
+        return HTMLResponse(_dedup_status_html("error", f"Scan not started: {e}"))
+    return HTMLResponse(_dedup_status_html(
+        "ok", f"Scan started (job {job.id[:8]}). Refresh the queue when it completes."
+    ))
+
+
+@router.post("/admin/duplicates/{candidate_id}/merge")
+async def admin_duplicates_merge_candidate(
+    request: Request, candidate_id: str, user: dict = require_admin
+) -> HTMLResponse:
+    form = await request.form()
+    tier, page = _dedup_form_state(form)
+    config = MergeConfig(
+        merge_contacts=form.get("merge_contacts") == "1",
+        merge_domains=form.get("merge_domains") == "1",
+        merge_names=form.get("merge_names") == "1",
+    )
+
+    try:
+        cand_uuid = uuid.UUID(candidate_id)
+    except ValueError:
+        return HTMLResponse(_dedup_status_html("error", "Invalid candidate ID."))
 
     session = _helpers.get_session()
     try:
-        if scan_mode == "internal":
-            duplicates = await asyncio.to_thread(scan_internal_duplicates, session, name_filter, result_limit)
+        cand = session.get(SupplierDuplicateCandidate, cand_uuid)
+        if not cand:
+            flash = ("error", "Candidate not found.")
+        elif cand.status != "proposed":
+            flash = ("error", "Candidate already decided.")
         else:
-            duplicates = await asyncio.to_thread(scan_duplicates, session, name_filter, result_limit)
+            try:
+                result = await asyncio.to_thread(
+                    merge_suppliers, session, cand.primary_id, cand.duplicate_id, config
+                )
+            except ValueError as e:
+                session.rollback()
+                flash = ("error", f"Merge failed: {e}")
+            else:
+                cand.status = "merged"
+                cand.decided_by = user.get("identifier", "admin")
+                cand.decided_at = datetime.now(timezone.utc)
+                session.commit()
+                flash = ("ok", _merge_summary(result))
+        ctx = _dedup_queue_ctx(session, tier, page, flash=flash)
     finally:
         session.close()
-
-    return templates.TemplateResponse(request, "partials/_admin_dedup_results.html", {
-        "user": user,
-        "active_nav": "admin",
-        "duplicates": duplicates,
-        "scanned": True,
-        "scan_mode": scan_mode,
-    })
+    ctx["user"] = user
+    return templates.TemplateResponse(request, "partials/_admin_dedup_queue.html", ctx)
 
 
-@router.post("/admin/duplicates/merge")
-async def admin_duplicates_merge(request: Request, user: dict = require_admin) -> HTMLResponse:
-    import asyncio
-    from starlette.responses import HTMLResponse
-    from scripts.find_duplicate_suppliers import merge_supplier
-
+@router.post("/admin/duplicates/{candidate_id}/reject")
+async def admin_duplicates_reject_candidate(
+    request: Request, candidate_id: str, user: dict = require_admin
+) -> HTMLResponse:
     form = await request.form()
-    keep_id = form.get("keep_id", "").strip()
-    remove_id = form.get("remove_id", "").strip()
-    merge_url = form.get("merge_url") == "1"
-    merge_contacts = form.get("merge_contacts") == "1"
+    tier, page = _dedup_form_state(form)
 
-    if not keep_id or not remove_id:
-        return HTMLResponse('<div class="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200 dark:border-red-800 mb-3">Missing supplier IDs.</div>')
+    try:
+        cand_uuid = uuid.UUID(candidate_id)
+    except ValueError:
+        return HTMLResponse(_dedup_status_html("error", "Invalid candidate ID."))
 
     session = _helpers.get_session()
     try:
-        merge_fields = {"url": merge_url, "contacts": merge_contacts}
-        result = await asyncio.to_thread(merge_supplier, session, keep_id, remove_id, merge_fields)
-        if result["status"] == "ok":
-            session.commit()
-            msg = f"Merged successfully. Updated {result['updated_rfq_items']} RFQ item(s)."
-            return HTMLResponse(f'<div class="px-4 py-3 rounded-lg text-sm bg-green-50 text-green-800 dark:bg-green-900/30 dark:text-green-300 border border-green-200 dark:border-green-800 mb-3">{msg}</div>')
+        cand = session.get(SupplierDuplicateCandidate, cand_uuid)
+        if not cand:
+            flash = ("error", "Candidate not found.")
+        elif cand.status != "proposed":
+            flash = ("error", "Candidate already decided.")
         else:
-            session.rollback()
-            msg = f"Error: {result['message']}"
-            return HTMLResponse(f'<div class="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200 dark:border-red-800 mb-3">{msg}</div>')
-    except Exception as e:
-        session.rollback()
-        logger.exception("Merge failed")
-        return HTMLResponse(f'<div class="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200 dark:border-red-800 mb-3">Error: {e}</div>')
+            cand.status = "rejected"
+            cand.decided_by = user.get("identifier", "admin")
+            cand.decided_at = datetime.now(timezone.utc)
+            session.commit()
+            flash = ("ok", "Marked as not a duplicate.")
+        ctx = _dedup_queue_ctx(session, tier, page, flash=flash)
     finally:
         session.close()
+    ctx["user"] = user
+    return templates.TemplateResponse(request, "partials/_admin_dedup_queue.html", ctx)
 
 
-@router.post("/admin/duplicates/dismiss")
-async def admin_duplicates_dismiss(request: Request, user: dict = require_admin) -> HTMLResponse:
-    """Mark a non-netsuite supplier as 'not a duplicate' by adding a flag."""
-    import uuid
-    from starlette.responses import HTMLResponse
-    from sqlalchemy.orm.attributes import flag_modified
-    from includes.dashboard.models import Supplier
-
+@router.post("/admin/duplicates/bulk-merge")
+async def admin_duplicates_bulk_merge(request: Request, user: dict = require_admin) -> HTMLResponse:
     form = await request.form()
-    supplier_id = form.get("supplier_id", "").strip()
-
-    if not supplier_id:
-        return HTMLResponse("")
+    tier, page = _dedup_form_state(form)
+    candidate_ids = [i for i in form.getlist("ids") if i]
+    config = MergeConfig(
+        merge_contacts=form.get("merge_contacts") == "1",
+        merge_domains=form.get("merge_domains") == "1",
+        merge_names=form.get("merge_names") == "1",
+    )
 
     session = _helpers.get_session()
     try:
-        sup = session.query(Supplier).filter(Supplier.id == uuid.UUID(supplier_id)).first()
-        if sup:
-            from datetime import datetime, timezone
-            comments = list(sup.comments or [])
-            comments.append({
-                "author": user.get("identifier", "admin"),
-                "comment": "Marked as not-a-duplicate during dedup review.",
-                "ts": datetime.now(timezone.utc).isoformat(),
-            })
-            sup.comments = comments
-            flag_modified(sup, "comments")
-            alt_names = list(sup.alt_names or [])
-            if "__dedup_reviewed__" not in alt_names:
-                alt_names.append("__dedup_reviewed__")
-                sup.alt_names = alt_names
-                flag_modified(sup, "alt_names")
-            session.commit()
-    except Exception as e:
-        session.rollback()
-        logger.warning(f"Dismiss failed: {e}")
-        return HTMLResponse(f'<div class="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200 dark:border-red-800 mb-3">Dismiss failed: {e}</div>')
+        merged = 0
+        errors = []
+        for cid in candidate_ids:
+            try:
+                cand_uuid = uuid.UUID(cid)
+            except ValueError:
+                continue
+            cand = session.get(SupplierDuplicateCandidate, cand_uuid)
+            if not cand or cand.status != "proposed":
+                continue
+            try:
+                await asyncio.to_thread(
+                    merge_suppliers, session, cand.primary_id, cand.duplicate_id, config
+                )
+            except ValueError as e:
+                session.rollback()
+                errors.append(str(e))
+            else:
+                cand.status = "merged"
+                cand.decided_by = user.get("identifier", "admin")
+                cand.decided_at = datetime.now(timezone.utc)
+                session.commit()
+                merged += 1
+
+        if errors:
+            flash = ("error", f"Merged {merged}; failed: {', '.join(errors[:3])}")
+        else:
+            flash = ("ok", f"Merged {merged} candidate(s).")
+        ctx = _dedup_queue_ctx(session, tier, page, flash=flash)
     finally:
         session.close()
-
-    return HTMLResponse('<div class="px-4 py-3 rounded-lg text-sm bg-gray-50 text-gray-600 dark:bg-gray-800 dark:text-gray-400 border border-gray-200 dark:border-gray-700 mb-3">Dismissed.</div>')
+    ctx["user"] = user
+    return templates.TemplateResponse(request, "partials/_admin_dedup_queue.html", ctx)
 
 
 @router.post("/admin/duplicates/delete")

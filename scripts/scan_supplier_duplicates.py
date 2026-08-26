@@ -134,6 +134,16 @@ def score_pair(info: PairInfo) -> tuple[float, list[str], str]:
     return round(confidence, 3), reasons, tier
 
 
+def candidate_tier(confidence: float | None, reasons: list | None) -> str:
+    """Tier for a stored candidate row — 'certain' is bulk-confirmable."""
+    reasons = reasons or []
+    if "normalised_name_identical" in reasons:
+        return "certain"
+    if "shared_domain" in reasons and (confidence or 0) >= CERTAIN_SIM:
+        return "certain"
+    return "review"
+
+
 def _supplier_names(session, supplier_ids) -> dict:
     if not supplier_ids:
         return {}

@@ -7,7 +7,7 @@ Chainlit mount and Google SSO init).
 
 import pytest
 import uuid
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch, MagicMock, PropertyMock, AsyncMock
 from collections import namedtuple
 
 from fastapi import FastAPI, Request, Depends
@@ -611,3 +611,120 @@ class TestLookupRFQThreadId:
             result = _lookup_rfq_thread_id("RFQ-2026-0001", "user@eagle.com")
             assert result == "new-thread"
             session.delete.assert_not_called()
+
+
+# ============================================================================
+# Admin supplier-dedup queue (A2)
+# ============================================================================
+
+class TestAdminDuplicatesQueue:
+    """Candidate queue: list rendering, merge, reject, scan trigger."""
+
+    def _candidate(self):
+        from datetime import datetime, timezone
+        cand = MagicMock()
+        cand.id = uuid.uuid4()
+        cand.status = "proposed"
+        cand.confidence = 0.98
+        cand.reasons = ["normalised_name_identical"]
+        cand.primary_id = uuid.uuid4()
+        cand.duplicate_id = uuid.uuid4()
+        cand.created_at = datetime(2026, 8, 26, 4, 15, tzinfo=timezone.utc)
+        cand.decided_by = None
+        cand.decided_at = None
+        return cand
+
+    def _supplier(self, supplier_id):
+        sup = MagicMock()
+        sup.id = supplier_id
+        sup.name = "Acme Pty Ltd"
+        sup.netsuite_id = "NS-1"
+        sup.url = "https://acme.com.au"
+        sup.country = "AU"
+        sup.source = "netsuite"
+        return sup
+
+    def _session(self, cands, suppliers=None):
+        cand_q = MagicMock()
+        cand_q.filter.return_value = cand_q
+        cand_q.order_by.return_value = cand_q
+        cand_q.all.return_value = cands
+
+        sup_q = MagicMock()
+        sup_q.filter.return_value = sup_q
+        sup_q.all.return_value = suppliers or []
+
+        session = MagicMock()
+        session.query = MagicMock(side_effect=lambda model: cand_q if model.__name__ == "SupplierDuplicateCandidate" else sup_q)
+        session.get.return_value = cands[0] if cands else None
+        return session
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_list_renders_candidates(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        session = self._session([cand], [self._supplier(cand.primary_id), self._supplier(cand.duplicate_id)])
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.get("/partial/admin/duplicates/list?tier=all&page=1")
+
+        assert resp.status_code == 200
+        assert "Acme Pty Ltd" in resp.text
+        assert "98%" in resp.text
+        assert "certain" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_merge_marks_candidate_merged(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        session = self._session([cand])
+        result = MagicMock(use_instead_set=False, counts={"rfq_items": 2, "email_tracking": 1, "contacts": 0, "transactions": 0})
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session), \
+             patch("includes.dashboard.routes.admin.merge_suppliers", return_value=result):
+            resp = client.post(
+                f"/admin/duplicates/{cand.id}/merge",
+                data={"merge_contacts": "1", "merge_domains": "1", "merge_names": "1", "page": "1", "tier": "all"},
+            )
+
+        assert resp.status_code == 200
+        assert cand.status == "merged"
+        assert cand.decided_by == "admin"
+        assert "Merged (" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_reject_marks_candidate_rejected(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        session = self._session([cand])
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.post(
+                f"/admin/duplicates/{cand.id}/reject",
+                data={"page": "1", "tier": "all"},
+            )
+
+        assert resp.status_code == 200
+        assert cand.status == "rejected"
+        assert "not a duplicate" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_scan_triggers_background_job(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        job = MagicMock()
+        job.id = "job-1234567890"
+        mock_job_runner = MagicMock()
+        mock_job_runner.run_script = AsyncMock(return_value=job)
+        with patch("includes.graph.job_runner", mock_job_runner):
+            resp = client.post("/admin/duplicates/scan")
+
+        assert resp.status_code == 200
+        assert "Scan started" in resp.text
