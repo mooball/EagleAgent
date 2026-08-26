@@ -72,6 +72,14 @@ class TestNormalizeSupplierName:
         from includes.dashboard.supplier_matching import normalize_supplier_name
         assert normalize_supplier_name("Acme (AUD) Pty Ltd") == "acme"
         assert normalize_supplier_name("Kalgin Freight Services (usd)") == "kalgin freight services"
+        # trailing parenthesised word-form currency is stripped too
+        assert normalize_supplier_name("Kalgin Freight Services (euro)") == "kalgin freight services"
+
+    def test_euro_as_brand_word_kept(self):
+        from includes.dashboard.supplier_matching import normalize_supplier_name
+        # 'euro' is a brand word here, not a currency annotation
+        assert normalize_supplier_name("Euro Signs and Safety") == "euro signs safety"
+        assert normalize_supplier_name("Euro Glass") == "euro glass"
 
     def test_empty(self):
         from includes.dashboard.supplier_matching import normalize_supplier_name

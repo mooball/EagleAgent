@@ -50,3 +50,23 @@ class TestScorePair:
         confidence, _reasons, tier = score_pair(info)
         assert confidence == 0.9
         assert tier == "review"  # certain needs shared domain (or identical name)
+
+    def test_identical_name_with_disagreeing_domains_is_review(self):
+        info = PairInfo(name_keys_equal=True, domains_a={"signsofsafety"}, domains_b={"eurosigns"})
+        confidence, reasons, tier = score_pair(info)
+        assert confidence == 0.6
+        assert "domain_disagreement" in reasons
+        assert tier == "review"
+
+    def test_identical_name_with_shared_domain_is_certain(self):
+        info = PairInfo(name_keys_equal=True, shared_domains={"acmeparts"},
+                        domains_a={"acmeparts"}, domains_b={"acmeparts"})
+        confidence, reasons, tier = score_pair(info)
+        assert confidence == 0.98
+        assert "domain_disagreement" not in reasons
+        assert tier == "certain"
+
+    def test_candidate_tier_domain_disagreement_is_review(self):
+        from scripts.scan_supplier_duplicates import candidate_tier
+        assert candidate_tier(0.6, ["normalised_name_identical", "domain_disagreement"]) == "review"
+        assert candidate_tier(0.98, ["normalised_name_identical"]) == "certain"

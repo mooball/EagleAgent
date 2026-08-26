@@ -28,10 +28,19 @@ NOISE_TOKENS = {
     "group", "holdings", "international", "intl",
     "australia", "australian", "aust", "au",
     # currency annotations found in vendor names, e.g. "(AUD)", "(usd)"
-    "aud", "usd", "eur", "nzd", "euro", "gbp",
+    # ('euro' is deliberately NOT here — see _CURRENCY_SUFFIX_RE)
+    "aud", "usd", "eur", "nzd", "gbp",
 }
 
 _PUNCT_RE = re.compile(r"[^a-z0-9]+")
+
+# Trailing parenthesised currency annotations: "... (euro)", "... (AUD)".
+# The word 'euro' is NOT a global noise token — it's also a brand word
+# ("Euro Signs and Safety", "Euro Glass") — so it is only stripped when it
+# appears as a trailing currency annotation.
+_CURRENCY_SUFFIX_RE = re.compile(
+    r"\s*\((?:aud|usd|eur|euro|nzd|gbp)\)\s*$", re.IGNORECASE
+)
 
 
 def _join_single_letters(tokens: list[str]) -> list[str]:
@@ -68,7 +77,8 @@ def normalize_supplier_name(name: str | None) -> str:
     if not name:
         return ""
     s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
-    s = _PUNCT_RE.sub(" ", s.lower())
+    s = _CURRENCY_SUFFIX_RE.sub(" ", s.lower())
+    s = _PUNCT_RE.sub(" ", s)
     tokens = [t for t in s.split() if t not in NOISE_TOKENS]
     if not tokens:  # all-noise name (e.g. "The Company") — keep as-is
         tokens = s.split()
