@@ -19,9 +19,10 @@
             {% if rfq.opportunity_id %}
             <span class="inline-flex items-center gap-2">
                 {% if sync_can_sync %}
-                <button type="button" @click="syncOpportunity()"
-                        class="px-2.5 py-1 rounded-md text-xs font-medium bg-green-600 text-white hover:bg-green-700 transition-colors"
-                        title="Push RFQ items and prices to the linked NetSuite Opportunity">
+                {# Temporarily disabled: opportunity sync is blocked until supplier deduplication is complete #}
+                <button type="button" disabled
+                        class="px-2.5 py-1 rounded-md text-xs font-medium bg-green-600 text-white opacity-60 cursor-not-allowed"
+                        title="Opportunity sync is temporarily disabled">
                     Update Opportunity
                 </button>
                 {% else %}
