@@ -278,9 +278,10 @@ def _dedup_status_html(kind: str, message: str) -> str:
             f'border mb-3">{message}</div>')
 
 
-def _dedup_supplier_card(sup) -> dict | None:
+def _dedup_supplier_card(sup, txn_stats: dict) -> dict | None:
     if not sup:
         return None
+    count, latest = txn_stats.get(sup.id, (0, None))
     return {
         "id": str(sup.id),
         "name": sup.name,
@@ -288,6 +289,8 @@ def _dedup_supplier_card(sup) -> dict | None:
         "url": sup.url,
         "country": sup.country,
         "source": sup.source,
+        "txn_count": count or 0,
+        "last_txn": str(latest) if latest is not None else None,
     }
 
 
@@ -317,11 +320,22 @@ def _dedup_queue_ctx(session, tier: str, page: int, flash=None) -> dict:
     for cand, _t in window:
         supplier_ids.extend([cand.primary_id, cand.duplicate_id])
     suppliers = {}
+    txn_stats = {}
     if supplier_ids:
         suppliers = {
             s.id: s
             for s in session.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()
         }
+        txn_rows = session.execute(
+            text("""
+                SELECT supplier_id, count(*) AS cnt, max(date) AS latest
+                FROM product_suppliers
+                WHERE supplier_id = ANY(:ids)
+                GROUP BY supplier_id
+            """),
+            {"ids": list(set(supplier_ids))},
+        ).fetchall()
+        txn_stats = {r.supplier_id: (r.cnt, r.latest) for r in txn_rows}
 
     items = []
     for cand, t in window:
@@ -334,8 +348,8 @@ def _dedup_queue_ctx(session, tier: str, page: int, flash=None) -> dict:
             "confidence_pct": round((cand.confidence or 0) * 100),
             "reasons": cand.reasons or [],
             "created_label": created_label,
-            "primary": _dedup_supplier_card(suppliers.get(cand.primary_id)),
-            "duplicate": _dedup_supplier_card(suppliers.get(cand.duplicate_id)),
+            "primary": _dedup_supplier_card(suppliers.get(cand.primary_id), txn_stats),
+            "duplicate": _dedup_supplier_card(suppliers.get(cand.duplicate_id), txn_stats),
         })
 
     return {

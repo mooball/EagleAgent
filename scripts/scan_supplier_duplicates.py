@@ -183,12 +183,29 @@ def _report(session, pairs: dict) -> None:
             print(f"    [{tier}] {na[:45]!r}  ↔  {nb[:45]!r}  ({confidence}) {', '.join(reasons)}")
 
 
+def _txn_stats(session, supplier_ids) -> dict:
+    """{supplier_id: (txn_count, latest_txn_date)} in one batched query."""
+    if not supplier_ids:
+        return {}
+    rows = session.execute(
+        text("""
+            SELECT supplier_id, count(*) AS cnt, max(date) AS latest
+            FROM product_suppliers
+            WHERE supplier_id = ANY(:ids)
+            GROUP BY supplier_id
+        """),
+        {"ids": list(supplier_ids)},
+    ).fetchall()
+    return {r.supplier_id: (r.cnt, r.latest) for r in rows}
+
+
 def _upsert_candidates(session, pairs: dict, min_confidence: float, user: str = "scan") -> dict:
     now = datetime.now(timezone.utc)
     existing = {
-        (c.primary_id, c.duplicate_id): c
+        frozenset((c.primary_id, c.duplicate_id)): c
         for c in session.query(SupplierDuplicateCandidate).all()
     }
+    stats = _txn_stats(session, {i for pair in pairs for i in pair})
 
     created = updated = skipped = 0
     for (id_a, id_b), info in pairs.items():
@@ -202,14 +219,16 @@ def _upsert_candidates(session, pairs: dict, min_confidence: float, user: str = 
         if not sup_a or not sup_b:
             skipped += 1
             continue
-        primary, duplicate = pick_keep_remove(sup_a, sup_b)
-        key = (primary.id, duplicate.id)
+        primary, duplicate = pick_keep_remove(sup_a, sup_b, stats)
 
-        row = existing.get(key)
+        row = existing.get(frozenset((id_a, id_b)))
         if row:
             if row.status == "proposed":
                 row.confidence = confidence
                 row.reasons = reasons
+                # Re-evaluate primary/duplicate with the latest activity data
+                row.primary_id = primary.id
+                row.duplicate_id = duplicate.id
                 updated += 1
             else:
                 skipped += 1  # already merged/rejected — leave the decision alone

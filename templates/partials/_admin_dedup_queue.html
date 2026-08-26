@@ -68,6 +68,9 @@
                         {% if p.url %}<span class="ml-1 break-all">{{ p.url }}</span>{% endif %}
                         {% if p.country %}<span class="ml-1">· {{ p.country }}</span>{% endif %}
                     </div>
+                    <div class="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
+                        {{ p.txn_count }} transaction{% if p.txn_count != 1 %}s{% endif %}{% if p.last_txn %} · last {{ p.last_txn }}{% else %} · none{% endif %}
+                    </div>
                     {% endif %}
                 </td>
                 <td class="px-3 py-3 border-l border-gray-100 dark:border-gray-700">
@@ -82,6 +85,9 @@
                         {% endif %}
                         {% if d.url %}<span class="ml-1 break-all">{{ d.url }}</span>{% endif %}
                         {% if d.country %}<span class="ml-1">· {{ d.country }}</span>{% endif %}
+                    </div>
+                    <div class="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
+                        {{ d.txn_count }} transaction{% if d.txn_count != 1 %}s{% endif %}{% if d.last_txn %} · last {{ d.last_txn }}{% else %} · none{% endif %}
                     </div>
                     {% endif %}
                 </td>
