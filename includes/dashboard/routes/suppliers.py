@@ -68,6 +68,7 @@ def supplier_list(request: Request, user: dict = Depends(require_user),
             suppliers.append({
                 "id": str(s.id),
                 "name": s.name,
+                "duplicate": bool(s.use_instead),
                 "location": ", ".join(filter(None, [s.city, s.country])) or None,
                 "supply_chain": ", ".join(filter(None, [scp.get("tier"), scp.get("category")])) or None,
                 "purchase_count": pc,
@@ -97,6 +98,12 @@ def supplier_detail(request: Request, supplier_id: str,
         ).first()
         if not supplier:
             return RedirectResponse("/suppliers")
+
+        use_instead_supplier = None
+        if supplier.use_instead:
+            use_instead_supplier = session.query(Supplier).filter(
+                Supplier.id == supplier.use_instead
+            ).first()
 
         contacts = _load_contacts(session, supplier.id)
 
@@ -136,6 +143,7 @@ def supplier_detail(request: Request, supplier_id: str,
 
     ctx = {
         "supplier": supplier,
+        "use_instead_supplier": use_instead_supplier,
         "contacts": contacts,
         "brands": brands,
         "purchases": purchases,
@@ -183,6 +191,7 @@ def partial_supplier_list(request: Request, user: dict = Depends(require_user),
             suppliers.append({
                 "id": str(s.id),
                 "name": s.name,
+                "duplicate": bool(s.use_instead),
                 "location": ", ".join(filter(None, [s.city, s.country])) or None,
                 "supply_chain": ", ".join(filter(None, [scp.get("tier"), scp.get("category")])) or None,
                 "purchase_count": pc,
@@ -236,6 +245,7 @@ def partial_supplier_rows(request: Request, user: dict = Depends(require_user),
             suppliers.append({
                 "id": str(s.id),
                 "name": s.name,
+                "duplicate": bool(s.use_instead),
                 "location": ", ".join(filter(None, [s.city, s.country])) or None,
                 "supply_chain": ", ".join(filter(None, [scp.get("tier"), scp.get("category")])) or None,
                 "purchase_count": pc,
@@ -261,6 +271,12 @@ def partial_supplier_detail(request: Request, supplier_id: str,
         ).first()
         if not supplier:
             return HTMLResponse("<p>Supplier not found.</p>")
+
+        use_instead_supplier = None
+        if supplier.use_instead:
+            use_instead_supplier = session.query(Supplier).filter(
+                Supplier.id == supplier.use_instead
+            ).first()
 
         contacts = _load_contacts(session, supplier.id)
 
@@ -299,6 +315,7 @@ def partial_supplier_detail(request: Request, supplier_id: str,
     return templates.TemplateResponse(request, "partials/supplier_detail.html", {
         "user": user,
         "supplier": supplier,
+        "use_instead_supplier": use_instead_supplier,
         "contacts": contacts,
         "brands": brands,
         "purchases": purchases,

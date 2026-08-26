@@ -34,7 +34,7 @@
                 :class="expanded[{{ item.line }}] ? 'bg-blue-50 dark:bg-blue-950' : ('{{ item.match }}' === 'discrepancy' ? 'bg-red-50 dark:bg-red-950/30' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50')"
                 @click="toggle({{ item.line }})">
                 <td class="px-2 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
-                <td class="px-3 py-2.5 font-mono whitespace-nowrap overflow-hidden" title="{{ item.part_number or '' }}">
+                <td class="px-3 py-2.5 font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap overflow-hidden" title="{{ item.part_number or '' }}">
                     <span class="inline-flex items-center gap-1 max-w-full">
                         <span class="block truncate">{{ item.part_number or '—' }}</span>
                         {% if item.product_id %}
@@ -50,7 +50,7 @@
                         {% else %}
                         <span class="w-3.5 shrink-0"></span>
                         {% endif %}
-                        <span class="min-w-0 break-words">{{ item.input_description or '—' }}</span>
+                        <span class="min-w-0 break-words text-gray-900 dark:text-gray-100">{{ item.input_description or '—' }}</span>
                         {% if item.department %}
                         <span class="ml-2 inline-flex items-center shrink-0 h-[13px] px-1 rounded-full text-[9px] leading-none font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-600"
                               title="Department: {{ item.department }}">{{ item.department }}</span>
@@ -69,7 +69,7 @@
                     {% endif %}
                 </td>
                 <td class="px-2 py-2.5 text-center">{{ item.quantity or '—' }}</td>
-                <td class="px-2 py-2.5 text-center text-xs text-gray-500">{{ item.uom or '' }}</td>
+                <td class="px-2 py-2.5 text-center text-gray-500">{{ item.uom or '' }}</td>
                 <td class="px-2 py-2.5 text-center">
                     {% if item.match == 'specific' %}
                     <span class="tip tip-end inline-block w-2.5 h-2.5 rounded-full bg-green-500" data-tip="Specific — part number + description (brand discoverable)"></span>

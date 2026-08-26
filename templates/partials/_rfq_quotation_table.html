@@ -42,23 +42,23 @@
                 <td class="px-3 py-2.5 text-center">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
                 <td class="px-3 py-2.5 text-right font-mono" @click.stop>
                     <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right"
-                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(item.cost_price) if item.cost_price is not none else '—' }}</span>
+                          @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(item.cost_price) if item.cost_price is not none else '—' }}</span>
                     <input type="text" inputmode="decimal"
                            class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                            value="{{ item.cost_price if item.cost_price is not none else '' }}"
                            placeholder="0.00"
-                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'cost_price', $el.value)"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'cost_price', $el.value)"
                            @keydown.enter="$el.blur()"
                            @keydown.escape="$el.value='{{ item.cost_price if item.cost_price is not none else '' }}'; $el.blur()">
                 </td>
                 <td class="px-3 py-2.5 text-right font-mono" @click.stop>
                     <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right"
-                          @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(item.sale_price) if item.sale_price is not none else '—' }}</span>
+                          @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(item.sale_price) if item.sale_price is not none else '—' }}</span>
                     <input type="text" inputmode="decimal"
                            class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                            value="{{ item.sale_price if item.sale_price is not none else '' }}"
                            placeholder="0.00"
-                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'sale_price', $el.value)"
+                           @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'sale_price', $el.value)"
                            @keydown.enter="$el.blur()"
                            @keydown.escape="$el.value='{{ item.sale_price if item.sale_price is not none else '' }}'; $el.blur()">
                 </td>
@@ -87,35 +87,35 @@
                                     <td class="py-1.5 pr-3 text-gray-900 dark:text-gray-100">{{ sup.name }}</td>
                                     <td class="py-1.5 px-2" @click.stop>
                                         <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1 py-0.5 -my-0.5 -mx-1 inline-block min-w-[40px]"
-                                              @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ sup.quote_currency or sup.currency or '—' }}</span>
+                                              @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ sup.quote_currency or sup.currency or '—' }}</span>
                                         <input type="text" maxlength="3"
                                                class="hidden w-16 rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0 text-sm focus:ring-1 focus:ring-blue-500"
                                                value="{{ sup.quote_currency or '' }}"
                                                placeholder="AUD"
-                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value.trim() || '—'; updateSupplierQuote({{ item.line }}, '{{ sup.name|e }}', 'quote_currency', $el.value.trim())"
+                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value.trim() || '—'; updateSupplierQuote({{ item.line }}, '{{ sup.name|e }}', 'quote_currency', $el.value.trim())"
                                                @keydown.enter="$el.blur()"
                                                @keydown.escape="$el.blur()">
                                     </td>
                                     <td class="py-1.5 px-2 text-gray-500 dark:text-gray-400">{{ sup.terms or '—' }}</td>
                                     <td class="py-1.5 px-2 text-right font-mono" @click.stop>
                                         <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1 py-0.5 -my-0.5 -mx-1 inline-block min-w-[60px] text-right"
-                                              @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(sup.quote_cost) if sup.quote_cost is not none else '—' }}</span>
+                                              @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ '$%.2f'|format(sup.quote_cost) if sup.quote_cost is not none else '—' }}</span>
                                         <input type="text" inputmode="decimal"
                                                class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500"
                                                value="{{ sup.quote_cost if sup.quote_cost is not none else '' }}"
                                                placeholder="0.00"
-                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierQuote({{ item.line }}, '{{ sup.name|e }}', 'quote_cost', $el.value)"
+                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierQuote({{ item.line }}, '{{ sup.name|e }}', 'quote_cost', $el.value)"
                                                @keydown.enter="$el.blur()"
                                                @keydown.escape="$el.blur()">
                                     </td>
                                     <td class="py-1.5 px-2" @click.stop>
                                         <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1 py-0.5 -my-0.5 -mx-1 inline-block min-w-[70px]"
-                                              @click="$el.classList.add('hidden'); $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ sup.quote_leadtime or '—' }}</span>
+                                              @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ sup.quote_leadtime or '—' }}</span>
                                         <input type="text"
                                                class="hidden w-28 rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0 text-sm focus:ring-1 focus:ring-blue-500"
                                                value="{{ sup.quote_leadtime or '' }}"
                                                placeholder="e.g. 2 weeks"
-                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.classList.remove('hidden'); $el.previousElementSibling.textContent = $el.value.trim() || '—'; updateSupplierQuote({{ item.line }}, '{{ sup.name|e }}', 'quote_leadtime', $el.value.trim())"
+                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value.trim() || '—'; updateSupplierQuote({{ item.line }}, '{{ sup.name|e }}', 'quote_leadtime', $el.value.trim())"
                                                @keydown.enter="$el.blur()"
                                                @keydown.escape="$el.blur()">
                                     </td>

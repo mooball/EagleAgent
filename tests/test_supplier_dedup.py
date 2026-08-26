@@ -2,7 +2,7 @@
 and reference reassignment (shared foundation S2)."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -276,3 +276,65 @@ class TestMergeDetails:
         pairs = {(k.key_type, k.key_value) for k in keys}
         assert ("name", "acme fluid") in pairs        # duplicate's name now searchable
         assert ("domain", "acmefluid") in pairs       # duplicate's domain now searchable
+
+
+class TestPickKeepRemove:
+    """Transaction count and recency now participate in primary selection."""
+
+    def _sup(self, netsuite_id=True, url=None, contacts=(), alt_names=(), alt_domains=()):
+        return Supplier(
+            id=uuid.uuid4(),
+            netsuite_id=netsuite_id,
+            url=url,
+            contacts=list(contacts),
+            alt_names=list(alt_names),
+            alt_domains=list(alt_domains),
+        )
+
+    def test_netsuite_beats_web_regardless_of_activity(self):
+        from includes.dashboard.supplier_dedup import pick_keep_remove
+
+        ns = self._sup(netsuite_id="NS-1")
+        web = self._sup(netsuite_id=None)
+        stats = {ns.id: (0, None), web.id: (50, date.today())}
+        keep, _remove = pick_keep_remove(ns, web, stats)
+        assert keep is ns
+
+    def test_transaction_count_breaks_netsuite_tie(self):
+        from includes.dashboard.supplier_dedup import pick_keep_remove
+
+        busy = self._sup(netsuite_id="NS-1")
+        quiet = self._sup(netsuite_id="NS-2")
+        stats = {busy.id: (10, None), quiet.id: (2, None)}
+        keep, _remove = pick_keep_remove(busy, quiet, stats)
+        assert keep is busy
+
+    def test_recency_breaks_tie(self):
+        from includes.dashboard.supplier_dedup import pick_keep_remove
+
+        stale = self._sup(netsuite_id="NS-1")
+        fresh = self._sup(netsuite_id="NS-2")
+        stats = {
+            stale.id: (3, date.today() - timedelta(days=800)),
+            fresh.id: (3, date.today() - timedelta(days=10)),
+        }
+        keep, _remove = pick_keep_remove(stale, fresh, stats)
+        assert keep is fresh
+
+    def test_transaction_cap_does_not_beat_netsuite(self):
+        """Even 500 transactions must not outweigh the netsuite_id bonus."""
+        from includes.dashboard.supplier_dedup import pick_keep_remove
+
+        ns = self._sup(netsuite_id="NS-1")
+        web = self._sup(netsuite_id=None)
+        stats = {ns.id: (0, None), web.id: (500, date.today())}
+        keep, _remove = pick_keep_remove(ns, web, stats)
+        assert keep is ns
+
+    def test_missing_stats_safe_and_tie_keeps_first(self):
+        from includes.dashboard.supplier_dedup import pick_keep_remove
+
+        a = self._sup(netsuite_id="NS-1")
+        b = self._sup(netsuite_id="NS-2")
+        keep, _remove = pick_keep_remove(a, b, None)
+        assert keep is a

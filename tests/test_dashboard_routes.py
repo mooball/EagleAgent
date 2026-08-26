@@ -7,7 +7,7 @@ Chainlit mount and Google SSO init).
 
 import pytest
 import uuid
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch, MagicMock, PropertyMock, AsyncMock
 from collections import namedtuple
 
 from fastapi import FastAPI, Request, Depends
@@ -75,7 +75,8 @@ def _login(client, email="admin@eagle.com", name="Test Admin"):
 # ============================================================================
 
 def _make_supplier(id=1, name="Acme Corp", country="AU", city="Brisbane",
-                   contacts=None, notes=None, embedding=None):
+                   contacts=None, notes=None, embedding=None, use_instead=None,
+                   url=None):
     s = MagicMock()
     s.id = id
     s.name = name
@@ -84,6 +85,9 @@ def _make_supplier(id=1, name="Acme Corp", country="AU", city="Brisbane",
     s.contacts = contacts
     s.notes = notes
     s.embedding = embedding
+    s.use_instead = use_instead
+    s.url = url
+    s.supply_chain_position = {}
     return s
 
 
@@ -339,6 +343,55 @@ class TestSupplierRoutes:
             resp = client.get("/suppliers/1")
             assert resp.status_code == 200
             assert "Acme Corp" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_supplier_list_marks_duplicates(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        dup = _make_supplier(id=1, name="The Billiard Shop", use_instead="2")
+        normal = _make_supplier(id=2, name="Billiard Shop")
+
+        with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
+            session = MagicMock()
+            qm = session.query.return_value.outerjoin.return_value.group_by.return_value
+            qm.count.return_value = 2
+            qm.order_by.return_value.offset.return_value.limit.return_value.all.return_value = [
+                (dup, 5), (normal, 3)
+            ]
+            mock_gs.return_value = session
+
+            resp = client.get("/suppliers")
+            assert resp.status_code == 200
+            assert "duplicate" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_supplier_detail_shows_use_instead_banner(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        target = _make_supplier(id=1, name="Billiard Shop")
+        dup = _make_supplier(id=2, name="The Billiard Shop", use_instead="1")
+
+        with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
+            session = MagicMock()
+            # First .first(): the requested supplier; second: the use_instead target
+            session.query.return_value.filter.return_value.first.side_effect = [dup, target]
+
+            # Brands query
+            brand_query = session.query.return_value.join.return_value.filter.return_value
+            brand_query.filter.return_value.order_by.return_value.all.return_value = []
+
+            # Purchases query
+            purchase_query = session.query.return_value.join.return_value.filter.return_value
+            purchase_query.order_by.return_value.limit.return_value.all.return_value = []
+
+            mock_gs.return_value = session
+
+            resp = client.get("/suppliers/2")
+            assert resp.status_code == 200
+            assert "This supplier is a duplicate." in resp.text
+            assert "Billiard Shop" in resp.text
 
 
 # ============================================================================
@@ -611,3 +664,240 @@ class TestLookupRFQThreadId:
             result = _lookup_rfq_thread_id("RFQ-2026-0001", "user@eagle.com")
             assert result == "new-thread"
             session.delete.assert_not_called()
+
+
+# ============================================================================
+# Admin supplier-dedup queue (A2)
+# ============================================================================
+
+class TestAdminDuplicatesQueue:
+    """Candidate queue: list rendering, merge, reject, scan trigger."""
+
+    def _candidate(self):
+        from datetime import datetime, timezone
+        cand = MagicMock()
+        cand.id = uuid.uuid4()
+        cand.status = "proposed"
+        cand.confidence = 0.98
+        cand.reasons = ["normalised_name_identical"]
+        cand.primary_id = uuid.uuid4()
+        cand.duplicate_id = uuid.uuid4()
+        cand.created_at = datetime(2026, 8, 26, 4, 15, tzinfo=timezone.utc)
+        cand.decided_by = None
+        cand.decided_at = None
+        return cand
+
+    def _supplier(self, supplier_id):
+        sup = MagicMock()
+        sup.id = supplier_id
+        sup.name = "Acme Pty Ltd"
+        sup.netsuite_id = "NS-1"
+        sup.url = "https://acme.com.au"
+        sup.country = "AU"
+        sup.source = "netsuite"
+        return sup
+
+    def _session(self, cands, suppliers=None):
+        cand_q = MagicMock()
+        cand_q.filter.return_value = cand_q
+        cand_q.order_by.return_value = cand_q
+        cand_q.all.return_value = cands
+
+        sup_q = MagicMock()
+        sup_q.filter.return_value = sup_q
+        sup_q.all.return_value = suppliers or []
+
+        session = MagicMock()
+        session.query = MagicMock(side_effect=lambda model: cand_q if model.__name__ == "SupplierDuplicateCandidate" else sup_q)
+        session.get.return_value = cands[0] if cands else None
+        return session
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_list_renders_candidates(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        session = self._session([cand], [self._supplier(cand.primary_id), self._supplier(cand.duplicate_id)])
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.get("/partial/admin/duplicates/list?tier=all&page=1")
+
+        assert resp.status_code == 200
+        assert "Acme Pty Ltd" in resp.text
+        assert "98%" in resp.text
+        assert "certain" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_merge_marks_candidate_merged(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        session = self._session([cand])
+        result = MagicMock(use_instead_set=False, counts={"rfq_items": 2, "email_tracking": 1, "contacts": 0, "transactions": 0})
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session), \
+             patch("includes.dashboard.routes.admin.merge_suppliers", return_value=result):
+            resp = client.post(
+                f"/admin/duplicates/{cand.id}/merge",
+                data={"merge_contacts": "1", "merge_domains": "1", "merge_names": "1", "page": "1", "tier": "all"},
+            )
+
+        assert resp.status_code == 200
+        assert cand.status == "merged"
+        assert cand.decided_by == "admin"
+        # success renders the queue without a flash
+        assert "Merged (" not in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_merge_applies_client_keep_flip(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        old_primary, old_duplicate = cand.primary_id, cand.duplicate_id
+        primary = self._supplier(old_primary)      # netsuite
+        duplicate = self._supplier(old_duplicate)  # netsuite
+        session = self._session([cand])
+        session.get.side_effect = lambda model, key: (
+            cand if key == cand.id
+            else primary if key == old_primary
+            else duplicate
+        )
+        result = MagicMock(use_instead_set=False, counts={})
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session), \
+             patch("includes.dashboard.routes.admin.merge_suppliers", return_value=result) as mock_merge:
+            resp = client.post(
+                f"/admin/duplicates/{cand.id}/merge",
+                data={"merge_contacts": "1", "merge_domains": "1", "merge_names": "1",
+                      "page": "1", "tier": "all", "keep_first": "0"},
+            )
+
+        assert resp.status_code == 200
+        assert cand.status == "merged"
+        # merge_suppliers was called with the flipped direction
+        _, call_primary, call_duplicate, _config = mock_merge.call_args.args
+        assert call_primary == old_duplicate
+        assert call_duplicate == old_primary
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_merge_keep_flip_blocked_when_web_duplicate_is_netsuite(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        ns_id, web_id = cand.primary_id, cand.duplicate_id
+        ns = self._supplier(ns_id)
+        web = self._supplier(web_id)
+        web.netsuite_id = None
+        session = self._session([cand])
+        session.get.side_effect = lambda model, key: (
+            cand if key == cand.id
+            else ns if key == ns_id
+            else web
+        )
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session), \
+             patch("includes.dashboard.routes.admin.merge_suppliers") as mock_merge:
+            resp = client.post(
+                f"/admin/duplicates/{cand.id}/merge",
+                data={"merge_contacts": "1", "merge_domains": "1", "merge_names": "1",
+                      "page": "1", "tier": "all", "keep_first": "0"},
+            )
+
+        assert resp.status_code == 200
+        assert cand.status == "proposed"          # untouched
+        mock_merge.assert_not_called()
+        assert "Cannot keep the web supplier" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_reject_marks_candidate_rejected(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        session = self._session([cand])
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.post(
+                f"/admin/duplicates/{cand.id}/reject",
+                data={"page": "1", "tier": "all"},
+            )
+
+        assert resp.status_code == 200
+        assert cand.status == "rejected"
+        assert "Marked as not a duplicate." not in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_scan_triggers_background_job(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        job = MagicMock()
+        job.id = "job-1234567890"
+        mock_job_runner = MagicMock()
+        mock_job_runner.run_script = AsyncMock(return_value=job)
+        with patch("includes.graph.job_runner", mock_job_runner):
+            resp = client.post("/admin/duplicates/scan")
+
+        assert resp.status_code == 200
+        assert "Scan started" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_swap_flips_keep_direction(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        old_primary, old_duplicate = cand.primary_id, cand.duplicate_id
+        primary = self._supplier(old_primary)      # netsuite
+        duplicate = self._supplier(old_duplicate)  # netsuite
+        session = self._session([cand])
+        session.get.side_effect = lambda model, key: (
+            cand if key == cand.id
+            else primary if key == old_primary
+            else duplicate
+        )
+
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.post(
+                f"/admin/duplicates/{cand.id}/swap",
+                data={"page": "1", "tier": "all"},
+            )
+
+        assert resp.status_code == 200
+        assert cand.primary_id == old_duplicate
+        assert cand.duplicate_id == old_primary
+        assert "Swapped" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_swap_blocked_when_web_would_keep_netsuite(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        ns_id, web_id = cand.primary_id, cand.duplicate_id
+        ns = self._supplier(ns_id)          # netsuite_id set
+        web = self._supplier(web_id)
+        web.netsuite_id = None
+        session = self._session([cand])
+        session.get.side_effect = lambda model, key: (
+            cand if key == cand.id
+            else ns if key == ns_id
+            else web
+        )
+
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.post(
+                f"/admin/duplicates/{cand.id}/swap",
+                data={"page": "1", "tier": "all"},
+            )
+
+        assert resp.status_code == 200
+        assert cand.primary_id == ns_id          # unchanged
+        assert cand.duplicate_id == web_id
+        assert "Cannot keep the web supplier" in resp.text

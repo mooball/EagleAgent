@@ -43,6 +43,8 @@ class PairInfo:
     name_sim: float | None = None          # max pg_trgm similarity of name keys
     name_keys_equal: bool = False          # some name key is exactly equal
     shared_domains: set = field(default_factory=set)
+    domains_a: set = field(default_factory=set)
+    domains_b: set = field(default_factory=set)
     country_a: str | None = None
     country_b: str | None = None
 
@@ -89,7 +91,7 @@ def scan_pairs(session, trigram_floor: float = TRIGRAM_FLOOR) -> dict[tuple, Pai
     for row in domain_rows:
         pairs[(row.id_a, row.id_b)].shared_domains.add(row.domain_key)
 
-    # One batched lookup for countries
+    # One batched lookup for countries and per-side domain keys
     ids = {i for pair in pairs for i in pair}
     if ids:
         rows = session.execute(
@@ -101,6 +103,20 @@ def scan_pairs(session, trigram_floor: float = TRIGRAM_FLOOR) -> dict[tuple, Pai
             info.country_a = countries.get(id_a)
             info.country_b = countries.get(id_b)
 
+        dk_rows = session.execute(
+            text("""
+                SELECT supplier_id, key_value FROM supplier_match_keys
+                WHERE key_type = 'domain' AND supplier_id = ANY(:ids)
+            """),
+            {"ids": list(ids)},
+        ).fetchall()
+        dk_map: dict = {}
+        for row in dk_rows:
+            dk_map.setdefault(row.supplier_id, set()).add(row.key_value)
+        for (id_a, id_b), info in pairs.items():
+            info.domains_a = set(dk_map.get(id_a, ()))
+            info.domains_b = set(dk_map.get(id_b, ()))
+
     return dict(pairs)
 
 
@@ -110,12 +126,20 @@ def score_pair(info: PairInfo) -> tuple[float, list[str], str]:
     Note on word-swapped names: pg_trgm similarity of two-word names with
     the words reversed is 1.0 (identical trigram sets), so trigram-only
     similarity is capped below the 'identical key' confidence.
+
+    Note on domains: an identical normalised name with *disagreeing*
+    domains (both sides have non-free domains and none overlap) is
+    conflicting evidence — capped below 'certain' for human review.
     """
     sim = info.name_sim
     shared = bool(info.shared_domains)
+    domains_disagree = bool(info.domains_a and info.domains_b and not shared)
 
     if info.name_keys_equal:
-        confidence, reasons = 0.98, ["normalised_name_identical"]
+        if domains_disagree:
+            confidence, reasons = 0.6, ["normalised_name_identical", "domain_disagreement"]
+        else:
+            confidence, reasons = 0.98, ["normalised_name_identical"]
     elif shared and sim is not None:
         confidence, reasons = max(0.75, min(sim, 0.92)), ["shared_domain", f"name_similarity:{sim:.2f}"]
     elif shared:
@@ -130,8 +154,22 @@ def score_pair(info: PairInfo) -> tuple[float, list[str], str]:
         confidence = min(confidence, 0.55)
         reasons.append("country_mismatch")
 
-    tier = "certain" if info.name_keys_equal or (shared and sim and sim >= CERTAIN_SIM) else "review"
+    tier = "certain" if (
+        info.name_keys_equal and not domains_disagree
+    ) or (shared and sim and sim >= CERTAIN_SIM) else "review"
     return round(confidence, 3), reasons, tier
+
+
+def candidate_tier(confidence: float | None, reasons: list | None) -> str:
+    """Tier for a stored candidate row — 'certain' is bulk-confirmable."""
+    reasons = reasons or []
+    if "domain_disagreement" in reasons:
+        return "review"
+    if "normalised_name_identical" in reasons:
+        return "certain"
+    if "shared_domain" in reasons and (confidence or 0) >= CERTAIN_SIM:
+        return "certain"
+    return "review"
 
 
 def _supplier_names(session, supplier_ids) -> dict:
@@ -173,18 +211,42 @@ def _report(session, pairs: dict) -> None:
             print(f"    [{tier}] {na[:45]!r}  ↔  {nb[:45]!r}  ({confidence}) {', '.join(reasons)}")
 
 
+def _txn_stats(session, supplier_ids) -> dict:
+    """{supplier_id: (txn_count, latest_txn_date)} in one batched query."""
+    if not supplier_ids:
+        return {}
+    rows = session.execute(
+        text("""
+            SELECT supplier_id, count(*) AS cnt, max(date) AS latest
+            FROM product_suppliers
+            WHERE supplier_id = ANY(:ids)
+            GROUP BY supplier_id
+        """),
+        {"ids": list(supplier_ids)},
+    ).fetchall()
+    return {r.supplier_id: (r.cnt, r.latest) for r in rows}
+
+
 def _upsert_candidates(session, pairs: dict, min_confidence: float, user: str = "scan") -> dict:
     now = datetime.now(timezone.utc)
     existing = {
-        (c.primary_id, c.duplicate_id): c
+        frozenset((c.primary_id, c.duplicate_id)): c
         for c in session.query(SupplierDuplicateCandidate).all()
     }
+    stats = _txn_stats(session, {i for pair in pairs for i in pair})
 
-    created = updated = skipped = 0
+    created = updated = removed = skipped = 0
     for (id_a, id_b), info in pairs.items():
         confidence, reasons, tier = score_pair(info)
+        row = existing.get(frozenset((id_a, id_b)))
         if confidence < min_confidence:
-            skipped += 1
+            # Pair no longer clears the bar — drop a stale proposed row so
+            # old confidence/reasons never linger in the queue.
+            if row and row.status == "proposed":
+                session.delete(row)
+                removed += 1
+            else:
+                skipped += 1
             continue
 
         sup_a = session.get(Supplier, id_a)
@@ -192,14 +254,15 @@ def _upsert_candidates(session, pairs: dict, min_confidence: float, user: str = 
         if not sup_a or not sup_b:
             skipped += 1
             continue
-        primary, duplicate = pick_keep_remove(sup_a, sup_b)
-        key = (primary.id, duplicate.id)
+        primary, duplicate = pick_keep_remove(sup_a, sup_b, stats)
 
-        row = existing.get(key)
         if row:
             if row.status == "proposed":
                 row.confidence = confidence
                 row.reasons = reasons
+                # Re-evaluate primary/duplicate with the latest activity data
+                row.primary_id = primary.id
+                row.duplicate_id = duplicate.id
                 updated += 1
             else:
                 skipped += 1  # already merged/rejected — leave the decision alone
@@ -217,7 +280,7 @@ def _upsert_candidates(session, pairs: dict, min_confidence: float, user: str = 
         ))
         created += 1
 
-    return {"created": created, "updated": updated, "skipped": skipped}
+    return {"created": created, "updated": updated, "removed": removed, "skipped": skipped}
 
 
 def main() -> None:

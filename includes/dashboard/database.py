@@ -6,9 +6,11 @@ tool compatibility) session factories using the same DATABASE_URL.
 """
 
 import logging
+import threading
+import time
 from urllib.parse import urlparse
 
-from sqlalchemy import create_engine, func, or_, literal
+from sqlalchemy import create_engine, func, or_, literal, text
 from sqlalchemy.orm import sessionmaker, Session
 
 from config import config
@@ -95,6 +97,151 @@ def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
     finally:
         if own_session:
             session.close()
+
+
+def match_suppliers_by_names(names: list[str], session=None) -> dict[str, "Supplier | None"]:
+    """Batch version of match_supplier_by_name for many names at once.
+
+    Mirrors the three-pass strategy (containment → alt_names → trigram) but
+    runs it with a handful of queries instead of ~3 per name. Semantics match
+    the per-name function; only the ordering of otherwise-equal candidate
+    ties may differ. Results are cached in-process for a short TTL because
+    the same RFQ names re-resolve on every tab render.
+
+    Args:
+        names: Supplier names to match (case-insensitive).
+        session: Optional SQLAlchemy session (caller-managed).
+
+    Returns:
+        Dict mapping each lowercased input name to the matched Supplier or None.
+    """
+    import json
+
+    from includes.dashboard.models import Supplier
+    from sqlalchemy import cast, String
+
+    names_lower = sorted({n.strip().lower() for n in names if n and n.strip()})
+    if not names_lower:
+        return {}
+
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        results: dict[str, "Supplier | None"] = {n: None for n in names_lower}
+
+        # ---- short-TTL cache: name -> (expiry, supplier_id str | None) ----
+        now = time.time()
+        to_resolve: list[str] = []
+        cached_ids: dict[str, str | None] = {}
+        with _NAME_MATCH_CACHE_LOCK:
+            for n in names_lower:
+                entry = _NAME_MATCH_CACHE.get(n)
+                if entry is not None and entry[0] > now:
+                    cached_ids[n] = entry[1]
+                else:
+                    to_resolve.append(n)
+
+        pending = to_resolve
+
+        # Pass 1: containment (both directions) — one query for all names
+        if pending:
+            conds = []
+            for n in pending:
+                lname = func.lower(Supplier.name)
+                conds.append(lname.contains(n))
+                conds.append(literal(n).contains(lname))
+            rows = session.query(Supplier).filter(or_(*conds)).all()
+            candidates: dict[str, list] = {n: [] for n in pending}
+            for row in rows:
+                rn = (row.name or "").strip().lower()
+                rlen = len((row.name or "").strip())
+                for n in pending:
+                    if n in rn or rn in n:
+                        candidates[n].append((abs(rlen - len(n)), row))
+            for n in pending:
+                if candidates[n]:
+                    # closest-length match wins, mirroring order_by(length diff).first()
+                    results[n] = min(candidates[n], key=lambda t: t[0])[1]
+            pending = [n for n in pending if results[n] is None]
+
+        # Pass 2: alt_names JSONB substring match — one query for remaining names
+        if pending:
+            conds = [
+                func.lower(cast(Supplier.alt_names, String)).contains(n)
+                for n in pending
+            ]
+            rows = session.query(Supplier).filter(or_(*conds)).all()
+            blobs = {}
+            for row in rows:
+                alt = row.alt_names
+                try:
+                    blobs[id(row)] = json.dumps(alt).lower() if alt is not None else None
+                except (TypeError, ValueError):
+                    blobs[id(row)] = str(alt).lower() if alt is not None else None
+            for n in pending:
+                for row in rows:
+                    blob = blobs.get(id(row))
+                    if blob and n in blob:
+                        results[n] = row
+                        break
+            pending = [n for n in pending if results[n] is None]
+
+        # Pass 3: trigram similarity fallback — ONE cross-join query for all names
+        if pending:
+            value_rows = ", ".join(
+                f"('{n.replace(chr(39), chr(39) * 2)}')" for n in pending
+            )
+            q = text(
+                f"""
+                WITH v(n) AS (VALUES {value_rows})
+                SELECT s.id, v.n, similarity(lower(s.name), v.n) AS sim
+                FROM suppliers s, v
+                WHERE similarity(lower(s.name), v.n) > 0.8
+                ORDER BY v.n, sim DESC
+                """
+            )
+            ids_by_name: dict[str, str] = {}
+            for r in session.execute(q).all():
+                ids_by_name.setdefault(r.n, str(r.id))
+            hit_ids = [ids_by_name[n] for n in pending if n in ids_by_name]
+            if hit_ids:
+                rows_by_id = {str(r.id): r for r in session.query(Supplier).filter(Supplier.id.in_(hit_ids)).all()}
+                for n in pending:
+                    sid = ids_by_name.get(n)
+                    if sid:
+                        results[n] = rows_by_id.get(sid)
+
+        # ---- update cache with fresh results ----
+        with _NAME_MATCH_CACHE_LOCK:
+            for n in to_resolve:
+                row = results.get(n)
+                _NAME_MATCH_CACHE[n] = (
+                    time.time() + _NAME_MATCH_CACHE_TTL,
+                    str(row.id) if row is not None else None,
+                )
+
+        # ---- resolve cache hits back into Supplier objects ----
+        cached_hits = list({sid for sid in cached_ids.values() if sid})
+        if cached_hits:
+            rows_by_id = {
+                str(r.id): r
+                for r in session.query(Supplier).filter(Supplier.id.in_(cached_hits)).all()
+            }
+            for n, sid in cached_ids.items():
+                if sid and results[n] is None:
+                    results[n] = rows_by_id.get(sid)
+
+        return results
+    finally:
+        if own_session:
+            session.close()
+
+
+# In-process name-match cache (name -> (expiry, supplier_id or None))
+_NAME_MATCH_CACHE: dict[str, tuple[float, str | None]] = {}
+_NAME_MATCH_CACHE_LOCK = threading.Lock()
+_NAME_MATCH_CACHE_TTL = 120.0
 
 
 def _extract_domain(url: str) -> str | None:
@@ -320,6 +467,10 @@ def update_supplier(supplier_id: str, updates: dict, modified_by: str) -> None:
                     setattr(supplier, key, value or None)
         supplier.modified_at = datetime.now(timezone.utc)
         supplier.modified_by = modified_by
+        # Keep the dedup match-key index in sync (local import avoids a cycle:
+        # supplier_matching imports _extract_domain from this module)
+        from includes.dashboard.supplier_matching import rebuild_match_keys
+        rebuild_match_keys(session, supplier)
         session.commit()
         session.refresh(supplier)
         return supplier

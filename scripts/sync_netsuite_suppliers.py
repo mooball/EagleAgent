@@ -26,6 +26,7 @@ from sqlalchemy.orm import sessionmaker
 
 from config.settings import Config
 from includes.dashboard.models import Brand, Contact, Supplier, SupplierBrand
+from includes.dashboard.supplier_matching import rebuild_match_keys
 from includes.netsuite.client import NetSuiteClient
 from includes.netsuite.queries import suppliers_updated_since
 from includes.netsuite.sync_utils import normalize_currency
@@ -335,6 +336,9 @@ def main():
 
                     # Sync contacts to contacts table
                     sync_supplier_contacts(session, existing, build_contacts(row))
+
+                    if changed:
+                        rebuild_match_keys(session, existing)
                 else:
                     # Check for existing web-sourced supplier that matches by domain or exact name
                     merged_web = None
@@ -361,6 +365,8 @@ def main():
 
                         # Sync contacts to contacts table
                         sync_supplier_contacts(session, merged_web, build_contacts(row))
+
+                        rebuild_match_keys(session, merged_web)
                     else:
                         # Insert new supplier
                         supplier = Supplier(
@@ -390,6 +396,8 @@ def main():
 
                         # Sync contacts to contacts table
                         sync_supplier_contacts(session, supplier, build_contacts(row))
+
+                        rebuild_match_keys(session, supplier)
 
                 processed += 1
 

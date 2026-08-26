@@ -15,6 +15,7 @@ Rules:
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -285,21 +286,50 @@ def merge_suppliers(
     )
 
 
-def pick_keep_remove(a: Supplier, b: Supplier) -> tuple[Supplier, Supplier]:
+def pick_keep_remove(
+    a: Supplier,
+    b: Supplier,
+    stats: dict | None = None,
+) -> tuple[Supplier, Supplier]:
     """Pick which supplier to keep (primary) and which to remove (duplicate).
 
-    Prefer the one with: netsuite_id > more contacts > has url > earlier created.
-    Ported from scripts/find_duplicate_suppliers.py (_pick_keep_remove).
+    Scoring (netsuite_id is absolute — a NetSuite record always beats a web
+    one, since the merge matrix rejects web-primary/NetSuite-duplicate;
+    transactions and recency decide between otherwise-similar sides):
+        netsuite_id        +200 (dominates; max activity bonus is 140)
+        transaction count  +2 each, capped at 50 (+100 max)
+        last txn ≤ 90d     +40
+        last txn ≤ 1y      +20
+        last txn ≤ 2y      +10
+        url                +10
+        each contact       +2
+        each alt_name      +1
+        each alt_domain    +1
+
+    stats: optional {supplier_id: (txn_count, latest_txn_date)} from the
+    transactions table; suppliers without an entry score 0 for activity.
     """
     def _score(sup: Supplier) -> int:
         s = 0
         if sup.netsuite_id:
-            s += 100
+            s += 200
         if sup.url:
             s += 10
         s += len(sup.contacts or []) * 2
         s += len(sup.alt_names or [])
         s += len(sup.alt_domains or [])
+
+        count, latest = (stats or {}).get(sup.id, (0, None))
+        s += min(count or 0, 50) * 2
+        if latest is not None:
+            latest_date = latest.date() if hasattr(latest, "date") else latest
+            days = (datetime.now(timezone.utc).date() - latest_date).days
+            if days <= 90:
+                s += 40
+            elif days <= 365:
+                s += 20
+            elif days <= 730:
+                s += 10
         return s
 
     if _score(a) >= _score(b):

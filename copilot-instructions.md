@@ -424,6 +424,7 @@ Project tasks live in todo.vu, accessed via the `todo-vu-mcp` MCP server. When a
 | ID | Project |
 |----|---------|
 | 1011 | EagleAgent (main) |
+| 1038 | **EagleAgent: Architecture** — default for most new tasks |
 | 1025 | EagleAgent: NetSuite |
 | 1026 | EagleAgent: RFQ Email |
 | 1027 | EagleAgent: Admin |
@@ -435,15 +436,32 @@ Project tasks live in todo.vu, accessed via the `todo-vu-mcp` MCP server. When a
 
 Older/non-EagleAgent projects for the same client: 254 (Google Workspace support), 261 (Support), 279 (solutrans.com.au), 553 (eaglexp.com.au), 680 (Workshop360).
 
-Default to project `1011` for new tasks unless the work clearly belongs to one of the more specific projects above.
+**Default to project `1038` (Architecture)** for new tasks — refactors, technical debt, concurrency, structural bugs, and anything cross-cutting. Use a more specific project only when the work clearly belongs to one feature area.
 
 ### Usage notes
 - Key tools: `list_tasks`, `create_task`, `change_tasks`, `task_add_comment`, `list_comments_attachments_time_entries`, `list_projects`, `list_clients`, `list_labels`, `list_users`.
-- **Task `details` must be markdown or plain text — HTML does not render.** Do not send `<p>` / `<strong>` tags.
 - `list_tasks` defaults to `user_mode="assigned"`. Pass `only="active"`/`"completed"`/`"overdue"` to scope by dashboard section, and `search` for free-text lookup.
+- `change_tasks` accepts `description` only when exactly one task id is given.
 - `list_projects` with `client_id` is not filtered strictly server-side — verify `client_id` on each returned project.
-- Task names come back HTML-escaped (`&amp;`, `&#x27;`); `details` is HTML.
+- Task names come back HTML-escaped (`&amp;`, `&#x27;`).
+- There is no delete-comment tool — don't post throwaway test comments.
 - **Creating or modifying tasks counts as a write action** — follow the same rule as code changes: propose first, wait for explicit approval.
+
+### Formatting task descriptions and comments
+
+Send **real HTML** — not markdown, and **never HTML-escaped**. Writing `&lt;p&gt;` renders as literal visible tags.
+
+Verified by round-trip test (2026-08-17):
+
+| | Tags |
+|---|---|
+| **Survives** | `<div>` `<h3>` `<strong>` `<em>` `<u>` `<a href>` `<ul>` `<ol>` `<li>` `<blockquote>` |
+| **Silently stripped** (tag removed, text kept) | `<code>` `<s>` `<pre>` |
+
+- `<p>` is accepted but rewritten to `<div>`.
+- Stripping **also eats adjacent whitespace** — `</strong> <code>x</code>` becomes `</strong>x`. Never rely on a space next to a stripped tag.
+- `<pre>` additionally **collapses newlines**, so multi-line code becomes one line. For code blocks use one `<div>` per line; for inline code just use plain text.
+- Escape real `&`, `<`, `>` as entities in body text — they round-trip correctly.
 
 ## Git & Repository
 - Do not commit `.env`, `.venv`, secrets, or `__pycache__/`.
