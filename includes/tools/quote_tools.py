@@ -494,6 +494,10 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                             isinactive=False,
                         ))
 
+            # Rebuild dedup match keys before committing the new row
+            from includes.dashboard.supplier_matching import rebuild_match_keys
+            rebuild_match_keys(session, new_supplier)
+
             # Commit BEFORE the slow Gemini categorization call — never hold
             # row locks across a ~20s external API call (deadlock source).
             session.commit()

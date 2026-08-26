@@ -467,6 +467,10 @@ def update_supplier(supplier_id: str, updates: dict, modified_by: str) -> None:
                     setattr(supplier, key, value or None)
         supplier.modified_at = datetime.now(timezone.utc)
         supplier.modified_by = modified_by
+        # Keep the dedup match-key index in sync (local import avoids a cycle:
+        # supplier_matching imports _extract_domain from this module)
+        from includes.dashboard.supplier_matching import rebuild_match_keys
+        rebuild_match_keys(session, supplier)
         session.commit()
         session.refresh(supplier)
         return supplier

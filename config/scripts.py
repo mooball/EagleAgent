@@ -33,6 +33,12 @@ SCRIPT_REGISTRY: dict[str, dict] = {
         "args_allowed": ["--report", "--dry-run", "--min-confidence", "--trigram-floor"],
         "long_running": True,
     },
+    "backfill_supplier_match_keys": {
+        "command": ["uv", "run", "python", "-m", "scripts.backfill_supplier_match_keys"],
+        "description": "Rebuild the supplier match-key index for all suppliers",
+        "args_allowed": ["--dry-run", "--batch-size"],
+        "long_running": True,
+    },
     "sync_netsuite_suppliers": {
         "command": ["uv", "run", "python", "-m", "scripts.sync_netsuite_suppliers"],
         "description": "Sync suppliers from NetSuite API (--since YYYY-MM-DD or Nd e.g. 7d; default: 30d)",

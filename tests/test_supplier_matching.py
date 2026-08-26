@@ -192,3 +192,22 @@ class TestRebuildMatchKeys:
         pairs = {(k.key_type, k.key_value) for k in keys}
         assert ("domain", "newbrand") in pairs
         assert ("domain", "acmeparts") in pairs  # original url key retained
+
+    def test_update_supplier_rebuilds_keys(self, db_session):
+        """update_supplier() (dashboard edit path) keeps match keys in sync."""
+        from unittest.mock import patch
+
+        sup = _make_supplier(db_session, name="Acme Parts Pty Ltd")
+        from includes.dashboard.supplier_matching import rebuild_match_keys
+        rebuild_match_keys(db_session, sup)
+        db_session.commit()
+
+        with patch("includes.dashboard.database.get_session", return_value=db_session):
+            from includes.dashboard.database import update_supplier
+            update_supplier(str(sup.id), {"name": "Acme Fluid"}, "tester")
+
+        db_session.expire_all()
+        keys = db_session.query(SupplierMatchKey).filter_by(supplier_id=sup.id).all()
+        pairs = {(k.key_type, k.key_value) for k in keys}
+        assert ("name", "acme fluid") in pairs
+        assert ("name", "acme parts") not in pairs
