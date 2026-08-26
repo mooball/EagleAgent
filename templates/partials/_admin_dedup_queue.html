@@ -42,8 +42,8 @@
         <thead class="bg-gray-50 dark:bg-gray-700 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-600">
             <tr>
                 <th class="px-2 py-2 w-8"></th>
-                <th class="px-3 py-2 text-left font-medium w-1/4">Primary (keep)</th>
-                <th class="px-3 py-2 text-left font-medium w-1/4 border-l border-gray-200 dark:border-gray-600">Duplicate</th>
+                <th class="px-3 py-2 text-left font-medium w-1/4">Supplier 1 (keep)</th>
+                <th class="px-3 py-2 text-left font-medium w-1/4 border-l border-gray-200 dark:border-gray-600">Supplier 2</th>
                 <th class="px-3 py-2 text-left font-medium border-l border-gray-200 dark:border-gray-600">Match</th>
                 <th class="px-3 py-2 text-right font-medium border-l border-gray-200 dark:border-gray-600">Actions</th>
             </tr>
@@ -55,9 +55,12 @@
                     <input type="checkbox" name="ids" value="{{ item.id }}" {% if item.tier == 'certain' %}checked{% endif %}
                            class="rounded border-gray-300 dark:border-gray-600">
                 </td>
-                <td class="px-3 py-3">
+                <td class="px-3 py-3 bg-green-50/70 dark:bg-green-950/20">
                     {% set p = item.primary %}
-                    <div class="font-medium text-gray-900 dark:text-gray-100">{{ p.name if p else '—' }}</div>
+                    <div class="flex items-start justify-between gap-2">
+                        <span class="font-medium text-gray-900 dark:text-gray-100">{{ p.name if p else '—' }}</span>
+                        <span class="text-[9px] px-1.5 py-0.5 rounded-full font-semibold bg-green-600 text-white shrink-0">KEEP</span>
+                    </div>
                     {% if p %}
                     <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                         {% if p.netsuite_id %}
@@ -71,11 +74,31 @@
                     <div class="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
                         {{ p.txn_count }} transaction{% if p.txn_count != 1 %}s{% endif %}{% if p.last_txn %} · last {{ p.last_txn }}{% else %} · none{% endif %}
                     </div>
+                    {% if p.tier or p.category %}
+                    <div class="flex flex-wrap items-center gap-1 mt-1">
+                        {% if p.tier %}<span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300">Tier {{ p.tier }}</span>{% endif %}
+                        {% if p.category %}<span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">{{ p.category }}</span>{% endif %}
+                    </div>
+                    {% endif %}
+                    {% if p.contact_count %}
+                    <div class="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
+                        {{ p.contact_count }} contact(s){% for c in p.contacts %}{% if loop.first %} · {% else %}, {% endif %}{{ c.name or c.email or '—' }}{% endfor %}
+                    </div>
+                    {% endif %}
+                    {% if p.notes %}
+                    <div class="text-[11px] text-gray-500 dark:text-gray-400 mt-1 border-t border-green-100 dark:border-green-900 pt-1 line-clamp-2" title="{{ p.notes }}">📝 {{ p.notes }}</div>
+                    {% endif %}
                     {% endif %}
                 </td>
                 <td class="px-3 py-3 border-l border-gray-100 dark:border-gray-700">
                     {% set d = item.duplicate %}
-                    <div class="font-medium text-gray-900 dark:text-gray-100">{{ d.name if d else '—' }}</div>
+                    <div class="flex items-start justify-between gap-2">
+                        <span class="font-medium text-gray-900 dark:text-gray-100">{{ d.name if d else '—' }}</span>
+                        <button hx-post="/admin/duplicates/{{ item.id }}/swap"
+                                hx-include="closest tr" hx-target="#dedup-list" hx-swap="innerHTML"
+                                class="text-[10px] px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 shrink-0"
+                                title="Keep this supplier instead">Keep this instead</button>
+                    </div>
                     {% if d %}
                     <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                         {% if d.netsuite_id %}
@@ -89,6 +112,20 @@
                     <div class="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
                         {{ d.txn_count }} transaction{% if d.txn_count != 1 %}s{% endif %}{% if d.last_txn %} · last {{ d.last_txn }}{% else %} · none{% endif %}
                     </div>
+                    {% if d.tier or d.category %}
+                    <div class="flex flex-wrap items-center gap-1 mt-1">
+                        {% if d.tier %}<span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300">Tier {{ d.tier }}</span>{% endif %}
+                        {% if d.category %}<span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">{{ d.category }}</span>{% endif %}
+                    </div>
+                    {% endif %}
+                    {% if d.contact_count %}
+                    <div class="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
+                        {{ d.contact_count }} contact(s){% for c in d.contacts %}{% if loop.first %} · {% else %}, {% endif %}{{ c.name or c.email or '—' }}{% endfor %}
+                    </div>
+                    {% endif %}
+                    {% if d.notes %}
+                    <div class="text-[11px] text-gray-500 dark:text-gray-400 mt-1 border-t border-gray-100 dark:border-gray-700 pt-1 line-clamp-2" title="{{ d.notes }}">📝 {{ d.notes }}</div>
+                    {% endif %}
                     {% endif %}
                 </td>
                 <td class="px-3 py-3 border-l border-gray-100 dark:border-gray-700">

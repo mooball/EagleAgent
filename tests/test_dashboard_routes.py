@@ -728,3 +728,60 @@ class TestAdminDuplicatesQueue:
 
         assert resp.status_code == 200
         assert "Scan started" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_swap_flips_keep_direction(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        old_primary, old_duplicate = cand.primary_id, cand.duplicate_id
+        primary = self._supplier(old_primary)      # netsuite
+        duplicate = self._supplier(old_duplicate)  # netsuite
+        session = self._session([cand])
+        session.get.side_effect = lambda model, key: (
+            cand if key == cand.id
+            else primary if key == old_primary
+            else duplicate
+        )
+
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.post(
+                f"/admin/duplicates/{cand.id}/swap",
+                data={"page": "1", "tier": "all"},
+            )
+
+        assert resp.status_code == 200
+        assert cand.primary_id == old_duplicate
+        assert cand.duplicate_id == old_primary
+        assert "Swapped" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_swap_blocked_when_web_would_keep_netsuite(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        ns_id, web_id = cand.primary_id, cand.duplicate_id
+        ns = self._supplier(ns_id)          # netsuite_id set
+        web = self._supplier(web_id)
+        web.netsuite_id = None
+        session = self._session([cand])
+        session.get.side_effect = lambda model, key: (
+            cand if key == cand.id
+            else ns if key == ns_id
+            else web
+        )
+
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.post(
+                f"/admin/duplicates/{cand.id}/swap",
+                data={"page": "1", "tier": "all"},
+            )
+
+        assert resp.status_code == 200
+        assert cand.primary_id == ns_id          # unchanged
+        assert cand.duplicate_id == web_id
+        assert "Cannot keep the web supplier" in resp.text

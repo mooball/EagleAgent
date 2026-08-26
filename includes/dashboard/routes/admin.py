@@ -282,6 +282,8 @@ def _dedup_supplier_card(sup, txn_stats: dict) -> dict | None:
     if not sup:
         return None
     count, latest = txn_stats.get(sup.id, (0, None))
+    scp = sup.supply_chain_position or {}
+    contacts = [c for c in (sup.contacts or []) if isinstance(c, dict)]
     return {
         "id": str(sup.id),
         "name": sup.name,
@@ -289,6 +291,14 @@ def _dedup_supplier_card(sup, txn_stats: dict) -> dict | None:
         "url": sup.url,
         "country": sup.country,
         "source": sup.source,
+        "notes": sup.notes,
+        "tier": scp.get("tier"),
+        "category": scp.get("category"),
+        "contact_count": len(contacts),
+        "contacts": [
+            {"name": c.get("name"), "email": c.get("email")}
+            for c in contacts[:2]
+        ],
         "txn_count": count or 0,
         "last_txn": str(latest) if latest is not None else None,
     }
@@ -497,6 +507,53 @@ async def admin_duplicates_reject_candidate(
             cand.decided_at = datetime.now(timezone.utc)
             session.commit()
             flash = ("ok", "Marked as not a duplicate.")
+        ctx = _dedup_queue_ctx(session, tier, page, flash=flash)
+    finally:
+        session.close()
+    ctx["user"] = user
+    return templates.TemplateResponse(request, "partials/_admin_dedup_queue.html", ctx)
+
+
+@router.post("/admin/duplicates/{candidate_id}/swap")
+async def admin_duplicates_swap_candidate(
+    request: Request, candidate_id: str, user: dict = require_admin
+) -> HTMLResponse:
+    """Flip which side is kept (primary). Blocked when it would make the
+    NetSuite supplier the duplicate — the merge matrix rejects that."""
+    form = await request.form()
+    tier, page = _dedup_form_state(form)
+
+    try:
+        cand_uuid = uuid.UUID(candidate_id)
+    except ValueError:
+        return HTMLResponse(_dedup_status_html("error", "Invalid candidate ID."))
+
+    session = _helpers.get_session()
+    try:
+        cand = session.get(SupplierDuplicateCandidate, cand_uuid)
+        if not cand:
+            flash = ("error", "Candidate not found.")
+        elif cand.status != "proposed":
+            flash = ("error", "Candidate already decided.")
+        else:
+            new_primary = session.get(Supplier, cand.duplicate_id)
+            new_duplicate = session.get(Supplier, cand.primary_id)
+            if (
+                new_primary and not new_primary.netsuite_id
+                and new_duplicate and new_duplicate.netsuite_id
+            ):
+                flash = (
+                    "error",
+                    "Cannot keep the web supplier — the NetSuite record would become "
+                    "the duplicate and the merge is rejected.",
+                )
+            else:
+                cand.primary_id, cand.duplicate_id = cand.duplicate_id, cand.primary_id
+                session.commit()
+                flash = (
+                    "ok",
+                    f"Swapped — {new_primary.name if new_primary else 'the other supplier'} will be kept.",
+                )
         ctx = _dedup_queue_ctx(session, tier, page, flash=flash)
     finally:
         session.close()
