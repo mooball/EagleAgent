@@ -23,8 +23,19 @@
         .dark .quote-declined { background: #3b1a1a; }
         .freeze-cell { background: #fff; }
         .dark .freeze-cell { background: #1f2937; }
-        tr:hover .freeze-cell { background: #f9fafb; }
-        .dark tr:hover .freeze-cell { background: #374151; }
+        /* Row highlight: inset top/bottom lines on every cell so the whole
+           row is marked even where cells have their own backgrounds.
+           The frozen columns are excluded here — their inner .freeze-cell
+           div paints its own copy (rules below) and stacking both would
+           double the line thickness. */
+        tr.item-row:hover > td:not(:has(> .freeze-cell)) { box-shadow: inset 0 2px 0 0 #60a5fa, inset 0 -2px 0 0 #60a5fa; }
+        .dark tr.item-row:hover > td:not(:has(> .freeze-cell)) { box-shadow: inset 0 2px 0 0 #3b82f6, inset 0 -2px 0 0 #3b82f6; }
+        tr.item-row:hover .freeze-cell {
+            box-shadow: inset 0 2px 0 0 #60a5fa, inset 0 -2px 0 0 #60a5fa, 1px 0 0 0 rgba(0,0,0,0.08);
+        }
+        .dark tr.item-row:hover .freeze-cell {
+            box-shadow: inset 0 2px 0 0 #3b82f6, inset 0 -2px 0 0 #3b82f6, 1px 0 0 0 rgba(255,255,255,0.06);
+        }
         .cost-sale-col { border-left: 2px solid #d1d5db; border-right: 2px solid #d1d5db; background: #f8fafc; }
         .dark .cost-sale-col { border-color: #4b5563; background: rgba(55, 65, 81, 0.25); }
     </style>
@@ -73,14 +84,14 @@
         <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
             {% for item in items %}
             {% set qty = item.quantity or 0 %}
-            <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 group">
-                <td class="!p-0 text-center font-mono text-xs text-gray-500">
-                    <div class="px-3 py-2.5 relative z-10 freeze-cell freeze-shadow"
+            <tr class="item-row group">
+                <td class="!p-0 relative text-center font-mono text-xs text-gray-500">
+                    <div class="px-3 py-2.5 absolute inset-0 z-10 flex items-center justify-center freeze-cell freeze-shadow"
                          :style="'transform: translateX(' + scrollX + 'px)'">{{ item.line }}</div>
                 </td>
-                <td class="!p-0">
-                    <div class="px-3 py-2.5 truncate relative z-10 freeze-cell freeze-shadow text-gray-900 dark:text-gray-100"
-                         :style="'max-width: 350px; transform: translateX(' + scrollX + 'px)'" title="{{ item.input_description or '' }}">{{ item.input_description or '—' }}</div>
+                <td class="!p-0 relative">
+                    <div class="px-3 py-2.5 absolute inset-0 z-10 flex items-center freeze-cell freeze-shadow text-gray-900 dark:text-gray-100"
+                         :style="'max-width: 350px; transform: translateX(' + scrollX + 'px)'" title="{{ item.input_description or '' }}"><span class="truncate min-w-0">{{ item.input_description or '—' }}</span></div>
                 </td>
                 <td class="px-3 py-2.5 font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">{{ item.part_number or '—' }}</td>
                 <td class="px-3 py-2.5 whitespace-nowrap">{{ item.brand or '—' }}</td>
