@@ -694,7 +694,70 @@ class TestAdminDuplicatesQueue:
         assert resp.status_code == 200
         assert cand.status == "merged"
         assert cand.decided_by == "admin"
-        assert "Merged (" in resp.text
+        # success renders the queue without a flash
+        assert "Merged (" not in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_merge_applies_client_keep_flip(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        old_primary, old_duplicate = cand.primary_id, cand.duplicate_id
+        primary = self._supplier(old_primary)      # netsuite
+        duplicate = self._supplier(old_duplicate)  # netsuite
+        session = self._session([cand])
+        session.get.side_effect = lambda model, key: (
+            cand if key == cand.id
+            else primary if key == old_primary
+            else duplicate
+        )
+        result = MagicMock(use_instead_set=False, counts={})
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session), \
+             patch("includes.dashboard.routes.admin.merge_suppliers", return_value=result) as mock_merge:
+            resp = client.post(
+                f"/admin/duplicates/{cand.id}/merge",
+                data={"merge_contacts": "1", "merge_domains": "1", "merge_names": "1",
+                      "page": "1", "tier": "all", "keep_first": "0"},
+            )
+
+        assert resp.status_code == 200
+        assert cand.status == "merged"
+        # merge_suppliers was called with the flipped direction
+        _, call_primary, call_duplicate, _config = mock_merge.call_args.args
+        assert call_primary == old_duplicate
+        assert call_duplicate == old_primary
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_merge_keep_flip_blocked_when_web_duplicate_is_netsuite(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        mock_config.TIMEZONE = "Australia/Brisbane"
+        _login(client)
+
+        cand = self._candidate()
+        ns_id, web_id = cand.primary_id, cand.duplicate_id
+        ns = self._supplier(ns_id)
+        web = self._supplier(web_id)
+        web.netsuite_id = None
+        session = self._session([cand])
+        session.get.side_effect = lambda model, key: (
+            cand if key == cand.id
+            else ns if key == ns_id
+            else web
+        )
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session), \
+             patch("includes.dashboard.routes.admin.merge_suppliers") as mock_merge:
+            resp = client.post(
+                f"/admin/duplicates/{cand.id}/merge",
+                data={"merge_contacts": "1", "merge_domains": "1", "merge_names": "1",
+                      "page": "1", "tier": "all", "keep_first": "0"},
+            )
+
+        assert resp.status_code == 200
+        assert cand.status == "proposed"          # untouched
+        mock_merge.assert_not_called()
+        assert "Cannot keep the web supplier" in resp.text
 
     @patch("includes.dashboard.routes._helpers.config")
     def test_reject_marks_candidate_rejected(self, mock_config, client):
@@ -712,7 +775,7 @@ class TestAdminDuplicatesQueue:
 
         assert resp.status_code == 200
         assert cand.status == "rejected"
-        assert "not a duplicate" in resp.text
+        assert "Marked as not a duplicate." not in resp.text
 
     @patch("includes.dashboard.routes._helpers.config")
     def test_scan_triggers_background_job(self, mock_config, client):

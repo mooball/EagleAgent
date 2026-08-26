@@ -34,7 +34,7 @@
             class="px-3 py-1.5 text-xs font-medium rounded-lg bg-green-600 text-white hover:bg-green-700">
         Merge selected
     </button>
-    <span class="text-xs text-gray-400 dark:text-gray-500">'Certain' rows are pre-checked. Bulk merge applies all three options.</span>
+    <span class="text-xs text-gray-400 dark:text-gray-500">'Certain' rows are pre-checked. Bulk merge applies all three options and each row's saved keep side.</span>
 </div>
 
 <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
@@ -42,24 +42,27 @@
         <thead class="bg-gray-50 dark:bg-gray-700 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-600">
             <tr>
                 <th class="px-2 py-2 w-8"></th>
-                <th class="px-3 py-2 text-left font-medium w-1/4">Supplier 1 (keep)</th>
-                <th class="px-3 py-2 text-left font-medium w-1/4 border-l border-gray-200 dark:border-gray-600">Supplier 2</th>
-                <th class="px-3 py-2 text-left font-medium border-l border-gray-200 dark:border-gray-600">Match</th>
-                <th class="px-3 py-2 text-right font-medium border-l border-gray-200 dark:border-gray-600">Actions</th>
+                <th class="px-3 py-2 text-left font-medium w-[35%]">Supplier 1</th>
+                <th class="px-3 py-2 text-left font-medium w-[35%] border-l border-gray-200 dark:border-gray-600">Supplier 2</th>
+                <th class="px-3 py-2 text-left font-medium w-[18%] border-l border-gray-200 dark:border-gray-600">Match</th>
+                <th class="px-3 py-2 text-right font-medium w-[12%] border-l border-gray-200 dark:border-gray-600">Actions</th>
             </tr>
         </thead>
         <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
             {% for item in items %}
-            <tr class="align-top hover:bg-gray-50 dark:hover:bg-gray-700/30">
+            <tr class="align-top hover:bg-gray-50 dark:hover:bg-gray-700/30" x-data="{ keepFirst: true }">
                 <td class="px-2 py-3 text-center">
                     <input type="checkbox" name="ids" value="{{ item.id }}" {% if item.tier == 'certain' %}checked{% endif %}
                            class="rounded border-gray-300 dark:border-gray-600">
                 </td>
-                <td class="px-3 py-3 bg-green-50/70 dark:bg-green-950/20">
+                <td class="px-3 py-3 transition-colors" :class="keepFirst ? 'bg-green-50/70 dark:bg-green-950/20' : ''">
                     {% set p = item.primary %}
                     <div class="flex items-start justify-between gap-2">
                         <span class="font-medium text-gray-900 dark:text-gray-100">{{ p.name if p else '—' }}</span>
-                        <span class="text-[9px] px-1.5 py-0.5 rounded-full font-semibold bg-green-600 text-white shrink-0">KEEP</span>
+                        <span x-show="keepFirst" x-cloak class="text-[9px] px-1.5 py-0.5 rounded-full font-semibold bg-green-600 text-white shrink-0">KEEP</span>
+                        <button type="button" x-show="!keepFirst" x-cloak @click.stop="keepFirst = true"
+                                class="text-[10px] px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 shrink-0"
+                                title="Keep this supplier">Keep this instead</button>
                     </div>
                     {% if p %}
                     <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
@@ -90,14 +93,14 @@
                     {% endif %}
                     {% endif %}
                 </td>
-                <td class="px-3 py-3 border-l border-gray-100 dark:border-gray-700">
+                <td class="px-3 py-3 border-l border-gray-100 dark:border-gray-700 transition-colors" :class="!keepFirst ? 'bg-green-50/70 dark:bg-green-950/20' : ''">
                     {% set d = item.duplicate %}
                     <div class="flex items-start justify-between gap-2">
                         <span class="font-medium text-gray-900 dark:text-gray-100">{{ d.name if d else '—' }}</span>
-                        <button hx-post="/admin/duplicates/{{ item.id }}/swap"
-                                hx-include="closest tr" hx-target="#dedup-list" hx-swap="innerHTML"
+                        <span x-show="!keepFirst" x-cloak class="text-[9px] px-1.5 py-0.5 rounded-full font-semibold bg-green-600 text-white shrink-0">KEEP</span>
+                        <button type="button" x-show="keepFirst" x-cloak @click.stop="keepFirst = false"
                                 class="text-[10px] px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 shrink-0"
-                                title="Keep this supplier instead">Keep this instead</button>
+                                title="Keep this supplier">Keep this instead</button>
                     </div>
                     {% if d %}
                     <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
@@ -165,6 +168,7 @@
                         </div>
                         <input type="hidden" name="page" value="{{ page }}">
                         <input type="hidden" name="tier" value="{{ tier }}">
+                        <input type="hidden" name="keep_first" :value="keepFirst ? '1' : '0'">
                     </div>
                 </td>
             </tr>

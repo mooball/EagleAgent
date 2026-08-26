@@ -389,16 +389,6 @@ def _dedup_form_state(form) -> tuple[str, int]:
     return tier, page
 
 
-def _merge_summary(result) -> str:
-    kept = "kept + use_instead set" if result.use_instead_set else "duplicate deleted"
-    return (
-        f"Merged ({kept}) — {result.counts.get('rfq_items', 0)} RFQ item row(s), "
-        f"{result.counts.get('email_tracking', 0)} email(s), "
-        f"{result.counts.get('contacts', 0)} contact(s), "
-        f"{result.counts.get('transactions', 0)} transaction(s)."
-    )
-
-
 @router.get("/admin/duplicates")
 async def admin_duplicates(request: Request, user: dict = require_admin) -> HTMLResponse:
     ctx = {"active_nav": "admin"}
@@ -468,19 +458,35 @@ async def admin_duplicates_merge_candidate(
         elif cand.status != "proposed":
             flash = ("error", "Candidate already decided.")
         else:
-            try:
-                result = await asyncio.to_thread(
-                    merge_suppliers, session, cand.primary_id, cand.duplicate_id, config
-                )
-            except ValueError as e:
-                session.rollback()
-                flash = ("error", f"Merge failed: {e}")
-            else:
-                cand.status = "merged"
-                cand.decided_by = user.get("identifier", "admin")
-                cand.decided_at = datetime.now(timezone.utc)
-                session.commit()
-                flash = ("ok", _merge_summary(result))
+            flash = None
+            # Client-side keep toggle is sent with the merge — apply the flip
+            if form.get("keep_first", "1") == "0":
+                new_primary = session.get(Supplier, cand.duplicate_id)
+                new_duplicate = session.get(Supplier, cand.primary_id)
+                if (
+                    new_primary and not new_primary.netsuite_id
+                    and new_duplicate and new_duplicate.netsuite_id
+                ):
+                    flash = (
+                        "error",
+                        "Cannot keep the web supplier — the NetSuite record would become "
+                        "the duplicate and the merge is rejected.",
+                    )
+                else:
+                    cand.primary_id, cand.duplicate_id = cand.duplicate_id, cand.primary_id
+            if flash is None:
+                try:
+                    result = await asyncio.to_thread(
+                        merge_suppliers, session, cand.primary_id, cand.duplicate_id, config
+                    )
+                except ValueError as e:
+                    session.rollback()
+                    flash = ("error", f"Merge failed: {e}")
+                else:
+                    cand.status = "merged"
+                    cand.decided_by = user.get("identifier", "admin")
+                    cand.decided_at = datetime.now(timezone.utc)
+                    session.commit()
         ctx = _dedup_queue_ctx(session, tier, page, flash=flash)
     finally:
         session.close()
@@ -512,7 +518,7 @@ async def admin_duplicates_reject_candidate(
             cand.decided_by = user.get("identifier", "admin")
             cand.decided_at = datetime.now(timezone.utc)
             session.commit()
-            flash = ("ok", "Marked as not a duplicate.")
+            flash = None
         ctx = _dedup_queue_ctx(session, tier, page, flash=flash)
     finally:
         session.close()
@@ -607,7 +613,7 @@ async def admin_duplicates_bulk_merge(request: Request, user: dict = require_adm
         if errors:
             flash = ("error", f"Merged {merged}; failed: {', '.join(errors[:3])}")
         else:
-            flash = ("ok", f"Merged {merged} candidate(s).")
+            flash = None
         ctx = _dedup_queue_ctx(session, tier, page, flash=flash)
     finally:
         session.close()
