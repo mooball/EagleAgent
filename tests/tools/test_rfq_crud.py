@@ -924,3 +924,135 @@ class TestItemDepartmentAutoSet:
 
         assert result is None
 
+
+class TestSwapSupplier:
+    """'Use instead' — replace a near-miss supplier on an RFQ line."""
+
+    @pytest.fixture
+    def db_session(self):
+        from includes.dashboard.database import _sync_url
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        from sqlalchemy import event
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _setup(self, db_session):
+        from includes.dashboard.models import RFQ, RFQItem, Supplier, Contact
+        rfq = RFQ(
+            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            customer="Test Customer", created_by="tester",
+            created_date=datetime.now(timezone.utc),
+        )
+        db_session.add(rfq)
+        db_session.flush()
+
+        primary = Supplier(name="TNT Express", netsuite_id="NS-6819", source="netsuite")
+        web = Supplier(name="TNT Express (ZZ Test)", netsuite_id=None, source="web")
+        db_session.add_all([primary, web])
+        db_session.flush()
+        db_session.add(Contact(
+            supplier_id=primary.id, label="Main", fullname="Jane",
+            email="jane@tnt.com", isinactive=False,
+        ))
+        db_session.flush()
+
+        item = RFQItem(
+            rfq_id=rfq.id, line=1, input_description="Cutterhead",
+            suppliers=[{
+                "supplier_id": str(web.id),
+                "name": web.name,
+                "db_match": "near_miss",
+                "near_miss_names": ["TNT Express"],
+                "status": "shortlisted",
+                "quote_cost": 123.45,
+                "quote_status": "quoted",
+                "notes": "keep me",
+            }],
+        )
+        db_session.add(item)
+        db_session.flush()
+        return rfq, item, primary, web
+
+    def test_swap_replaces_entry_and_preserves_quote(self, db_session):
+        from includes.tools.rfq_crud import _swap_supplier_sync
+        rfq, item, primary, web = self._setup(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = _swap_supplier_sync(rfq.rfq_number, {
+                "line": 1, "from_id": str(web.id), "to_id": str(primary.id),
+            }, "tester")
+
+        assert isinstance(result, dict)
+        suppliers = result["items"][0]["suppliers"]
+        assert len(suppliers) == 1
+        s = suppliers[0]
+        assert s["name"] == "TNT Express"
+        assert s["supplier_id"] == str(primary.id)
+        assert s["db_match"] == "exact"
+        assert s["quote_cost"] == 123.45
+        assert s["quote_status"] == "quoted"
+        assert s["notes"] == "keep me"
+        assert s["status"] == "shortlisted"
+        assert "jane@tnt.com" in str(s.get("contacts"))
+        # the flagged web record itself is untouched
+        assert web.id is not None
+
+    def test_swap_missing_target_errors(self, db_session):
+        from includes.tools.rfq_crud import _swap_supplier_sync
+        rfq, item, primary, web = self._setup(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = _swap_supplier_sync(rfq.rfq_number, {
+                "line": 1, "from_id": str(web.id), "to_id": str(uuid.uuid4()),
+            }, "tester")
+
+        assert isinstance(result, str)
+        assert "replacement supplier not found" in result
+
+    def test_swap_missing_from_id_errors(self, db_session):
+        from includes.tools.rfq_crud import _swap_supplier_sync
+        rfq, item, primary, web = self._setup(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = _swap_supplier_sync(rfq.rfq_number, {
+                "line": 1, "from_id": str(uuid.uuid4()), "to_id": str(primary.id),
+            }, "tester")
+
+        assert isinstance(result, str)
+        assert "supplier not found on this line" in result
+
+    def test_db_linked_flagged_supplier_gets_near_miss(self, db_session):
+        from includes.tools.rfq_crud import _add_supplier_sync
+        from includes.dashboard.models import SupplierDuplicateCandidate
+        rfq, item, primary, web = self._setup(db_session)
+        db_session.add(SupplierDuplicateCandidate(
+            primary_id=primary.id, duplicate_id=web.id,
+            source="auto", status="proposed", confidence=0.7,
+            reasons=["domain_mismatch"],
+        ))
+        db_session.flush()
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = _add_supplier_sync(rfq.rfq_number, {"line": 1, "suppliers": [
+                {"name": web.name, "supplier_id": str(web.id)},
+            ]}, "tester")
+
+        assert isinstance(result, dict)
+        entry = [s for s in result["items"][0]["suppliers"] if s["name"] == web.name][0]
+        assert entry["db_match"] == "near_miss"
+        assert entry["near_miss_names"] == ["TNT Express"]
+
+

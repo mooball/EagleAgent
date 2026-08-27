@@ -17,6 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from sqlalchemy import or_
 from sqlalchemy.orm.attributes import flag_modified
 
 from includes.dashboard.database import _extract_domain
@@ -374,3 +375,108 @@ def supplier_lookup(session, name: str, hide_dups: bool = True, limit: int = 10)
     if hide_dups:
         query = query.filter(Supplier.use_instead.is_(None))
     return query.order_by(Supplier.name).limit(limit).all()
+
+
+def nominate_near_misses(session, new_supplier, near_misses: list[dict]) -> int:
+    """Pair a newly-created supplier with each rejected near-miss (Track B).
+
+    Writes proposed candidate rows so the Track A review queue surfaces the
+    decision; merging a confirmed pair deletes the web row. Never commits.
+
+    near_misses entries: {"supplier": Supplier, "confidence": float,
+    "rejected_because": str} — as produced by match_supplier().
+    Returns the number of NEW candidate rows written.
+    """
+    from includes.dashboard.models import SupplierDuplicateCandidate
+
+    if not near_misses:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    added = 0
+    for nm in near_misses:
+        other = nm.get("supplier")
+        if other is None or other.id == new_supplier.id:
+            continue
+        # NetSuite always wins the primary slot — never propose keeping the
+        # fresh web record over an existing one.
+        primary, duplicate = pick_keep_remove(other, new_supplier)
+        row = (
+            session.query(SupplierDuplicateCandidate)
+            .filter(
+                ((SupplierDuplicateCandidate.primary_id == primary.id)
+                 & (SupplierDuplicateCandidate.duplicate_id == duplicate.id))
+                | ((SupplierDuplicateCandidate.primary_id == duplicate.id)
+                   & (SupplierDuplicateCandidate.duplicate_id == primary.id))
+            )
+            .first()
+        )
+        if row:
+            if row.status == "proposed":
+                row.confidence = max(row.confidence or 0, nm.get("confidence") or 0.5)
+                reason = nm.get("rejected_because") or "near_miss"
+                row.reasons = list(dict.fromkeys((row.reasons or []) + [reason]))
+            continue
+
+        session.add(SupplierDuplicateCandidate(
+            primary_id=primary.id,
+            duplicate_id=duplicate.id,
+            source="auto",
+            status="proposed",
+            confidence=nm.get("confidence") or 0.5,
+            reasons=[nm.get("rejected_because") or "near_miss"],
+            created_by="quote",
+            created_at=now,
+        ))
+        added += 1
+    return added
+
+
+def open_near_miss_pairs(session, supplier_id) -> list[dict]:
+    """The OTHER sides of proposed candidate rows referencing supplier_id.
+
+    Returns [{"id": str, "name": str, "confidence": float, "reasons": list}].
+    Used to render a flagged record as a near-miss even when matching landed
+    on it directly (the record is already in the review queue).
+    """
+    from includes.dashboard.models import SupplierDuplicateCandidate
+
+    try:
+        supplier_id = uuid.UUID(str(supplier_id))
+    except (ValueError, TypeError):
+        return []
+
+    rows = (
+        session.query(SupplierDuplicateCandidate)
+        .filter(
+            SupplierDuplicateCandidate.status == "proposed",
+            or_(
+                SupplierDuplicateCandidate.primary_id == supplier_id,
+                SupplierDuplicateCandidate.duplicate_id == supplier_id,
+            ),
+        )
+        .all()
+    )
+    if not rows:
+        return []
+    other_ids = {
+        r.duplicate_id if r.primary_id == supplier_id else r.primary_id
+        for r in rows
+    }
+    others = {
+        s.id: s
+        for s in session.query(Supplier).filter(Supplier.id.in_(list(other_ids))).all()
+    }
+    out = []
+    for r in rows:
+        other = others.get(
+            r.duplicate_id if r.primary_id == supplier_id else r.primary_id
+        )
+        if other:
+            out.append({
+                "id": str(other.id),
+                "name": other.name,
+                "confidence": r.confidence,
+                "reasons": r.reasons or [],
+            })
+    return out

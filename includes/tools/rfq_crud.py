@@ -1139,6 +1139,18 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
     db_linked = [s for s in valid_suppliers if s.get("supplier_id")]
     needs_match = [s for s in valid_suppliers if not s.get("supplier_id")]
 
+    if db_linked:
+        # A linked id can still be a flagged record — surface it as a near-miss
+        from includes.dashboard.supplier_dedup import open_near_miss_pairs
+        for s in db_linked:
+            if "db_match" not in s:
+                flagged = open_near_miss_pairs(session, s["supplier_id"])
+                if flagged:
+                    s["db_match"] = "near_miss"
+                    s["near_miss_names"] = [f["name"] for f in flagged]
+                else:
+                    s["db_match"] = "exact"
+
     if needs_match:
         _match_suppliers_to_db(
             needs_match,
@@ -1198,6 +1210,7 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
                         "cost_currency",
                         "price_date", "price_doc", "price_doc_type",
                         "transaction_count",
+                        "db_match", "near_miss_names",
                         "quote_status", "quote_cost", "quote_currency", "quote_leadtime",
                         "quote_part_number"]:
                 val = sup.get(key)
@@ -1226,6 +1239,8 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
                 "price_doc": sup.get("price_doc"),
                 "price_doc_type": sup.get("price_doc_type"),
                 "transaction_count": sup.get("transaction_count"),
+                "db_match": sup.get("db_match"),
+                "near_miss_names": sup.get("near_miss_names"),
                 "quote_status": sup.get("quote_status"),
                 "quote_cost": sup.get("quote_cost"),
                 "quote_currency": sup.get("quote_currency"),
@@ -1393,6 +1408,100 @@ def _add_suppliers_bulk_sync(rfq_number: str, data: dict, user_id: str) -> dict 
         elif total_added and rfq.status == "in_progress":
             history.append({"date": now, "user": "system", "action": "Status auto-changed to in_progress (suppliers added)"})
 
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except SQLAlchemyError:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+@_serialized_rfq_write
+def _swap_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
+    """Replace a near-miss supplier with the surviving record on one line.
+
+    RFQ-only swap — the flagged web record stays in the DB for the admin
+    dedup queue to clean up later. Quote fields and notes are carried over.
+    """
+    from includes.dashboard.models import Contact, RFQ, RFQItem, Supplier
+    from sqlalchemy.orm.attributes import flag_modified
+
+    line_num = _get_line(data)
+    from_id = (data.get("from_id") or "").strip()
+    to_id = (data.get("to_id") or "").strip()
+    if line_num is None or not from_id or not to_id:
+        return "Error: line, from_id and to_id are required."
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+
+        line_item = session.query(RFQItem).filter(
+            RFQItem.rfq_id == rfq.id, RFQItem.line == line_num
+        ).first()
+        if not line_item:
+            return f"Error: line {line_num} not found in {rfq_number}."
+
+        target = session.query(Supplier).filter(Supplier.id == to_id).first()
+        if not target:
+            return "Error: replacement supplier not found."
+
+        suppliers = list(line_item.suppliers or [])
+        idx = None
+        for i, sup in enumerate(suppliers):
+            if isinstance(sup, dict) and str(sup.get("supplier_id")) == from_id:
+                idx = i
+                break
+        if idx is None:
+            return "Error: supplier not found on this line."
+
+        old = suppliers[idx]
+        contact_rows = (
+            session.query(Contact)
+            .filter(Contact.supplier_id == target.id, Contact.isinactive == False)
+            .order_by(Contact.label.nullsfirst(), Contact.fullname)
+            .all()
+        )
+        replacement = {
+            "supplier_id": str(target.id),
+            "name": target.name,
+            "contacts": [
+                {"name": c.fullname, "email": c.email, "phone": c.phone, "label": c.label}
+                for c in contact_rows
+            ],
+            "status": old.get("status", "candidate"),
+            "notes": old.get("notes", ""),
+            "lead_time": old.get("lead_time"),
+            "price": old.get("price"),
+            "price_type": old.get("price_type"),
+            "cost_price": old.get("cost_price"),
+            "cost_price_aud": old.get("cost_price_aud"),
+            "sale_price": old.get("sale_price"),
+            "cost_currency": old.get("cost_currency"),
+            "quote_status": old.get("quote_status"),
+            "quote_cost": old.get("quote_cost"),
+            "quote_currency": old.get("quote_currency"),
+            "quote_leadtime": old.get("quote_leadtime"),
+            "quote_part_number": old.get("quote_part_number"),
+            "db_match": "exact",
+        }
+        suppliers[idx] = replacement
+        line_item.suppliers = suppliers
+        flag_modified(line_item, "suppliers")
+
+        now = _now_iso()
+        history = list(rfq.history or [])
+        history.append({
+            "date": now,
+            "user": user_id,
+            "action": f"Line {line_num}: replaced {old.get('name')} with {target.name} (duplicate swap)",
+        })
         rfq.history = history
         rfq.updated_at = _now_dt()
         session.commit()

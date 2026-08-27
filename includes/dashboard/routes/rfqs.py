@@ -209,10 +209,50 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                             if str(matched.id) not in used_ids:
                                 sup["is_new"] = True
 
+        # Near-miss details for the RFQ supplier popup (display only)
+        near_ids = {
+            sup["supplier_id"]
+            for item in rfq.get("items", [])
+            for sup in item.get("suppliers", [])
+            if sup.get("db_match") == "near_miss" and sup.get("supplier_id")
+        }
+        near_matches_by_sup: dict[str, list] = {}
+        if near_ids:
+            from includes.dashboard.models import SupplierDuplicateCandidate
+            cands = (
+                session.query(SupplierDuplicateCandidate)
+                .filter(SupplierDuplicateCandidate.duplicate_id.in_(list(near_ids)))
+                .all()
+            )
+            primary_ids = {c.primary_id for c in cands}
+            primaries = {
+                s.id: s
+                for s in session.query(Supplier).filter(Supplier.id.in_(list(primary_ids))).all()
+            }
+            for c in cands:
+                p = primaries.get(c.primary_id)
+                if not p:
+                    continue
+                near_matches_by_sup.setdefault(str(c.duplicate_id), []).append({
+                    "id": str(p.id),
+                    "name": p.name,
+                    "url": p.url,
+                    "country": p.country,
+                    "confidence": round((c.confidence or 0) * 100),
+                    "reasons": c.reasons or [],
+                })
+
         for item in rfq.get("items", []):
             for sup in item.get("suppliers", []):
                 if not sup.get("supplier_id"):
                     sup["is_new"] = True
+                # Track B icons: a linked record is an exact DB match unless the
+                # creation flow already marked it near_miss. Legacy rows lack the
+                # key entirely — default them so the UI can render the blue icon.
+                if "db_match" not in sup:
+                    sup["db_match"] = "exact" if sup.get("supplier_id") else None
+                if sup.get("db_match") == "near_miss" and sup.get("supplier_id"):
+                    sup["near_matches"] = near_matches_by_sup.get(sup["supplier_id"], [])
     finally:
         session.close()
 
@@ -1365,6 +1405,31 @@ async def partial_rfq_delete_item(request: Request, rfq_id: str, line: int,
     from includes.tools.rfq_crud import _delete_item_sync
     user_ident = user.get("identifier", "dashboard")
     result = await asyncio.to_thread(_delete_item_sync, rfq_id, line, user_ident)
+    if isinstance(result, str):
+        return HTMLResponse(f"<p>{result}</p>", status_code=400)
+    rfq = result
+    _enrich_rfq_supplier_contacts(rfq)
+    return _render_rfq_detail_partial_response(request, user, rfq)
+
+
+@router.post("/partial/rfqs/{rfq_id}/swap-supplier")
+async def partial_rfq_swap_supplier(request: Request, rfq_id: str,
+                                    user: dict = Depends(require_user)):
+    """Replace a near-miss supplier with the surviving record on one line."""
+    form = await request.form()
+    try:
+        line_num = int(form.get("line", 0))
+    except (TypeError, ValueError):
+        return HTMLResponse("<p>Invalid line number.</p>", status_code=400)
+
+    from includes.tools.rfq_crud import _swap_supplier_sync
+    data = {
+        "line": line_num,
+        "from_id": (form.get("from_id") or "").strip(),
+        "to_id": (form.get("to_id") or "").strip(),
+    }
+    user_ident = user.get("identifier", "dashboard")
+    result = await asyncio.to_thread(_swap_supplier_sync, rfq_id, data, user_ident)
     if isinstance(result, str):
         return HTMLResponse(f"<p>{result}</p>", status_code=400)
     rfq = result

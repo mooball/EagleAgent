@@ -262,6 +262,7 @@ class TestMatchSuppliersToDb:
             _match_suppliers_to_db(suppliers)
 
         assert suppliers[0].get("supplier_id") == str(sup.id)
+        assert suppliers[0].get("db_match") == "exact"
         # DB is authoritative — no web lookup needed
         mock_verify.assert_not_called()
 
@@ -294,6 +295,53 @@ class TestMatchSuppliersToDb:
             _match_suppliers_to_db(suppliers)
 
         mock_verify.assert_called_once()
+
+        # The new web record is flagged as a near-miss and queued for review
+        from includes.dashboard.models import SupplierDuplicateCandidate
+        assert suppliers[0].get("db_match") == "near_miss"
+        assert "btpzzunique" in suppliers[0].get("near_miss_names", [])[0].lower() or any(
+            "btpzzunique" in n.lower() for n in suppliers[0].get("near_miss_names", [])
+        )
+        rows = db_session.query(SupplierDuplicateCandidate).filter(
+            SupplierDuplicateCandidate.primary_id == sup.id
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].duplicate_id is not None
+        assert rows[0].reasons == ["domain_mismatch"]
+        assert rows[0].source == "auto" and rows[0].status == "proposed"
+
+    @patch("includes.tools.quote_tools._verify_supplier_url", return_value=None)
+    def test_flagged_record_matches_as_near_miss(self, mock_verify, db_session):
+        """Matching a record that's already flagged → near_miss, not exact."""
+        from includes.dashboard.models import SupplierDuplicateCandidate
+        primary = Supplier(
+            id=uuid.uuid4(), name="Acme Pty Ltd", netsuite_id="NS-1",
+            source="netsuite",
+        )
+        dup = Supplier(
+            id=uuid.uuid4(), name="Acme Pty Ltd", netsuite_id=None,
+            source="web", url="https://www.acme-flagged.com.au",
+        )
+        db_session.add_all([primary, dup])
+        db_session.flush()
+        db_session.add(SupplierDuplicateCandidate(
+            primary_id=primary.id, duplicate_id=dup.id,
+            source="auto", status="proposed", confidence=0.7,
+            reasons=["domain_mismatch"],
+        ))
+        db_session.flush()
+
+        suppliers = [{
+            "name": "Acme Pty Ltd",
+            "country": "AU",
+            "contacts": [{"url": "https://www.acme-flagged.com.au"}],
+        }]
+        with patch("includes.dashboard.database.get_session", return_value=db_session):
+            _match_suppliers_to_db(suppliers)
+
+        assert suppliers[0]["supplier_id"] == str(dup.id)
+        assert suppliers[0]["db_match"] == "near_miss"
+        assert suppliers[0]["near_miss_names"] == ["Acme Pty Ltd"]
 
     @patch("includes.tools.quote_tools._verify_supplier_url", return_value=None)
     def test_empty_suppliers_list(self, mock_verify):

@@ -378,6 +378,7 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
     session = get_session()
     matched: set[str] = set()  # track names already matched
     needs_web_search: dict[str, list[dict]] = {}  # names that need URL lookup
+    near_misses: dict[str, list[dict]] = {}  # name_lower → rejected candidates (Track B)
     try:
         for name_lower, sup_list in names_to_match.items():
             sup_country = sup_list[0].get("country")
@@ -388,12 +389,20 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                 if isinstance(c, dict) and c.get("url"):
                     sup_url = c["url"]
                     break
-            row = match_supplier(name_lower, url=sup_url, country=sup_country, session=session)
+            match = match_supplier(name_lower, url=sup_url, country=sup_country, session=session)
+            row = match.supplier
             if row:
                 logger.info(f"[supplier-match] '{name_lower}' → '{row.name}' (id={row.id})")
                 matched.add(name_lower)
+                from includes.dashboard.supplier_dedup import open_near_miss_pairs
+                flagged = open_near_miss_pairs(session, row.id)
                 for sup in sup_list:
                     sup["supplier_id"] = str(row.id)
+                    if flagged:
+                        sup["db_match"] = "near_miss"
+                        sup["near_miss_names"] = [f["name"] for f in flagged]
+                    else:
+                        sup["db_match"] = "exact"
                     if row.currency and not sup.get("currency"):
                         sup["currency"] = row.currency
                     if row.country and not sup.get("country"):
@@ -407,6 +416,8 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                     if row.contacts:
                         merge_supplier_contacts(sup, row.contacts)
             else:
+                if match.near_misses:
+                    near_misses[name_lower] = match.near_misses
                 needs_web_search[name_lower] = sup_list
     finally:
         session.close()  # ← release connection before any I/O
@@ -445,11 +456,19 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
 
             # Step 4: Retry match with URL
             if sup_url:
-                row = match_supplier(name_lower, url=sup_url, country=sup_country, session=session)
+                match = match_supplier(name_lower, url=sup_url, country=sup_country, session=session)
+                row = match.supplier
                 if row:
                     logger.info(f"[supplier-match] '{name_lower}' matched via URL → '{row.name}'")
+                    from includes.dashboard.supplier_dedup import open_near_miss_pairs
+                    flagged = open_near_miss_pairs(session, row.id)
                     for sup in sup_list:
                         sup["supplier_id"] = str(row.id)
+                        if flagged:
+                            sup["db_match"] = "near_miss"
+                            sup["near_miss_names"] = [f["name"] for f in flagged]
+                        else:
+                            sup["db_match"] = "exact"
                         if row.currency and not sup.get("currency"):
                             sup["currency"] = row.currency
                         if row.country and not sup.get("country"):
@@ -463,6 +482,11 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
                         if row.contacts:
                             merge_supplier_contacts(sup, row.contacts)
                     continue
+                if match.near_misses:
+                    # Keep the richer rejection set from whichever pass saw more
+                    existing = near_misses.get(name_lower, [])
+                    merged = {nm["supplier"].id: nm for nm in existing + match.near_misses}
+                    near_misses[name_lower] = list(merged.values())
 
             # Step 5: Create new supplier
             ref_sup = sup_list[0]
@@ -497,6 +521,13 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
             # Rebuild dedup match keys before committing the new row
             from includes.dashboard.supplier_matching import rebuild_match_keys
             rebuild_match_keys(session, new_supplier)
+
+            # Track B: pair the new record with any rejected near-misses so
+            # the dedup review queue can surface the decision later.
+            from includes.dashboard.supplier_dedup import nominate_near_misses
+            flagged = nominate_near_misses(
+                session, new_supplier, near_misses.get(name_lower, [])
+            )
 
             # Commit BEFORE the slow Gemini categorization call — never hold
             # row locks across a ~20s external API call (deadlock source).
@@ -549,6 +580,16 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
 
             for sup in sup_list:
                 sup["supplier_id"] = str(new_supplier_id)
+                if flagged:
+                    sup["db_match"] = "near_miss"
+                    names = [
+                        nm["supplier"].name
+                        for nm in near_misses.get(name_lower, [])
+                        if nm.get("supplier")
+                    ]
+                    sup["near_miss_names"] = names
+                else:
+                    sup["db_match"] = "new"
                 if cat_data:
                     if cat_data.get("tier"):
                         sup["tier"] = cat_data["tier"]

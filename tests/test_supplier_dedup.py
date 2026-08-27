@@ -116,6 +116,96 @@ class TestLookupHygiene:
         assert dup.id in ids
 
 
+class TestNominateNearMisses:
+    """B2: pairing newly-created suppliers with rejected near-misses."""
+
+    def test_creates_row_per_near_miss(self, db_session):
+        from includes.dashboard.supplier_dedup import nominate_near_misses
+        from includes.dashboard.models import SupplierDuplicateCandidate
+        ns1 = _supplier(db_session, name="Existing NS One")
+        ns2 = _supplier(db_session, name="Existing NS Two")
+        new_web = _supplier(db_session, name="New Web Co", netsuite_id=False)
+
+        added = nominate_near_misses(db_session, new_web, [
+            {"supplier": ns1, "confidence": 0.7, "rejected_because": "domain_mismatch"},
+            {"supplier": ns2, "confidence": 0.5, "rejected_because": "country_mismatch"},
+        ])
+        db_session.flush()
+
+        assert added == 2
+        rows = db_session.query(SupplierDuplicateCandidate).filter(
+            SupplierDuplicateCandidate.duplicate_id == new_web.id
+        ).all()
+        assert len(rows) == 2
+        for r in rows:
+            assert r.primary_id in (ns1.id, ns2.id)
+            assert r.duplicate_id == new_web.id
+            assert r.source == "auto"
+            assert r.status == "proposed"
+            assert r.created_by == "quote"
+        by_primary = {r.primary_id: r for r in rows}
+        assert by_primary[ns1.id].reasons == ["domain_mismatch"]
+        assert by_primary[ns2.id].reasons == ["country_mismatch"]
+
+    def test_existing_proposed_row_updated_not_duplicated(self, db_session):
+        from includes.dashboard.supplier_dedup import nominate_near_misses
+        from includes.dashboard.models import SupplierDuplicateCandidate
+        ns = _supplier(db_session, name="Existing NS")
+        web = _supplier(db_session, name="New Web", netsuite_id=False)
+        db_session.add(SupplierDuplicateCandidate(
+            primary_id=ns.id,
+            duplicate_id=web.id,
+            source="auto",
+            status="proposed",
+            confidence=0.4,
+            reasons=["old_reason"],
+            created_by="quote",
+        ))
+        db_session.flush()
+
+        added = nominate_near_misses(db_session, web, [
+            {"supplier": ns, "confidence": 0.7, "rejected_because": "domain_mismatch"},
+        ])
+        db_session.flush()
+
+        assert added == 0
+        row = db_session.query(SupplierDuplicateCandidate).filter(
+            SupplierDuplicateCandidate.primary_id == ns.id,
+            SupplierDuplicateCandidate.duplicate_id == web.id,
+        ).one()
+        assert row.confidence == 0.7
+        assert "domain_mismatch" in row.reasons
+        assert "old_reason" in row.reasons
+
+    def test_decided_row_left_alone(self, db_session):
+        from includes.dashboard.supplier_dedup import nominate_near_misses
+        from includes.dashboard.models import SupplierDuplicateCandidate
+        ns = _supplier(db_session, name="Existing NS")
+        web = _supplier(db_session, name="New Web", netsuite_id=False)
+        db_session.add(SupplierDuplicateCandidate(
+            primary_id=ns.id, duplicate_id=web.id,
+            source="auto", status="rejected", confidence=0.4,
+            created_by="admin",
+        ))
+        db_session.flush()
+
+        added = nominate_near_misses(db_session, web, [
+            {"supplier": ns, "confidence": 0.7, "rejected_because": "domain_mismatch"},
+        ])
+        assert added == 0
+        row = db_session.query(SupplierDuplicateCandidate).filter(
+            SupplierDuplicateCandidate.primary_id == ns.id,
+            SupplierDuplicateCandidate.duplicate_id == web.id,
+        ).one()
+        assert row.status == "rejected"
+        assert row.confidence == 0.4
+
+    def test_empty_near_misses_no_op(self, db_session):
+        from includes.dashboard.supplier_dedup import nominate_near_misses
+        web = _supplier(db_session, name="New Web", netsuite_id=False)
+        assert nominate_near_misses(db_session, web, []) == 0
+
+
 def _product(session):
     product = Product(part_number=f"PN-{uuid.uuid4().hex[:8]}", netsuite_id=f"P-{uuid.uuid4().hex[:8]}")
     session.add(product)

@@ -8,6 +8,7 @@ tool compatibility) session factories using the same DATABASE_URL.
 import logging
 import threading
 import time
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from sqlalchemy import create_engine, func, or_, literal, text
@@ -290,27 +291,62 @@ def _extract_domain(url: str) -> str | None:
         return None
 
 
+@dataclass
+class SupplierMatch:
+    """Result of match_supplier: the confident match plus rejected near-misses.
+
+    near_misses entries: {"supplier": Supplier, "confidence": float,
+    "rejected_because": str}. Track B feeds these into the dedup review
+    queue instead of discarding them.
+    """
+    supplier: "Supplier | None" = None
+    near_misses: list = field(default_factory=list)
+
+
+def _name_ratio(a: str, b: str) -> float:
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, (a or "").strip().lower(), (b or "").strip().lower()).ratio()
+
+
+def _add_near_miss(near_misses: list, supplier, confidence: float, reason: str) -> None:
+    """Append a near-miss, keeping the best confidence per supplier id."""
+    for nm in near_misses:
+        if nm["supplier"].id == supplier.id:
+            nm["confidence"] = max(nm["confidence"], round(confidence, 3))
+            return
+    near_misses.append({
+        "supplier": supplier,
+        "confidence": round(confidence, 3),
+        "rejected_because": reason,
+    })
+
+
 def match_supplier(
     name: str,
     url: str | None = None,
     country: str | None = None,
     session=None,
-) -> "Supplier | None":
+) -> SupplierMatch:
     """Find the best DB match for a supplier, verifying with domain/country.
 
-    1. Call match_supplier_by_name() to get a name-based candidate.
-    2. If a candidate is found, verify it against corroborating attributes:
+    1. Domain-first: any supplier whose root domain (url, alt_domains or
+       contact URLs) matches the incoming URL — names only need to be loosely
+       compatible.
+    2. Name-based candidate via match_supplier_by_name(), verified against
+       corroborating attributes:
        - Domain: if both sides have a URL, domains must match.
        - Country: if both sides have a country, they must match.
        - If neither can be compared, accept only exact containment matches
          (not trigram-only).
-    3. Return the verified candidate or None.
+    3. Rejections are not discarded — they are returned as near_misses so
+       Track B can queue them for human review.
     """
     own_session = session is None
     if own_session:
         from includes.dashboard.database import get_session
         session = get_session()
     name_lower = name.strip().lower()
+    near_misses: list = []
     try:
         # --- Domain-first lookup ---
         # If a URL is provided, search for any existing supplier with the
@@ -327,21 +363,35 @@ def match_supplier(
             for s in all_suppliers:
                 s_domain = _extract_domain(s.url)
                 if s_domain and s_domain == incoming_domain:
-                    # Domain match is strong, but verify names are at least loosely compatible
-                    s_name = (s.name or "").strip().lower()
-                    if s_name and name_lower not in s_name and s_name not in name_lower:
-                        from difflib import SequenceMatcher
-                        name_sim = SequenceMatcher(None, name_lower, s_name).ratio()
-                        if name_sim < 0.3:
-                            logger.info(
-                                f"[supplier-match] '{name}' domain-matched '{s.name}' "
-                                f"({incoming_domain}) but REJECTED: names too different (sim={name_sim:.2f})"
-                            )
-                            continue
+                    # Domain match is strong, but names must be compatible —
+                    # compare noise-token-normalised names: containment, or
+                    # similarity ≥ 0.45. Raw-string similarity alone is too
+                    # permissive (0.43 for "TNT Express (ZZ Test)" vs
+                    # "TNT International (Use S13261)" — same domain,
+                    # different businesses).
+                    from includes.dashboard.supplier_matching import normalize_supplier_name
+                    norm_in = normalize_supplier_name(name)
+                    norm_db = normalize_supplier_name(s.name)
+                    sim = _name_ratio(norm_in, norm_db)
+                    # Containment only counts for real name stubs (≥4 chars) —
+                    # noise stripping can leave tiny remnants like "btp" that
+                    # would false-match inside "btpzzunique test".
+                    compatible = (
+                        (norm_in and len(norm_in) >= 4 and norm_in in norm_db)
+                        or (norm_db and len(norm_db) >= 4 and norm_db in norm_in)
+                        or sim >= 0.45
+                    )
+                    if not compatible:
+                        logger.info(
+                            f"[supplier-match] '{name}' domain-matched '{s.name}' "
+                            f"({incoming_domain}) but REJECTED: names too different (sim={sim:.2f})"
+                        )
+                        _add_near_miss(near_misses, s, sim, "domain_match_names_too_different")
+                        continue
                     logger.info(
                         f"[supplier-match] '{name}' → '{s.name}' via domain match ({incoming_domain})"
                     )
-                    return s
+                    return SupplierMatch(supplier=s, near_misses=near_misses)
                 # Check alt_domains array
                 if s.alt_domains:
                     for alt_d in s.alt_domains:
@@ -349,7 +399,7 @@ def match_supplier(
                             logger.info(
                                 f"[supplier-match] '{name}' → '{s.name}' via alt_domain match ({incoming_domain})"
                             )
-                            return s
+                            return SupplierMatch(supplier=s, near_misses=near_misses)
                 # Also check contact URLs
                 if s.contacts:
                     for c in s.contacts:
@@ -359,15 +409,12 @@ def match_supplier(
                                 logger.info(
                                     f"[supplier-match] '{name}' → '{s.name}' via contact domain match ({incoming_domain})"
                                 )
-                                return s
+                                return SupplierMatch(supplier=s, near_misses=near_misses)
 
         # --- Name-based matching with verification ---
         candidate = match_supplier_by_name(name, session=session)
         if not candidate:
-            return None
-
-        # Extract domain from the incoming URL
-        incoming_domain = _extract_domain(url)
+            return SupplierMatch(near_misses=near_misses)
 
         # Extract domain from the candidate's contacts or url field
         candidate_domain = _extract_domain(getattr(candidate, "url", None))
@@ -383,6 +430,8 @@ def match_supplier(
         if candidate.alt_domains:
             candidate_alt_domains = {d.lower() for d in candidate.alt_domains if d}
 
+        sim = _name_ratio(name, candidate.name or "")
+
         # Domain check: if both have domains, they must match (primary or alt)
         if incoming_domain and candidate_domain:
             if incoming_domain != candidate_domain and incoming_domain not in candidate_alt_domains:
@@ -390,7 +439,8 @@ def match_supplier(
                     f"[supplier-match] '{name}' name-matched '{candidate.name}' "
                     f"but REJECTED: domain mismatch ({incoming_domain} vs {candidate_domain})"
                 )
-                return None
+                _add_near_miss(near_misses, candidate, min(sim, 0.9), "domain_mismatch")
+                return SupplierMatch(near_misses=near_misses)
 
         # Country check: if both have countries, they must match
         incoming_country = (country or "").strip().upper()
@@ -401,21 +451,22 @@ def match_supplier(
                     f"[supplier-match] '{name}' name-matched '{candidate.name}' "
                     f"but REJECTED: country mismatch ({incoming_country} vs {candidate_country})"
                 )
-                return None
+                _add_near_miss(near_misses, candidate, min(sim, 0.9), "country_mismatch")
+                return SupplierMatch(near_misses=near_misses)
 
         # If neither domain nor country could be compared, only accept
         # high-confidence name matches (containment, not trigram-only).
         if not incoming_domain and not candidate_domain and not incoming_country and not candidate_country:
-            name_lower = name.strip().lower()
             cand_lower = (candidate.name or "").strip().lower()
             if name_lower not in cand_lower and cand_lower not in name_lower:
                 logger.info(
                     f"[supplier-match] '{name}' trigram-matched '{candidate.name}' "
                     f"but REJECTED: no corroborating attributes and not a containment match"
                 )
-                return None
+                _add_near_miss(near_misses, candidate, min(sim, 0.9), "no_corroboration_trigram_only")
+                return SupplierMatch(near_misses=near_misses)
 
-        return candidate
+        return SupplierMatch(supplier=candidate, near_misses=near_misses)
     finally:
         if own_session:
             session.close()
