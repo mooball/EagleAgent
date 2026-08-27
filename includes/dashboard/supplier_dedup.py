@@ -337,3 +337,40 @@ def pick_keep_remove(
     if _score(a) >= _score(b):
         return a, b
     return b, a
+
+
+def resolve_supplier_id(session, supplier_id, _max_hops: int = 5):
+    """Follow use_instead chains to the surviving primary. Cycle-safe.
+
+    Returns the original id unchanged when there is no chain (or it cycles).
+    """
+    seen = set()
+    while supplier_id and supplier_id not in seen and _max_hops:
+        seen.add(supplier_id)
+        nxt = session.query(Supplier.use_instead).filter(
+            Supplier.id == supplier_id
+        ).scalar()
+        if not nxt:
+            break
+        supplier_id, _max_hops = nxt, _max_hops - 1
+    return supplier_id
+
+
+def active_suppliers(session):
+    """Base query for any user-facing supplier choice list."""
+    return session.query(Supplier).filter(Supplier.use_instead.is_(None))
+
+
+def supplier_lookup(session, name: str, hide_dups: bool = True, limit: int = 10):
+    """Case-insensitive name lookup for supplier pickers.
+
+    hide_dups=True  — linking flows: flagged duplicates are excluded, because
+                     they must never be attached to a new email/RFQ/transaction.
+    hide_dups=False — management views: all rows returned; callers should show
+                     the duplicate flag (sup.use_instead) so duplicates stay
+                     visible and identifiable.
+    """
+    query = session.query(Supplier).filter(Supplier.name.ilike(f"%{name}%"))
+    if hide_dups:
+        query = query.filter(Supplier.use_instead.is_(None))
+    return query.order_by(Supplier.name).limit(limit).all()

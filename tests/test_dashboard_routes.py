@@ -1059,11 +1059,24 @@ class TestSupplierSearchOptions:
         _login(client)
 
         exclude_id = uuid.uuid4()
+        excluded = MagicMock()
+        excluded.id = exclude_id
+        excluded.name = "Acme Excluded"
+        excluded.netsuite_id = "NS-1"
+        excluded.source = "netsuite"
+        excluded.use_instead = None
+        kept = MagicMock()
+        kept.id = uuid.uuid4()
+        kept.name = "Acme Kept"
+        kept.netsuite_id = None
+        kept.source = "web"
+        kept.use_instead = None
+
         q = MagicMock()
         q.filter.return_value = q
         q.order_by.return_value = q
         q.limit.return_value = q
-        q.all.return_value = []
+        q.all.return_value = [excluded, kept]
 
         session = MagicMock()
         session.query.return_value = q
@@ -1071,10 +1084,98 @@ class TestSupplierSearchOptions:
             resp = client.get(f"/partial/suppliers/search?q=acme&exclude={exclude_id}")
 
         assert resp.status_code == 200
-        # One of the filters must exclude the supplied id (UUID rides in a bind param)
-        exclude_values = [
-            str(getattr(getattr(call.args[0], "right", None), "value", None))
-            for call in q.filter.call_args_list
-        ]
-        assert str(exclude_id) in exclude_values
+        assert "Acme Kept" in resp.text
+        assert "Acme Excluded" not in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_flags_duplicates_in_results(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        dup = MagicMock()
+        dup.id = uuid.uuid4()
+        dup.name = "Commander (Old)"
+        dup.netsuite_id = None
+        dup.source = "web"
+        dup.use_instead = uuid.uuid4()
+
+        q = MagicMock()
+        q.filter.return_value = q
+        q.order_by.return_value = q
+        q.limit.return_value = q
+        q.all.return_value = [dup]
+
+        session = MagicMock()
+        session.query.return_value = q
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.get("/partial/suppliers/search?q=commander")
+
+        assert resp.status_code == 200
+        assert "Commander (Old)" in resp.text
+        assert "duplicate" in resp.text
+
+
+class TestAdminEmailLinkLookup:
+    """Email-log linking lookups must hide flagged duplicates."""
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_supplier_search_sql_hides_flagged(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        result_rows = MagicMock()
+        result_rows.mappings.return_value.all.return_value = []
+        session = MagicMock()
+        session.execute.return_value = result_rows
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.get("/api/admin/search-entities?type=supplier&q=commander")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"results": []}
+        sql = str(session.execute.call_args[0][0])
+        assert "use_instead IS NULL" in sql
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_short_query_returns_empty(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        resp = client.get("/api/admin/search-entities?type=supplier&q=c")
+        assert resp.status_code == 200
+        assert resp.json() == {"results": []}
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_link_supplier_resolves_flagged_to_primary(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        tracking = MagicMock()
+        tracking.id = "email-1"
+        tracking.gmail_thread_id = "thread-1"
+        tracking.rfq_token = None
+        tracking.rfq_id = None
+        tracking.direction = "sent"
+
+        supplier = MagicMock()
+        supplier.name = "Primary Co"
+
+        session = MagicMock()
+        session.query.return_value.filter.return_value.first.return_value = tracking
+        session.query.return_value.filter.return_value.first.return_value = supplier
+
+        primary = uuid.uuid4()
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session), \
+             patch("includes.dashboard.supplier_dedup.resolve_supplier_id", return_value=primary):
+            resp = client.post("/api/admin/link-email", json={
+                "email_id": "email-1",
+                "link_type": "supplier",
+                "entity_id": str(uuid.uuid4()),
+                "save_domain": False,
+            })
+
+        assert resp.status_code == 200
+        assert "Primary Co" in resp.text
+        # The UPDATE must reference the resolved primary, not the flagged id
+        params = session.execute.call_args[0][1]
+        assert str(primary) in str(params)
 

@@ -383,7 +383,9 @@ def _save_draft_to_tracking(
                     )
                 ).first()
                 if contact and contact.supplier_id:
-                    supplier_id = contact.supplier_id
+                    # Auto-link always lands on the surviving supplier
+                    from includes.dashboard.supplier_dedup import resolve_supplier_id
+                    supplier_id = resolve_supplier_id(session, contact.supplier_id)
 
             session.execute(
                 text("""
@@ -474,7 +476,9 @@ def _save_sent_to_tracking(
                     )
                 ).first()
                 if contact and contact.supplier_id:
-                    supplier_id = contact.supplier_id
+                    # Auto-link always lands on the surviving supplier
+                    from includes.dashboard.supplier_dedup import resolve_supplier_id
+                    supplier_id = resolve_supplier_id(session, contact.supplier_id)
 
             session.execute(
                 text("""

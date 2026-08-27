@@ -67,6 +67,55 @@ def _brand(session, name=None):
     return brand
 
 
+class TestLookupHygiene:
+    """S3: resolve_supplier_id and active_suppliers helpers."""
+
+    def test_resolve_follows_chain(self, db_session):
+        from includes.dashboard.supplier_dedup import resolve_supplier_id
+        c = _supplier(db_session, name="C Final")
+        b = _supplier(db_session, name="B Middle", use_instead=c.id)
+        a = _supplier(db_session, name="A Flagged", use_instead=b.id)
+        assert resolve_supplier_id(db_session, a.id) == c.id
+
+    def test_resolve_no_chain_returns_self(self, db_session):
+        from includes.dashboard.supplier_dedup import resolve_supplier_id
+        a = _supplier(db_session)
+        assert resolve_supplier_id(db_session, a.id) == a.id
+
+    def test_resolve_cycle_safe(self, db_session):
+        from includes.dashboard.supplier_dedup import resolve_supplier_id
+        a = _supplier(db_session, name="A")
+        b = _supplier(db_session, name="B", use_instead=a.id)
+        a.use_instead = b.id
+        db_session.flush()
+        resolved = resolve_supplier_id(db_session, a.id)
+        assert resolved in (a.id, b.id)  # stops, does not loop forever
+
+    def test_active_suppliers_excludes_flagged(self, db_session):
+        from includes.dashboard.supplier_dedup import active_suppliers
+        primary = _supplier(db_session, name="Primary")
+        dup = _supplier(db_session, name="Dup", use_instead=primary.id)
+        ids = {s.id for s in active_suppliers(db_session).all()}
+        assert primary.id in ids
+        assert dup.id not in ids
+
+    def test_supplier_lookup_hides_dups_for_linking(self, db_session):
+        from includes.dashboard.supplier_dedup import supplier_lookup
+        primary = _supplier(db_session, name="Commander Pty Ltd")
+        dup = _supplier(db_session, name="Commander (Old)", use_instead=primary.id)
+        ids = {s.id for s in supplier_lookup(db_session, "commander", hide_dups=True)}
+        assert primary.id in ids
+        assert dup.id not in ids
+
+    def test_supplier_lookup_shows_dups_for_management(self, db_session):
+        from includes.dashboard.supplier_dedup import supplier_lookup
+        primary = _supplier(db_session, name="Commander Pty Ltd")
+        dup = _supplier(db_session, name="Commander (Old)", use_instead=primary.id)
+        ids = {s.id for s in supplier_lookup(db_session, "commander", hide_dups=False)}
+        assert primary.id in ids
+        assert dup.id in ids
+
+
 def _product(session):
     product = Product(part_number=f"PN-{uuid.uuid4().hex[:8]}", netsuite_id=f"P-{uuid.uuid4().hex[:8]}")
     session.add(product)

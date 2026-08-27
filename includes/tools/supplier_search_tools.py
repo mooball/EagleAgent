@@ -241,6 +241,11 @@ def run_previous_suppliers_sync(rfq_id: str, user_id: str, line_numbers: list[in
             lines.append(f"- Line {line}: {', '.join(names)}")
         text = "\n".join(lines)
 
+    skipped = result.get("skipped_duplicates") or []
+    if skipped:
+        text += (f"\n- Skipped {len(skipped)} known duplicate supplier(s) "
+                 f"(never added to RFQs): {', '.join(skipped)}")
+
     # Cross-apply within groups
     cross = _cross_apply_suppliers_sync(rfq_id, user_id)
     if isinstance(cross, dict) and cross.get("added", 0) > 0:

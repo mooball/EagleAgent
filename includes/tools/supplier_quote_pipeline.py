@@ -236,7 +236,9 @@ def _classify_supplier_email_sync(email_tracking_id: int) -> dict:
         # Also check supplier via the FK link
         if not matched_supplier and tracking.supplier_id:
             from includes.dashboard.models import Supplier
-            supplier_obj = session.query(Supplier).filter(Supplier.id == tracking.supplier_id).first()
+            from includes.dashboard.supplier_dedup import resolve_supplier_id
+            supplier_id = resolve_supplier_id(session, tracking.supplier_id)
+            supplier_obj = session.query(Supplier).filter(Supplier.id == supplier_id).first()
             if supplier_obj:
                 matched_supplier = supplier_obj.name
 

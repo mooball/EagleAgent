@@ -52,7 +52,7 @@ def get_suppliers_to_categorize(force: bool = False, limit: int | None = None) -
             func.count(Transaction.id).label("purchase_count"),
         ).outerjoin(
             Transaction, Transaction.supplier_id == Supplier.id
-        ).group_by(Supplier.id)
+        ).filter(Supplier.use_instead.is_(None)).group_by(Supplier.id)
 
         if not force:
             # Only suppliers without a categorization

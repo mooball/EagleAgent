@@ -2862,6 +2862,7 @@ def _find_purchase_suppliers_sync(
 
     total_added = 0
     by_line = {}
+    skipped_duplicates = []
 
     for item in specific_items:
         line = item["line"]
@@ -2876,6 +2877,12 @@ def _find_purchase_suppliers_sync(
         try:
             ph_rows = _find_purchase_history_for_part(part_number, 20)
             for row in ph_rows:
+                # Known duplicates are surfaced for historical context only —
+                # they must never be linked to a new RFQ.
+                if row.get("is_duplicate"):
+                    if row["name"] not in skipped_duplicates:
+                        skipped_duplicates.append(row["name"])
+                    continue
                 if row["name"].lower() not in existing_names:
                     suppliers.append({
                         "supplier_id": row["supplier_id"],
@@ -2899,7 +2906,11 @@ def _find_purchase_suppliers_sync(
             total_added += len(suppliers)
             by_line[line] = [s["name"] for s in suppliers]
 
-    return {"added": total_added, "by_line": by_line}
+    return {
+        "added": total_added,
+        "by_line": by_line,
+        "skipped_duplicates": skipped_duplicates,
+    }
 
 
 @_serialized_rfq_write

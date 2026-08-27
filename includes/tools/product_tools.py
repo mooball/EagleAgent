@@ -253,6 +253,34 @@ def _suggest_spelling(session, query: str) -> Optional[str]:
     return None
 
 
+def _flagged_supplier_targets(session, supplier_ids) -> dict:
+    """{supplier_id: (target_id, target_name)} for use_instead-flagged rows.
+
+    Returns {} on any error (mock sessions in tests included).
+    """
+    if not supplier_ids:
+        return {}
+    try:
+        rows = (
+            session.query(Supplier.id, Supplier.use_instead)
+            .filter(
+                Supplier.id.in_(list(supplier_ids)),
+                Supplier.use_instead.isnot(None),
+            )
+            .all()
+        )
+        if not rows:
+            return {}
+        target_ids = {r[1] for r in rows if r[1]}
+        targets = {
+            t.id: t.name
+            for t in session.query(Supplier).filter(Supplier.id.in_(list(target_ids))).all()
+        }
+        return {r[0]: (r[1], targets.get(r[1])) for r in rows}
+    except Exception:
+        return {}
+
+
 def _do_supplier_search(name: Optional[str] = None,
                         brand: Optional[str] = None,
                         country: Optional[str] = None,
@@ -287,6 +315,9 @@ def _do_supplier_search(name: Optional[str] = None,
         )
 
         # Base query: LEFT JOIN purchase stats so every supplier gets a count (0 if none)
+        # Note: known duplicates are NOT filtered here — they're flagged in the
+        # output so the agent can still use them for historical counts, but
+        # must never link them to new RFQs/transactions.
         base_query = (
             session.query(
                 Supplier,
@@ -449,12 +480,22 @@ def _do_supplier_search(name: Optional[str] = None,
         for sid, bname in brand_links:
             supplier_brands.setdefault(sid, []).append(bname)
 
-        output_parts = [f"Found {total} matching supplier(s). Displaying {len(displayed)}, sorted by purchase history (most purchases first):"]
+        dup_targets = _flagged_supplier_targets(session, supplier_ids)
+        dup_count = sum(1 for sid in supplier_ids if sid in dup_targets)
+
+        output_parts = [f"Found {total} matching supplier(s). Displaying {len(displayed)}, sorted by purchase history (most purchases first):" + (
+            f" — {dup_count} flagged as known duplicate(s) ⚠️" if dup_count else ""
+        )]
         for row in displayed:
             s = row[0]
             purchase_count = row[1]
             last_purchase_date = row[2]
             item = f"- [{s.name}](/suppliers/{s.id})"
+            if s.id in dup_targets:
+                target_id, target_name = dup_targets[s.id]
+                item += " ⚠️ **KNOWN DUPLICATE — DO NOT USE**"
+                if target_name:
+                    item += f" — use [{target_name}](/suppliers/{target_id}) instead"
             if s.city or s.country:
                 location = ", ".join(filter(None, [s.city, s.country]))
                 item += f" | Location: {location}"
@@ -519,6 +560,12 @@ async def search_suppliers(name: Optional[str] = None,
       String matches are tried first, then suppliers who have sold similar products
       are found via product-vector search, then vector similarity on supplier notes
       fills remaining results.
+
+    Duplicate handling: known duplicates are NOT hidden. They appear flagged with
+    "⚠️ KNOWN DUPLICATE — DO NOT USE" and a pointer to the surviving supplier.
+    Use flagged rows only for historical data (purchase counts, past pricing).
+    NEVER attach them to a new RFQ, quote, or transaction — use the surviving
+    supplier instead.
 
     Provide as many arguments as needed to narrow results.
 
@@ -604,6 +651,9 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
         output_parts.append("| # | Supplier ID | Supplier | Location | Contact | Part Number | Brand | Last Cost | Last Sale Price | Last Date | Total Qty | Orders |")
         output_parts.append("|---|-------------|----------|----------|---------|-------------|-------|-----------|-----------------|-----------|-----------|---------|") 
 
+        dup_targets = _flagged_supplier_targets(
+            session, [row.supplier_id for row in results]
+        )
         for idx, row in enumerate(results, 1):
             cost, price = price_subquery.get((row.supplier_id, row.part_number), (None, None))
             cost_str = f"${cost:,.2f}" if cost is not None else "N/A"
@@ -621,8 +671,11 @@ def _do_part_purchase_history(part_number: str, limit: int = 20) -> str:
                     c = contacts[0]  # Primary contact
                     parts = [p for p in [c.get("name"), c.get("email"), c.get("phone")] if p]
                     contact_str = " | ".join(parts) if parts else "N/A"
+            name_cell = f"[{row.supplier_name}](/suppliers/{row.supplier_id})"
+            if row.supplier_id in dup_targets:
+                name_cell += " ⚠️ KNOWN DUPLICATE — DO NOT USE"
             output_parts.append(
-                f"| {idx} | {row.supplier_id} | [{row.supplier_name}](/suppliers/{row.supplier_id}) | {location_str} | {contact_str} | {row.part_number} | {row.brand or 'N/A'} | {cost_str} | {price_str} | {date_str} | {qty_str} | {row.order_count} |"
+                f"| {idx} | {row.supplier_id} | {name_cell} | {location_str} | {contact_str} | {row.part_number} | {row.brand or 'N/A'} | {cost_str} | {price_str} | {date_str} | {qty_str} | {row.order_count} |"
             )
 
         return "\n".join(output_parts)
@@ -644,6 +697,10 @@ async def part_purchase_history(part_number: str, limit: int = 20) -> str:
 
     Use when the user asks "who can supply part X?", "which suppliers have we
     bought part X from?", "purchase history for part X", or similar.
+
+    Known duplicate suppliers appear flagged with "⚠️ KNOWN DUPLICATE — DO NOT
+    USE" — they are historical context only and must never be linked to new
+    RFQs or transactions.
 
     Args:
         part_number: The part number to search for (e.g. '123-ABC'). Partial matches supported.
@@ -886,6 +943,9 @@ def _find_purchase_history_for_part(part_number: str, limit: int = 20) -> list[d
         )
 
         out = []
+        dup_targets = _flagged_supplier_targets(
+            session, [row.supplier_id for row in results]
+        )
         for row in results:
             # Get latest PO cost
             latest_po = (
@@ -950,6 +1010,7 @@ def _find_purchase_history_for_part(part_number: str, limit: int = 20) -> list[d
                 "supplier_id": str(row.supplier_id),
                 "name": row.supplier_name,
                 "contacts": contacts,
+                "is_duplicate": row.supplier_id in dup_targets,
                 "cost": cost,
                 "price": sale_price or price,
                 "margin": margin,
@@ -971,7 +1032,11 @@ def _find_suppliers_by_brand(brand: str, limit: int = 200) -> list[dict]:
             session.query(Supplier)
             .join(SupplierBrand, SupplierBrand.supplier_id == Supplier.id)
             .join(Brand, SupplierBrand.brand_id == Brand.id)
-            .filter(Brand.name.ilike(f"%{brand}%"), Brand.duplicate_of.is_(None))
+            .filter(
+                Brand.name.ilike(f"%{brand}%"),
+                Brand.duplicate_of.is_(None),
+                Supplier.use_instead.is_(None),
+            )
             .limit(limit)
             .all()
         )
@@ -1024,7 +1089,11 @@ def _find_brand_suppliers_with_tier(brand: str, limit: int = 200) -> list[dict]:
             .join(SupplierBrand, SupplierBrand.supplier_id == Supplier.id)
             .join(Brand, SupplierBrand.brand_id == Brand.id)
             .outerjoin(tx_count_sub, tx_count_sub.c.supplier_id == Supplier.id)
-            .filter(Brand.name.ilike(brand), Brand.duplicate_of.is_(None))
+            .filter(
+                Brand.name.ilike(brand),
+                Brand.duplicate_of.is_(None),
+                Supplier.use_instead.is_(None),
+            )
             .all()
         )
 

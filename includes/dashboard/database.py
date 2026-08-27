@@ -63,10 +63,11 @@ def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
         row = (
             session.query(Supplier)
             .filter(
+                Supplier.use_instead.is_(None),
                 or_(
                     func.lower(Supplier.name).contains(name_lower),
                     literal(name_lower).contains(func.lower(Supplier.name)),
-                )
+                ),
             )
             .order_by(func.abs(func.length(Supplier.name) - len(name_lower)))
             .first()
@@ -79,6 +80,7 @@ def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
             row = (
                 session.query(Supplier)
                 .filter(
+                    Supplier.use_instead.is_(None),
                     Supplier.alt_names.isnot(None),
                     func.lower(cast(Supplier.alt_names, String)).contains(name_lower),
                 )
@@ -89,7 +91,7 @@ def match_supplier_by_name(name: str, session=None) -> "Supplier | None":
             sim = func.similarity(func.lower(Supplier.name), name_lower)
             row = (
                 session.query(Supplier)
-                .filter(sim > 0.8)
+                .filter(Supplier.use_instead.is_(None), sim > 0.8)
                 .order_by(sim.desc())
                 .first()
             )
@@ -151,7 +153,9 @@ def match_suppliers_by_names(names: list[str], session=None) -> dict[str, "Suppl
                 lname = func.lower(Supplier.name)
                 conds.append(lname.contains(n))
                 conds.append(literal(n).contains(lname))
-            rows = session.query(Supplier).filter(or_(*conds)).all()
+            rows = session.query(Supplier).filter(
+                Supplier.use_instead.is_(None), or_(*conds)
+            ).all()
             candidates: dict[str, list] = {n: [] for n in pending}
             for row in rows:
                 rn = (row.name or "").strip().lower()
@@ -171,7 +175,9 @@ def match_suppliers_by_names(names: list[str], session=None) -> dict[str, "Suppl
                 func.lower(cast(Supplier.alt_names, String)).contains(n)
                 for n in pending
             ]
-            rows = session.query(Supplier).filter(or_(*conds)).all()
+            rows = session.query(Supplier).filter(
+                Supplier.use_instead.is_(None), or_(*conds)
+            ).all()
             blobs = {}
             for row in rows:
                 alt = row.alt_names
@@ -198,6 +204,7 @@ def match_suppliers_by_names(names: list[str], session=None) -> dict[str, "Suppl
                 SELECT s.id, v.n, similarity(lower(s.name), v.n) AS sim
                 FROM suppliers s, v
                 WHERE similarity(lower(s.name), v.n) > 0.8
+                  AND s.use_instead IS NULL
                 ORDER BY v.n, sim DESC
                 """
             )
@@ -314,7 +321,8 @@ def match_supplier(
         if incoming_domain:
             from includes.dashboard.models import Supplier
             all_suppliers = session.query(Supplier).filter(
-                Supplier.url.isnot(None)
+                Supplier.url.isnot(None),
+                Supplier.use_instead.is_(None),
             ).all()
             for s in all_suppliers:
                 s_domain = _extract_domain(s.url)

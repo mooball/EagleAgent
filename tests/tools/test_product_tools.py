@@ -1,7 +1,7 @@
 import pytest
 from datetime import date
 from unittest.mock import MagicMock, patch
-from includes.tools.product_tools import _do_product_search, _do_part_purchase_history, _do_search_purchase_history, search_products, part_purchase_history, search_purchase_history
+from includes.tools.product_tools import _do_product_search, _do_part_purchase_history, _do_search_purchase_history, search_products, part_purchase_history, search_purchase_history, _flagged_supplier_targets
 from includes.dashboard.models import Product, Supplier, Transaction
 
 @pytest.fixture
@@ -264,6 +264,47 @@ async def test_async_part_purchase_history_tool(mock_session):
 
     result = await part_purchase_history.ainvoke({"part_number": "XYZ"})
     assert "No products found" in result
+
+
+class _FakeQuery:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class TestFlaggedSupplierTargets:
+
+    def test_maps_flagged_supplier_to_target(self):
+        import uuid as _uuid
+        sid, tid = _uuid.uuid4(), _uuid.uuid4()
+        target = MagicMock()
+        target.id = tid
+        target.name = "Survivor Pty Ltd"
+
+        session = MagicMock()
+        session.query.side_effect = [
+            _FakeQuery([(sid, tid)]),
+            _FakeQuery([target]),
+        ]
+        out = _flagged_supplier_targets(session, [sid])
+        assert out[sid] == (tid, "Survivor Pty Ltd")
+
+    def test_empty_when_no_flagged_rows(self):
+        import uuid as _uuid
+        session = MagicMock()
+        session.query.side_effect = [_FakeQuery([])]
+        assert _flagged_supplier_targets(session, [_uuid.uuid4()]) == {}
+
+    def test_empty_on_error(self):
+        import uuid as _uuid
+        session = MagicMock()
+        session.query.side_effect = Exception("boom")
+        assert _flagged_supplier_targets(session, [_uuid.uuid4()]) == {}
 
 
 class TestSearchPurchaseHistory:

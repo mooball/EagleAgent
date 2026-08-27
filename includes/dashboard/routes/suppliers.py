@@ -264,26 +264,33 @@ def partial_supplier_rows(request: Request, user: dict = Depends(require_user),
 @router.get("/partial/suppliers/search")
 def partial_supplier_search(request: Request, user: dict = Depends(require_user),
                             q: str = "", exclude: str = ""):
-    """Typeahead lookup for the duplicate-nomination picker (reusable picker)."""
+    """Typeahead lookup for the duplicate-nomination picker.
+
+    Management context — duplicates are shown and flagged so the reviewer
+    can see them (nominating a pair is the whole point here).
+    """
     import uuid as _uuid
+    from includes.dashboard.supplier_dedup import supplier_lookup
+
     results = []
     q = (q or "").strip()
     if len(q) >= 2:
         session = _helpers.get_session()
         try:
-            query = session.query(Supplier).filter(Supplier.name.ilike(f"%{q}%"))
+            rows = supplier_lookup(session, q, hide_dups=False)
             if exclude:
                 try:
-                    query = query.filter(Supplier.id != _uuid.UUID(exclude))
+                    exclude_id = _uuid.UUID(exclude)
+                    rows = [r for r in rows if r.id != exclude_id]
                 except ValueError:
                     pass
-            rows = query.order_by(Supplier.name).limit(10).all()
             results = [
                 {
                     "id": str(s.id),
                     "name": s.name,
                     "netsuite_id": s.netsuite_id,
                     "source": s.source or "web",
+                    "duplicate": bool(s.use_instead),
                 }
                 for s in rows
             ]

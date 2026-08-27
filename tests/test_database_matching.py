@@ -342,3 +342,37 @@ class TestMatchSupplierByName:
     def test_whitespace_name_returns_none(self, db_session):
         result = match_supplier_by_name("   ", session=db_session)
         assert result is None
+
+
+# ============================================================================
+# S3 — flagged (use_instead) suppliers are invisible to matching
+# ============================================================================
+
+class TestMatchingSkipsFlagged:
+
+    def _pair(self, db_session):
+        primary = Supplier(
+            name="Acme Pty Ltd", netsuite_id="NS-1", source="netsuite",
+            url="https://www.acme.com.au",
+        )
+        db_session.add(primary)
+        db_session.flush()
+        dup = Supplier(
+            name="Acme Pty Ltd", netsuite_id=None, source="web",
+            url="https://www.acme.com.au", use_instead=primary.id,
+        )
+        db_session.add(dup)
+        db_session.flush()
+        return primary, dup
+
+    def test_match_supplier_by_name_skips_flagged(self, db_session):
+        primary, _dup = self._pair(db_session)
+        result = match_supplier_by_name("Acme Pty Ltd", session=db_session)
+        assert result is not None and result.id == primary.id
+
+    def test_match_supplier_domain_first_skips_flagged(self, db_session):
+        primary, _dup = self._pair(db_session)
+        result = match_supplier(
+            "Acme Pty Ltd", url="https://www.acme.com.au", session=db_session
+        )
+        assert result is not None and result.id == primary.id

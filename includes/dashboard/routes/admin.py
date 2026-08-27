@@ -1142,7 +1142,11 @@ async def api_search_entities(request: Request, type: str, q: str, user: dict = 
     try:
         if type == "supplier":
             rows = session.execute(
-                text("SELECT id, name FROM suppliers WHERE LOWER(name) LIKE :q ORDER BY name LIMIT 10"),
+                text(
+                    "SELECT id, name FROM suppliers "
+                    "WHERE LOWER(name) LIKE :q AND use_instead IS NULL "
+                    "ORDER BY name LIMIT 10"
+                ),
                 {"q": f"%{q.lower()}%"}
             ).mappings().all()
             return JSONResponse({"results": [{"id": str(r["id"]), "name": r["name"]} for r in rows]})
@@ -1280,6 +1284,15 @@ async def api_link_email(request: Request, user: dict = Depends(_helpers.require
             entity_id = body.get("entity_id")
             if not entity_id:
                 return JSONResponse({"status": "error", "message": "No supplier selected"})
+
+            # A flagged duplicate must never be linked — land on the survivor
+            from includes.dashboard.supplier_dedup import resolve_supplier_id
+            try:
+                supplier_uuid = uuid.UUID(str(entity_id))
+            except ValueError:
+                return JSONResponse({"status": "error", "message": "Invalid supplier id"})
+            entity_id = str(resolve_supplier_id(session, supplier_uuid))
+
             # Link this email (and thread) to the supplier
             session.execute(
                 text("""
