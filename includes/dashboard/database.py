@@ -244,17 +244,26 @@ _NAME_MATCH_CACHE_LOCK = threading.Lock()
 _NAME_MATCH_CACHE_TTL = 120.0
 
 
+# Second-level labels that are part of the public suffix, never the
+# registrable name — 'pngaf.com.pg' must not reduce to 'com.pg'.
+GENERIC_SLD_LABELS = {
+    "com", "net", "org", "gov", "edu", "co", "ac", "asn", "id", "mil", "sch",
+}
+
+
 def _extract_domain(url: str) -> str | None:
     """Extract the registrable (root) domain from a URL, stripping subdomains.
 
-    Uses a simple heuristic: if the TLD is a two-part ccTLD (e.g. .com.au,
-    .co.uk, .co.nz) keep the last 3 labels, otherwise keep the last 2.
+    Heuristic: if the second-to-last label is a public-suffix label such as
+    'com', 'co' or 'gov' (e.g. .com.au, .co.uk, .com.pg) keep the last 3
+    labels, otherwise keep the last 2.
 
     Examples:
         'https://www.abcparts.com.au/contact' → 'abcparts.com.au'
         'https://my.komatsu.com.au'           → 'komatsu.com.au'
         'http://sleatorplant.com'              → 'sleatorplant.com'
         'https://shop.example.co.uk'           → 'example.co.uk'
+        'https://www.pngaf.com.pg'             → 'pngaf.com.pg'
     Returns None if the URL cannot be parsed.
     """
     if not url:
@@ -265,13 +274,7 @@ def _extract_domain(url: str) -> str | None:
             return None
         hostname = hostname.lower()
         parts = hostname.split(".")
-        # Two-part ccTLDs where the registrable domain is 3 labels deep
-        _TWO_PART_TLDS = {
-            "com.au", "com.br", "com.cn", "com.hk", "com.my", "com.sg",
-            "com.tw", "co.id", "co.in", "co.jp", "co.kr", "co.nz", "co.th",
-            "co.uk", "co.za", "net.au", "org.au", "org.uk", "org.nz",
-        }
-        if len(parts) >= 3 and f"{parts[-2]}.{parts[-1]}" in _TWO_PART_TLDS:
+        if len(parts) >= 3 and parts[-2] in GENERIC_SLD_LABELS:
             return ".".join(parts[-3:])
         if len(parts) >= 2:
             return ".".join(parts[-2:])

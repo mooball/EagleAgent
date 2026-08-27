@@ -50,7 +50,8 @@
         </thead>
         <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
             {% for item in items %}
-            <tr class="align-top hover:bg-gray-50 dark:hover:bg-gray-700/30" x-data="{ keepFirst: true }">
+            <tr class="align-top hover:bg-gray-50 dark:hover:bg-gray-700/30"
+                x-data="{ keepFirst: {{ 'false' if (not (item.primary and item.primary.netsuite_id)) and (item.duplicate and item.duplicate.netsuite_id) else 'true' }} }">
                 <td class="px-2 py-3 text-center">
                     <input type="checkbox" name="ids" value="{{ item.id }}" {% if item.tier == 'certain' %}checked{% endif %}
                            class="rounded border-gray-300 dark:border-gray-600">
@@ -60,9 +61,11 @@
                     <div class="flex items-start justify-between gap-2">
                         <span class="font-medium text-gray-900 dark:text-gray-100">{{ p.name if p else '—' }}</span>
                         <span x-show="keepFirst" x-cloak class="text-[9px] px-1.5 py-0.5 rounded-full font-semibold bg-green-600 text-white shrink-0">KEEP</span>
+                        {% if (p and p.netsuite_id) or not (d and d.netsuite_id) %}
                         <button type="button" x-show="!keepFirst" x-cloak @click.stop="keepFirst = true"
                                 class="text-[10px] px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 shrink-0"
                                 title="Keep this supplier">Keep this instead</button>
+                        {% endif %}
                     </div>
                     {% if p %}
                     <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
@@ -98,9 +101,11 @@
                     <div class="flex items-start justify-between gap-2">
                         <span class="font-medium text-gray-900 dark:text-gray-100">{{ d.name if d else '—' }}</span>
                         <span x-show="!keepFirst" x-cloak class="text-[9px] px-1.5 py-0.5 rounded-full font-semibold bg-green-600 text-white shrink-0">KEEP</span>
+                        {% if (d and d.netsuite_id) or not (p and p.netsuite_id) %}
                         <button type="button" x-show="keepFirst" x-cloak @click.stop="keepFirst = false"
                                 class="text-[10px] px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 shrink-0"
                                 title="Keep this supplier">Keep this instead</button>
+                        {% endif %}
                     </div>
                     {% if d %}
                     <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">

@@ -901,3 +901,180 @@ class TestAdminDuplicatesQueue:
         assert cand.primary_id == ns_id          # unchanged
         assert cand.duplicate_id == web_id
         assert "Cannot keep the web supplier" in resp.text
+
+
+class TestAdminDuplicatesManualNominate:
+    """Manual nomination: source='manual' candidate rows via the supplier page."""
+
+    def _supplier(self, supplier_id, netsuite_id="NS-1"):
+        sup = MagicMock()
+        sup.id = supplier_id
+        sup.name = "Acme Pty Ltd"
+        sup.netsuite_id = netsuite_id
+        sup.url = "https://acme.com.au"
+        sup.country = "AU"
+        sup.source = "netsuite" if netsuite_id else "web"
+        return sup
+
+    def _nom_session(self, sup_a, sup_b, existing=None):
+        q = MagicMock()
+        q.filter.return_value = q
+        q.first.return_value = existing
+        session = MagicMock()
+        session.query.return_value = q
+        session.get.side_effect = lambda model, key: (
+            sup_a if str(key) == str(sup_a.id)
+            else sup_b if str(key) == str(sup_b.id)
+            else None
+        )
+        return session
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_creates_manual_proposed_row(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        a, b = self._supplier(uuid.uuid4()), self._supplier(uuid.uuid4())
+        session = self._nom_session(a, b)
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.post("/admin/duplicates/manual",
+                               data={"a_id": str(a.id), "b_id": str(b.id)})
+
+        assert resp.status_code == 200
+        assert "Duplicate nominated" in resp.text
+        assert "Review in the duplicates queue" in resp.text
+        row = session.add.call_args[0][0]
+        assert row.status == "proposed"
+        assert row.source == "manual"
+        assert row.confidence == 1.0
+        assert row.reasons == ["manual"]
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_netsuite_side_always_primary(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        ns = self._supplier(uuid.uuid4(), netsuite_id="NS-1")
+        web = self._supplier(uuid.uuid4(), netsuite_id=None)
+        session = self._nom_session(web, ns)   # web posted as side a
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.post("/admin/duplicates/manual",
+                               data={"a_id": str(web.id), "b_id": str(ns.id)})
+
+        assert resp.status_code == 200
+        row = session.add.call_args[0][0]
+        assert row.primary_id == ns.id
+        assert row.duplicate_id == web.id
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_self_pair_rejected(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        a = self._supplier(uuid.uuid4())
+        resp = client.post("/admin/duplicates/manual",
+                           data={"a_id": str(a.id), "b_id": str(a.id)})
+
+        assert resp.status_code == 200
+        assert "cannot be a duplicate of itself" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_reopens_decided_pair(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        a, b = self._supplier(uuid.uuid4()), self._supplier(uuid.uuid4())
+        existing = MagicMock()
+        existing.status = "rejected"
+        session = self._nom_session(a, b, existing=existing)
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.post("/admin/duplicates/manual",
+                               data={"a_id": str(a.id), "b_id": str(b.id)})
+
+        assert resp.status_code == 200
+        assert existing.status == "proposed"
+        assert existing.source == "manual"
+        assert existing.decided_by is None
+        session.add.assert_not_called()
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_existing_proposed_pair_rejected(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        a, b = self._supplier(uuid.uuid4()), self._supplier(uuid.uuid4())
+        existing = MagicMock()
+        existing.status = "proposed"
+        session = self._nom_session(a, b, existing=existing)
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.post("/admin/duplicates/manual",
+                               data={"a_id": str(a.id), "b_id": str(b.id)})
+
+        assert resp.status_code == 200
+        assert "already in the duplicates queue" in resp.text
+        session.add.assert_not_called()
+
+
+class TestSupplierSearchOptions:
+    """Typeahead lookup backing the nomination picker."""
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_renders_matching_suppliers(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        row = MagicMock()
+        row.id = uuid.uuid4()
+        row.name = "Acme Pty Ltd"
+        row.netsuite_id = "NS-1"
+        row.source = "netsuite"
+
+        q = MagicMock()
+        q.filter.return_value = q
+        q.order_by.return_value = q
+        q.limit.return_value = q
+        q.all.return_value = [row]
+
+        session = MagicMock()
+        session.query.return_value = q
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.get("/partial/suppliers/search?q=acme")
+
+        assert resp.status_code == 200
+        assert "Acme Pty Ltd" in resp.text
+        assert "pick-supplier" in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_short_query_returns_nothing(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        resp = client.get("/partial/suppliers/search?q=a")
+        assert resp.status_code == 200
+        assert "Acme" not in resp.text
+
+    @patch("includes.dashboard.routes._helpers.config")
+    def test_exclude_filters_current_supplier(self, mock_config, client):
+        mock_config.get_admin_emails.return_value = ["admin@eagle.com"]
+        _login(client)
+
+        exclude_id = uuid.uuid4()
+        q = MagicMock()
+        q.filter.return_value = q
+        q.order_by.return_value = q
+        q.limit.return_value = q
+        q.all.return_value = []
+
+        session = MagicMock()
+        session.query.return_value = q
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=session):
+            resp = client.get(f"/partial/suppliers/search?q=acme&exclude={exclude_id}")
+
+        assert resp.status_code == 200
+        # One of the filters must exclude the supplied id (UUID rides in a bind param)
+        exclude_values = [
+            str(getattr(getattr(call.args[0], "right", None), "value", None))
+            for call in q.filter.call_args_list
+        ]
+        assert str(exclude_id) in exclude_values
+

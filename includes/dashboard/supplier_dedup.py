@@ -293,10 +293,10 @@ def pick_keep_remove(
 ) -> tuple[Supplier, Supplier]:
     """Pick which supplier to keep (primary) and which to remove (duplicate).
 
-    Scoring (netsuite_id is absolute — a NetSuite record always beats a web
-    one, since the merge matrix rejects web-primary/NetSuite-duplicate;
-    transactions and recency decide between otherwise-similar sides):
-        netsuite_id        +200 (dominates; max activity bonus is 140)
+    A NetSuite record always wins outright — the merge matrix rejects a
+    web primary with a NetSuite duplicate, so proposing one would produce
+    an unmergeable candidate. Everything below only breaks ties between two
+    sides of the same kind:
         transaction count  +2 each, capped at 50 (+100 max)
         last txn ≤ 90d     +40
         last txn ≤ 1y      +20
@@ -309,10 +309,12 @@ def pick_keep_remove(
     stats: optional {supplier_id: (txn_count, latest_txn_date)} from the
     transactions table; suppliers without an entry score 0 for activity.
     """
+    a_netsuite, b_netsuite = bool(a.netsuite_id), bool(b.netsuite_id)
+    if a_netsuite != b_netsuite:
+        return (a, b) if a_netsuite else (b, a)
+
     def _score(sup: Supplier) -> int:
         s = 0
-        if sup.netsuite_id:
-            s += 200
         if sup.url:
             s += 10
         s += len(sup.contacts or []) * 2

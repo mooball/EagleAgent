@@ -261,6 +261,41 @@ def partial_supplier_rows(request: Request, user: dict = Depends(require_user),
     })
 
 
+@router.get("/partial/suppliers/search")
+def partial_supplier_search(request: Request, user: dict = Depends(require_user),
+                            q: str = "", exclude: str = ""):
+    """Typeahead lookup for the duplicate-nomination picker (reusable picker)."""
+    import uuid as _uuid
+    results = []
+    q = (q or "").strip()
+    if len(q) >= 2:
+        session = _helpers.get_session()
+        try:
+            query = session.query(Supplier).filter(Supplier.name.ilike(f"%{q}%"))
+            if exclude:
+                try:
+                    query = query.filter(Supplier.id != _uuid.UUID(exclude))
+                except ValueError:
+                    pass
+            rows = query.order_by(Supplier.name).limit(10).all()
+            results = [
+                {
+                    "id": str(s.id),
+                    "name": s.name,
+                    "netsuite_id": s.netsuite_id,
+                    "source": s.source or "web",
+                }
+                for s in rows
+            ]
+        finally:
+            session.close()
+
+    return templates.TemplateResponse(request, "partials/_supplier_search_options.html", {
+        "results": results,
+        "q": q,
+    })
+
+
 @router.get("/partial/suppliers/{supplier_id}")
 def partial_supplier_detail(request: Request, supplier_id: str,
                             user: dict = Depends(require_user)):
