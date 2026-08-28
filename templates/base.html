@@ -16,6 +16,13 @@
           onerror="if(!window.__twFallback){window.__twFallback=1;var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4';document.head.appendChild(s);var st=document.createElement('style');st.type='text/tailwindcss';st.textContent='@custom-variant dark (&:where(.dark, .dark *));';document.head.appendChild(st)}">
     <!-- DaisyUI CSS (tooltips/components — loaded after Tailwind) -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5/daisyui.css">
+    <style>
+        /* Keep DaisyUI tooltips above sticky table headers (z-10) */
+        .tooltip:before,
+        .tooltip:after {
+            z-index: 60;
+        }
+    </style>
     <script>
         // Restore theme before paint to prevent flash
         if (localStorage.theme === 'dark' || (!localStorage.theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
@@ -2635,7 +2642,7 @@
         },
 
         toggle(key) {
-            if (!this.emailMap[key]) return;
+            if (!(key in this.emailMap)) return;
             const idx = this.selected.indexOf(key);
             if (idx >= 0) this.selected.splice(idx, 1);
             else this.selected.push(key);

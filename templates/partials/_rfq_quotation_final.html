@@ -16,6 +16,7 @@
         <div class="flex items-center gap-3 text-[11px] text-gray-500 dark:text-gray-400">
             <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500"></span> Ready</span>
             <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-500"></span> Missing requirements</span>
+            <span class="inline-flex items-center gap-1"><span class="px-1 py-0.5 rounded text-[9px] leading-none font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">NS</span> Needs to be created in NetSuite</span>
             {% if rfq.opportunity_id %}
             <span class="inline-flex items-center gap-2">
                 {% if sync_can_sync %}
@@ -63,6 +64,9 @@
                         <div class="flex items-center gap-2">
                             {% if item.part_number %}
                             <span class="font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">{{ item.part_number }}</span>
+                            {% if not item.product_ns_id %}
+                            <span class="inline-flex items-center shrink-0 text-[9px] px-1 py-0.5 rounded font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 tooltip" data-tip="Part number needs to be created in NetSuite">NS</span>
+                            {% endif %}
                             {% else %}
                             <span class="font-mono text-xs text-red-500 dark:text-red-400 whitespace-nowrap">missing part number</span>
                             {% endif %}
@@ -84,6 +88,9 @@
                     <td class="px-3 py-2.5 whitespace-nowrap">
                         {% if item.brand %}
                         {{ item.brand }}
+                        {% if not item.brand_ns_id and not item.brand_is_excluded %}
+                        <span class="ml-1 inline-flex items-center shrink-0 text-[9px] px-1 py-0.5 rounded font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 tooltip" data-tip="Brand needs to be created in NetSuite">NS</span>
+                        {% endif %}
                         {% else %}
                         <span class="text-red-500 dark:text-red-400 font-medium">Missing</span>
                         {% endif %}
@@ -119,11 +126,12 @@
                         <span class="inline-flex items-center gap-1">
                             <span>{{ sel.name }}</span>
                             {% if sel.near_matches %}
-                            <svg class="w-3 h-3 text-red-500 dark:text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="Possible duplicate{% if sel.near_matches %}: {{ sel.near_matches | map(attribute='name') | join(', ') }}{% endif %}"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"/></svg>
+                            <span class="tooltip shrink-0" data-tip="Possible duplicate: {{ sel.near_matches | map(attribute='name') | join(', ') }}">
+                            <svg class="w-3 h-3 text-red-500 dark:text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"/></svg>
+                            </span>
                             {% endif %}
                             {% if not sel.ns_linked %}
-                            <span class="text-[10px] text-amber-600 dark:text-amber-400"
-                                  title="Supplier has no NetSuite vendor linked — vendor will be omitted from the line">not linked</span>
+                            <span class="inline-flex items-center shrink-0 text-[9px] px-1 py-0.5 rounded font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 tooltip" data-tip="Supplier needs to be created in NetSuite">NS</span>
                             {% endif %}
                         </span>
                         {% else %}

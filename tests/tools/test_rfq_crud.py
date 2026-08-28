@@ -75,6 +75,148 @@ class TestSerializedRfqWrite:
 
 
 # ---------------------------------------------------------------------------
+# RFQ-local supplier merge (suppliers tab)
+# ---------------------------------------------------------------------------
+
+class TestMergeRfqSuppliers:
+    @pytest.fixture
+    def db_session(self):
+        """DB session with SAVEPOINT so commits inside helpers don't end the
+        outer transaction — everything rolls back at the end."""
+        from includes.dashboard.database import _sync_url
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        from sqlalchemy import event
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _make_rfq(self, session, items_suppliers) -> RFQ:
+        """items_suppliers: list of list-of-supplier-dicts per line."""
+        rfq = RFQ(
+            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            customer="Test Customer",
+            created_by="tester",
+            created_date=datetime.now(timezone.utc),
+        )
+        session.add(rfq)
+        session.flush()
+        for line, sups in enumerate(items_suppliers, start=1):
+            session.add(RFQItem(
+                rfq_id=rfq.id,
+                line=line,
+                input_description=f"desc {line}",
+                suppliers=[dict(s) for s in sups],
+            ))
+        session.flush()
+        return rfq
+
+    def _merge(self, db_session, rfq, keep, drops):
+        from includes.tools.rfq_crud import _merge_rfq_suppliers_sync
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            return _merge_rfq_suppliers_sync(rfq.rfq_number, keep, drops, "tester")
+
+    def _line_suppliers(self, db_session, rfq, line):
+        db_session.expire_all()
+        item = db_session.query(RFQItem).filter(
+            RFQItem.rfq_id == rfq.id, RFQItem.line == line
+        ).first()
+        return item.suppliers
+
+    def test_replaces_dropped_names_and_preserves_order(self, db_session):
+        rfq = self._make_rfq(db_session, [
+            [{"name": "ABC Pty Ltd", "status": "shortlisted",
+              "contacts": [{"email": "a@x.com"}], "quote_cost": 120},
+             {"name": "Other Co", "status": "shortlisted"}],
+            [{"name": "A.B.C. Pty Ltd", "status": "shortlisted",
+              "notes": "web sourced", "contacts": [{"email": "w@x.com"}]}],
+            [{"name": "Other Co", "status": "shortlisted"}],
+        ])
+        result = self._merge(db_session, rfq, "ABC Pty Ltd", ["A.B.C. Pty Ltd"])
+        assert isinstance(result, dict)
+
+        line1 = self._line_suppliers(db_session, rfq, 1)
+        assert [s["name"] for s in line1] == ["ABC Pty Ltd", "Other Co"]  # order kept
+        line2 = self._line_suppliers(db_session, rfq, 2)
+        assert len(line2) == 1
+        merged = line2[0]
+        assert merged["name"] == "ABC Pty Ltd"
+        assert merged["status"] == "shortlisted"
+        assert merged["notes"] == "web sourced"
+        assert {c["email"] for c in merged["contacts"]} == {"w@x.com", "a@x.com"}
+        line3 = self._line_suppliers(db_session, rfq, 3)
+        assert [s["name"] for s in line3] == ["Other Co"]
+
+        rfq_row = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        assert any("Merged suppliers" in h["action"] for h in (rfq_row.history or []))
+
+    def test_does_not_copy_selection_status_across_lines(self, db_session):
+        rfq = self._make_rfq(db_session, [
+            [{"name": "ABC", "status": "shortlisted", "quote_status": "selected",
+              "quote_cost": 100}],
+            [{"name": "A.B.C.", "status": "shortlisted", "lead_time": 5}],
+        ])
+        self._merge(db_session, rfq, "ABC", ["A.B.C."])
+
+        line1 = self._line_suppliers(db_session, rfq, 1)
+        assert line1[0]["quote_status"] == "selected"
+        line2 = self._line_suppliers(db_session, rfq, 2)
+        assert line2[0]["name"] == "ABC"
+        # Line 2's own data is preserved — line 1's selection is NOT copied across.
+        assert line2[0].get("quote_status") is None
+        assert line2[0]["lead_time"] == 5
+        assert "quote_cost" not in line2[0] or line2[0].get("quote_cost") is None
+
+    def test_collapses_duplicates_on_same_item(self, db_session):
+        rfq = self._make_rfq(db_session, [
+            [{"name": "ABC", "status": "shortlisted", "quote_status": "quoted",
+              "quote_cost": 120},
+             {"name": "A.B.C.", "status": "shortlisted", "quote_status": "shortlisted"},
+             {"name": "Other Co", "status": "shortlisted"}],
+        ])
+        self._merge(db_session, rfq, "ABC", ["A.B.C."])
+
+        line1 = self._line_suppliers(db_session, rfq, 1)
+        assert [s["name"] for s in line1] == ["ABC", "Other Co"]
+        assert line1[0]["quote_status"] == "quoted"  # strongest kept
+        assert line1[0]["quote_cost"] == 120
+
+    def test_prefers_db_linked_identity(self, db_session):
+        linked_id = str(uuid.uuid4())
+        rfq = self._make_rfq(db_session, [
+            [{"name": "ABC", "status": "shortlisted", "supplier_id": linked_id,
+              "db_match": "exact"}],
+            [{"name": "A.B.C.", "status": "shortlisted", "db_match": "new"}],
+        ])
+        self._merge(db_session, rfq, "ABC", ["A.B.C."])
+
+        line2 = self._line_suppliers(db_session, rfq, 2)
+        assert line2[0]["name"] == "ABC"
+        assert line2[0]["supplier_id"] == linked_id
+        assert line2[0]["db_match"] == "exact"
+
+    def test_errors(self, db_session):
+        rfq = self._make_rfq(db_session, [
+            [{"name": "ABC", "status": "shortlisted"}],
+        ])
+        assert isinstance(self._merge(db_session, rfq, "ABC", []), str)
+        assert isinstance(self._merge(db_session, rfq, "ABC", ["ABC"]), str)
+        assert isinstance(self._merge(db_session, rfq, "XYZ", ["ABC"]), str)
+        assert isinstance(self._merge(db_session, rfq, "ABC", ["Not Here"]), str)
+
+
+# ---------------------------------------------------------------------------
 # Quote brand (custbodyquote_brand on the future NetSuite Quote)
 # ---------------------------------------------------------------------------
 

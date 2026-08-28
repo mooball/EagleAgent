@@ -461,6 +461,8 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
     Enriches each item dict with:
       - product_ns_id        — NetSuite internal ID of the linked product's item
       - product_part_number  — linked product's part number
+      - brand_ns_id          — NetSuite internal ID of the item's brand
+                               (exact local-DB match only)
       - sync_status          — 'ready' | 'needs_item' | 'no_match'
       - selected_supplier    — the supplier dict with quote_status == 'selected'
       - missing_department / missing_cost / missing_sale / missing_supplier
@@ -487,6 +489,21 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             rows = session.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()
             suppliers = {str(s.id): s for s in rows}
 
+        # Brand NetSuite linkage — exact local-DB matches only; near-misses
+        # and unknown brands are treated as not-in-NetSuite.
+        from includes.tools.product_tools import match_brands, BRAND_NAME_EXCLUSIONS
+        brand_names = sorted({
+            (i.get("brand") or "").strip()
+            for i in items
+            if (i.get("brand") or "").strip().lower() not in BRAND_NAME_EXCLUSIONS
+        })
+        brand_lookup = {}
+        if brand_names:
+            try:
+                brand_lookup = match_brands(brand_names)
+            except Exception:
+                brand_lookup = {}
+
         ready_count = 0
         for item in items:
             product = None
@@ -494,6 +511,18 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                 product = products.get(str(item["product_id"]))
             item["product_ns_id"] = product.netsuite_id if product else None
             item["product_part_number"] = product.part_number if product else None
+
+            brand_name = (item.get("brand") or "").strip()
+            item["brand_is_excluded"] = bool(brand_name) and brand_name.lower() in BRAND_NAME_EXCLUSIONS
+            if brand_name:
+                bm = brand_lookup.get(brand_name)
+                item["brand_ns_id"] = (
+                    bm["brand"].get("netsuite_id")
+                    if bm and bm["status"] == "exact" and bm.get("brand")
+                    else None
+                )
+            else:
+                item["brand_ns_id"] = None
 
             selected = next(
                 (s for s in (item.get("suppliers") or []) if s.get("quote_status") == "selected"),
@@ -1493,6 +1522,31 @@ async def partial_rfq_swap_supplier(request: Request, rfq_id: str,
     rfq = result
     _enrich_rfq_supplier_contacts(rfq)
     return _render_rfq_detail_partial_response(request, user, rfq)
+
+
+@router.post("/partial/rfqs/{rfq_id}/merge-suppliers")
+async def partial_rfq_merge_suppliers(request: Request, rfq_id: str,
+                                      user: dict = Depends(require_user)):
+    """Merge selected suppliers on the RFQ (RFQ-local cleanup only)."""
+    form = await request.form()
+    keep = (form.get("keep") or "").strip()
+    try:
+        drops = [d.strip() for d in form.getlist("drops") if d and d.strip()]
+    except AttributeError:
+        drops = [v.strip() for k, v in form.multi_items() if k == "drops" and v and v.strip()]
+    if not keep or not drops:
+        return HTMLResponse("<p>Select at least two suppliers to merge.</p>", status_code=400)
+
+    from includes.tools.rfq_crud import _merge_rfq_suppliers_sync
+    result = await asyncio.to_thread(
+        _merge_rfq_suppliers_sync, rfq_id, keep, drops,
+        user.get("identifier", "dashboard"),
+    )
+    if isinstance(result, str):
+        return HTMLResponse(f"<p>{result}</p>", status_code=400)
+    rfq = result
+    _enrich_rfq_supplier_contacts(rfq)
+    return _render_rfq_detail_partial_response(request, user, rfq, default_tab="suppliers")
 
 
 @router.post("/partial/rfqs/{rfq_id}/bulk-update-items")

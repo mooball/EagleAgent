@@ -1514,6 +1514,197 @@ def _swap_supplier_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
         session.close()
 
 
+# Supplier status precedence for RFQ-local merges (strongest wins).
+_SUPPLIER_STATUS_RANK = {
+    "selected": 4, "quoted": 3, "shortlisted": 2, "candidate": 1, "dropped": 0,
+}
+
+
+def _merge_supplier_dicts(base: dict, extra: dict) -> dict:
+    """Merge two RFQ supplier dicts: base wins conflicts, extra fills gaps.
+
+    The strongest status/quote_status is kept, contacts are unioned and notes
+    concatenated. Pure dict transform — no DB access.
+    """
+    merged = dict(base)
+
+    def _best(a, b):
+        ra = _SUPPLIER_STATUS_RANK.get(str(a or "").lower(), -1)
+        rb = _SUPPLIER_STATUS_RANK.get(str(b or "").lower(), -1)
+        return a if ra >= rb else b
+
+    merged["status"] = _best(base.get("status"), extra.get("status"))
+    merged["quote_status"] = _best(base.get("quote_status"), extra.get("quote_status"))
+
+    for field in (
+        "lead_time", "price", "price_type", "cost_price", "cost_price_aud",
+        "sale_price", "cost_currency", "quote_cost", "quote_currency",
+        "quote_leadtime", "quote_part_number", "purchase_ref", "price_date",
+        "price_doc", "price_doc_type", "transaction_count",
+        "country", "currency", "tier", "category", "source",
+    ):
+        if not merged.get(field) and extra.get(field):
+            merged[field] = extra[field]
+
+    contacts = list(base.get("contacts") or [])
+    seen = set()
+    for c in contacts:
+        if isinstance(c, dict):
+            key = c.get("email") or c.get("url") or c.get("name")
+            if key:
+                seen.add(key)
+    for c in extra.get("contacts") or []:
+        if isinstance(c, dict):
+            key = c.get("email") or c.get("url") or c.get("name")
+            if key and key not in seen:
+                contacts.append(c)
+                seen.add(key)
+    merged["contacts"] = contacts
+
+    base_notes = (base.get("notes") or "").strip()
+    extra_notes = (extra.get("notes") or "").strip()
+    if base_notes and extra_notes and extra_notes not in base_notes:
+        merged["notes"] = f"{base_notes}; {extra_notes}"
+    elif not base_notes and extra_notes:
+        merged["notes"] = extra_notes
+
+    if not merged.get("supplier_id") and extra.get("supplier_id"):
+        merged["supplier_id"] = extra["supplier_id"]
+    if (merged.get("db_match") in (None, "", "new")) and extra.get("db_match") in ("exact", "near_miss"):
+        merged["db_match"] = extra["db_match"]
+
+    base_nm = list(base.get("near_miss_names") or [])
+    for n in extra.get("near_miss_names") or []:
+        if n not in base_nm:
+            base_nm.append(n)
+    merged["near_miss_names"] = base_nm
+    return merged
+
+
+@_serialized_rfq_write
+def _merge_rfq_suppliers_sync(rfq_number: str, keep_name: str, drop_names: list, user_id: str) -> dict | str:
+    """Merge suppliers on an RFQ by name — RFQ-local cleanup only.
+
+    Every occurrence of a dropped name on any line is replaced by the kept
+    supplier (the keeper's spelling). Selection/quote status is preserved
+    (strongest wins); quote data, contacts and notes from the dropped
+    suppliers fill any gaps. The main Suppliers DB is not touched.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+    from includes.dashboard.models import RFQ
+
+    keep_name = (keep_name or "").strip()
+    drop_display = [(d or "").strip() for d in drop_names if (d or "").strip()]
+    drop_keys = {d.lower() for d in drop_display}
+    if not keep_name:
+        return "Error: 'keep' is required."
+    drop_keys.discard(keep_name.lower())
+    if not drop_keys:
+        return "Error: select at least one other supplier to merge."
+
+    session = _get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return f"Error: RFQ '{rfq_number}' not found."
+
+        keep_key = keep_name.lower()
+        keeper_occurrences = [
+            sup
+            for item in rfq.items
+            for sup in (item.suppliers or [])
+            if (sup.get("name") or "").strip().lower() == keep_key
+        ]
+        if not keeper_occurrences:
+            return f"Error: supplier '{keep_name}' not found on this RFQ."
+
+        # Canonical keeper: prefer an occurrence linked to the Suppliers DB.
+        canonical = dict(next(
+            (s for s in keeper_occurrences if s.get("supplier_id")),
+            keeper_occurrences[0],
+        ))
+        canonical["name"] = (keeper_occurrences[0].get("name") or "").strip()
+
+        changed_items = 0
+        dropped_hit = False
+        for item in rfq.items:
+            sups = list(item.suppliers or [])
+            new_sups = []
+            matching = []
+            pos = None
+            for sup in sups:
+                key = (sup.get("name") or "").strip().lower()
+                if key == keep_key or key in drop_keys:
+                    if key in drop_keys:
+                        dropped_hit = True
+                    if pos is None:
+                        pos = len(new_sups)
+                    matching.append(sup)
+                else:
+                    new_sups.append(sup)
+
+            if pos is None:
+                continue
+
+            # Line-local merge: strongest within-line status wins, drops fill
+            # gaps — other lines' quote state is never copied across.
+            line_base = dict(matching[0])
+            for sup in matching[1:]:
+                line_base = _merge_supplier_dicts(line_base, sup)
+
+            # Identity belongs to the keeper; per-line data stays with the item.
+            line_base["name"] = canonical["name"]
+            line_base["supplier_id"] = canonical.get("supplier_id") or line_base.get("supplier_id")
+            if (line_base.get("db_match") in (None, "", "new")) and canonical.get("db_match"):
+                line_base["db_match"] = canonical["db_match"]
+            contacts = list(line_base.get("contacts") or [])
+            seen = set()
+            for c in contacts:
+                if isinstance(c, dict):
+                    ck = c.get("email") or c.get("url") or c.get("name")
+                    if ck:
+                        seen.add(ck)
+            for c in canonical.get("contacts") or []:
+                if isinstance(c, dict):
+                    ck = c.get("email") or c.get("url") or c.get("name")
+                    if ck and ck not in seen:
+                        contacts.append(c)
+                        seen.add(ck)
+            line_base["contacts"] = contacts
+            for f in ("country", "currency", "tier", "category", "source"):
+                if not line_base.get(f):
+                    line_base[f] = canonical.get(f)
+
+            new_sups.insert(pos, line_base)
+            changed_items += 1
+            item.suppliers = new_sups
+            flag_modified(item, "suppliers")
+
+        if not dropped_hit:
+            return f"Error: none of the selected suppliers were found on this RFQ."
+
+        now = _now_iso()
+        history = list(rfq.history or [])
+        history.append({
+            "date": now,
+            "user": user_id,
+            "action": (
+                f"Merged suppliers {', '.join(drop_display)} into "
+                f"{canonical['name']} across {changed_items} item(s)"
+            ),
+        })
+        rfq.history = history
+        rfq.updated_at = _now_dt()
+        session.commit()
+        session.refresh(rfq)
+        return _rfq_to_dict(rfq)
+    except SQLAlchemyError:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 def _select_quote_core(session, rfq, line_item, data):
     """Select/deselect a supplier's quote on a single line item in-place.
 
