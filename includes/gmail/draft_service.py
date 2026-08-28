@@ -149,6 +149,16 @@ def _gmail_create_draft(service, msg) -> dict:
     ).execute()
 
 
+def _normalize_cc(cc: str | None) -> str:
+    """Validate a comma-separated CC list and return the joined header value."""
+    parts = [p.strip() for p in (cc or "").split(",") if p.strip()]
+    for addr in parts:
+        if "@" not in addr:
+            raise ValueError(f"Invalid CC email address: {addr}")
+        check_recipient_allowed(addr)
+    return ", ".join(parts)
+
+
 def create_draft_email(
     user_email: str,
     recipient_email: str,
@@ -159,6 +169,7 @@ def create_draft_email(
     opportunity_id: str | None = None,
     body_plain: str | None = None,
     attachments: list[dict] | None = None,
+    cc: str | None = None,
 ) -> dict:
     """Create a draft email with custom tracking headers.
     
@@ -172,6 +183,7 @@ def create_draft_email(
         opportunity_id: Optional secondary tracking ID (e.g., HubSpot Deal ID)
         body_plain: Plain text version (optional, falls back to html2text)
         attachments: Optional list of {filename, mime_type, data} dicts
+        cc: Optional comma-separated CC recipient list
         
     Returns:
         dict with:
@@ -184,6 +196,7 @@ def create_draft_email(
     """
     try:
         check_recipient_allowed(recipient_email)
+        cc_header = _normalize_cc(cc)
         service = get_gmail_client(user_email)
         
         # Custom tracking headers (immutable — survive subject/body edits)
@@ -194,6 +207,8 @@ def create_draft_email(
         }
         if opportunity_id:
             headers["X-Eagle-Opportunity"] = opportunity_id
+        if cc_header:
+            headers["Cc"] = cc_header
 
         msg = _build_mime_message(
             user_email=user_email,
@@ -268,10 +283,12 @@ def send_email_direct(
     email_type: str = "rfq_outreach",
     opportunity_id: str | None = None,
     attachments: list[dict] | None = None,
+    cc: str | None = None,
 ) -> dict:
     """Send an HTML email directly via Gmail API and track it as sent."""
     try:
         check_recipient_allowed(recipient_email)
+        cc_header = _normalize_cc(cc)
         service = get_gmail_client(user_email)
 
         headers = {
@@ -281,6 +298,8 @@ def send_email_direct(
         }
         if opportunity_id:
             headers["X-Eagle-Opportunity"] = opportunity_id
+        if cc_header:
+            headers["Cc"] = cc_header
 
         msg = _build_mime_message(
             user_email=user_email,

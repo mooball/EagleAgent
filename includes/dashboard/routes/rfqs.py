@@ -2670,6 +2670,7 @@ async def api_create_email_draft(
         recipient_name = body.get("recipient_name", "").strip()
         subject = body.get("subject", "").strip()
         body_html = body.get("body_html", "").strip()
+        cc = body.get("cc", "").strip() or None
         
         # Validate
         if not recipient_email or "@" not in recipient_email:
@@ -2713,6 +2714,7 @@ async def api_create_email_draft(
             email_type="rfq_outreach",  # Can be extended to support other types
             opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal"),
             attachments=attachments,
+            cc=cc,
         )
         
         if draft_result["status"] != "ok":
@@ -2759,6 +2761,7 @@ async def api_send_email_direct(
         recipient_name = body.get("recipient_name", "").strip()
         subject = body.get("subject", "").strip()
         body_html = body.get("body_html", "").strip()
+        cc = body.get("cc", "").strip() or None
 
         if not recipient_email or "@" not in recipient_email:
             return JSONResponse({"status": "error", "message": "Invalid recipient email"}, status_code=400)
@@ -2786,6 +2789,7 @@ async def api_send_email_direct(
             email_type="rfq_outreach",
             opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal"),
             attachments=attachments,
+            cc=cc,
         )
 
         if send_result["status"] != "ok":

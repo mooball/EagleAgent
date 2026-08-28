@@ -61,6 +61,11 @@
                        class="w-full text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-hidden focus:ring-1 focus:ring-blue-500">
             </div>
             <div>
+                <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">CC</label>
+                <input type="text" x-model="emailModal.cc" placeholder="Comma-separated email addresses (optional)"
+                       class="w-full text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-hidden focus:ring-1 focus:ring-blue-500">
+            </div>
+            <div>
                 <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Subject</label>
                 <div class="flex items-center gap-2">
                     <span class="shrink-0 text-sm font-mono font-medium text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2.5 py-2 rounded-lg border border-gray-300 dark:border-gray-600"
@@ -112,7 +117,9 @@
 
         {# Footer — editor mode #}
         <div x-show="!emailModal.isLoading && emailModal.mode === 'editor'" class="flex items-center justify-between px-5 py-3 border-t border-gray-200 dark:border-gray-700 shrink-0 bg-gray-50 dark:bg-gray-800">
-            <span class="text-xs text-gray-400">To: <span x-text="emailModal.recipientEmail" class="font-mono"></span></span>
+            <span class="text-xs text-gray-400">To: <span x-text="emailModal.recipientEmail" class="font-mono"></span>
+                <template x-if="emailModal.cc.trim()"><span> · CC: <span class="font-mono" x-text="emailModal.cc"></span></span></template>
+            </span>
             <div class="flex items-center gap-2">
                 <button @click="emailModal.close()" type="button"
                         class="px-3 py-1.5 rounded text-xs font-medium border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">Cancel</button>

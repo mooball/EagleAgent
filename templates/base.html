@@ -1522,6 +1522,7 @@
                     userEmail: "",
                     recipientEmail: "",
                     recipientName: "",
+                    cc: "",
                     subject: "",
                     bodyHtml: "",
                     composeUrl: null,
@@ -1538,6 +1539,7 @@
                         this.userEmail = userEmail || this.userEmail || "";
                         this.recipientEmail = recipientEmail;
                         this.recipientName = recipientName;
+                        this.cc = "";
                         this.subject = subject || 'Quote Request';
                         this.bodyHtml = this._normalizeBodyHtml(this._withTrackingFooter(bodyHtml || ''));
                         this.mode = 'editor';
@@ -1577,6 +1579,7 @@
                         this.trackingId = "";
                         this.recipientEmail = "";
                         this.recipientName = "";
+                        this.cc = "";
                         this.subject = "";
                         this.bodyHtml = "";
                         this.composeUrl = null;
@@ -1930,6 +1933,7 @@
                                     recipient_name: this.recipientName,
                                     subject: (this.trackingId ? '[' + this.trackingId + '] ' : '') + this.subject,
                                     body_html: bodyHtml,
+                                    cc: this.cc.trim(),
                                     ...this._attachmentPayload(),
                                 }),
                             });
@@ -1966,6 +1970,7 @@
                                     recipient_name: this.recipientName,
                                     subject: (this.trackingId ? '[' + this.trackingId + '] ' : '') + this.subject,
                                     body_html: bodyHtml,
+                                    cc: this.cc.trim(),
                                     ...this._attachmentPayload(),
                                 }),
                             });
