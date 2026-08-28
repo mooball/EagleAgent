@@ -7,9 +7,10 @@ already run (via the background NETSUITE_SYNC_ENABLED loop in main.py).
 Steps:
   1. Prune Checkpoints (keep last 5 per thread — limits DB bloat)
   2. Link Supplier Brands (--since 2d — post-sync linking)
-  3. Categorize Suppliers (--limit 100 — batch of uncategorized)
-  4. Generate Supplier Notes (--limit 100 — research missing notes)
-  5. Update Supplier Embeddings (re-embed any with NULL embedding)
+  3. Scan Supplier Duplicates (all-pairs scan — fresh duplicate candidates)
+  4. Categorize Suppliers (--limit 100 — batch of uncategorized)
+  5. Generate Supplier Notes (--limit 100 — research missing notes)
+  6. Update Supplier Embeddings (re-embed any with NULL embedding)
 
 Usage:
   uv run python -m scripts.nightly_sync
@@ -60,6 +61,12 @@ STEPS = [
         "module": "scripts.link_supplier_brands",
         "args": ["--since", "2d"],
         "description": "Link suppliers to brands from recent transactions",
+    },
+    {
+        "name": "scan_supplier_duplicates",
+        "module": "scripts.scan_supplier_duplicates",
+        "args": [],
+        "description": "Scan all suppliers for duplicate candidates",
     },
     {
         "name": "categorize_suppliers",
