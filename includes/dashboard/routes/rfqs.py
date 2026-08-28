@@ -502,11 +502,23 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             item["selected_supplier"] = selected
             if selected is not None:
                 selected["ns_linked"] = False
+                selected["near_matches"] = []
                 if selected.get("supplier_id"):
                     sup = suppliers.get(str(selected["supplier_id"]))
                     if sup is not None:
                         selected["netsuite_id"] = sup.netsuite_id
                         selected["ns_linked"] = bool(sup.netsuite_id)
+                    from includes.dashboard.supplier_dedup import open_near_miss_pairs
+                    flagged = open_near_miss_pairs(session, selected["supplier_id"])
+                    selected["near_matches"] = [
+                        {
+                            "name": f["name"],
+                            "id": f["id"],
+                            "confidence": round((f.get("confidence") or 0) * 100),
+                            "reasons": f.get("reasons") or [],
+                        }
+                        for f in flagged
+                    ]
 
             # Mandatory-for-sync rules (UI-enforced even if NetSuite doesn't require them).
             # Item match is temporary — lifted once the system auto-creates parts.
@@ -541,6 +553,12 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                 issues.append({
                     "key": "supplier",
                     "label": "Supplier not selected — choose one on the Selection tab",
+                })
+            elif selected.get("near_matches"):
+                issues.append({
+                    "key": "supplier_duplicate",
+                    "label": "Possible duplicate — matches "
+                             + ", ".join(nm["name"] for nm in selected["near_matches"]),
                 })
             if item.get("sale_price") is None:
                 issues.append({
