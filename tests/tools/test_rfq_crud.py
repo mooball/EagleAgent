@@ -466,6 +466,50 @@ class TestAutoQuoteBrand:
         assert result["quote_brand_result"] == "wired"
         assert result["department_result"] == "depts wired"
 
+    def test_classify_brand_near_alternatives_reported(self, db_session):
+        suffix = uuid.uuid4().hex[:6]
+        self._make_brand(db_session, f"Toyzz Parts {suffix}")
+        self._make_brand(db_session, f"Toyzz Industrial {suffix}")
+        rfq = self._make_rfq_with_items(db_session, ["toyzz"])
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session), \
+             patch("includes.tools.product_tools.get_session", return_value=db_session), \
+             patch("includes.tools.rfq_crud._set_quote_brand_from_items_sync", return_value="ok"), \
+             patch("includes.tools.rfq_crud._set_item_departments_sync", return_value="ok"):
+            from includes.tools.rfq_crud import _classify_rfq_items_sync
+            result = _classify_rfq_items_sync(rfq.rfq_number, "tester", search_db=False)
+
+        near = [b for b in result["brand_results"] if b["status"] == "near"]
+        assert len(near) == 1
+        assert near[0]["input"] == "toyzz"
+        assert set(near[0]["alternatives"]) == {f"Toyzz Parts {suffix}", f"Toyzz Industrial {suffix}"}
+
+        db_session.expire_all()
+        stored = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).first()
+        assert stored.brand == "toyzz"  # unchanged — no exact match
+
+    def test_classify_brand_exact_canonicalised(self, db_session):
+        suffix = uuid.uuid4().hex[:6]
+        self._make_brand(db_session, f"Toyzz Parts {suffix}")
+        self._make_brand(db_session, f"Toyzz Parts {suffix} Industrial")
+        rfq = self._make_rfq_with_items(db_session, [f"Toyzz-Parts {suffix}"])
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session), \
+             patch("includes.tools.product_tools.get_session", return_value=db_session), \
+             patch("includes.tools.rfq_crud._set_quote_brand_from_items_sync", return_value="ok"), \
+             patch("includes.tools.rfq_crud._set_item_departments_sync", return_value="ok"):
+            from includes.tools.rfq_crud import _classify_rfq_items_sync
+            result = _classify_rfq_items_sync(rfq.rfq_number, "tester", search_db=False)
+
+        exact = [b for b in result["brand_results"] if b["status"] == "exact"]
+        assert len(exact) == 1
+        assert exact[0]["brand"] == f"Toyzz Parts {suffix}"
+        assert f"Toyzz Parts {suffix} Industrial" in exact[0]["alternatives"]
+
+        db_session.expire_all()
+        stored = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).first()
+        assert stored.brand == f"Toyzz Parts {suffix}"
+
 
 # ---------------------------------------------------------------------------
 # Item departments (Phase 3) — store / edit / validate against the enum

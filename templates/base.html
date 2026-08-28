@@ -4,9 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}EagleAgent{% endblock %}</title>
+    <style>
+        /* Establish cascade-layer order BEFORE any stylesheet loads:
+           daisyUI sits between Tailwind's components and utilities so
+           utility classes (bg-*, text-*, border-*) still win over
+           daisyUI component styles. */
+        @layer theme, base, components, daisyui, utilities;
+    </style>
     <!-- Tailwind CSS: use pre-built file in prod, fall back to CDN for local dev -->
     <link rel="stylesheet" href="/public/tailwind.min.css?v={{ css_version | default('dev') }}"
           onerror="if(!window.__twFallback){window.__twFallback=1;var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4';document.head.appendChild(s);var st=document.createElement('style');st.type='text/tailwindcss';st.textContent='@custom-variant dark (&:where(.dark, .dark *));';document.head.appendChild(st)}">
+    <!-- DaisyUI CSS (tooltips/components — loaded after Tailwind) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5/daisyui.css">
     <script>
         // Restore theme before paint to prevent flash
         if (localStorage.theme === 'dark' || (!localStorage.theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {

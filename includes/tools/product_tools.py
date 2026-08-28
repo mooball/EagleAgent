@@ -905,6 +905,103 @@ def _find_product_by_code(part_number: str, brand: str = None) -> Optional[dict]
         session.close()
 
 
+# Brand names treated as "no brand" during classification — never looked up.
+BRAND_NAME_EXCLUSIONS = ("other", "n/a", "na", "none", "unknown")
+
+
+def _brand_result(status: str, brand=None, alternatives=None) -> dict:
+    return {
+        "status": status,
+        "brand": (
+            {
+                "name": brand.name,
+                "id": str(brand.id),
+                "netsuite_id": brand.netsuite_id,
+            }
+            if brand is not None
+            else None
+        ),
+        "alternatives": alternatives or [],
+    }
+
+
+def match_brands(names: list[str], limit: int = 10) -> dict[str, dict]:
+    """Batch deterministic brand lookup — two queries for any number of names.
+
+    Same semantics as :func:`match_brand` (normalised exact first, then
+    normalised substring), but resolves many names at once. Returns a dict
+    keyed by the exact input name.
+    """
+    session = get_session()
+    try:
+        norms: dict[str, str] = {}
+        for name in names:
+            norm = normalize_part_number(name)
+            if norm and norm not in norms:
+                norms[norm] = name
+        if not norms:
+            return {}
+
+        norm_list = list(norms.keys())
+        # ilike (case-insensitive) keeps parity with the single-name matcher;
+        # normalised names are alphanumeric only so no wildcard injection.
+        exact_rows = (
+            session.query(Brand)
+            .filter(
+                Brand.duplicate_of.is_(None),
+                or_(*[_norm_expr(Brand.name).ilike(n) for n in norm_list]),
+            )
+            .order_by(Brand.name)
+            .all()
+        )
+        conds = [_norm_expr(Brand.name).ilike(f"%{n}%") for n in norm_list]
+        near_rows = (
+            session.query(Brand)
+            .filter(Brand.duplicate_of.is_(None), or_(*conds))
+            .order_by(Brand.name)
+            .limit(max(limit, 1) * len(norm_list))
+            .all()
+        )
+
+        def _nkey(b) -> str:
+            return normalize_part_number(b.name).lower()
+
+        results: dict[str, dict] = {}
+        for norm, name in norms.items():
+            key = norm.lower()
+            exact_matches = [b for b in exact_rows if _nkey(b) == key]
+            near_matches = [b for b in near_rows if key in _nkey(b)]
+            if exact_matches:
+                chosen = exact_matches[0]
+                alternatives = [b.name for b in near_matches if b.id != chosen.id][: limit - 1]
+                results[name] = _brand_result("exact", chosen, alternatives)
+            elif near_matches:
+                results[name] = _brand_result(
+                    "near", None, [b.name for b in near_matches[:limit]]
+                )
+            else:
+                results[name] = _brand_result("none")
+        return results
+    finally:
+        session.close()
+
+
+def match_brand(name: str, limit: int = 10) -> dict:
+    """Deterministic brand lookup for classification.
+
+    Normalised exact equality first (punctuation/case-insensitive), then a
+    normalised substring pass ("toyota" → "Toyota Parts"). Only canonical
+    brands (duplicate_of IS NULL) are considered; ties resolve
+    alphabetically.
+
+    Returns:
+        {"status": "exact" | "near" | "none",
+         "brand": {"name": str, "id": str, "netsuite_id": str} | None,
+         "alternatives": [str, ...]}  # other candidate names
+    """
+    return match_brands([name], limit=limit).get(name) or _brand_result("none")
+
+
 def _find_purchase_history_for_part(part_number: str, limit: int = 20) -> list[dict]:
     """Return structured purchase history per supplier for a part number.
 

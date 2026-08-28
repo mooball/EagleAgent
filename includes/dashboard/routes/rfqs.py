@@ -599,11 +599,51 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
         "departments": _department_options(),
     }
     ctx.update(_rfq_sync_readiness(rfq))
+    _annotate_brand_db_status(rfq)
     if ctx["active_tab"] == "suppliers":
         ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
     if ctx["active_tab"] == "communications":
         ctx.update(_rfq_comms_context(rfq))
     return ctx
+
+
+_BRAND_ALT_DISPLAY_MAX = 3
+
+
+def _annotate_brand_db_status(rfq: dict) -> None:
+    """Tag each item with its brand's database status for the items table.
+
+    Sets on each item dict:
+      - brand_db_status  — 'exact' | 'near' | 'none' (unset if excluded/blank)
+      - brand_db_alternatives — up to 3 candidate names
+      - brand_db_alt_total — total number of candidates found
+    """
+    from includes.tools.product_tools import match_brands, BRAND_NAME_EXCLUSIONS
+
+    items = rfq.get("items") or []
+    if not items:
+        return
+    brands = {
+        (i.get("brand") or "").strip()
+        for i in items
+        if (i.get("brand") or "").strip().lower() not in BRAND_NAME_EXCLUSIONS
+    }
+    brands.discard("")
+    if not brands:
+        return
+    try:
+        lookup = match_brands(sorted(brands))
+    except Exception:
+        return
+    for item in items:
+        brand = (item.get("brand") or "").strip()
+        if not brand or brand not in lookup:
+            continue
+        res = lookup[brand]
+        item["brand_db_status"] = res["status"]
+        alts = res.get("alternatives") or []
+        item["brand_db_alternatives"] = alts[:_BRAND_ALT_DISPLAY_MAX]
+        item["brand_db_alt_total"] = len(alts)
 
 
 # Pipeline markers older than this are considered stale (server restart mid-run)

@@ -169,6 +169,25 @@ def run_classify_sync(rfq_id: str, user_id: str) -> str:
     if unclassifiable:
         lines.append(f"- {len(unclassifiable)} items could not be auto-classified (minimal data)")
 
+    for b in result.get("brand_results", []):
+        if b["status"] == "exact":
+            if b["alternatives"]:
+                lines.append(
+                    f"- Line {b['line']}: brand '{b['input']}' → '{b['brand']}' "
+                    f"(alternatives: {', '.join(b['alternatives'])})"
+                )
+            elif b["input"] != b["brand"]:
+                lines.append(
+                    f"- Line {b['line']}: brand '{b['input']}' canonicalised to '{b['brand']}'"
+                )
+        elif b["status"] == "near":
+            lines.append(
+                f"- Line {b['line']}: brand '{b['input']}' not in DB — "
+                f"possible: {', '.join(b['alternatives'])}"
+            )
+        else:
+            lines.append(f"- Line {b['line']}: brand '{b['input']}' not found in database")
+
     # Step 2: Validate items not in DB
     needs_validation = [
         i for i in to_validate

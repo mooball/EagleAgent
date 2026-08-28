@@ -2391,12 +2391,59 @@ def _classify_rfq_items_sync(
     if class_updates:
         _update_items_bulk_sync(rfq_number, {"items": class_updates}, user_id)
 
+    # Step 1b: Deterministic brand existence check — canonicalise exact
+    # matches, report near-miss alternatives and unknown brands.
+    from includes.tools.product_tools import match_brands, BRAND_NAME_EXCLUSIONS
+
+    brand_results = []
+    brand_updates = []
+    branded_items = [
+        item for item in items
+        if (item.get("brand") or "").strip()
+        and (item.get("brand") or "").strip().lower() not in BRAND_NAME_EXCLUSIONS
+    ]
+    brand_lookup = match_brands(
+        [(i.get("brand") or "").strip() for i in branded_items]
+    )
+    for item in branded_items:
+        line = item["line"]
+        brand = (item.get("brand") or "").strip()
+        bm = brand_lookup.get(brand)
+        if not bm:
+            continue
+        if bm["status"] == "exact":
+            brand_results.append({
+                "line": line, "status": "exact", "input": brand,
+                "brand": bm["brand"]["name"], "alternatives": bm["alternatives"],
+            })
+            if bm["brand"]["name"] != brand:
+                # 'match' is pinned so canonicalising the brand doesn't reset
+                # the item's classification or product link.
+                brand_updates.append({
+                    "line": line, "brand": bm["brand"]["name"],
+                    "match": item.get("match") or "unmatched",
+                })
+        elif bm["status"] == "near":
+            brand_results.append({
+                "line": line, "status": "near", "input": brand,
+                "brand": None, "alternatives": bm["alternatives"],
+            })
+        else:
+            brand_results.append({
+                "line": line, "status": "none", "input": brand,
+                "brand": None, "alternatives": [],
+            })
+    if brand_updates:
+        _update_items_bulk_sync(rfq_number, {"items": brand_updates}, user_id)
+
+    canonical_by_line = {u["line"]: u["brand"] for u in brand_updates}
+
     if search_db and to_validate:
         db_updates = []
         for item in to_validate:
             line = item["line"]
             part_number = item.get("part_number", "")
-            brand = item.get("brand", "")
+            brand = canonical_by_line.get(line) or item.get("brand", "")
             try:
                 product = _find_product_by_code(part_number, brand or None)
             except (KeyError, ValueError, LookupError):
@@ -2427,6 +2474,7 @@ def _classify_rfq_items_sync(
     return {
         "classified": classified,
         "db_matches": db_matches,
+        "brand_results": brand_results,
         "to_validate": to_validate,
         "unclassifiable": unclassifiable,
         "quote_brand_result": quote_brand_result,
