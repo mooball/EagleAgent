@@ -118,7 +118,8 @@ def build_domain_index(session: Session) -> dict[str, list[dict]]:
 
     # 3. Supplier website URLs
     suppliers = session.query(Supplier.id, Supplier.name, Supplier.url).filter(
-        Supplier.url.isnot(None)
+        Supplier.url.isnot(None),
+        Supplier.use_instead.is_(None),
     ).all()
     for s in suppliers:
         domain = extract_domain_from_url(s.url)
@@ -126,7 +127,8 @@ def build_domain_index(session: Session) -> dict[str, list[dict]]:
 
     # 4. Supplier alt_domains
     suppliers_alt = session.query(Supplier.id, Supplier.name, Supplier.alt_domains).filter(
-        Supplier.alt_domains.isnot(None)
+        Supplier.alt_domains.isnot(None),
+        Supplier.use_instead.is_(None),
     ).all()
     for s in suppliers_alt:
         if isinstance(s.alt_domains, list):
@@ -236,9 +238,11 @@ def find_all_matches(
     )
     for c in contacts:
         if c.supplier_id:
-            supplier = session.get(Supplier, c.supplier_id)
+            from includes.dashboard.supplier_dedup import resolve_supplier_id
+            supplier_id = resolve_supplier_id(session, c.supplier_id)
+            supplier = session.get(Supplier, supplier_id)
             if supplier:
-                _add("supplier", c.supplier_id, supplier.name, "exact")
+                _add("supplier", supplier.id, supplier.name, "exact")
         elif c.customer_id:
             customer = session.get(Customer, c.customer_id)
             if customer:
@@ -363,7 +367,9 @@ def save_sender_domain(
         return f"(skipped domain {domain})"
 
     if entity_type == "supplier":
-        supplier = session.query(Supplier).get(entity_id)
+        from includes.dashboard.supplier_dedup import resolve_supplier_id
+        supplier_id = resolve_supplier_id(session, entity_id)
+        supplier = session.query(Supplier).get(supplier_id)
         if not supplier:
             return "(supplier not found)"
         alt_domains = list(supplier.alt_domains or [])

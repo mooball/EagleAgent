@@ -132,7 +132,9 @@ def map_vendor_to_supplier(row: dict) -> dict:
     }
 
 
-# Fields that NetSuite owns — these get overwritten on sync
+# Fields that NetSuite owns — these get overwritten on sync.
+# Deliberately excludes use_instead (merged-duplicate flag) and
+# alt_names/alt_domains (merged data) — a sync must never clobber them.
 NETSUITE_OWNED_FIELDS = {
     "name", "url", "address_1", "address_2", "city", "state",
     "postcode", "country", "notes", "terms", "currency", "hubspot_id",

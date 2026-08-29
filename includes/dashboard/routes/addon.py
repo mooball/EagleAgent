@@ -249,7 +249,9 @@ def get_email_context(body: ContextRequest, user: AddonUser):
         # Supplier
         if tracking.supplier_id:
             try:
-                supplier = session.query(Supplier).get(tracking.supplier_id)
+                from includes.dashboard.supplier_dedup import resolve_supplier_id
+                supplier_id = resolve_supplier_id(session, tracking.supplier_id)
+                supplier = session.query(Supplier).get(supplier_id)
                 if supplier:
                     result.supplier = {
                         "id": str(supplier.id),
@@ -358,7 +360,8 @@ def search_entities(type: str, q: str, user: AddonUser):
             rows = session.execute(
                 text(
                     "SELECT id, name FROM suppliers "
-                    "WHERE LOWER(name) LIKE :q ORDER BY name LIMIT 10"
+                    "WHERE LOWER(name) LIKE :q AND use_instead IS NULL "
+                    "ORDER BY name LIMIT 10"
                 ),
                 {"q": f"%{q.lower()}%"},
             ).mappings().all()
@@ -514,6 +517,10 @@ def link_email(body: LinkEmailRequest, user: AddonUser):
                     {"status": "error", "message": "Invalid entity ID"},
                     status_code=400,
                 )
+
+            # A flagged duplicate must never be linked — land on the survivor
+            from includes.dashboard.supplier_dedup import resolve_supplier_id
+            supplier_id = resolve_supplier_id(session, supplier_id)
 
             supplier = session.query(Supplier).get(supplier_id)
             if not supplier:

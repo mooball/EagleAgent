@@ -1,0 +1,19 @@
+{% if results %}
+<div class="mt-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden max-h-64 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
+    {% for s in results %}
+    <button type="button"
+            @click="$dispatch('pick-supplier', { id: '{{ s.id }}', name: '{{ s.name | replace("'", "\\'") }}' })"
+            class="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center justify-between gap-2">
+        <span class="text-sm text-gray-900 dark:text-gray-100">{{ s.name }}</span>
+        <span class="text-[10px] shrink-0 px-1.5 py-0.5 rounded
+            {% if s.duplicate %}bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200
+            {% elif s.netsuite_id %}bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300
+            {% else %}bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400{% endif %}">
+            {% if s.duplicate %}duplicate{% else %}{{ s.netsuite_id or s.source }}{% endif %}
+        </span>
+    </button>
+    {% endfor %}
+</div>
+{% elif q and q | length >= 2 %}
+<div class="mt-1 text-xs text-gray-400 dark:text-gray-500 px-1">No suppliers match "{{ q }}".</div>
+{% endif %}

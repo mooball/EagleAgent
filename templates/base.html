@@ -4,9 +4,25 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}EagleAgent{% endblock %}</title>
+    <style>
+        /* Establish cascade-layer order BEFORE any stylesheet loads:
+           daisyUI sits between Tailwind's components and utilities so
+           utility classes (bg-*, text-*, border-*) still win over
+           daisyUI component styles. */
+        @layer theme, base, components, daisyui, utilities;
+    </style>
     <!-- Tailwind CSS: use pre-built file in prod, fall back to CDN for local dev -->
     <link rel="stylesheet" href="/public/tailwind.min.css?v={{ css_version | default('dev') }}"
           onerror="if(!window.__twFallback){window.__twFallback=1;var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4';document.head.appendChild(s);var st=document.createElement('style');st.type='text/tailwindcss';st.textContent='@custom-variant dark (&:where(.dark, .dark *));';document.head.appendChild(st)}">
+    <!-- DaisyUI CSS (tooltips/components — loaded after Tailwind) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5/daisyui.css">
+    <style>
+        /* Keep DaisyUI tooltips above sticky table headers (z-10) */
+        .tooltip:before,
+        .tooltip:after {
+            z-index: 60;
+        }
+    </style>
     <script>
         // Restore theme before paint to prevent flash
         if (localStorage.theme === 'dark' || (!localStorage.theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
@@ -1376,6 +1392,7 @@
                     {key: 'department', label: 'Department set'},
                     {key: 'cost', label: 'Cost price set'},
                     {key: 'supplier', label: 'Supplier selected'},
+                    {key: 'supplier_duplicate', label: 'Not a known duplicate'},
                     {key: 'sale', label: 'Sale price set'},
                 ],
                 syncModal: { open: false, line: null, item: null },
@@ -1505,6 +1522,7 @@
                     userEmail: "",
                     recipientEmail: "",
                     recipientName: "",
+                    cc: "",
                     subject: "",
                     bodyHtml: "",
                     composeUrl: null,
@@ -1521,6 +1539,7 @@
                         this.userEmail = userEmail || this.userEmail || "";
                         this.recipientEmail = recipientEmail;
                         this.recipientName = recipientName;
+                        this.cc = "";
                         this.subject = subject || 'Quote Request';
                         this.bodyHtml = this._normalizeBodyHtml(this._withTrackingFooter(bodyHtml || ''));
                         this.mode = 'editor';
@@ -1560,6 +1579,7 @@
                         this.trackingId = "";
                         this.recipientEmail = "";
                         this.recipientName = "";
+                        this.cc = "";
                         this.subject = "";
                         this.bodyHtml = "";
                         this.composeUrl = null;
@@ -1913,6 +1933,7 @@
                                     recipient_name: this.recipientName,
                                     subject: (this.trackingId ? '[' + this.trackingId + '] ' : '') + this.subject,
                                     body_html: bodyHtml,
+                                    cc: this.cc.trim(),
                                     ...this._attachmentPayload(),
                                 }),
                             });
@@ -1949,6 +1970,7 @@
                                     recipient_name: this.recipientName,
                                     subject: (this.trackingId ? '[' + this.trackingId + '] ' : '') + this.subject,
                                     body_html: bodyHtml,
+                                    cc: this.cc.trim(),
                                     ...this._attachmentPayload(),
                                 }),
                             });
@@ -2625,7 +2647,7 @@
         },
 
         toggle(key) {
-            if (!this.emailMap[key]) return;
+            if (!(key in this.emailMap)) return;
             const idx = this.selected.indexOf(key);
             if (idx >= 0) this.selected.splice(idx, 1);
             else this.selected.push(key);

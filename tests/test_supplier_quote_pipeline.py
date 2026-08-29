@@ -287,6 +287,49 @@ class TestApplyQuoteData:
     @patch("includes.tools.rfq_crud._add_supplier_sync")
     @patch("includes.tools.rfq_crud._update_supplier_sync")
     @patch("includes.tools.rfq_crud._get_rfq_dict_sync")
+    def test_quote_number_and_date_written_to_meta(self, mock_get_rfq, mock_update, mock_add, mock_meta):
+        from includes.tools.supplier_quote_pipeline import _apply_quote_data
+        mock_get_rfq.return_value = self._mock_rfq()
+
+        quote_data = {
+            "quotes": [{"item_line": 1, "price": 42.50}],
+            "quote_number": "Q-2345",
+            "quote_date": "2026-08-12",
+        }
+        actions = _apply_quote_data("RFQ-001", "Acme Corp", quote_data, "test@test.com")
+        mock_meta.assert_called_once()
+        meta_call = mock_meta.call_args[0]
+        assert meta_call[0] == "RFQ-001"
+        assert meta_call[1]["quote_number"] == "Q-2345"
+        assert meta_call[1]["quote_date"] == "2026-08-12"
+        assert any("Q-2345" in a for a in actions)
+        assert any("2026-08-12" in a for a in actions)
+
+    @patch("includes.tools.rfq_crud._set_supplier_meta_sync")
+    @patch("includes.tools.rfq_crud._add_supplier_sync")
+    @patch("includes.tools.rfq_crud._update_supplier_sync")
+    @patch("includes.tools.rfq_crud._get_rfq_dict_sync")
+    def test_quote_date_falls_back_to_email_date(self, mock_get_rfq, mock_update, mock_add, mock_meta):
+        from includes.tools.supplier_quote_pipeline import _apply_quote_data
+        mock_get_rfq.return_value = self._mock_rfq()
+
+        quote_data = {
+            "quotes": [{"item_line": 1, "price": 42.50}],
+            "quote_number": "Q-999",
+        }
+        actions = _apply_quote_data(
+            "RFQ-001", "Acme Corp", quote_data, "test@test.com",
+            email_date="2026-08-27",
+        )
+        meta_call = mock_meta.call_args[0]
+        assert meta_call[1]["quote_number"] == "Q-999"
+        assert meta_call[1]["quote_date"] == "2026-08-27"
+        assert any("2026-08-27" in a for a in actions)
+
+    @patch("includes.tools.rfq_crud._set_supplier_meta_sync")
+    @patch("includes.tools.rfq_crud._add_supplier_sync")
+    @patch("includes.tools.rfq_crud._update_supplier_sync")
+    @patch("includes.tools.rfq_crud._get_rfq_dict_sync")
     def test_skips_missing_price(self, mock_get_rfq, mock_update, mock_add, mock_meta):
         from includes.tools.supplier_quote_pipeline import _apply_quote_data
         mock_get_rfq.return_value = self._mock_rfq()

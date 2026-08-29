@@ -1,8 +1,8 @@
 import pytest
 from datetime import date
 from unittest.mock import MagicMock, patch
-from includes.tools.product_tools import _do_product_search, _do_part_purchase_history, _do_search_purchase_history, search_products, part_purchase_history, search_purchase_history
-from includes.dashboard.models import Product, Supplier, Transaction
+from includes.tools.product_tools import _do_product_search, _do_part_purchase_history, _do_search_purchase_history, search_products, part_purchase_history, search_purchase_history, _flagged_supplier_targets, match_brand
+from includes.dashboard.models import Product, Supplier, Transaction, Brand
 
 @pytest.fixture
 def mock_session():
@@ -264,6 +264,180 @@ async def test_async_part_purchase_history_tool(mock_session):
 
     result = await part_purchase_history.ainvoke({"part_number": "XYZ"})
     assert "No products found" in result
+
+
+class _FakeQuery:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class TestFlaggedSupplierTargets:
+
+    def test_maps_flagged_supplier_to_target(self):
+        import uuid as _uuid
+        sid, tid = _uuid.uuid4(), _uuid.uuid4()
+        target = MagicMock()
+        target.id = tid
+        target.name = "Survivor Pty Ltd"
+
+        session = MagicMock()
+        session.query.side_effect = [
+            _FakeQuery([(sid, tid)]),
+            _FakeQuery([target]),
+        ]
+        out = _flagged_supplier_targets(session, [sid])
+        assert out[sid] == (tid, "Survivor Pty Ltd")
+
+    def test_empty_when_no_flagged_rows(self):
+        import uuid as _uuid
+        session = MagicMock()
+        session.query.side_effect = [_FakeQuery([])]
+        assert _flagged_supplier_targets(session, [_uuid.uuid4()]) == {}
+
+    def test_empty_on_error(self):
+        import uuid as _uuid
+        session = MagicMock()
+        session.query.side_effect = Exception("boom")
+        assert _flagged_supplier_targets(session, [_uuid.uuid4()]) == {}
+
+
+class TestMatchBrand:
+    """Deterministic brand lookup used by Classify & Validate."""
+
+    @pytest.fixture
+    def db_session(self):
+        import uuid as _uuid
+        from sqlalchemy import create_engine, event
+        from sqlalchemy.orm import sessionmaker
+        from includes.dashboard.database import _sync_url
+
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _brand(self, session, name, duplicate_of=None):
+        import uuid as _uuid
+        b = Brand(netsuite_id=f"NS-{_uuid.uuid4().hex[:8]}", name=name,
+                  duplicate_of=duplicate_of)
+        session.add(b)
+        session.flush()
+        return b
+
+    def test_exact_single(self, db_session):
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:6]
+        self._brand(db_session, f"Toyzz Parts {suffix}")
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            result = match_brand(f"Toyzz Parts {suffix}")
+        assert result["status"] == "exact"
+        assert result["brand"]["name"] == f"Toyzz Parts {suffix}"
+        assert result["alternatives"] == []
+
+    def test_punctuation_normalised_exact(self, db_session):
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:6]
+        self._brand(db_session, f"Toyzz Parts {suffix}")
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            result = match_brand(f"TOYZZ-PARTS{suffix}")
+        assert result["status"] == "exact"
+        assert result["brand"]["name"] == f"Toyzz Parts {suffix}"
+
+    def test_exact_with_alternatives(self, db_session):
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:6]
+        self._brand(db_session, f"Toyzz {suffix}")
+        self._brand(db_session, f"Toyzz {suffix} Parts")
+        self._brand(db_session, f"Toyzz {suffix} Industrial")
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            result = match_brand(f"Toyzz {suffix}")
+        assert result["status"] == "exact"
+        assert result["brand"]["name"] == f"Toyzz {suffix}"
+        assert f"Toyzz {suffix} Parts" in result["alternatives"]
+        assert f"Toyzz {suffix} Industrial" in result["alternatives"]
+
+    def test_near_only(self, db_session):
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:6]
+        self._brand(db_session, f"Toyzz Parts {suffix}")
+        self._brand(db_session, f"Toyzz Industrial {suffix}")
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            result = match_brand("toyzz")
+        assert result["status"] == "near"
+        assert result["brand"] is None
+        assert set(result["alternatives"]) == {f"Toyzz Parts {suffix}", f"Toyzz Industrial {suffix}"}
+
+    def test_none(self, db_session):
+        import uuid as _uuid
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            result = match_brand(f"ZzzNotABrand{_uuid.uuid4().hex[:6]}")
+        assert result["status"] == "none"
+        assert result["brand"] is None
+        assert result["alternatives"] == []
+
+    def test_duplicate_of_excluded(self, db_session):
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:6]
+        canonical = self._brand(db_session, f"Toyzz {suffix}")
+        self._brand(db_session, f"Toyzz Dup {suffix}", duplicate_of=canonical.id)
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            result = match_brand(f"Toyzz {suffix}")
+        assert result["status"] == "exact"
+        assert result["brand"]["name"] == f"Toyzz {suffix}"
+        assert all("Dup" not in a for a in result["alternatives"])
+
+    def test_match_brands_batch_mixed(self, db_session):
+        import uuid as _uuid
+        from includes.tools.product_tools import match_brands
+        suffix = _uuid.uuid4().hex[:6]
+        self._brand(db_session, f"Toyzz {suffix}")
+        self._brand(db_session, f"Toyzz {suffix} Parts")
+        self._brand(db_session, f"Toyzz {suffix} Industrial")
+        names = [
+            f"Toyzz {suffix}",              # exact + alternatives
+            "toyzz",                        # near (substring only)
+            f"Zzz{suffix}",                 # none
+            f"TOYZZ {suffix}",              # exact via punctuation normalisation
+        ]
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            results = match_brands(names)
+        assert set(results) == set(names)
+        assert results[f"Toyzz {suffix}"]["status"] == "exact"
+        assert results[f"Toyzz {suffix}"]["brand"]["name"] == f"Toyzz {suffix}"
+        assert f"Toyzz {suffix} Industrial" in results[f"Toyzz {suffix}"]["alternatives"]
+        assert results["toyzz"]["status"] == "near"
+        assert set(results["toyzz"]["alternatives"]) == {
+            f"Toyzz {suffix}", f"Toyzz {suffix} Parts", f"Toyzz {suffix} Industrial",
+        }
+        assert results[f"Zzz{suffix}"]["status"] == "none"
+        assert results[f"Zzz{suffix}"]["alternatives"] == []
+        assert results[f"TOYZZ {suffix}"]["status"] == "exact"
+        assert results[f"TOYZZ {suffix}"]["brand"]["name"] == f"Toyzz {suffix}"
+
+    def test_match_brands_empty_and_blank(self, db_session):
+        import uuid as _uuid
+        from includes.tools.product_tools import match_brands
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            assert match_brands([]) == {}
+            assert match_brands(["   ", "!!!"]) == {}
 
 
 class TestSearchPurchaseHistory:

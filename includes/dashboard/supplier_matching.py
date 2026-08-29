@@ -12,7 +12,7 @@ import logging
 import re
 import unicodedata
 
-from includes.dashboard.database import _extract_domain
+from includes.dashboard.database import GENERIC_SLD_LABELS, _extract_domain
 from includes.dashboard.models import SupplierMatchKey
 
 logger = logging.getLogger(__name__)
@@ -85,6 +85,25 @@ def normalize_supplier_name(name: str | None) -> str:
     return " ".join(_join_single_letters(tokens))
 
 
+# Currency annotations are stripped from name keys so "Envirostraw (USD)"
+# matches "EnviroStraw Pty Ltd" — but two records carrying *different*
+# currencies are deliberately separate NetSuite vendors, never duplicates.
+# 'euro' and 'cad' are excluded: both are common words in real trading names.
+_CURRENCY_CODES = {
+    "aud", "usd", "eur", "nzd", "gbp", "sgd", "jpy", "chf", "hkd", "myr",
+}
+_CURRENCY_TOKEN_RE = re.compile(
+    r"\b(" + "|".join(sorted(_CURRENCY_CODES)) + r")\b", re.IGNORECASE
+)
+
+
+def currency_tokens(name: str | None) -> set[str]:
+    """Currency codes appearing as whole words in a supplier name."""
+    if not name:
+        return set()
+    return {m.lower() for m in _CURRENCY_TOKEN_RE.findall(name)}
+
+
 # ---------------------------------------------------------------------------
 # Domain keys (free-mail excluded, TLD stripped)
 # ---------------------------------------------------------------------------
@@ -111,7 +130,12 @@ def domain_key(value: str | None) -> str | None:
     d = _extract_domain(raw)
     if not d or d in FREEMAIL_DOMAINS:
         return None
-    return d.split(".")[0] or None
+    stem = d.split(".")[0]
+    # A public-suffix label as the stem means the domain was mis-split;
+    # keys like 'com' or 'gov' would false-match hundreds of suppliers.
+    if not stem or stem in GENERIC_SLD_LABELS:
+        return None
+    return stem
 
 
 # ---------------------------------------------------------------------------

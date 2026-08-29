@@ -169,6 +169,25 @@ def run_classify_sync(rfq_id: str, user_id: str) -> str:
     if unclassifiable:
         lines.append(f"- {len(unclassifiable)} items could not be auto-classified (minimal data)")
 
+    for b in result.get("brand_results", []):
+        if b["status"] == "exact":
+            if b["alternatives"]:
+                lines.append(
+                    f"- Line {b['line']}: brand '{b['input']}' → '{b['brand']}' "
+                    f"(alternatives: {', '.join(b['alternatives'])})"
+                )
+            elif b["input"] != b["brand"]:
+                lines.append(
+                    f"- Line {b['line']}: brand '{b['input']}' canonicalised to '{b['brand']}'"
+                )
+        elif b["status"] == "near":
+            lines.append(
+                f"- Line {b['line']}: brand '{b['input']}' not in DB — "
+                f"possible: {', '.join(b['alternatives'])}"
+            )
+        else:
+            lines.append(f"- Line {b['line']}: brand '{b['input']}' not found in database")
+
     # Step 2: Validate items not in DB
     needs_validation = [
         i for i in to_validate
@@ -240,6 +259,11 @@ def run_previous_suppliers_sync(rfq_id: str, user_id: str, line_numbers: list[in
         for line, names in sorted(by_line.items()):
             lines.append(f"- Line {line}: {', '.join(names)}")
         text = "\n".join(lines)
+
+    skipped = result.get("skipped_duplicates") or []
+    if skipped:
+        text += (f"\n- Skipped {len(skipped)} known duplicate supplier(s) "
+                 f"(never added to RFQs): {', '.join(skipped)}")
 
     # Cross-apply within groups
     cross = _cross_apply_suppliers_sync(rfq_id, user_id)

@@ -138,8 +138,8 @@ class TestMatchSupplierDomainFirst:
             country="AU",
             session=db_session,
         )
-        assert result is not None
-        assert result.id == sup.id
+        assert result.supplier is not None
+        assert result.supplier.id == sup.id
 
     def test_domain_match_subdomain(self, db_session):
         """Subdomain difference shouldn't matter — root domains match."""
@@ -159,8 +159,8 @@ class TestMatchSupplierDomainFirst:
             country="AU",
             session=db_session,
         )
-        assert result is not None
-        assert result.id == sup.id
+        assert result.supplier is not None
+        assert result.supplier.id == sup.id
 
     def test_no_domain_match_falls_through_to_name(self, db_session):
         """When domains don't match, domain-first should not return the wrong supplier."""
@@ -181,7 +181,10 @@ class TestMatchSupplierDomainFirst:
             session=db_session,
         )
         # Should NOT match — domain mismatch rejects the name-based candidate too
-        assert result is None
+        assert result.supplier is None
+        # ...and the rejection is preserved as a near-miss for review
+        assert result.near_misses
+        assert result.near_misses[0]["rejected_because"] == "domain_mismatch"
 
     def test_domain_match_via_contact_url(self, db_session):
         """Match via a URL in the supplier's contacts array."""
@@ -202,8 +205,30 @@ class TestMatchSupplierDomainFirst:
             country="AU",
             session=db_session,
         )
-        assert result is not None
-        assert result.id == sup.id
+        assert result.supplier is not None
+        assert result.supplier.id == sup.id
+
+    def test_domain_match_rejects_unrelated_names(self, db_session):
+        """Same domain but clearly different businesses → reject + near-miss."""
+        sup = Supplier(
+            id=uuid.uuid4(),
+            name="TNT International (Use S13261)",
+            url="https://www.tnt.com",
+            country="AU",
+            source="netsuite",
+        )
+        db_session.add(sup)
+        db_session.flush()
+
+        result = match_supplier(
+            "TNT Express (ZZ Test)",
+            url="https://www.tnt.com/express/en_au/",
+            country="AU",
+            session=db_session,
+        )
+        assert result.supplier is None
+        assert result.near_misses
+        assert result.near_misses[0]["rejected_because"] == "domain_match_names_too_different"
 
 
 # ============================================================================
@@ -223,8 +248,8 @@ class TestMatchSupplierNameVerification:
         db_session.flush()
 
         result = match_supplier("Sydney Tools Pty Ltd", country="AU", session=db_session)
-        assert result is not None
-        assert result.id == sup.id
+        assert result.supplier is not None
+        assert result.supplier.id == sup.id
 
     def test_name_match_different_country_rejected(self, db_session):
         """Name match + different country → reject."""
@@ -238,7 +263,9 @@ class TestMatchSupplierNameVerification:
         db_session.flush()
 
         result = match_supplier("Global Supply Co", country="AU", session=db_session)
-        assert result is None
+        assert result.supplier is None
+        assert result.near_misses
+        assert result.near_misses[0]["rejected_because"] == "country_mismatch"
 
     def test_name_match_domain_mismatch_rejected(self, db_session):
         """Name matches but domains are different → reject."""
@@ -259,7 +286,9 @@ class TestMatchSupplierNameVerification:
             session=db_session,
         )
         # Domains differ → domain-first won't match; name match found but domain mismatch rejects it.
-        assert result is None
+        assert result.supplier is None
+        assert result.near_misses
+        assert result.near_misses[0]["rejected_because"] == "domain_mismatch"
 
     def test_no_corroborating_attrs_containment_accepted(self, db_session):
         """No URL or country on either side, but name containment → accept."""
@@ -272,8 +301,8 @@ class TestMatchSupplierNameVerification:
         db_session.flush()
 
         result = match_supplier("Parker Hannifin Australia", session=db_session)
-        assert result is not None
-        assert result.id == sup.id
+        assert result.supplier is not None
+        assert result.supplier.id == sup.id
 
     def test_no_match_returns_none(self, db_session):
         """Completely unknown supplier → None."""
@@ -283,7 +312,8 @@ class TestMatchSupplierNameVerification:
             country="NZ",
             session=db_session,
         )
-        assert result is None
+        assert result.supplier is None
+        assert result.near_misses == []
 
     def test_match_no_url_same_country(self, db_session):
         """No URLs on either side, same country → match by name containment."""
@@ -297,8 +327,8 @@ class TestMatchSupplierNameVerification:
         db_session.flush()
 
         result = match_supplier("Total Tools", country="AU", session=db_session)
-        assert result is not None
-        assert result.id == sup.id
+        assert result.supplier is not None
+        assert result.supplier.id == sup.id
 
 
 # ============================================================================
@@ -342,3 +372,37 @@ class TestMatchSupplierByName:
     def test_whitespace_name_returns_none(self, db_session):
         result = match_supplier_by_name("   ", session=db_session)
         assert result is None
+
+
+# ============================================================================
+# S3 — flagged (use_instead) suppliers are invisible to matching
+# ============================================================================
+
+class TestMatchingSkipsFlagged:
+
+    def _pair(self, db_session):
+        primary = Supplier(
+            name="Acme Pty Ltd", netsuite_id="NS-1", source="netsuite",
+            url="https://www.acme.com.au",
+        )
+        db_session.add(primary)
+        db_session.flush()
+        dup = Supplier(
+            name="Acme Pty Ltd", netsuite_id=None, source="web",
+            url="https://www.acme.com.au", use_instead=primary.id,
+        )
+        db_session.add(dup)
+        db_session.flush()
+        return primary, dup
+
+    def test_match_supplier_by_name_skips_flagged(self, db_session):
+        primary, _dup = self._pair(db_session)
+        result = match_supplier_by_name("Acme Pty Ltd", session=db_session)
+        assert result is not None and result.id == primary.id
+
+    def test_match_supplier_domain_first_skips_flagged(self, db_session):
+        primary, _dup = self._pair(db_session)
+        result = match_supplier(
+            "Acme Pty Ltd", url="https://www.acme.com.au", session=db_session
+        )
+        assert result.supplier is not None and result.supplier.id == primary.id

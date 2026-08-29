@@ -54,9 +54,30 @@ class TestScorePair:
     def test_identical_name_with_disagreeing_domains_is_review(self):
         info = PairInfo(name_keys_equal=True, domains_a={"signsofsafety"}, domains_b={"eurosigns"})
         confidence, reasons, tier = score_pair(info)
-        assert confidence == 0.6
+        assert confidence == 0.5
         assert "domain_disagreement" in reasons
         assert tier == "review"
+
+    def test_similar_name_with_disagreeing_domains_is_capped(self):
+        info = PairInfo(name_sim=0.9, domains_a={"yalematerials"}, domains_b={"materialshandling"})
+        confidence, reasons, tier = score_pair(info)
+        assert confidence == 0.5
+        assert "domain_disagreement" in reasons
+        assert tier == "review"
+
+    def test_currency_mismatch_is_review(self):
+        info = PairInfo(name_keys_equal=True, currency_a={"gbp"}, currency_b={"eur"})
+        confidence, reasons, tier = score_pair(info)
+        assert confidence == 0.5
+        assert "currency_mismatch" in reasons
+        assert tier == "review"
+
+    def test_same_currency_does_not_cap(self):
+        info = PairInfo(name_keys_equal=True, currency_a={"usd"}, currency_b={"usd"})
+        confidence, reasons, tier = score_pair(info)
+        assert confidence == 0.98
+        assert "currency_mismatch" not in reasons
+        assert tier == "certain"
 
     def test_identical_name_with_shared_domain_is_certain(self):
         info = PairInfo(name_keys_equal=True, shared_domains={"acmeparts"},

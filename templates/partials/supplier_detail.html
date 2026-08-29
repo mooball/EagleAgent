@@ -57,12 +57,56 @@
                 {{ supplier.url }}
             </a>
             {% endif %}
+            {% if user and user.role == 'Admin' and not supplier.use_instead %}
+            <button @click="$dispatch('open-nominate')"
+                    class="mr-1 px-3 py-1.5 text-xs font-medium rounded-md border border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-900/30"
+                    title="Mark this supplier as a duplicate of another supplier">
+                Mark as duplicate
+            </button>
+            {% endif %}
             <button x-show="!editing" @click="editing = true"
                     class="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400" title="Edit">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
             </button>
         </div>
     </div>
+
+    {% if user and user.role == 'Admin' and not supplier.use_instead %}
+    <!-- Mark-as-duplicate nomination panel -->
+    <div class="mb-6"
+         x-data="{ nominate: false, picked: null, pickedName: '' }"
+         @open-nominate.window="nominate = true; $nextTick(() => { $refs.nomInput && $refs.nomInput.focus() })"
+         @pick-supplier.window="if ($event.detail.id === '{{ supplier.id }}') { picked = null; pickedName = ''; if ($refs.nomInput) { $refs.nomInput.value = ''; $refs.nomInput.focus(); } } else { picked = $event.detail.id; pickedName = $event.detail.name; }">
+        <div x-show="nominate" x-cloak
+             class="bg-white dark:bg-gray-800 rounded-lg border border-amber-200 dark:border-amber-700 p-4">
+            <div class="flex items-center justify-between mb-2">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Mark as duplicate</h3>
+                <button type="button" @click="nominate = false; picked = null; pickedName = ''"
+                        class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" aria-label="Close">✕</button>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                Find the supplier this one duplicates, then confirm. The pair is added to the
+                duplicates queue for review and merge.
+            </p>
+            <input type="text" name="q" x-ref="nomInput" placeholder="Search suppliers…"
+                   hx-get="/partial/suppliers/search" hx-trigger="input changed delay:250ms"
+                   hx-vals='{"exclude": "{{ supplier.id }}"}'
+                   hx-target="#nom-search-results" hx-swap="innerHTML"
+                   class="w-full px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <div id="nom-search-results"></div>
+            <div id="nom-status" class="mt-3"></div>
+            <form hx-post="/admin/duplicates/manual" hx-target="#nom-status" hx-swap="innerHTML"
+                  class="mt-3 flex items-center gap-3">
+                <input type="hidden" name="a_id" value="{{ supplier.id }}">
+                <input type="hidden" name="b_id" :value="picked">
+                <button type="submit" :disabled="!picked"
+                        class="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed">
+                    Confirm — <span x-text="pickedName || 'pick a supplier above'"></span> is a duplicate
+                </button>
+            </form>
+        </div>
+    </div>
+    {% endif %}
 
     <div class="flex flex-col lg:flex-row gap-6">
         <!-- Details card -->

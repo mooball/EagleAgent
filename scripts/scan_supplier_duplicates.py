@@ -27,6 +27,7 @@ from sqlalchemy import text
 from includes.dashboard.database import get_session
 from includes.dashboard.models import Supplier, SupplierDuplicateCandidate
 from includes.dashboard.supplier_dedup import pick_keep_remove
+from includes.dashboard.supplier_matching import currency_tokens
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -47,6 +48,8 @@ class PairInfo:
     domains_b: set = field(default_factory=set)
     country_a: str | None = None
     country_b: str | None = None
+    currency_a: set = field(default_factory=set)
+    currency_b: set = field(default_factory=set)
 
 
 def scan_pairs(session, trigram_floor: float = TRIGRAM_FLOOR) -> dict[tuple, PairInfo]:
@@ -91,17 +94,20 @@ def scan_pairs(session, trigram_floor: float = TRIGRAM_FLOOR) -> dict[tuple, Pai
     for row in domain_rows:
         pairs[(row.id_a, row.id_b)].shared_domains.add(row.domain_key)
 
-    # One batched lookup for countries and per-side domain keys
+    # One batched lookup for countries, currencies and per-side domain keys
     ids = {i for pair in pairs for i in pair}
     if ids:
         rows = session.execute(
-            text("SELECT id, country FROM suppliers WHERE id = ANY(:ids)"),
+            text("SELECT id, country, name FROM suppliers WHERE id = ANY(:ids)"),
             {"ids": list(ids)},
         ).fetchall()
         countries = {r.id: r.country for r in rows}
+        currencies = {r.id: currency_tokens(r.name) for r in rows}
         for (id_a, id_b), info in pairs.items():
             info.country_a = countries.get(id_a)
             info.country_b = countries.get(id_b)
+            info.currency_a = currencies.get(id_a, set())
+            info.currency_b = currencies.get(id_b, set())
 
         dk_rows = session.execute(
             text("""
@@ -127,19 +133,17 @@ def score_pair(info: PairInfo) -> tuple[float, list[str], str]:
     the words reversed is 1.0 (identical trigram sets), so trigram-only
     similarity is capped below the 'identical key' confidence.
 
-    Note on domains: an identical normalised name with *disagreeing*
-    domains (both sides have non-free domains and none overlap) is
-    conflicting evidence — capped below 'certain' for human review.
+    Note on domains: two businesses that each publish a *different*
+    non-free domain are almost never the same company, however similar the
+    names read. That contradiction caps confidence and forces human review
+    regardless of which evidence produced the pair.
     """
     sim = info.name_sim
     shared = bool(info.shared_domains)
     domains_disagree = bool(info.domains_a and info.domains_b and not shared)
 
     if info.name_keys_equal:
-        if domains_disagree:
-            confidence, reasons = 0.6, ["normalised_name_identical", "domain_disagreement"]
-        else:
-            confidence, reasons = 0.98, ["normalised_name_identical"]
+        confidence, reasons = 0.98, ["normalised_name_identical"]
     elif shared and sim is not None:
         confidence, reasons = max(0.75, min(sim, 0.92)), ["shared_domain", f"name_similarity:{sim:.2f}"]
     elif shared:
@@ -149,21 +153,28 @@ def score_pair(info: PairInfo) -> tuple[float, list[str], str]:
     else:
         confidence, reasons = 0.0, ["unknown"]
 
+    if domains_disagree:
+        confidence = min(confidence, 0.5)
+        reasons.append("domain_disagreement")
+
+    # Different currency annotations mark deliberately separate vendor records
+    if info.currency_a and info.currency_b and not (info.currency_a & info.currency_b):
+        confidence = min(confidence, 0.5)
+        reasons.append("currency_mismatch")
+
     ca, cb = (info.country_a or "").strip().upper(), (info.country_b or "").strip().upper()
     if ca and cb and ca != cb:
         confidence = min(confidence, 0.55)
         reasons.append("country_mismatch")
 
-    tier = "certain" if (
-        info.name_keys_equal and not domains_disagree
-    ) or (shared and sim and sim >= CERTAIN_SIM) else "review"
+    tier = candidate_tier(confidence, reasons)
     return round(confidence, 3), reasons, tier
 
 
 def candidate_tier(confidence: float | None, reasons: list | None) -> str:
     """Tier for a stored candidate row — 'certain' is bulk-confirmable."""
     reasons = reasons or []
-    if "domain_disagreement" in reasons:
+    if "domain_disagreement" in reasons or "currency_mismatch" in reasons:
         return "review"
     if "normalised_name_identical" in reasons:
         return "certain"
@@ -279,6 +290,15 @@ def _upsert_candidates(session, pairs: dict, min_confidence: float, user: str = 
             created_at=now,
         ))
         created += 1
+
+    # Proposed rows for pairs the scan no longer produces at all (scoring
+    # changed, names edited, one side merged away) would otherwise keep
+    # their stale confidence in the queue forever.
+    current = {frozenset(pair) for pair in pairs}
+    for key, row in existing.items():
+        if row.status == "proposed" and key not in current:
+            session.delete(row)
+            removed += 1
 
     return {"created": created, "updated": updated, "removed": removed, "skipped": skipped}
 

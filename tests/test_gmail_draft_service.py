@@ -105,6 +105,88 @@ class TestCreateDraftEmail:
         assert result["status"] == "error"
         assert "Failed to create draft" in result["message"]
 
+    @patch("includes.gmail.draft_service.get_gmail_client")
+    @patch("includes.gmail.draft_service.check_recipient_allowed")
+    @patch("includes.gmail.draft_service._save_draft_to_tracking")
+    def test_cc_header_included_in_draft(self, mock_save, mock_check, mock_get_client):
+        """CC list lands as a Cc: MIME header on the draft."""
+        import base64 as _b64
+        from email import message_from_bytes
+
+        mock_check.return_value = None
+        captured = {}
+        mock_service = MagicMock()
+        mock_create = MagicMock()
+        mock_create.execute.return_value = {
+            "id": "draft-cc", "message": {"id": "msg-cc", "threadId": "thread-cc"},
+        }
+
+        def _create(userId, body):
+            captured["raw"] = body["message"]["raw"]
+            return mock_create
+
+        mock_service.users.return_value.drafts.return_value.create.side_effect = _create
+        mock_get_client.return_value = mock_service
+
+        from includes.gmail.draft_service import create_draft_email
+        result = create_draft_email(
+            user_email="staff@eagle.com",
+            recipient_email="supplier@acme.com",
+            subject="Quote Request",
+            body_html="<p>Please quote</p>",
+            rfq_id="RFQ-2026-0042",
+            cc="ops@acme.com, manager@acme.com",
+        )
+        assert result["status"] == "ok"
+
+        msg = message_from_bytes(_b64.urlsafe_b64decode(captured["raw"]))
+        assert msg["Cc"] == "ops@acme.com, manager@acme.com"
+        # To + both CC addresses all validated
+        assert mock_check.call_count == 3
+
+    @patch("includes.gmail.draft_service.check_recipient_allowed")
+    def test_invalid_cc_rejected(self, mock_check):
+        """Malformed CC addresses fail before the Gmail API is called."""
+        from includes.gmail.draft_service import create_draft_email
+        mock_check.return_value = None
+        result = create_draft_email(
+            user_email="staff@eagle.com",
+            recipient_email="supplier@acme.com",
+            subject="Test",
+            body_html="<p>Test</p>",
+            rfq_id="RFQ-2026-0042",
+            cc="not-an-email",
+        )
+        assert result["status"] == "error"
+
+
+class TestNormalizeCc:
+    def test_empty(self):
+        from includes.gmail.draft_service import _normalize_cc
+        assert _normalize_cc(None) == ""
+        assert _normalize_cc("") == ""
+        assert _normalize_cc("  , , ") == ""
+
+    @patch("includes.gmail.draft_service.check_recipient_allowed")
+    def test_comma_list_normalised(self, mock_check):
+        from includes.gmail.draft_service import _normalize_cc
+        mock_check.return_value = None
+        assert _normalize_cc(" a@x.com , b@y.com ") == "a@x.com, b@y.com"
+
+    @patch("includes.gmail.draft_service.check_recipient_allowed")
+    def test_invalid_raises(self, mock_check):
+        from includes.gmail.draft_service import _normalize_cc
+        mock_check.return_value = None
+        with pytest.raises(ValueError):
+            _normalize_cc("a@x.com, not-an-email")
+
+    @patch("includes.gmail.draft_service.check_recipient_allowed")
+    def test_blocked_domain_propagates(self, mock_check):
+        from includes.gmail.draft_service import _normalize_cc, RecipientBlockedError
+        mock_check.side_effect = RecipientBlockedError("Blocked")
+        with pytest.raises(RecipientBlockedError):
+            _normalize_cc("bad@blocked.com")
+
 
 # ---------------------------------------------------------------------------
 # MIME builder: cid conversion, nesting, header injection

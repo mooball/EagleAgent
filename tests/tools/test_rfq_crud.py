@@ -75,6 +75,173 @@ class TestSerializedRfqWrite:
 
 
 # ---------------------------------------------------------------------------
+# RFQ-local supplier merge (suppliers tab)
+# ---------------------------------------------------------------------------
+
+class TestMergeRfqSuppliers:
+    @pytest.fixture
+    def db_session(self):
+        """DB session with SAVEPOINT so commits inside helpers don't end the
+        outer transaction — everything rolls back at the end."""
+        from includes.dashboard.database import _sync_url
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        from sqlalchemy import event
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _make_rfq(self, session, items_suppliers, supplier_meta=None) -> RFQ:
+        """items_suppliers: list of list-of-supplier-dicts per line."""
+        rfq = RFQ(
+            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            customer="Test Customer",
+            created_by="tester",
+            created_date=datetime.now(timezone.utc),
+            supplier_meta=supplier_meta,
+        )
+        session.add(rfq)
+        session.flush()
+        for line, sups in enumerate(items_suppliers, start=1):
+            session.add(RFQItem(
+                rfq_id=rfq.id,
+                line=line,
+                input_description=f"desc {line}",
+                suppliers=[dict(s) for s in sups],
+            ))
+        session.flush()
+        return rfq
+
+    def _merge(self, db_session, rfq, keep, drops):
+        from includes.tools.rfq_crud import _merge_rfq_suppliers_sync
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            return _merge_rfq_suppliers_sync(rfq.rfq_number, keep, drops, "tester")
+
+    def _line_suppliers(self, db_session, rfq, line):
+        db_session.expire_all()
+        item = db_session.query(RFQItem).filter(
+            RFQItem.rfq_id == rfq.id, RFQItem.line == line
+        ).first()
+        return item.suppliers
+
+    def test_replaces_dropped_names_and_preserves_order(self, db_session):
+        rfq = self._make_rfq(db_session, [
+            [{"name": "ABC Pty Ltd", "status": "shortlisted",
+              "contacts": [{"email": "a@x.com"}], "quote_cost": 120},
+             {"name": "Other Co", "status": "shortlisted"}],
+            [{"name": "A.B.C. Pty Ltd", "status": "shortlisted",
+              "notes": "web sourced", "contacts": [{"email": "w@x.com"}]}],
+            [{"name": "Other Co", "status": "shortlisted"}],
+        ])
+        result = self._merge(db_session, rfq, "ABC Pty Ltd", ["A.B.C. Pty Ltd"])
+        assert isinstance(result, dict)
+
+        line1 = self._line_suppliers(db_session, rfq, 1)
+        assert [s["name"] for s in line1] == ["ABC Pty Ltd", "Other Co"]  # order kept
+        line2 = self._line_suppliers(db_session, rfq, 2)
+        assert len(line2) == 1
+        merged = line2[0]
+        assert merged["name"] == "ABC Pty Ltd"
+        assert merged["status"] == "shortlisted"
+        assert merged["notes"] == "web sourced"
+        assert {c["email"] for c in merged["contacts"]} == {"w@x.com", "a@x.com"}
+        line3 = self._line_suppliers(db_session, rfq, 3)
+        assert [s["name"] for s in line3] == ["Other Co"]
+
+        rfq_row = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        assert any("Merged suppliers" in h["action"] for h in (rfq_row.history or []))
+
+    def test_does_not_copy_selection_status_across_lines(self, db_session):
+        rfq = self._make_rfq(db_session, [
+            [{"name": "ABC", "status": "shortlisted", "quote_status": "selected",
+              "quote_cost": 100}],
+            [{"name": "A.B.C.", "status": "shortlisted", "lead_time": 5}],
+        ])
+        self._merge(db_session, rfq, "ABC", ["A.B.C."])
+
+        line1 = self._line_suppliers(db_session, rfq, 1)
+        assert line1[0]["quote_status"] == "selected"
+        line2 = self._line_suppliers(db_session, rfq, 2)
+        assert line2[0]["name"] == "ABC"
+        # Line 2's own data is preserved — line 1's selection is NOT copied across.
+        assert line2[0].get("quote_status") is None
+        assert line2[0]["lead_time"] == 5
+        assert "quote_cost" not in line2[0] or line2[0].get("quote_cost") is None
+
+    def test_collapses_duplicates_on_same_item(self, db_session):
+        rfq = self._make_rfq(db_session, [
+            [{"name": "ABC", "status": "shortlisted", "quote_status": "quoted",
+              "quote_cost": 120},
+             {"name": "A.B.C.", "status": "shortlisted", "quote_status": "shortlisted"},
+             {"name": "Other Co", "status": "shortlisted"}],
+        ])
+        self._merge(db_session, rfq, "ABC", ["A.B.C."])
+
+        line1 = self._line_suppliers(db_session, rfq, 1)
+        assert [s["name"] for s in line1] == ["ABC", "Other Co"]
+        assert line1[0]["quote_status"] == "quoted"  # strongest kept
+        assert line1[0]["quote_cost"] == 120
+
+    def test_prefers_db_linked_identity(self, db_session):
+        linked_id = str(uuid.uuid4())
+        rfq = self._make_rfq(db_session, [
+            [{"name": "ABC", "status": "shortlisted", "supplier_id": linked_id,
+              "db_match": "exact"}],
+            [{"name": "A.B.C.", "status": "shortlisted", "db_match": "new"}],
+        ])
+        self._merge(db_session, rfq, "ABC", ["A.B.C."])
+
+        line2 = self._line_suppliers(db_session, rfq, 2)
+        assert line2[0]["name"] == "ABC"
+        assert line2[0]["supplier_id"] == linked_id
+        assert line2[0]["db_match"] == "exact"
+
+    def test_folds_supplier_meta_into_keeper(self, db_session):
+        rfq = self._make_rfq(
+            db_session,
+            [
+                [{"name": "ABC", "status": "shortlisted"}],
+                [{"name": "A.B.C.", "status": "shortlisted"}],
+            ],
+            supplier_meta={
+                "ABC": {"quote_number": "Q-KEEP", "notes": "keep notes"},
+                "A.B.C.": {"quote_number": "Q-DROP", "quote_date": "2026-08-12",
+                            "shipping_cost": 25},
+            },
+        )
+        self._merge(db_session, rfq, "ABC", ["A.B.C."])
+
+        db_session.expire_all()
+        stored = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        meta = stored.supplier_meta or {}
+        assert "A.B.C." not in meta
+        assert meta["ABC"]["quote_number"] == "Q-KEEP"  # keeper wins
+        assert meta["ABC"]["quote_date"] == "2026-08-12"  # drop fills gap
+        assert meta["ABC"]["shipping_cost"] == 25
+        assert meta["ABC"]["notes"] == "keep notes"
+
+    def test_errors(self, db_session):
+        rfq = self._make_rfq(db_session, [
+            [{"name": "ABC", "status": "shortlisted"}],
+        ])
+        assert isinstance(self._merge(db_session, rfq, "ABC", []), str)
+        assert isinstance(self._merge(db_session, rfq, "ABC", ["ABC"]), str)
+        assert isinstance(self._merge(db_session, rfq, "XYZ", ["ABC"]), str)
+        assert isinstance(self._merge(db_session, rfq, "ABC", ["Not Here"]), str)
+
+
+# ---------------------------------------------------------------------------
 # Quote brand (custbodyquote_brand on the future NetSuite Quote)
 # ---------------------------------------------------------------------------
 
@@ -465,6 +632,50 @@ class TestAutoQuoteBrand:
         mock_set_depts.assert_called_once_with(rfq.rfq_number, "tester")
         assert result["quote_brand_result"] == "wired"
         assert result["department_result"] == "depts wired"
+
+    def test_classify_brand_near_alternatives_reported(self, db_session):
+        suffix = uuid.uuid4().hex[:6]
+        self._make_brand(db_session, f"Toyzz Parts {suffix}")
+        self._make_brand(db_session, f"Toyzz Industrial {suffix}")
+        rfq = self._make_rfq_with_items(db_session, ["toyzz"])
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session), \
+             patch("includes.tools.product_tools.get_session", return_value=db_session), \
+             patch("includes.tools.rfq_crud._set_quote_brand_from_items_sync", return_value="ok"), \
+             patch("includes.tools.rfq_crud._set_item_departments_sync", return_value="ok"):
+            from includes.tools.rfq_crud import _classify_rfq_items_sync
+            result = _classify_rfq_items_sync(rfq.rfq_number, "tester", search_db=False)
+
+        near = [b for b in result["brand_results"] if b["status"] == "near"]
+        assert len(near) == 1
+        assert near[0]["input"] == "toyzz"
+        assert set(near[0]["alternatives"]) == {f"Toyzz Parts {suffix}", f"Toyzz Industrial {suffix}"}
+
+        db_session.expire_all()
+        stored = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).first()
+        assert stored.brand == "toyzz"  # unchanged — no exact match
+
+    def test_classify_brand_exact_canonicalised(self, db_session):
+        suffix = uuid.uuid4().hex[:6]
+        self._make_brand(db_session, f"Toyzz Parts {suffix}")
+        self._make_brand(db_session, f"Toyzz Parts {suffix} Industrial")
+        rfq = self._make_rfq_with_items(db_session, [f"Toyzz-Parts {suffix}"])
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session), \
+             patch("includes.tools.product_tools.get_session", return_value=db_session), \
+             patch("includes.tools.rfq_crud._set_quote_brand_from_items_sync", return_value="ok"), \
+             patch("includes.tools.rfq_crud._set_item_departments_sync", return_value="ok"):
+            from includes.tools.rfq_crud import _classify_rfq_items_sync
+            result = _classify_rfq_items_sync(rfq.rfq_number, "tester", search_db=False)
+
+        exact = [b for b in result["brand_results"] if b["status"] == "exact"]
+        assert len(exact) == 1
+        assert exact[0]["brand"] == f"Toyzz Parts {suffix}"
+        assert f"Toyzz Parts {suffix} Industrial" in exact[0]["alternatives"]
+
+        db_session.expire_all()
+        stored = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).first()
+        assert stored.brand == f"Toyzz Parts {suffix}"
 
 
 # ---------------------------------------------------------------------------
@@ -923,4 +1134,136 @@ class TestItemDepartmentAutoSet:
             result = _set_item_departments_sync(rfq.rfq_number, "tester")
 
         assert result is None
+
+
+class TestSwapSupplier:
+    """'Use instead' — replace a near-miss supplier on an RFQ line."""
+
+    @pytest.fixture
+    def db_session(self):
+        from includes.dashboard.database import _sync_url
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        from sqlalchemy import event
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _setup(self, db_session):
+        from includes.dashboard.models import RFQ, RFQItem, Supplier, Contact
+        rfq = RFQ(
+            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            customer="Test Customer", created_by="tester",
+            created_date=datetime.now(timezone.utc),
+        )
+        db_session.add(rfq)
+        db_session.flush()
+
+        primary = Supplier(name="TNT Express", netsuite_id="NS-6819", source="netsuite")
+        web = Supplier(name="TNT Express (ZZ Test)", netsuite_id=None, source="web")
+        db_session.add_all([primary, web])
+        db_session.flush()
+        db_session.add(Contact(
+            supplier_id=primary.id, label="Main", fullname="Jane",
+            email="jane@tnt.com", isinactive=False,
+        ))
+        db_session.flush()
+
+        item = RFQItem(
+            rfq_id=rfq.id, line=1, input_description="Cutterhead",
+            suppliers=[{
+                "supplier_id": str(web.id),
+                "name": web.name,
+                "db_match": "near_miss",
+                "near_miss_names": ["TNT Express"],
+                "status": "shortlisted",
+                "quote_cost": 123.45,
+                "quote_status": "quoted",
+                "notes": "keep me",
+            }],
+        )
+        db_session.add(item)
+        db_session.flush()
+        return rfq, item, primary, web
+
+    def test_swap_replaces_entry_and_preserves_quote(self, db_session):
+        from includes.tools.rfq_crud import _swap_supplier_sync
+        rfq, item, primary, web = self._setup(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = _swap_supplier_sync(rfq.rfq_number, {
+                "line": 1, "from_id": str(web.id), "to_id": str(primary.id),
+            }, "tester")
+
+        assert isinstance(result, dict)
+        suppliers = result["items"][0]["suppliers"]
+        assert len(suppliers) == 1
+        s = suppliers[0]
+        assert s["name"] == "TNT Express"
+        assert s["supplier_id"] == str(primary.id)
+        assert s["db_match"] == "exact"
+        assert s["quote_cost"] == 123.45
+        assert s["quote_status"] == "quoted"
+        assert s["notes"] == "keep me"
+        assert s["status"] == "shortlisted"
+        assert "jane@tnt.com" in str(s.get("contacts"))
+        # the flagged web record itself is untouched
+        assert web.id is not None
+
+    def test_swap_missing_target_errors(self, db_session):
+        from includes.tools.rfq_crud import _swap_supplier_sync
+        rfq, item, primary, web = self._setup(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = _swap_supplier_sync(rfq.rfq_number, {
+                "line": 1, "from_id": str(web.id), "to_id": str(uuid.uuid4()),
+            }, "tester")
+
+        assert isinstance(result, str)
+        assert "replacement supplier not found" in result
+
+    def test_swap_missing_from_id_errors(self, db_session):
+        from includes.tools.rfq_crud import _swap_supplier_sync
+        rfq, item, primary, web = self._setup(db_session)
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = _swap_supplier_sync(rfq.rfq_number, {
+                "line": 1, "from_id": str(uuid.uuid4()), "to_id": str(primary.id),
+            }, "tester")
+
+        assert isinstance(result, str)
+        assert "supplier not found on this line" in result
+
+    def test_db_linked_flagged_supplier_gets_near_miss(self, db_session):
+        from includes.tools.rfq_crud import _add_supplier_sync
+        from includes.dashboard.models import SupplierDuplicateCandidate
+        rfq, item, primary, web = self._setup(db_session)
+        db_session.add(SupplierDuplicateCandidate(
+            primary_id=primary.id, duplicate_id=web.id,
+            source="auto", status="proposed", confidence=0.7,
+            reasons=["domain_mismatch"],
+        ))
+        db_session.flush()
+
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            result = _add_supplier_sync(rfq.rfq_number, {"line": 1, "suppliers": [
+                {"name": web.name, "supplier_id": str(web.id)},
+            ]}, "tester")
+
+        assert isinstance(result, dict)
+        entry = [s for s in result["items"][0]["suppliers"] if s["name"] == web.name][0]
+        assert entry["db_match"] == "near_miss"
+        assert entry["near_miss_names"] == ["TNT Express"]
+
 

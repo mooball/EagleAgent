@@ -433,6 +433,88 @@ async def admin_duplicates_scan(request: Request, user: dict = require_admin) ->
     ))
 
 
+@router.post("/admin/duplicates/manual")
+async def admin_duplicates_manual_nominate(request: Request, user: dict = require_admin) -> HTMLResponse:
+    """Nominate a duplicate pair by hand (source='manual', status='proposed')."""
+    import html
+    from includes.dashboard.supplier_dedup import pick_keep_remove
+
+    form = await request.form()
+    try:
+        id_a = uuid.UUID(str(form.get("a_id", "")))
+        id_b = uuid.UUID(str(form.get("b_id", "")))
+    except ValueError:
+        return HTMLResponse(_dedup_status_html("error", "Invalid supplier reference."))
+
+    if id_a == id_b:
+        return HTMLResponse(_dedup_status_html("error", "A supplier cannot be a duplicate of itself."))
+
+    session = _helpers.get_session()
+    try:
+        sup_a = session.get(Supplier, id_a)
+        sup_b = session.get(Supplier, id_b)
+        if not sup_a or not sup_b:
+            return HTMLResponse(_dedup_status_html("error", "Supplier not found."))
+
+        # NetSuite always wins the primary slot — a web record can never
+        # be kept over a NetSuite one, so never propose it that way.
+        primary, duplicate = pick_keep_remove(sup_a, sup_b)
+
+        row = (
+            session.query(SupplierDuplicateCandidate)
+            .filter(
+                ((SupplierDuplicateCandidate.primary_id == primary.id)
+                 & (SupplierDuplicateCandidate.duplicate_id == duplicate.id))
+                | ((SupplierDuplicateCandidate.primary_id == duplicate.id)
+                   & (SupplierDuplicateCandidate.duplicate_id == primary.id))
+            )
+            .first()
+        )
+
+        now = datetime.now(timezone.utc)
+        who = user.get("identifier", "admin")
+        if row:
+            if row.status == "proposed":
+                return HTMLResponse(_dedup_status_html(
+                    "error", "This pair is already in the duplicates queue."
+                ))
+            # Re-open a previously decided pair as a fresh nomination
+            row.status = "proposed"
+            row.source = "manual"
+            row.confidence = 1.0
+            row.reasons = ["manual"]
+            row.primary_id = primary.id
+            row.duplicate_id = duplicate.id
+            row.created_by = who
+            row.created_at = now
+            row.decided_by = None
+            row.decided_at = None
+        else:
+            session.add(SupplierDuplicateCandidate(
+                primary_id=primary.id,
+                duplicate_id=duplicate.id,
+                source="manual",
+                status="proposed",
+                confidence=1.0,
+                reasons=["manual"],
+                created_by=who,
+                created_at=now,
+            ))
+        session.commit()
+        label_a = html.escape(primary.name or "?")
+        label_b = html.escape(duplicate.name or "?")
+    finally:
+        session.close()
+
+    return HTMLResponse(_dedup_status_html(
+        "ok",
+        f"Duplicate nominated: <strong>{label_a}</strong> ↔ <strong>{label_b}</strong>. "
+        '<a hx-get="/partial/admin/duplicates" hx-target="#main-content" '
+        'hx-push-url="/admin/duplicates" class="underline font-medium">'
+        "Review in the duplicates queue</a>",
+    ))
+
+
 @router.post("/admin/duplicates/{candidate_id}/merge")
 async def admin_duplicates_merge_candidate(
     request: Request, candidate_id: str, user: dict = require_admin
@@ -1060,7 +1142,11 @@ async def api_search_entities(request: Request, type: str, q: str, user: dict = 
     try:
         if type == "supplier":
             rows = session.execute(
-                text("SELECT id, name FROM suppliers WHERE LOWER(name) LIKE :q ORDER BY name LIMIT 10"),
+                text(
+                    "SELECT id, name FROM suppliers "
+                    "WHERE LOWER(name) LIKE :q AND use_instead IS NULL "
+                    "ORDER BY name LIMIT 10"
+                ),
                 {"q": f"%{q.lower()}%"}
             ).mappings().all()
             return JSONResponse({"results": [{"id": str(r["id"]), "name": r["name"]} for r in rows]})
@@ -1198,6 +1284,15 @@ async def api_link_email(request: Request, user: dict = Depends(_helpers.require
             entity_id = body.get("entity_id")
             if not entity_id:
                 return JSONResponse({"status": "error", "message": "No supplier selected"})
+
+            # A flagged duplicate must never be linked — land on the survivor
+            from includes.dashboard.supplier_dedup import resolve_supplier_id
+            try:
+                supplier_uuid = uuid.UUID(str(entity_id))
+            except ValueError:
+                return JSONResponse({"status": "error", "message": "Invalid supplier id"})
+            entity_id = str(resolve_supplier_id(session, supplier_uuid))
+
             # Link this email (and thread) to the supplier
             session.execute(
                 text("""

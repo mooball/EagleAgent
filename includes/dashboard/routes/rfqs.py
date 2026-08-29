@@ -209,10 +209,50 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                             if str(matched.id) not in used_ids:
                                 sup["is_new"] = True
 
+        # Near-miss details for the RFQ supplier popup (display only)
+        near_ids = {
+            sup["supplier_id"]
+            for item in rfq.get("items", [])
+            for sup in item.get("suppliers", [])
+            if sup.get("db_match") == "near_miss" and sup.get("supplier_id")
+        }
+        near_matches_by_sup: dict[str, list] = {}
+        if near_ids:
+            from includes.dashboard.models import SupplierDuplicateCandidate
+            cands = (
+                session.query(SupplierDuplicateCandidate)
+                .filter(SupplierDuplicateCandidate.duplicate_id.in_(list(near_ids)))
+                .all()
+            )
+            primary_ids = {c.primary_id for c in cands}
+            primaries = {
+                s.id: s
+                for s in session.query(Supplier).filter(Supplier.id.in_(list(primary_ids))).all()
+            }
+            for c in cands:
+                p = primaries.get(c.primary_id)
+                if not p:
+                    continue
+                near_matches_by_sup.setdefault(str(c.duplicate_id), []).append({
+                    "id": str(p.id),
+                    "name": p.name,
+                    "url": p.url,
+                    "country": p.country,
+                    "confidence": round((c.confidence or 0) * 100),
+                    "reasons": c.reasons or [],
+                })
+
         for item in rfq.get("items", []):
             for sup in item.get("suppliers", []):
                 if not sup.get("supplier_id"):
                     sup["is_new"] = True
+                # Track B icons: a linked record is an exact DB match unless the
+                # creation flow already marked it near_miss. Legacy rows lack the
+                # key entirely — default them so the UI can render the blue icon.
+                if "db_match" not in sup:
+                    sup["db_match"] = "exact" if sup.get("supplier_id") else None
+                if sup.get("db_match") == "near_miss" and sup.get("supplier_id"):
+                    sup["near_matches"] = near_matches_by_sup.get(sup["supplier_id"], [])
     finally:
         session.close()
 
@@ -421,6 +461,8 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
     Enriches each item dict with:
       - product_ns_id        — NetSuite internal ID of the linked product's item
       - product_part_number  — linked product's part number
+      - brand_ns_id          — NetSuite internal ID of the item's brand
+                               (exact local-DB match only)
       - sync_status          — 'ready' | 'needs_item' | 'no_match'
       - selected_supplier    — the supplier dict with quote_status == 'selected'
       - missing_department / missing_cost / missing_sale / missing_supplier
@@ -447,6 +489,21 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             rows = session.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()
             suppliers = {str(s.id): s for s in rows}
 
+        # Brand NetSuite linkage — exact local-DB matches only; near-misses
+        # and unknown brands are treated as not-in-NetSuite.
+        from includes.tools.product_tools import match_brands, BRAND_NAME_EXCLUSIONS
+        brand_names = sorted({
+            (i.get("brand") or "").strip()
+            for i in items
+            if (i.get("brand") or "").strip().lower() not in BRAND_NAME_EXCLUSIONS
+        })
+        brand_lookup = {}
+        if brand_names:
+            try:
+                brand_lookup = match_brands(brand_names)
+            except Exception:
+                brand_lookup = {}
+
         ready_count = 0
         for item in items:
             product = None
@@ -455,6 +512,18 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             item["product_ns_id"] = product.netsuite_id if product else None
             item["product_part_number"] = product.part_number if product else None
 
+            brand_name = (item.get("brand") or "").strip()
+            item["brand_is_excluded"] = bool(brand_name) and brand_name.lower() in BRAND_NAME_EXCLUSIONS
+            if brand_name:
+                bm = brand_lookup.get(brand_name)
+                item["brand_ns_id"] = (
+                    bm["brand"].get("netsuite_id")
+                    if bm and bm["status"] == "exact" and bm.get("brand")
+                    else None
+                )
+            else:
+                item["brand_ns_id"] = None
+
             selected = next(
                 (s for s in (item.get("suppliers") or []) if s.get("quote_status") == "selected"),
                 None,
@@ -462,11 +531,23 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             item["selected_supplier"] = selected
             if selected is not None:
                 selected["ns_linked"] = False
+                selected["near_matches"] = []
                 if selected.get("supplier_id"):
                     sup = suppliers.get(str(selected["supplier_id"]))
                     if sup is not None:
                         selected["netsuite_id"] = sup.netsuite_id
                         selected["ns_linked"] = bool(sup.netsuite_id)
+                    from includes.dashboard.supplier_dedup import open_near_miss_pairs
+                    flagged = open_near_miss_pairs(session, selected["supplier_id"])
+                    selected["near_matches"] = [
+                        {
+                            "name": f["name"],
+                            "id": f["id"],
+                            "confidence": round((f.get("confidence") or 0) * 100),
+                            "reasons": f.get("reasons") or [],
+                        }
+                        for f in flagged
+                    ]
 
             # Mandatory-for-sync rules (UI-enforced even if NetSuite doesn't require them).
             # Item match is temporary — lifted once the system auto-creates parts.
@@ -501,6 +582,12 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                 issues.append({
                     "key": "supplier",
                     "label": "Supplier not selected — choose one on the Selection tab",
+                })
+            elif selected.get("near_matches"):
+                issues.append({
+                    "key": "supplier_duplicate",
+                    "label": "Possible duplicate — matches "
+                             + ", ".join(nm["name"] for nm in selected["near_matches"]),
                 })
             if item.get("sale_price") is None:
                 issues.append({
@@ -541,11 +628,51 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
         "departments": _department_options(),
     }
     ctx.update(_rfq_sync_readiness(rfq))
+    _annotate_brand_db_status(rfq)
     if ctx["active_tab"] == "suppliers":
         ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
     if ctx["active_tab"] == "communications":
         ctx.update(_rfq_comms_context(rfq))
     return ctx
+
+
+_BRAND_ALT_DISPLAY_MAX = 3
+
+
+def _annotate_brand_db_status(rfq: dict) -> None:
+    """Tag each item with its brand's database status for the items table.
+
+    Sets on each item dict:
+      - brand_db_status  — 'exact' | 'near' | 'none' (unset if excluded/blank)
+      - brand_db_alternatives — up to 3 candidate names
+      - brand_db_alt_total — total number of candidates found
+    """
+    from includes.tools.product_tools import match_brands, BRAND_NAME_EXCLUSIONS
+
+    items = rfq.get("items") or []
+    if not items:
+        return
+    brands = {
+        (i.get("brand") or "").strip()
+        for i in items
+        if (i.get("brand") or "").strip().lower() not in BRAND_NAME_EXCLUSIONS
+    }
+    brands.discard("")
+    if not brands:
+        return
+    try:
+        lookup = match_brands(sorted(brands))
+    except Exception:
+        return
+    for item in items:
+        brand = (item.get("brand") or "").strip()
+        if not brand or brand not in lookup:
+            continue
+        res = lookup[brand]
+        item["brand_db_status"] = res["status"]
+        alts = res.get("alternatives") or []
+        item["brand_db_alternatives"] = alts[:_BRAND_ALT_DISPLAY_MAX]
+        item["brand_db_alt_total"] = len(alts)
 
 
 # Pipeline markers older than this are considered stale (server restart mid-run)
@@ -1370,6 +1497,56 @@ async def partial_rfq_delete_item(request: Request, rfq_id: str, line: int,
     rfq = result
     _enrich_rfq_supplier_contacts(rfq)
     return _render_rfq_detail_partial_response(request, user, rfq)
+
+
+@router.post("/partial/rfqs/{rfq_id}/swap-supplier")
+async def partial_rfq_swap_supplier(request: Request, rfq_id: str,
+                                    user: dict = Depends(require_user)):
+    """Replace a near-miss supplier with the surviving record on one line."""
+    form = await request.form()
+    try:
+        line_num = int(form.get("line", 0))
+    except (TypeError, ValueError):
+        return HTMLResponse("<p>Invalid line number.</p>", status_code=400)
+
+    from includes.tools.rfq_crud import _swap_supplier_sync
+    data = {
+        "line": line_num,
+        "from_id": (form.get("from_id") or "").strip(),
+        "to_id": (form.get("to_id") or "").strip(),
+    }
+    user_ident = user.get("identifier", "dashboard")
+    result = await asyncio.to_thread(_swap_supplier_sync, rfq_id, data, user_ident)
+    if isinstance(result, str):
+        return HTMLResponse(f"<p>{result}</p>", status_code=400)
+    rfq = result
+    _enrich_rfq_supplier_contacts(rfq)
+    return _render_rfq_detail_partial_response(request, user, rfq)
+
+
+@router.post("/partial/rfqs/{rfq_id}/merge-suppliers")
+async def partial_rfq_merge_suppliers(request: Request, rfq_id: str,
+                                      user: dict = Depends(require_user)):
+    """Merge selected suppliers on the RFQ (RFQ-local cleanup only)."""
+    form = await request.form()
+    keep = (form.get("keep") or "").strip()
+    try:
+        drops = [d.strip() for d in form.getlist("drops") if d and d.strip()]
+    except AttributeError:
+        drops = [v.strip() for k, v in form.multi_items() if k == "drops" and v and v.strip()]
+    if not keep or not drops:
+        return HTMLResponse("<p>Select at least two suppliers to merge.</p>", status_code=400)
+
+    from includes.tools.rfq_crud import _merge_rfq_suppliers_sync
+    result = await asyncio.to_thread(
+        _merge_rfq_suppliers_sync, rfq_id, keep, drops,
+        user.get("identifier", "dashboard"),
+    )
+    if isinstance(result, str):
+        return HTMLResponse(f"<p>{result}</p>", status_code=400)
+    rfq = result
+    _enrich_rfq_supplier_contacts(rfq)
+    return _render_rfq_detail_partial_response(request, user, rfq, default_tab="suppliers")
 
 
 @router.post("/partial/rfqs/{rfq_id}/bulk-update-items")
@@ -2493,6 +2670,7 @@ async def api_create_email_draft(
         recipient_name = body.get("recipient_name", "").strip()
         subject = body.get("subject", "").strip()
         body_html = body.get("body_html", "").strip()
+        cc = body.get("cc", "").strip() or None
         
         # Validate
         if not recipient_email or "@" not in recipient_email:
@@ -2536,6 +2714,7 @@ async def api_create_email_draft(
             email_type="rfq_outreach",  # Can be extended to support other types
             opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal"),
             attachments=attachments,
+            cc=cc,
         )
         
         if draft_result["status"] != "ok":
@@ -2582,6 +2761,7 @@ async def api_send_email_direct(
         recipient_name = body.get("recipient_name", "").strip()
         subject = body.get("subject", "").strip()
         body_html = body.get("body_html", "").strip()
+        cc = body.get("cc", "").strip() or None
 
         if not recipient_email or "@" not in recipient_email:
             return JSONResponse({"status": "error", "message": "Invalid recipient email"}, status_code=400)
@@ -2609,6 +2789,7 @@ async def api_send_email_direct(
             email_type="rfq_outreach",
             opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal"),
             attachments=attachments,
+            cc=cc,
         )
 
         if send_result["status"] != "ok":
