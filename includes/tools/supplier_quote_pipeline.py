@@ -492,6 +492,10 @@ def _interpret_quote_sync(rfq_id: str, supplier_name: str, content_bundle: str) 
       - quotes: [{item_line, confidence, price, currency, lead_time}, ...]
       - shipping: {cost, currency} or None
       - declined_items: [line_numbers]
+      - quote_number: str or None — the supplier's quote reference
+        (typically the PDF filename or a header on the document)
+      - quote_date: str or None — the date stated on the quote document
+        (YYYY-MM-DD)
       - notes: str
       - terms: str
       - warnings: [str]
@@ -546,6 +550,8 @@ Return ONLY valid JSON in this exact format:
     {{"item_line": 1, "confidence": "high", "price": 42.50, "currency": "AUD", "lead_time": "2 weeks", "part_number": "SP-1234"}},
   ],
   "shipping": {{"cost": 25.00, "currency": "AUD"}},
+  "quote_number": "Q-2026-0812",
+  "quote_date": "2026-08-12",
   "declined_items": [2],
   "notes": "Volume discount available",
   "terms": "Net 30",
@@ -557,6 +563,8 @@ Rules:
 - `item_line` must match a line number from the RFQ items list.
 - `price` is the unit price (not total).
 - `currency` defaults to "AUD" if not specified in the email.
+- `quote_number` is the supplier's own quote reference number if one appears — typically the name of the PDF file (e.g. "Q-2345.pdf") or a header line like "Quote #Q-2345" / "Quotation No: Q-2345". Use null when no reference is given.
+- `quote_date` is the date stated on the quote document (e.g. "Quoted 12/08/2026"), formatted as YYYY-MM-DD. Use null when the document has no date.
 - `part_number` is the supplier's own part number for the item (if they provide one). Leave as empty string "" if not provided or if they simply reference the RFQ's existing part number.
 - `shipping` is null if not mentioned.
 - `declined_items` lists line numbers the supplier explicitly cannot supply.
@@ -602,8 +610,12 @@ Rules:
     return result
 
 
-def _apply_quote_data(rfq_id: str, supplier_name: str, quote_data: dict, user_id: str) -> list[str]:
+def _apply_quote_data(rfq_id: str, supplier_name: str, quote_data: dict, user_id: str,
+                      email_date: str | None = None) -> list[str]:
     """Apply extracted quote data to the RFQ using rfq_crud functions.
+
+    email_date is the received date of the supplier email (YYYY-MM-DD) and is
+    used as the quote date fallback when the document itself has no date.
 
     Returns list of action summaries.
     """
@@ -694,12 +706,14 @@ def _apply_quote_data(rfq_id: str, supplier_name: str, quote_data: dict, user_id
             _update_supplier_sync(rfq_id, {"line": line, "name": supplier_name, "quote_status": "declined"}, user_id)
             actions.append(f"✗ Line {line}: declined")
 
-    # Apply supplier meta (shipping, terms, notes)
+    # Apply supplier meta (shipping, terms, notes, quote reference)
     shipping = quote_data.get("shipping")
     notes = quote_data.get("notes")
     terms = quote_data.get("terms")
+    quote_number = (quote_data.get("quote_number") or "").strip()
+    quote_date = (quote_data.get("quote_date") or email_date or "").strip()
 
-    if shipping or notes or terms:
+    if shipping or notes or terms or quote_number or quote_date:
         meta_data = {"name": supplier_name}
         if shipping:
             meta_data["shipping_cost"] = shipping.get("cost")
@@ -708,8 +722,16 @@ def _apply_quote_data(rfq_id: str, supplier_name: str, quote_data: dict, user_id
             meta_data["notes"] = notes
         if terms:
             meta_data["terms"] = terms
+        if quote_number:
+            meta_data["quote_number"] = quote_number
+        if quote_date:
+            meta_data["quote_date"] = quote_date
         _set_supplier_meta_sync(rfq_id, meta_data, user_id)
         meta_parts = []
+        if quote_number:
+            meta_parts.append(f"quote #{quote_number}")
+        if quote_date:
+            meta_parts.append(f"date {quote_date}")
         if shipping:
             meta_parts.append(f"shipping: {shipping.get('cost')} {shipping.get('currency', 'AUD')}")
         if terms:
@@ -857,7 +879,22 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                 logger.warning(f"[quote-pipeline] #{email_tracking_id}: interpretation failed — {quote_data['error']}")
                 return
 
-            actions = _apply_quote_data(rfq_id, supplier_name, quote_data, user_id)
+            # Quote date fallback: use the email's received date when the
+            # document itself has no date.
+            from datetime import datetime as _dt
+            email_date = None
+            try:
+                raw_ts = tracking.sent_at or tracking.created_at
+                if isinstance(raw_ts, _dt):
+                    email_date = raw_ts.date().isoformat()
+                elif isinstance(raw_ts, str) and len(raw_ts) >= 10:
+                    email_date = raw_ts[:10]
+            except Exception:
+                email_date = None
+
+            actions = _apply_quote_data(rfq_id, supplier_name, quote_data, user_id, email_date=email_date)
+            final_quote_date = (quote_data.get("quote_date") or email_date or "").strip() or None
+            quote_number_val = (quote_data.get("quote_number") or "").strip() or None
 
             # Store full pipeline result
             _save_pipeline_result(email_tracking_id, {
@@ -870,6 +907,8 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                 "shipping": quote_data.get("shipping"),
                 "terms": quote_data.get("terms"),
                 "notes": quote_data.get("notes"),
+                "quote_number": quote_number_val,
+                "quote_date": final_quote_date,
                 "warnings": quote_data.get("warnings", []),
                 "actions": actions,
                 "processed_at": _now_iso(),

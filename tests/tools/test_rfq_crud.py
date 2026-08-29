@@ -102,13 +102,14 @@ class TestMergeRfqSuppliers:
         transaction.rollback()
         connection.close()
 
-    def _make_rfq(self, session, items_suppliers) -> RFQ:
+    def _make_rfq(self, session, items_suppliers, supplier_meta=None) -> RFQ:
         """items_suppliers: list of list-of-supplier-dicts per line."""
         rfq = RFQ(
             rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
             customer="Test Customer",
             created_by="tester",
             created_date=datetime.now(timezone.utc),
+            supplier_meta=supplier_meta,
         )
         session.add(rfq)
         session.flush()
@@ -205,6 +206,30 @@ class TestMergeRfqSuppliers:
         assert line2[0]["name"] == "ABC"
         assert line2[0]["supplier_id"] == linked_id
         assert line2[0]["db_match"] == "exact"
+
+    def test_folds_supplier_meta_into_keeper(self, db_session):
+        rfq = self._make_rfq(
+            db_session,
+            [
+                [{"name": "ABC", "status": "shortlisted"}],
+                [{"name": "A.B.C.", "status": "shortlisted"}],
+            ],
+            supplier_meta={
+                "ABC": {"quote_number": "Q-KEEP", "notes": "keep notes"},
+                "A.B.C.": {"quote_number": "Q-DROP", "quote_date": "2026-08-12",
+                            "shipping_cost": 25},
+            },
+        )
+        self._merge(db_session, rfq, "ABC", ["A.B.C."])
+
+        db_session.expire_all()
+        stored = db_session.query(RFQ).filter(RFQ.rfq_number == rfq.rfq_number).first()
+        meta = stored.supplier_meta or {}
+        assert "A.B.C." not in meta
+        assert meta["ABC"]["quote_number"] == "Q-KEEP"  # keeper wins
+        assert meta["ABC"]["quote_date"] == "2026-08-12"  # drop fills gap
+        assert meta["ABC"]["shipping_cost"] == 25
+        assert meta["ABC"]["notes"] == "keep notes"
 
     def test_errors(self, db_session):
         rfq = self._make_rfq(db_session, [

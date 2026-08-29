@@ -1683,6 +1683,21 @@ def _merge_rfq_suppliers_sync(rfq_number: str, keep_name: str, drop_names: list,
         if not dropped_hit:
             return f"Error: none of the selected suppliers were found on this RFQ."
 
+        # Fold RFQ-level supplier meta (shipping, quote #, date, notes…) so
+        # the metadata follows the merged supplier name.
+        meta = dict(rfq.supplier_meta or {})
+        keep_meta = dict(meta.get(canonical["name"], {}) or {})
+        for drop_name in drop_display:
+            if drop_name == canonical["name"]:
+                continue
+            dropped_meta = meta.pop(drop_name, None) or {}
+            for k, v in (dropped_meta or {}).items():
+                if v is not None and not keep_meta.get(k):
+                    keep_meta[k] = v
+        if keep_meta:
+            meta[canonical["name"]] = keep_meta
+        rfq.supplier_meta = meta
+
         now = _now_iso()
         history = list(rfq.history or [])
         history.append({
@@ -1868,7 +1883,7 @@ def _decline_quote_sync(rfq_number: str, data: dict, user_id: str) -> dict | str
 
 @_serialized_rfq_write
 def _set_supplier_meta_sync(rfq_number: str, data: dict, user_id: str) -> dict | str:
-    """Write supplier-level metadata (shipping, notes, terms) to rfqs.supplier_meta."""
+    """Write supplier-level metadata (shipping, notes, terms, quote refs) to rfqs.supplier_meta."""
     from includes.dashboard.models import RFQ
 
     name = data.get("name")
@@ -1883,7 +1898,8 @@ def _set_supplier_meta_sync(rfq_number: str, data: dict, user_id: str) -> dict |
 
         meta = dict(rfq.supplier_meta or {})
         entry = dict(meta.get(name, {}))
-        for key in ("shipping_cost", "shipping_currency", "notes", "terms"):
+        for key in ("shipping_cost", "shipping_currency", "notes", "terms",
+                    "quote_number", "quote_date"):
             if key in data:
                 val = data[key]
                 entry[key] = val if val is not None and val != "" else None

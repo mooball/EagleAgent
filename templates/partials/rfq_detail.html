@@ -770,6 +770,16 @@
                                 </div>
                             </div>
                         </template>
+                        <template x-if="pd.quote_number || pd.quote_date">
+                            <div class="text-xs space-y-1 border-t border-gray-100 dark:border-gray-700 pt-2">
+                                <template x-if="pd.quote_number">
+                                    <div><span class="font-medium text-gray-500 dark:text-gray-400">Quote Number:</span> <span class="font-mono" x-text="pd.quote_number"></span></div>
+                                </template>
+                                <template x-if="pd.quote_date">
+                                    <div><span class="font-medium text-gray-500 dark:text-gray-400">Quote Date:</span> <span x-text="pd.quote_date"></span></div>
+                                </template>
+                            </div>
+                        </template>
                         <template x-if="pd.shipping || pd.terms || pd.notes">
                             <div class="text-xs space-y-1 border-t border-gray-100 dark:border-gray-700 pt-2">
                                 <template x-if="pd.shipping">
