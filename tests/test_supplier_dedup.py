@@ -17,6 +17,7 @@ from includes.dashboard.models import (
     RFQItem,
     Supplier,
     SupplierBrand,
+    SupplierDuplicateCandidate,
     SupplierMatchKey,
     Transaction,
 )
@@ -298,6 +299,69 @@ class TestMergeMatrix:
         sup = _supplier(db_session)
         with pytest.raises(ValueError, match="different"):
             merge_suppliers(db_session, sup.id, sup.id)
+
+    def test_candidate_row_survives_merge(self, db_session):
+        """Regression: ON DELETE CASCADE used to delete the candidate row,
+        so the route's status update raised StaleDataError (500)."""
+        from includes.dashboard.supplier_dedup import merge_suppliers
+
+        primary = _supplier(db_session, name="Keeper", netsuite_id="NS-KEEP")
+        duplicate = _supplier(db_session, name="Keeper (Web)", netsuite_id=False)
+        cand = SupplierDuplicateCandidate(
+            primary_id=primary.id, duplicate_id=duplicate.id,
+            source="manual", status="proposed", confidence=0.9,
+        )
+        db_session.add(cand)
+        db_session.flush()
+
+        # Route snapshots the name before merging
+        dup_sup = db_session.get(Supplier, cand.duplicate_id)
+        cand.duplicate_name = dup_sup.name
+
+        merge_suppliers(db_session, primary.id, duplicate.id)
+        cand.status = "merged"
+        cand.decided_by = "admin"
+        cand.decided_at = datetime.now(timezone.utc)
+        db_session.commit()  # would raise StaleDataError with CASCADE
+
+        row = db_session.get(SupplierDuplicateCandidate, cand.id)
+        assert row is not None
+        assert row.status == "merged"
+        assert row.primary_id == primary.id
+        assert row.duplicate_id is None        # supplier deleted → SET NULL
+        assert row.duplicate_name == "Keeper (Web)"  # history preserved
+
+    def test_merge_cleans_up_other_queue_rows(self, db_session):
+        from includes.dashboard.supplier_dedup import merge_suppliers
+
+        primary = _supplier(db_session, name="Keeper", netsuite_id="NS-KEEP")
+        duplicate = _supplier(db_session, name="Keeper (Web)", netsuite_id=False)
+        other = _supplier(db_session, name="Third NS", netsuite_id="NS-THIRD")
+
+        mirror = SupplierDuplicateCandidate(
+            primary_id=duplicate.id, duplicate_id=primary.id, status="proposed")
+        exact = SupplierDuplicateCandidate(
+            primary_id=primary.id, duplicate_id=duplicate.id, status="proposed")
+        other_dup = SupplierDuplicateCandidate(
+            primary_id=other.id, duplicate_id=duplicate.id, status="proposed")
+        dup_other = SupplierDuplicateCandidate(
+            primary_id=duplicate.id, duplicate_id=other.id, status="proposed")
+        clash_existing = SupplierDuplicateCandidate(
+            primary_id=other.id, duplicate_id=primary.id, status="rejected")
+        for r in (mirror, exact, other_dup, dup_other, clash_existing):
+            db_session.add(r)
+        db_session.flush()
+
+        merge_suppliers(db_session, primary.id, duplicate.id)
+        db_session.commit()
+
+        rows = {r.id: r for r in db_session.query(SupplierDuplicateCandidate).all()}
+        assert mirror.id not in rows                      # mirror pair removed
+        assert rows[exact.id].status == "proposed"        # exact pair left for route
+        assert other_dup.id not in rows                   # (other, primary) clash
+        assert rows[clash_existing.id].status == "rejected"
+        assert rows[dup_other.id].primary_id == primary.id
+        assert rows[dup_other.id].duplicate_id == other.id
 
     def test_already_merged_rejected(self, db_session):
         from includes.dashboard.supplier_dedup import merge_suppliers

@@ -93,8 +93,12 @@ class SupplierDuplicateCandidate(Base):
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    primary_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id', ondelete='CASCADE'), nullable=False)
-    duplicate_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id', ondelete='CASCADE'), nullable=False)
+    # RESTRICT on primary (never deleted) and SET NULL on duplicate: when a
+    # merge deletes the web duplicate row, the decided queue row survives with
+    # duplicate_id NULL and duplicate_name holding a snapshot for history.
+    primary_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id', ondelete='RESTRICT'), nullable=False)
+    duplicate_id = Column(UUID(as_uuid=True), ForeignKey('suppliers.id', ondelete='SET NULL'), nullable=True)
+    duplicate_name = Column(String, nullable=True)
     source = Column(String(10), nullable=False, default='auto')   # 'auto' | 'manual'
     status = Column(String(10), nullable=False, default='proposed')
     confidence = Column(Float, nullable=True)
