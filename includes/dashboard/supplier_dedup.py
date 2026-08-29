@@ -28,6 +28,7 @@ from includes.dashboard.models import (
     RFQItem,
     Supplier,
     SupplierBrand,
+    SupplierDuplicateCandidate,
     Transaction,
 )
 from includes.dashboard.supplier_matching import rebuild_match_keys
@@ -263,6 +264,57 @@ def merge_suppliers(
     _reassign_rfq_items(session, primary, duplicate, counts)
     _reassign_rfq_supplier_meta(session, primary, duplicate, counts)
     _reassign_fks(session, primary, duplicate, counts)
+
+    # 2b. Candidate queue cleanup — the duplicate row is about to be deleted
+    # (web) or retired (use_instead), so no queue row may keep referencing it
+    # as a distinct entity. Pairs are resolved deterministically in two
+    # passes: existing rows claim their pair first, then remapped rows only
+    # keep it if free (clashing/self rows are deleted). The exact pair being
+    # merged is left alone — the caller marks it decided afterwards.
+    queue_rows = (
+        session.query(SupplierDuplicateCandidate)
+        .filter(
+            or_(
+                SupplierDuplicateCandidate.primary_id == duplicate_uuid,
+                SupplierDuplicateCandidate.duplicate_id == duplicate_uuid,
+                SupplierDuplicateCandidate.primary_id == primary_uuid,
+                SupplierDuplicateCandidate.duplicate_id == primary_uuid,
+            )
+        )
+        .all()
+    )
+
+    def _final_pair(row) -> tuple:
+        np, nd = row.primary_id, row.duplicate_id
+        if np == duplicate_uuid:
+            np = primary_uuid
+        elif nd == duplicate_uuid and np != primary_uuid:
+            nd = primary_uuid
+        return np, nd
+
+    claimed = {}
+    for row in queue_rows:
+        if row.primary_id == row.duplicate_id:
+            continue  # self-pairs are deleted below
+        if row.primary_id != duplicate_uuid and not (
+            row.duplicate_id == duplicate_uuid and row.primary_id != primary_uuid
+        ):
+            claimed[(row.primary_id, row.duplicate_id)] = row  # unchanged rows claim first
+    for row in queue_rows:
+        np, nd = _final_pair(row)
+        if (np, nd) == (row.primary_id, row.duplicate_id):
+            continue
+        if np == nd or (np, nd) in claimed:
+            continue  # collision → delete below
+        claimed[(np, nd)] = row
+
+    for row in queue_rows:
+        np, nd = _final_pair(row)
+        if np == nd or (np, nd) not in claimed or claimed[(np, nd)] is not row:
+            session.delete(row)
+        else:
+            row.primary_id, row.duplicate_id = np, nd
+    session.flush()  # deletions land before the supplier row goes away
 
     # 3. Keep or delete the duplicate row
     deleted = False

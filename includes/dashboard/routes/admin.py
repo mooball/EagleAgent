@@ -557,6 +557,11 @@ async def admin_duplicates_merge_candidate(
                 else:
                     cand.primary_id, cand.duplicate_id = cand.duplicate_id, cand.primary_id
             if flash is None:
+                # Snapshot the duplicate's name — the supplier row may be
+                # deleted by the merge (duplicate_id becomes NULL).
+                dup_sup = session.get(Supplier, cand.duplicate_id)
+                if dup_sup:
+                    cand.duplicate_name = dup_sup.name
                 try:
                     result = await asyncio.to_thread(
                         merge_suppliers, session, cand.primary_id, cand.duplicate_id, config
@@ -678,6 +683,9 @@ async def admin_duplicates_bulk_merge(request: Request, user: dict = require_adm
             cand = session.get(SupplierDuplicateCandidate, cand_uuid)
             if not cand or cand.status != "proposed":
                 continue
+            dup_sup = session.get(Supplier, cand.duplicate_id)
+            if dup_sup:
+                cand.duplicate_name = dup_sup.name
             try:
                 await asyncio.to_thread(
                     merge_suppliers, session, cand.primary_id, cand.duplicate_id, config
