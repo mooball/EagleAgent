@@ -240,23 +240,37 @@ def _txn_stats(session, supplier_ids) -> dict:
 
 def _upsert_candidates(session, pairs: dict, min_confidence: float, user: str = "scan") -> dict:
     now = datetime.now(timezone.utc)
-    existing = {
-        frozenset((c.primary_id, c.duplicate_id)): c
-        for c in session.query(SupplierDuplicateCandidate).all()
-    }
+    # Group by unordered pair — the DB unique constraint is on the ORDERED
+    # (primary_id, duplicate_id) pair, so flipped duplicates (A,B) and (B,A)
+    # can coexist for the same two suppliers. Keep every row visible here so
+    # the scan can collapse them instead of crashing on the collision.
+    existing: dict = defaultdict(list)
+    for c in session.query(SupplierDuplicateCandidate).all():
+        existing[frozenset((c.primary_id, c.duplicate_id))].append(c)
     stats = _txn_stats(session, {i for pair in pairs for i in pair})
 
     created = updated = removed = skipped = 0
+    seen_pairs = set()
     for (id_a, id_b), info in pairs.items():
+        pair_key = frozenset((id_a, id_b))
+        if pair_key in seen_pairs:
+            # Same unordered pair listed under both orientations — process once.
+            continue
+        seen_pairs.add(pair_key)
+
         confidence, reasons, tier = score_pair(info)
-        row = existing.get(frozenset((id_a, id_b)))
+        rows = existing.get(pair_key, [])
+
         if confidence < min_confidence:
-            # Pair no longer clears the bar — drop a stale proposed row so
+            # Pair no longer clears the bar — drop stale proposed rows so
             # old confidence/reasons never linger in the queue.
-            if row and row.status == "proposed":
-                session.delete(row)
-                removed += 1
-            else:
+            for row in rows:
+                if row.status == "proposed":
+                    session.delete(row)
+                    removed += 1
+                else:
+                    skipped += 1  # already merged/rejected — leave the decision alone
+            if not rows:
                 skipped += 1
             continue
 
@@ -267,38 +281,63 @@ def _upsert_candidates(session, pairs: dict, min_confidence: float, user: str = 
             continue
         primary, duplicate = pick_keep_remove(sup_a, sup_b, stats)
 
-        if row:
-            if row.status == "proposed":
-                row.confidence = confidence
-                row.reasons = reasons
-                # Re-evaluate primary/duplicate with the latest activity data
-                row.primary_id = primary.id
-                row.duplicate_id = duplicate.id
-                updated += 1
-            else:
-                skipped += 1  # already merged/rejected — leave the decision alone
+        if not rows:
+            session.add(SupplierDuplicateCandidate(
+                primary_id=primary.id,
+                duplicate_id=duplicate.id,
+                source="auto",
+                status="proposed",
+                confidence=confidence,
+                reasons=reasons,
+                created_by=user,
+                created_at=now,
+            ))
+            created += 1
             continue
 
-        session.add(SupplierDuplicateCandidate(
-            primary_id=primary.id,
-            duplicate_id=duplicate.id,
-            source="auto",
-            status="proposed",
-            confidence=confidence,
-            reasons=reasons,
-            created_by=user,
-            created_at=now,
-        ))
-        created += 1
+        decided = [row for row in rows if row.status != "proposed"]
+        proposed = [row for row in rows if row.status == "proposed"]
+
+        if decided:
+            # A merge/reject decision exists for this pair — leave it alone
+            # and drop any stray proposed rows pointing at the same pair.
+            for row in proposed:
+                session.delete(row)
+                removed += 1
+            skipped += len(decided)
+            continue
+
+        # All rows are proposed: keep exactly one per pair. Prefer the row
+        # already oriented like the fresh pick so no flip UPDATE is needed.
+        target = (primary.id, duplicate.id)
+        keeper = next(
+            (row for row in proposed if (row.primary_id, row.duplicate_id) == target),
+            proposed[0],
+        )
+        for row in proposed:
+            if row is not keeper:
+                session.delete(row)
+                removed += 1
+        if (keeper.primary_id, keeper.duplicate_id) != target:
+            # Safe: every other row for this pair is already deleted, and
+            # none of them held the target orientation (or it would have
+            # been picked as keeper), so the flip cannot collide.
+            keeper.primary_id = primary.id
+            keeper.duplicate_id = duplicate.id
+        keeper.confidence = confidence
+        keeper.reasons = reasons
+        updated += 1
 
     # Proposed rows for pairs the scan no longer produces at all (scoring
     # changed, names edited, one side merged away) would otherwise keep
     # their stale confidence in the queue forever.
     current = {frozenset(pair) for pair in pairs}
-    for key, row in existing.items():
-        if row.status == "proposed" and key not in current:
-            session.delete(row)
-            removed += 1
+    for key, rows in existing.items():
+        if key not in current:
+            for row in rows:
+                if row.status == "proposed":
+                    session.delete(row)
+                    removed += 1
 
     return {"created": created, "updated": updated, "removed": removed, "skipped": skipped}
 
