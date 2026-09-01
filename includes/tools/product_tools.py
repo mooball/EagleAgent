@@ -879,19 +879,43 @@ async def search_purchase_history(
 # ---------------------------------------------------------------------------
 
 def _find_product_by_code(part_number: str, brand: str = None) -> Optional[dict]:
-    """Find a product by part_number OR supplier_code. Returns dict or None."""
+    """Find a product by part_number OR supplier_code. Returns dict or None.
+
+    When multiple products match, the one with the most purchase-history
+    transactions is returned (ties broken by most recently modified).
+    """
     session = get_session()
     try:
         norm_pn = normalize_part_number(part_number)
-        query = session.query(Product).filter(
-            or_(
-                _norm_expr(Product.part_number).ilike(norm_pn),
-                _norm_expr(Product.supplier_code).ilike(norm_pn),
+
+        # Rank matches by purchase count — the most-purchased product wins.
+        purchase_counts = (
+            session.query(
+                Transaction.product_id,
+                func.count(Transaction.id).label("purchase_count"),
+            )
+            .group_by(Transaction.product_id)
+            .subquery()
+        )
+        query = (
+            session.query(Product)
+            .outerjoin(
+                purchase_counts,
+                purchase_counts.c.product_id == Product.id,
+            )
+            .filter(
+                or_(
+                    _norm_expr(Product.part_number).ilike(norm_pn),
+                    _norm_expr(Product.supplier_code).ilike(norm_pn),
+                )
             )
         )
         if brand:
             query = query.filter(Product.brand.ilike(brand))
-        product = query.first()
+        product = query.order_by(
+            purchase_counts.c.purchase_count.desc().nulls_last(),
+            Product.netsuite_last_modified.desc().nulls_last(),
+        ).first()
         if product:
             return {
                 "id": str(product.id),
