@@ -351,7 +351,12 @@ def search_entities(type: str, q: str, user: AddonUser):
     from includes.dashboard.database import get_session
     from sqlalchemy import text
 
-    if not q or len(q) < 2:
+    # Trim surrounding whitespace — Gmail keyboard autocomplete can append a
+    # trailing space to word-like queries (e.g. "OP72975 "), which would
+    # otherwise fail every LIKE match.
+    q = (q or "").strip()
+
+    if len(q) < 2:
         return JSONResponse({"results": []})
 
     session = get_session()
