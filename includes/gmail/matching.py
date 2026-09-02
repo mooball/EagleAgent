@@ -120,6 +120,7 @@ def build_domain_index(session: Session) -> dict[str, list[dict]]:
     suppliers = session.query(Supplier.id, Supplier.name, Supplier.url).filter(
         Supplier.url.isnot(None),
         Supplier.use_instead.is_(None),
+        Supplier.isinactive == False,
     ).all()
     for s in suppliers:
         domain = extract_domain_from_url(s.url)
@@ -129,6 +130,7 @@ def build_domain_index(session: Session) -> dict[str, list[dict]]:
     suppliers_alt = session.query(Supplier.id, Supplier.name, Supplier.alt_domains).filter(
         Supplier.alt_domains.isnot(None),
         Supplier.use_instead.is_(None),
+        Supplier.isinactive == False,
     ).all()
     for s in suppliers_alt:
         if isinstance(s.alt_domains, list):

@@ -36,6 +36,7 @@ class Supplier(Base):
     # Superseded record — points at the supplier to use instead. Never deleted
     # while this row exists in NetSuite (see supplier_dedup.merge_suppliers).
     use_instead = Column(UUID(as_uuid=True), ForeignKey('suppliers.id'), nullable=True, index=True)
+    isinactive = Column(Boolean, nullable=False, default=False)
 
     # 256 dimensions for Gemini embedding-2-preview (notes only)
     embedding = Column(Vector(256), nullable=True)
@@ -118,6 +119,7 @@ class Brand(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     netsuite_id = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
+    isinactive = Column(Boolean, nullable=False, default=False)
     duplicate_of = Column(UUID(as_uuid=True), ForeignKey('brands.id'), nullable=True, index=True)
     netsuite_last_modified = Column(DateTime(timezone=True), nullable=True)
 
@@ -130,6 +132,7 @@ class Product(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     netsuite_id = Column(String, unique=True, nullable=True)
+    isinactive = Column(Boolean, nullable=False, default=False)
     part_number = Column(String, index=True, nullable=False)
     supplier_code = Column(String, nullable=True)
     description = Column(Text, nullable=True)

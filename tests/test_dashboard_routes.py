@@ -181,10 +181,9 @@ class TestRequireRole:
 
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
-            session.query.return_value.outerjoin.return_value.group_by.return_value = session.query.return_value
-            session.query.return_value.count.return_value = 0
-            session.query.return_value.outerjoin.return_value.group_by.return_value.count.return_value = 0
-            session.query.return_value.outerjoin.return_value.group_by.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
+            qm = session.query.return_value.outerjoin.return_value.group_by.return_value
+            qm.filter.return_value.count.return_value = 0
+            qm.filter.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
             mock_gs.return_value = session
             resp = client.get("/suppliers")
             assert resp.status_code == 200
@@ -204,8 +203,8 @@ class TestHtmxRendering:
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
             qm = session.query.return_value.outerjoin.return_value.group_by.return_value
-            qm.count.return_value = 0
-            qm.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
+            qm.filter.return_value.count.return_value = 0
+            qm.filter.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
             mock_gs.return_value = session
 
             resp = client.get("/suppliers", headers={"HX-Request": "true"})
@@ -222,8 +221,8 @@ class TestHtmxRendering:
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
             qm = session.query.return_value.outerjoin.return_value.group_by.return_value
-            qm.count.return_value = 0
-            qm.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
+            qm.filter.return_value.count.return_value = 0
+            qm.filter.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
             mock_gs.return_value = session
 
             resp = client.get("/suppliers")
@@ -280,8 +279,8 @@ class TestSupplierRoutes:
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
             qm = session.query.return_value.outerjoin.return_value.group_by.return_value
-            qm.count.return_value = 0
-            qm.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
+            qm.filter.return_value.count.return_value = 0
+            qm.filter.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
             mock_gs.return_value = session
 
             resp = client.get("/suppliers")
@@ -297,7 +296,7 @@ class TestSupplierRoutes:
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
             qm = session.query.return_value.outerjoin.return_value.group_by.return_value
-            qm_filtered = qm.filter.return_value
+            qm_filtered = qm.filter.return_value.filter.return_value
             qm_filtered.count.return_value = 0
             qm_filtered.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
             mock_gs.return_value = session
@@ -355,8 +354,8 @@ class TestSupplierRoutes:
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
             qm = session.query.return_value.outerjoin.return_value.group_by.return_value
-            qm.count.return_value = 2
-            qm.order_by.return_value.offset.return_value.limit.return_value.all.return_value = [
+            qm.filter.return_value.count.return_value = 2
+            qm.filter.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = [
                 (dup, 5), (normal, 3)
             ]
             mock_gs.return_value = session
@@ -443,8 +442,8 @@ class TestPartialRoutes:
         with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
             session = MagicMock()
             qm = session.query.return_value.outerjoin.return_value.group_by.return_value
-            qm.count.return_value = 0
-            qm.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
+            qm.filter.return_value.count.return_value = 0
+            qm.filter.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
             mock_gs.return_value = session
 
             resp = client.get("/partial/suppliers")

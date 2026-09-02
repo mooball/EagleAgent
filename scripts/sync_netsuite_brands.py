@@ -165,6 +165,7 @@ def main():
                     "netsuite_id": netsuite_id,
                     "name": cleaned_name,
                     "netsuite_last_modified": last_modified,
+                    "isinactive": row.get("isinactive") == "T",
                 })
 
         skipped = fetched - len(all_records)
@@ -215,6 +216,7 @@ def main():
                 set_={
                     "name": stmt.excluded.name,
                     "netsuite_last_modified": stmt.excluded.netsuite_last_modified,
+                    "isinactive": stmt.excluded.isinactive,
                 },
             )
             session.execute(stmt)

@@ -411,7 +411,10 @@ def resolve_supplier_id(session, supplier_id, _max_hops: int = 5):
 
 def active_suppliers(session):
     """Base query for any user-facing supplier choice list."""
-    return session.query(Supplier).filter(Supplier.use_instead.is_(None))
+    return session.query(Supplier).filter(
+        Supplier.use_instead.is_(None),
+        Supplier.isinactive == False,
+    )
 
 
 def supplier_lookup(session, name: str, hide_dups: bool = True, limit: int = 10):
@@ -424,6 +427,7 @@ def supplier_lookup(session, name: str, hide_dups: bool = True, limit: int = 10)
                      visible and identifiable.
     """
     query = session.query(Supplier).filter(Supplier.name.ilike(f"%{name}%"))
+    query = query.filter(Supplier.isinactive == False)
     if hide_dups:
         query = query.filter(Supplier.use_instead.is_(None))
     return query.order_by(Supplier.name).limit(limit).all()

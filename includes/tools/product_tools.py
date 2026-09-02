@@ -325,6 +325,7 @@ def _do_supplier_search(name: Optional[str] = None,
                 purchase_sub.c.last_purchase_date,
             )
             .outerjoin(purchase_sub, Supplier.id == purchase_sub.c.supplier_id)
+            .filter(Supplier.isinactive == False)
         )
 
         if name:
@@ -904,10 +905,11 @@ def _find_product_by_code(part_number: str, brand: str = None) -> Optional[dict]
                 purchase_counts.c.product_id == Product.id,
             )
             .filter(
+                Product.isinactive == False,
                 or_(
                     _norm_expr(Product.part_number).ilike(norm_pn),
                     _norm_expr(Product.supplier_code).ilike(norm_pn),
-                )
+                ),
             )
         )
         if brand:
@@ -973,6 +975,7 @@ def match_brands(names: list[str], limit: int = 10) -> dict[str, dict]:
             session.query(Brand)
             .filter(
                 Brand.duplicate_of.is_(None),
+                Brand.isinactive == False,
                 or_(*[_norm_expr(Brand.name).ilike(n) for n in norm_list]),
             )
             .order_by(Brand.name)
@@ -981,7 +984,7 @@ def match_brands(names: list[str], limit: int = 10) -> dict[str, dict]:
         conds = [_norm_expr(Brand.name).ilike(f"%{n}%") for n in norm_list]
         near_rows = (
             session.query(Brand)
-            .filter(Brand.duplicate_of.is_(None), or_(*conds))
+            .filter(Brand.duplicate_of.is_(None), Brand.isinactive == False, or_(*conds))
             .order_by(Brand.name)
             .limit(max(limit, 1) * len(norm_list))
             .all()

@@ -365,7 +365,7 @@ def search_entities(type: str, q: str, user: AddonUser):
             rows = session.execute(
                 text(
                     "SELECT id, name FROM suppliers "
-                    "WHERE LOWER(name) LIKE :q AND use_instead IS NULL "
+                    "WHERE LOWER(name) LIKE :q AND use_instead IS NULL AND isinactive = false "
                     "ORDER BY name LIMIT 10"
                 ),
                 {"q": f"%{q.lower()}%"},

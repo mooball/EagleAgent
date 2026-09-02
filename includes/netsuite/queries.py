@@ -24,6 +24,7 @@ def suppliers_updated_since(since_date: str) -> str:
 
     return (
         "SELECT v.id, v.entityid, v.companyname, v.email, v.phone, v.url, "
+        "v.isinactive, "
         "v.custentity_supplier_notes, v.custentity_supplier_brand, "
         "v.custentity_ss_hubspot_id, BUILTIN.DF(v.terms) AS terms, "
         "BUILTIN.DF(v.currency) AS currency, "
@@ -48,18 +49,17 @@ def all_brands(since_date: str | None = None) -> str:
                     only returns brands modified on or after that date.
 
     Returns:
-        SuiteQL SELECT statement returning id and name for active brands.
+        SuiteQL SELECT statement returning id, name and inactive flag.
     """
     query = (
-        "SELECT id, name, lastmodified "
-        "FROM customrecord_brands "
-        "WHERE isinactive = 'F'"
+        "SELECT id, name, isinactive, lastmodified "
+        "FROM customrecord_brands"
     )
 
     if since_date:
         dt = datetime.strptime(since_date, "%Y-%m-%d")
         ns_date = f"{dt.day}/{dt.month}/{dt.year}"
-        query += f" AND lastmodified >= '{ns_date}'"
+        query += f" WHERE lastmodified >= '{ns_date}'"
 
     query += " ORDER BY name"
     return query
@@ -69,7 +69,7 @@ def products_updated_since(since_date: str) -> str:
     """
     SuiteQL query for inventory item records modified on or after a given date.
 
-    Only returns active InvtPart (inventory part) items.
+    Returns InvtPart (inventory part) items including the inactive flag.
 
     Args:
         since_date: ISO date string, e.g. '2026-04-01'
@@ -82,13 +82,13 @@ def products_updated_since(since_date: str) -> str:
 
     return (
         "SELECT i.id, i.itemid, i.description, "
+        "i.isinactive, "
         "i.custitem_brand, BUILTIN.DF(i.custitem_brand) AS brand_name, "
         "i.department, "
         "i.weight, "
         "i.lastmodifieddate "
         "FROM item i "
         "WHERE i.itemtype = 'InvtPart' "
-        "AND i.isinactive = 'F' "
         f"AND i.lastmodifieddate >= '{ns_date}' "
         "ORDER BY i.lastmodifieddate ASC"
     )
@@ -197,7 +197,8 @@ def customers_updated_since(since_date: str) -> str:
     """
     SuiteQL query for Customer records modified on or after a given date.
 
-    Only returns active customers (isinactive = 'F').
+    Includes the inactive flag so local rows are updated when a customer
+    is deactivated in NetSuite.
 
     Args:
         since_date: ISO date string, e.g. '2026-04-01'
@@ -212,8 +213,7 @@ def customers_updated_since(since_date: str) -> str:
         "SELECT c.id, c.entityid, c.companyname, c.fullname, c.email, c.phone, "
         "c.isinactive, BUILTIN.DF(c.currency) AS currency, c.salesrep, c.contactlist, c.lastmodifieddate "
         "FROM customer c "
-        "WHERE c.isinactive = 'F' "
-        f"AND c.lastmodifieddate >= '{ns_date}' "
+        f"WHERE c.lastmodifieddate >= '{ns_date}' "
         "ORDER BY c.lastmodifieddate ASC"
     )
 

@@ -45,7 +45,7 @@ def supplier_list(request: Request, user: dict = Depends(require_user),
             func.count(Transaction.id).label("purchase_count"),
         ).outerjoin(
             Transaction, Transaction.supplier_id == Supplier.id
-        ).group_by(Supplier.id)
+        ).group_by(Supplier.id).filter(Supplier.isinactive == False)
 
         if q:
             query = query.filter(Supplier.name.ilike(f"%{q}%"))
@@ -168,7 +168,7 @@ def partial_supplier_list(request: Request, user: dict = Depends(require_user),
             func.count(Transaction.id).label("purchase_count"),
         ).outerjoin(
             Transaction, Transaction.supplier_id == Supplier.id
-        ).group_by(Supplier.id)
+        ).group_by(Supplier.id).filter(Supplier.isinactive == False)
 
         if q:
             query = query.filter(Supplier.name.ilike(f"%{q}%"))
@@ -222,7 +222,7 @@ def partial_supplier_rows(request: Request, user: dict = Depends(require_user),
             func.count(Transaction.id).label("purchase_count"),
         ).outerjoin(
             Transaction, Transaction.supplier_id == Supplier.id
-        ).group_by(Supplier.id)
+        ).group_by(Supplier.id).filter(Supplier.isinactive == False)
 
         if q:
             query = query.filter(Supplier.name.ilike(f"%{q}%"))
