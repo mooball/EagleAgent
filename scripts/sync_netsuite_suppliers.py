@@ -118,6 +118,7 @@ def map_vendor_to_supplier(row: dict) -> dict:
         "netsuite_id": str(row.get("id", "")).strip(),
         "name": (row.get("companyname") or row.get("entityid") or "").strip(),
         "url": row.get("url"),
+        "isinactive": row.get("isinactive") == "T",
         "address_1": row.get("addr1"),
         "address_2": row.get("addr2"),
         "city": row.get("city"),
@@ -136,7 +137,7 @@ def map_vendor_to_supplier(row: dict) -> dict:
 # Deliberately excludes use_instead (merged-duplicate flag) and
 # alt_names/alt_domains (merged data) — a sync must never clobber them.
 NETSUITE_OWNED_FIELDS = {
-    "name", "url", "address_1", "address_2", "city", "state",
+    "name", "url", "isinactive", "address_1", "address_2", "city", "state",
     "postcode", "country", "notes", "terms", "currency", "hubspot_id",
     "netsuite_last_modified",
 }
@@ -375,6 +376,7 @@ def main():
                             netsuite_id=netsuite_id,
                             name=mapped["name"],
                             url=mapped["url"],
+                            isinactive=mapped["isinactive"],
                             address_1=mapped["address_1"],
                             address_2=mapped["address_2"],
                             city=mapped["city"],

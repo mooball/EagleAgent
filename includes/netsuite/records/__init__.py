@@ -7,6 +7,15 @@ by callers (UI, agents, pipelines).
 
 from .base import CreateResult, NetSuiteCreateError
 from .opportunity import create_opportunity, create_and_link_opportunity, update_opportunity_title
+from .item import (
+    create_brand,
+    create_item,
+    ensure_item_with_vendor,
+    find_brand_by_name,
+    find_item_by_part_number,
+    get_or_create_brand,
+    set_vendor_price,
+)
 
 __all__ = [
     "CreateResult",
@@ -14,4 +23,11 @@ __all__ = [
     "create_opportunity",
     "create_and_link_opportunity",
     "update_opportunity_title",
+    "create_brand",
+    "create_item",
+    "ensure_item_with_vendor",
+    "find_brand_by_name",
+    "find_item_by_part_number",
+    "get_or_create_brand",
+    "set_vendor_price",
 ]

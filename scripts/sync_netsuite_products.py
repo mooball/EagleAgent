@@ -111,6 +111,7 @@ def map_item_to_product(row: dict) -> dict:
     return {
         "netsuite_id": str(row.get("id", "")).strip(),
         "part_number": (row.get("itemid") or "").strip(),
+        "isinactive": row.get("isinactive") == "T",
         "description": description or None,
         "brand": row.get("brand_name"),
         "netsuite_brand_id": netsuite_brand_id,
@@ -123,7 +124,7 @@ def map_item_to_product(row: dict) -> dict:
 # Fields that NetSuite owns — these get overwritten on sync
 NETSUITE_OWNED_FIELDS = {
     "part_number", "description", "brand", "brand_id", "weight_kg", "department_id",
-    "netsuite_last_modified",
+    "isinactive", "netsuite_last_modified",
 }
 
 
@@ -239,6 +240,7 @@ def main():
                     product = Product(
                         netsuite_id=netsuite_id,
                         part_number=mapped["part_number"],
+                        isinactive=mapped["isinactive"],
                         description=mapped["description"],
                         brand=mapped["brand"],
                         brand_id=mapped["brand_id"],
