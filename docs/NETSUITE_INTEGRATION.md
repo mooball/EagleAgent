@@ -149,6 +149,74 @@ NetSuite API
   → PostgreSQL
 ```
 
+## Record Writes (Creating Items, Brands, Opportunities)
+
+Write-backs to NetSuite use the REST record API (`record/v1/...`) through
+`NetSuiteClient.create_record` / `update_record` / `get_record`, wrapped by
+typed helpers in `includes/netsuite/records/`:
+
+| Module | Helpers |
+|---|---|
+| `records/opportunity.py` | `create_opportunity`, `create_and_link_opportunity` — create Opportunities and link them to local RFQs |
+| `records/item.py` | `find_item_by_part_number`, `find_brand_by_name`, `create_brand`, `get_or_create_brand`, `create_item`, `set_vendor_price`, `ensure_item_with_vendor` — inventory items + brands |
+
+`ensure_item_with_vendor` is the high-level find-or-create flow: resolve brand
+(create if missing), find an existing item (local smart product match, then a
+NetSuite `itemid` lookup), then either refresh the vendor price or create the
+item. Vendor and brand are mandatory — if either is missing no item is created.
+
+### Item creation payload (verified live)
+
+Minimal working `POST record/v1/inventoryitem`:
+
+```json
+{
+  "itemId": "EGTEST-ITEM-001",
+  "class": {"id": "1"},
+  "salesDescription": "...",
+  "purchaseDescription": "...",
+  "department": {"id": "8"},
+  "purchaseTaxCode": {"id": "15"},
+  "salesTaxCode": {"id": "15"},
+  "custitem_brand": {"id": "<customrecord_brands internal id>"},
+  "itemVendor": {
+    "items": [
+      {"vendor": {"id": "<vendor internal id>"}, "preferredVendor": true, "purchasePrice": 123.45}
+    ]
+  },
+  "externalId": "optional-idempotency-key"
+}
+```
+
+Item vendor prices are stored in the **vendor's currency** — convert with
+`includes.currency.convert(amount, from_iso, vendor_iso)` before sending.
+The vendor record's `currency.refName` is the ISO code.
+
+### Important REST behaviours (probed live)
+
+- **`inventoryitem` has NO DELETE operation** — only get/put/post/patch
+  (DELETE → 400 "There are no records of this type"). `opportunity` and
+  `vendor` do support DELETE. For test hygiene use `externalId` upserts and
+  distinctive prefixes; cleanup happens in the UI.
+- **`itemVendor` sublist writes**: setting `purchasePrice` works when adding
+  a line, but PATCH **ignores price changes on existing lines** (returns 204,
+  nothing changes). The workaround mirrors the legacy Suitelet: clear the
+  sublist (`PATCH ?replace=itemVendor` with `items: []`) then re-add all
+  lines. `set_vendor_price` implements this and preserves other vendors'
+  lines.
+- GETs omit sublist content unless `?expandSubResources=true` is added.
+- Valid PATCH query params are only `init`, `replace`, `replaceSelectedFields`.
+- New NetSuite IDs are written back to local `products.netsuite_id` /
+  `brands.netsuite_id` immediately after creation.
+
+### SuiteQL lookups
+
+```sql
+SELECT id FROM item WHERE UPPER(itemid) = UPPER('...')              -- item existence
+SELECT id FROM customrecord_brands WHERE UPPER(name) = UPPER('...') -- brand existence
+SELECT purchaseprice FROM itemvendor WHERE item = '<item id>'       -- verify vendor price
+```
+
 ## Troubleshooting
 
 | Issue | Cause | Fix |
