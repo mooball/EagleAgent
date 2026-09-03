@@ -60,7 +60,8 @@ class Supervisor:
                     logger.info("Supervisor intent: ResearchAgent")
                     return {"next_agent": "ResearchAgent", "step_count": step_count + 1}
                 if any(s in first_line for s in ("search_products", "search_suppliers",
-                       "search_brands", "part_purchase_history", "search_purchase_history")):
+                       "search_brands", "part_purchase_history", "search_purchase_history",
+                       "part_sale_history_batch")):
                     logger.info("Supervisor intent: ProcurementAgent")
                     return {"next_agent": "ProcurementAgent", "intent_context": "", "step_count": step_count + 1}
 
