@@ -629,6 +629,8 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
     }
     ctx.update(_rfq_sync_readiness(rfq))
     _annotate_brand_db_status(rfq)
+    if ctx["active_tab"] == "selection":
+        _annotate_last_sale(rfq)
     if ctx["active_tab"] == "suppliers":
         ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
     if ctx["active_tab"] == "communications":
@@ -637,6 +639,31 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
 
 
 _BRAND_ALT_DISPLAY_MAX = 3
+
+
+def _annotate_last_sale(rfq: dict) -> None:
+    """Annotate each item with its last sale transaction (selection tab).
+
+    Sets ``item["last_sale"]`` — the latest Quote/SalesOrder transaction for
+    the item's part number, duplicate-aware across all matching products.
+    None when the part number isn't in the database or has no transactions.
+    """
+    from includes.tools.product_tools import last_sale_for_part_numbers
+
+    items = rfq.get("items") or []
+    part_numbers = {
+        (i.get("part_number") or "").strip()
+        for i in items
+        if (i.get("part_number") or "").strip()
+    }
+    if not part_numbers:
+        return
+    try:
+        lookup = last_sale_for_part_numbers(list(part_numbers))
+    except Exception:
+        return
+    for item in items:
+        item["last_sale"] = lookup.get((item.get("part_number") or "").strip())
 
 
 def _annotate_brand_db_status(rfq: dict) -> None:

@@ -931,6 +931,82 @@ def _find_product_by_code(part_number: str, brand: str = None) -> Optional[dict]
         session.close()
 
 
+def last_sale_for_part_numbers(part_numbers: list[str]) -> dict[str, dict]:
+    """Latest sale transaction (Quote or SalesOrder) per part number.
+
+    Duplicate-aware: matches ALL product rows whose normalised part_number or
+    supplier_code equals the normalised query. Inactive products still count —
+    sale history is history. Returns ``{part_number: {...}}`` for part numbers
+    that have at least one matching Quote/SalesOrder transaction:
+
+        {"price": float, "date": "YYYY-MM-DD" | None, "vendor": str,
+         "doc_type": "Quote" | "SalesOrder", "doc_label": "Quote" | "Sale",
+         "doc_number": str}
+    """
+    pns = {pn.strip() for pn in (part_numbers or []) if pn and pn.strip()}
+    if not pns:
+        return {}
+
+    norms: dict[str, str] = {}
+    conds = []
+    for pn in pns:
+        norm = normalize_part_number(pn)
+        if not norm:
+            continue
+        norms[pn] = norm
+        conds.append(_norm_expr(Product.part_number).ilike(norm))
+        conds.append(_norm_expr(Product.supplier_code).ilike(norm))
+    if not conds:
+        return {}
+
+    session = get_session()
+    try:
+        rows = (
+            session.query(
+                Product.part_number,
+                Product.supplier_code,
+                Transaction.price,
+                Transaction.date,
+                Transaction.doc_type,
+                Transaction.doc_number,
+                Supplier.name.label("vendor_name"),
+            )
+            .join(Transaction, Transaction.product_id == Product.id)
+            .join(Supplier, Transaction.supplier_id == Supplier.id)
+            .filter(
+                or_(*conds),
+                Transaction.doc_type.in_(("Quote", "SalesOrder")),
+                Transaction.price.isnot(None),
+            )
+            .order_by(Transaction.date.desc().nulls_last())
+            .all()
+        )
+    finally:
+        session.close()
+
+    result: dict[str, dict] = {}
+    for r in rows:
+        # Rows are globally date-ordered, so the first hit per part number
+        # is that part number's latest sale.
+        for pn, norm in norms.items():
+            pn_norm = normalize_part_number(r.part_number or "")
+            sc_norm = normalize_part_number(r.supplier_code or "")
+            if pn_norm != norm and sc_norm != norm:
+                continue
+            if pn in result:
+                break
+            result[pn] = {
+                "price": float(r.price),
+                "date": str(r.date) if r.date else None,
+                "vendor": r.vendor_name or "",
+                "doc_type": r.doc_type,
+                "doc_label": "Quote" if r.doc_type == "Quote" else "Sale",
+                "doc_number": r.doc_number,
+            }
+            break
+    return result
+
+
 # Brand names treated as "no brand" during classification — never looked up.
 BRAND_NAME_EXCLUSIONS = ("other", "n/a", "na", "none", "unknown")
 
