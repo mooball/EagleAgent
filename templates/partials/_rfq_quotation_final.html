@@ -157,6 +157,10 @@
                         <button type="button" @click.stop="openSyncStatus({{ item.line }})"
                                 class="inline-block w-3 h-3 rounded-full bg-green-500 hover:ring-2 hover:ring-green-300 transition-shadow cursor-pointer"
                                 title="Ready to sync — click for details"></button>
+                        {% elif item.sync_status == 'warning' %}
+                        <button type="button" @click.stop="openSyncStatus({{ item.line }})"
+                                class="inline-block w-3 h-3 rounded-full bg-amber-500 hover:ring-2 hover:ring-amber-300 transition-shadow cursor-pointer"
+                                title="Warnings — click for details"></button>
                         {% else %}
                         <button type="button" @click.stop="openSyncStatus({{ item.line }})"
                                 class="inline-block w-3 h-3 rounded-full bg-red-500 hover:ring-2 hover:ring-red-300 transition-shadow cursor-pointer"
@@ -222,6 +226,12 @@
                                 <template x-if="!syncIssue(syncModal.item, check.key)">
                                     <span class="text-gray-700 dark:text-gray-200" x-text="check.label"></span>
                                 </template>
+                            </div>
+                        </template>
+                        <template x-for="w in (syncModal.item && syncModal.item.sync_warnings || [])" :key="w.key">
+                            <div class="flex items-start gap-2 text-sm">
+                                <span class="text-amber-500 shrink-0 font-semibold">!</span>
+                                <span class="text-amber-600 dark:text-amber-400" x-text="w.label"></span>
                             </div>
                         </template>
                     </div>

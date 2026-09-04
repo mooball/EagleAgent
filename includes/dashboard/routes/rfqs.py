@@ -463,7 +463,10 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
       - product_part_number  — linked product's part number
       - brand_ns_id          — NetSuite internal ID of the item's brand
                                (exact local-DB match only)
-      - sync_status          — 'ready' | 'needs_item' | 'no_match'
+      - sync_status          — 'ready' | 'warning' | 'missing'
+      - sync_issues          — blocking issues (stopper for syncing)
+      - sync_warnings        — non-blocking warnings (e.g. possible
+                               supplier duplicates)
       - selected_supplier    — the supplier dict with quote_status == 'selected'
       - missing_department / missing_cost / missing_sale / missing_supplier
 
@@ -566,19 +569,23 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                     selected["supplier_email"] = (contact.get("email") or "").strip()
                     selected["supplier_contact"] = (contact.get("name") or "").strip()
 
-            # Mandatory-for-sync rules (UI-enforced even if NetSuite doesn't require them).
-            # Item match is temporary — lifted once the system auto-creates parts.
+            # Mandatory-for-sync rules (UI-enforced even if NetSuite doesn't
+            # require them). Not-in-NetSuite is deliberately NOT a stopper:
+            # products and brands get pushed to NetSuite during the sync flow.
             from includes.netsuite.departments import DEPARTMENT_BY_ID
             issues = []
-            if not item.get("product_id") or not product:
+            warnings = []
+            if not (item.get("part_number") or "").strip():
                 issues.append({
                     "key": "item",
-                    "label": "No matching product — classify the line against an inventory item",
+                    "label": "Part number not set — classify the line against an inventory item",
                 })
-            elif not product.netsuite_id:
-                issues.append({
-                    "key": "item",
-                    "label": "Product not in NetSuite — push it to NetSuite first",
+            elif not item.get("product_id") or not product:
+                # A part number with no DB product match just means the part
+                # isn't in NetSuite yet — it gets created during the sync.
+                warnings.append({
+                    "key": "item_unmatched",
+                    "label": "No matching product in the database — a new NetSuite item will be created",
                 })
             if not (item.get("brand") or "").strip():
                 issues.append({
@@ -601,7 +608,7 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                     "label": "Supplier not selected — choose one on the Selection tab",
                 })
             elif selected.get("near_matches"):
-                issues.append({
+                warnings.append({
                     "key": "supplier_duplicate",
                     "label": "Possible duplicate — matches "
                              + ", ".join(nm["name"] for nm in selected["near_matches"]),
@@ -613,7 +620,13 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                 })
 
             item["sync_issues"] = issues
-            item["sync_status"] = "ready" if not issues else "missing"
+            item["sync_warnings"] = warnings
+            if issues:
+                item["sync_status"] = "missing"
+            elif warnings:
+                item["sync_status"] = "warning"
+            else:
+                item["sync_status"] = "ready"
             if not issues:
                 ready_count += 1
 
