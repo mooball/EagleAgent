@@ -148,6 +148,10 @@ def create_vendor(
     go_source_email: Optional[str] = None,
     external_id: Optional[str] = None,
     custom_form_id: Optional[str] = None,
+    address: Optional[dict] = None,
+    address_label: str = "Main",
+    default_shipping: bool = True,
+    default_billing: bool = True,
     writeback_local: bool = True,
 ) -> CreateResult:
     """Create a vendor in NetSuite.
@@ -157,6 +161,12 @@ def create_vendor(
     Company type, AUD currency, legal name = company name, tax item GST
     (AU) / FREE (international). The Go Source custom email fields default
     from ``go_source_email`` or ``email``.
+
+    ``address`` is an optional dict with any of: addr1, addr2, city, state,
+    zip, country. When given, it is added to the vendor's address book with
+    ``address_label`` (default "Main") and marked default billing/shipping.
+    ``country`` may be a dict ref, a 2-letter ISO code (sent as internal id),
+    or a full country name (sent as refName).
     """
     if not company_name or not company_name.strip():
         return CreateResult(
@@ -172,7 +182,7 @@ def create_vendor(
         "subsidiary": {"id": SUBSIDIARY_ID},
         "isPerson": bool(is_person),
         "legalName": (legal_name or company_name).strip(),
-        "taxItem": {"id": str(tax_item_id or resolve_tax_item(country))},
+        "taxItem": {"id": str(tax_item_id or resolve_tax_item(country or (address or {}).get("country")))},
         "currency": {"id": str(currency_id or CURRENCY_AUD)},
         "currencyList": {
             "items": [{"currency": {"id": str(currency_id or CURRENCY_AUD)}}]
@@ -197,6 +207,11 @@ def create_vendor(
         payload["custentity_go_souce_email_address"] = go_source
     if external_id:
         payload["externalId"] = external_id
+    address_entry = _build_address_book(
+        address, address_label, default_shipping, default_billing
+    )
+    if address_entry is not None:
+        payload["addressBook"] = {"items": [address_entry]}
 
     try:
         netsuite_id = client.create_record("vendor", payload)
@@ -212,6 +227,7 @@ def create_vendor(
         _writeback_supplier_sync(
             company_name, netsuite_id,
             url=url, country=country,
+            address=address,
             currency_symbol=_currency_symbol(currency_id),
         )
 
@@ -228,10 +244,49 @@ def ensure_vendor(company_name: str, **kwargs) -> CreateResult:
                 company_name, existing,
                 url=kwargs.get("url"),
                 country=kwargs.get("country"),
+                address=kwargs.get("address"),
                 currency_symbol=_currency_symbol(kwargs.get("currency_id")),
             )
         return CreateResult(success=True, netsuite_id=existing, record_type="vendor")
     return create_vendor(company_name, **kwargs)
+
+
+def _build_address_book(
+    address: Optional[dict],
+    label: str,
+    default_shipping: bool,
+    default_billing: bool,
+) -> Optional[dict]:
+    """Build an addressBook sublist item from an address dict.
+
+    Returns None when no address fields are provided (nothing to add).
+    """
+    if not address or not isinstance(address, dict):
+        return None
+    addr: dict = {}
+    for key in ("addr1", "addr2", "city", "state", "zip"):
+        if address.get(key):
+            addr[key] = str(address[key]).strip()
+    if address.get("country"):
+        cval = address["country"]
+        if isinstance(cval, dict):
+            addr["country"] = cval
+        else:
+            cstr = str(cval).strip()
+            # Country internal ids ARE the 2-letter ISO codes (verified live);
+            # full names work via refName. refName with an ISO code is rejected.
+            if len(cstr) == 2 and cstr.isalpha():
+                addr["country"] = {"id": cstr.upper()}
+            else:
+                addr["country"] = {"refName": cstr}
+    if not addr:
+        return None
+    return {
+        "label": (label or "Main").strip() or "Main",
+        "defaultBilling": bool(default_billing),
+        "defaultShipping": bool(default_shipping),
+        "addressBookAddress": addr,
+    }
 
 
 # ── Local writeback ────────────────────────────────────────────────────────
@@ -253,6 +308,7 @@ def _writeback_supplier_sync(
     netsuite_id: str,
     url: Optional[str] = None,
     country: Optional[str] = None,
+    address: Optional[dict] = None,
     currency_symbol: Optional[str] = None,
 ) -> None:
     """Record the new vendor ID on the matching local supplier row
@@ -288,6 +344,20 @@ def _writeback_supplier_sync(
             existing.country = country.strip()
         if currency_symbol and not existing.currency:
             existing.currency = currency_symbol
+        # Address fields — only fill empty local columns
+        addr = address or {}
+        if addr.get("addr1") and not existing.address_1:
+            existing.address_1 = str(addr["addr1"]).strip()
+        if addr.get("addr2") and not existing.address_2:
+            existing.address_2 = str(addr["addr2"]).strip()
+        if addr.get("city") and not existing.city:
+            existing.city = str(addr["city"]).strip()
+        if addr.get("state") and not existing.state:
+            existing.state = str(addr["state"]).strip()
+        if addr.get("zip") and not existing.postcode:
+            existing.postcode = str(addr["zip"]).strip()
+        if addr.get("country") and not existing.country:
+            existing.country = str(addr["country"]).strip()
         existing.source = "netsuite"
         existing.modified_by = "netsuite"
         session.commit()
