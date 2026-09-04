@@ -92,27 +92,27 @@
                     {% if item.match == 'specific' %}
                     <span class="hs-tooltip [--placement:right] inline-block">
                         <span class="block w-2.5 h-2.5 rounded-full bg-green-500"></span>
-                        <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700 whitespace-nowrap" role="tooltip">Specific — part number + description (brand discoverable)</span>
+                        <span class="hs-tooltip-content hidden z-50 max-w-[300px] py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700" role="tooltip">Specific — part number + description (brand discoverable)</span>
                     </span>
                     {% elif item.match == 'branded' %}
                     <span class="hs-tooltip [--placement:right] inline-block">
                         <span class="block w-2.5 h-2.5 rounded-full bg-blue-500"></span>
-                        <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700 whitespace-nowrap" role="tooltip">Branded — brand + description, no part number</span>
+                        <span class="hs-tooltip-content hidden z-50 max-w-[300px] py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700" role="tooltip">Branded — brand + description, no part number</span>
                     </span>
                     {% elif item.match == 'generic' %}
                     <span class="hs-tooltip [--placement:right] inline-block">
                         <span class="block w-2.5 h-2.5 rounded-full bg-purple-500"></span>
-                        <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700 whitespace-nowrap" role="tooltip">Generic — description only</span>
+                        <span class="hs-tooltip-content hidden z-50 max-w-[300px] py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700" role="tooltip">Generic — description only</span>
                     </span>
                     {% elif item.match == 'discrepancy' %}
                     <span class="hs-tooltip [--placement:right] inline-block">
                         <span class="block w-2.5 h-2.5 rounded-full bg-orange-500"></span>
-                        <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700 whitespace-nowrap" role="tooltip">{{ item.notes or 'Discrepancy — part number mismatch or unverifiable' }}</span>
+                        <span class="hs-tooltip-content hidden z-50 max-w-[300px] py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700" role="tooltip">{{ item.notes or 'Discrepancy — part number mismatch or unverifiable' }}</span>
                     </span>
                     {% else %}
                     <span class="hs-tooltip [--placement:right] inline-block">
                         <span class="block w-2.5 h-2.5 rounded-full bg-gray-400"></span>
-                        <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700 whitespace-nowrap" role="tooltip">Unmatched — not yet classified</span>
+                        <span class="hs-tooltip-content hidden z-50 max-w-[300px] py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700" role="tooltip">Unmatched — not yet classified</span>
                     </span>
                     {% endif %}
                 </td>

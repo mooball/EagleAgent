@@ -16,7 +16,7 @@
         <div class="flex items-center gap-3 text-[11px] text-gray-500 dark:text-gray-400">
             <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500"></span> Ready</span>
             <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-500"></span> Missing requirements</span>
-            <span class="inline-flex items-center gap-1"><span class="px-1 py-0.5 rounded text-[9px] leading-none font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">NS</span> Needs to be created in NetSuite</span>
+            <span class="inline-flex items-center gap-1"><span class="px-1 py-0.5 rounded text-[9px] leading-none font-semibold bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">NS</span> Needs to be created in NetSuite</span>
             {% if rfq.opportunity_id %}
             <span class="inline-flex items-center gap-2">
                 {% if sync_can_sync %}
@@ -66,7 +66,7 @@
                             <span class="font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">{{ item.part_number }}</span>
                             {% if not item.product_ns_id %}
                             <span class="hs-tooltip inline-flex items-center shrink-0">
-                                <span class="hs-tooltip-toggle text-[9px] px-1 py-0.5 rounded font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">NS</span>
+                                <span class="hs-tooltip-toggle text-[9px] px-1 py-0.5 rounded font-semibold bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">NS</span>
                                 <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700 whitespace-nowrap" role="tooltip">Part number will be added to NetSuite</span>
                             </span>
                             {% endif %}
@@ -93,7 +93,7 @@
                         {{ item.brand }}
                         {% if not item.brand_ns_id and not item.brand_is_excluded %}
                         <span class="hs-tooltip inline-flex items-center shrink-0 ml-1">
-                            <span class="hs-tooltip-toggle text-[9px] px-1 py-0.5 rounded font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">NS</span>
+                            <span class="hs-tooltip-toggle text-[9px] px-1 py-0.5 rounded font-semibold bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">NS</span>
                             <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700 whitespace-nowrap" role="tooltip">Brand will be added to NetSuite</span>
                         </span>
                         {% endif %}
@@ -138,10 +138,12 @@
                             </span>
                             {% endif %}
                             {% if not sel.ns_linked %}
+                            <span class="hs-tooltip inline-flex">
                             <button type="button" data-hs-overlay="#ns-supplier-modal"
                                     @click="openNsSupplier({{ item.line }})"
-                                    class="ml-1 inline-flex items-center shrink-0 text-[9px] px-1 py-0.5 rounded font-semibold bg-blue-100 text-blue-700 border border-blue-300 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-600 hover:bg-blue-200 dark:hover:bg-blue-900/60 transition-colors"
-                                    title="Add this Supplier to NetSuite">NS+</button>
+                                    class="ml-1 inline-flex items-center shrink-0 text-[9px] px-1 py-0.5 rounded font-semibold bg-red-100 text-red-700 border border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-600 hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors">NS+</button>
+                            <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700 whitespace-nowrap" role="tooltip">Add this Supplier to NetSuite</span>
+                            </span>
                             {% endif %}
                         </span>
                         {% else %}
