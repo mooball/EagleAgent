@@ -548,6 +548,23 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                         }
                         for f in flagged
                     ]
+                    # Prefill fields for the NetSuite supplier modal
+                    selected["supplier_name"] = sup.name or ""
+                    selected["supplier_url"] = sup.url or ""
+                    selected["supplier_country"] = sup.country or ""
+                    selected["supplier_city"] = sup.city or ""
+                    selected["supplier_state"] = sup.state or ""
+                    selected["supplier_zip"] = sup.postcode or ""
+                    selected["supplier_addr1"] = sup.address_1 or ""
+                    selected["supplier_addr2"] = sup.address_2 or ""
+                    selected["supplier_terms"] = sup.terms or ""
+                    selected["supplier_currency"] = sup.currency or ""
+                    contact = {}
+                    if isinstance(sup.contacts, list) and sup.contacts:
+                        contact = sup.contacts[0] or {}
+                    selected["supplier_phone"] = (contact.get("phone") or "").strip()
+                    selected["supplier_email"] = (contact.get("email") or "").strip()
+                    selected["supplier_contact"] = (contact.get("name") or "").strip()
 
             # Mandatory-for-sync rules (UI-enforced even if NetSuite doesn't require them).
             # Item match is temporary — lifted once the system auto-creates parts.
@@ -631,6 +648,18 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
     _annotate_brand_db_status(rfq)
     if ctx["active_tab"] == "selection":
         _annotate_last_sale(rfq)
+    if ctx["active_tab"] == "quotation":
+        from includes.netsuite.records.vendor import TERM_OPTIONS, CURRENCY_OPTIONS
+        from includes.netsuite.countries import country_option_groups, AU_STATES, COUNTRY_CURRENCY
+        ctx["ns_terms_options"] = [
+            {"id": v, "name": k} for k, v in TERM_OPTIONS.items()
+        ]
+        ctx["ns_currency_options"] = [
+            {"id": v, "name": k} for k, v in CURRENCY_OPTIONS.items()
+        ]
+        ctx["ns_country_options"] = country_option_groups()
+        ctx["ns_au_states"] = list(AU_STATES)
+        ctx["ns_country_currency"] = COUNTRY_CURRENCY
     if ctx["active_tab"] == "suppliers":
         ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
     if ctx["active_tab"] == "communications":
@@ -884,6 +913,137 @@ def _render_rfq_detail_partial_response(request: Request, user: dict, rfq: dict,
     response = templates.TemplateResponse(request, "partials/rfq_detail.html", _rfq_detail_context(rfq, user, active_tab))
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@router.post("/partial/rfqs/{rfq_id}/supplier-to-netsuite")
+async def supplier_to_netsuite(request: Request, rfq_id: str,
+                                 user: dict = Depends(require_user)):
+    """Create a NetSuite vendor from a local supplier (Quotation tab NS+ flow).
+
+    Updates the local supplier row with the form fields, then ensures the
+    vendor exists in NetSuite (exact entityId match prevents duplicates) and
+    writes the NetSuite internal ID back locally.
+    """
+    from uuid import UUID
+    from includes.dashboard.supplier_dedup import open_near_miss_pairs
+    from includes.netsuite.records.vendor import ensure_vendor, resolve_currency, TERM_OPTIONS
+
+    body = await request.json()
+    supplier_id = body.get("supplier_id")
+    if not supplier_id:
+        return JSONResponse({"error": "Missing supplier_id"}, status_code=400)
+
+    url = phone = email = contact_name = None
+    addr1 = addr2 = city = state = zipcode = country = currency = terms_id = None
+
+    session = _helpers.get_session()
+    try:
+        try:
+            supplier = session.query(Supplier).filter(
+                Supplier.id == UUID(str(supplier_id))
+            ).first()
+        except ValueError:
+            supplier = None
+        if supplier is None:
+            return JSONResponse({"error": "Supplier not found"}, status_code=404)
+
+        # Duplicate guard — block unless the user confirmed
+        flagged = open_near_miss_pairs(session, supplier.id)
+        if flagged and not body.get("duplicate_checked"):
+            names = ", ".join(f["name"] for f in flagged)
+            return JSONResponse(
+                {"error": f"Possible duplicate supplier(s): {names}. Confirm before continuing."},
+                status_code=400,
+            )
+
+        # Update local supplier fields from the form
+        name = (body.get("name") or supplier.name or "").strip()
+        if not name:
+            return JSONResponse({"error": "Company name is required"}, status_code=400)
+        supplier.name = name
+        if body.get("url") is not None:
+            url = (body.get("url") or "").strip() or None
+            supplier.url = url
+        country = (body.get("country") or "").strip() or None
+        supplier.country = country
+        addr1 = (body.get("addr1") or "").strip() or None
+        addr2 = (body.get("addr2") or "").strip() or None
+        city = (body.get("city") or "").strip() or None
+        state = (body.get("state") or "").strip() or None
+        zipcode = (body.get("zip") or "").strip() or None
+        supplier.address_1, supplier.address_2 = addr1, addr2
+        supplier.city, supplier.state, supplier.postcode = city, state, zipcode
+        currency = (body.get("currency") or "").strip().upper() or None
+        if currency:
+            supplier.currency = currency
+        terms_id = body.get("terms_id")
+        if terms_id:
+            term_name = next(
+                (n for n, tid in TERM_OPTIONS.items() if tid == str(terms_id)), None
+            )
+            if term_name:
+                supplier.terms = term_name
+        phone = (body.get("phone") or "").strip() or None
+        email = (body.get("email") or "").strip() or None
+        contact_name = (body.get("contact_name") or "").strip() or None
+        if phone or email or contact_name:
+            contacts = supplier.contacts if isinstance(supplier.contacts, list) else []
+            if not contacts:
+                contacts = [{}]
+            contact = dict(contacts[0] or {})
+            if phone:
+                contact["phone"] = phone
+            if email:
+                contact["email"] = email
+            if contact_name:
+                contact["name"] = contact_name
+            contacts[0] = contact
+            supplier.contacts = contacts
+        session.commit()
+
+        if supplier.netsuite_id:
+            return JSONResponse(
+                {"ok": True, "netsuite_id": supplier.netsuite_id, "already_linked": True}
+            )
+    finally:
+        session.close()
+
+    address = {
+        "addr1": addr1, "addr2": addr2, "city": city,
+        "state": state, "zip": zipcode, "country": country,
+    }
+    if not any(address.values()):
+        address = None
+
+    result = ensure_vendor(
+        company_name=name,
+        url=url,
+        country=country,
+        phone=phone,
+        email=email,
+        go_source_contact=contact_name,
+        address=address,
+        terms_id=terms_id,
+        currency_id=resolve_currency(currency),
+        writeback_local=False,
+    )
+    if not result.success:
+        return JSONResponse(
+            {"error": result.error or "Failed to create vendor in NetSuite"},
+            status_code=502,
+        )
+
+    # Write the NetSuite ID back onto the local supplier row
+    session = _helpers.get_session()
+    try:
+        row = session.query(Supplier).filter(Supplier.id == UUID(str(supplier_id))).first()
+        if row:
+            row.netsuite_id = result.netsuite_id
+            session.commit()
+    finally:
+        session.close()
+
+    return JSONResponse({"ok": True, "netsuite_id": result.netsuite_id})
 
 
 # ---------------------------------------------------------------------------

@@ -55,6 +55,23 @@ _CURRENCY_IDS = {
     "PHP": "10", "ZAR": "11",
 }
 
+#: Public aliases used by the vendor UI forms.
+CURRENCY_OPTIONS = _CURRENCY_IDS
+
+#: Term options (display name → internal id) from the NetSuite terms list.
+TERM_OPTIONS = {
+    "Net 14 Days": "1",
+    "30 Days": "2",
+    "Due on receipt": "4",
+    "Net 7 Days": "7",
+    "Prepayment": "8",
+    "30 days EOM": "9",
+    "Payment after delivery": "18",
+    "End of Next Month (EOM)": "19",
+    "45 Days from EOM": "20",
+    "Pay Immediately": "21",
+}
+
 
 def _suiteql_literal(value: str) -> str:
     """Escape a string literal for inlining into SuiteQL."""
@@ -146,6 +163,7 @@ def create_vendor(
     tax_item_id: Optional[str] = None,
     country: Optional[str] = None,
     go_source_email: Optional[str] = None,
+    go_source_contact: Optional[str] = None,
     external_id: Optional[str] = None,
     custom_form_id: Optional[str] = None,
     address: Optional[dict] = None,
@@ -159,8 +177,10 @@ def create_vendor(
     Only companyName is required. Category and terms are only sent when
     explicitly provided. Defaults: Master Supplier custom form (97),
     Company type, AUD currency, legal name = company name, tax item GST
-    (AU) / FREE (international). The Go Source custom email fields default
-    from ``go_source_email`` or ``email``.
+    (AU) / FREE (international). The Go Source contact-name field defaults
+    from ``go_source_contact`` (name of the person at the company, used
+    when sending emails) and the Go Source email address from
+    ``go_source_email`` or ``email``.
 
     ``address`` is an optional dict with any of: addr1, addr2, city, state,
     zip, country. When given, it is added to the vendor's address book with
@@ -201,10 +221,12 @@ def create_vendor(
         payload["phone"] = phone.strip()
     if email:
         payload["email"] = email.strip()
-    go_source = (go_source_email or email or "").strip()
-    if go_source:
-        payload["custentity_go_souce_email_name"] = go_source
-        payload["custentity_go_souce_email_address"] = go_source
+    go_source_name = (go_source_contact or "").strip()
+    if go_source_name:
+        payload["custentity_go_souce_email_name"] = go_source_name
+    go_source_address = (go_source_email or email or "").strip()
+    if go_source_address:
+        payload["custentity_go_souce_email_address"] = go_source_address
     if external_id:
         payload["externalId"] = external_id
     address_entry = _build_address_book(
