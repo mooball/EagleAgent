@@ -27,6 +27,9 @@ ALLOWED = {
     "includes/chat/context_chainlit.py",
     "includes/chat/data_layer.py",
     "includes/chat/local_storage_client.py",
+    # Track A transcript adapter — reads/writes Chainlit's threads/steps
+    # tables via the configured data layer (parent plan §11).
+    "includes/chat/transcript.py",
     # Removed from this list in Phase 5, when the bridge is deleted.
     "includes/agent_bridge.py",
 }

@@ -253,8 +253,14 @@
             <!-- Overlay to prevent iframe from stealing mouse events during resize -->
             <div x-show="isResizing" class="absolute inset-0 z-40"></div>
 
+            {% if user and is_beta_chat_user(user.email) %}
+            <!-- Beta chat UI — same-document embed (plan-chatMigration-beta) -->
+            <div id="chat-ui-embed" class="flex-1 w-full min-h-0 overflow-hidden"
+                 hx-get="/chat-ui/embed" hx-trigger="load" hx-swap="innerHTML"></div>
+            {% else %}
             <!-- Chat iframe — never destroyed, only hidden -->
             <iframe id="agent-iframe" src="/chat" class="flex-1 w-full border-0"></iframe>
+            {% endif %}
         </aside>
     </div>
 
@@ -313,38 +319,13 @@
                     window.addEventListener('message', (event) => {
                         if (event.origin !== window.location.origin) return;
                         if (event.data?.type === 'agent_navigate') {
-                            const url = event.data.payload?.url;
-                            if (url) {
-                                htmx.ajax('GET', '/partial' + url, {
-                                    target: '#main-content',
-                                    swap: 'innerHTML'
-                                });
-                                history.pushState({}, '', url);
-                                if (this.agentState === 'expanded') {
-                                    this.agentState = 'panel';
-                                }
-                            }
-                        }
-                        if (event.data?.type === 'dashboard_refresh') {
-                            // Re-fetch the current partial to refresh displayed data
-                            const path = window.location.pathname;
-                            htmx.ajax('GET', '/partial' + path, {
-                                target: '#main-content',
-                                swap: 'innerHTML'
-                            });
-                            // Don't clear agentWorking here — tools send refresh
-                            // mid-process; only explicit agent_done should clear it.
-                        }
-                        if (event.data?.type === 'agent_working') {
-                            this.agentWorking = true;
-                            this.agentWorkingLabel = event.data.payload?.label || 'Agent working...';
-                            // Reset safety timeout on each working signal
-                            clearTimeout(this._agentWorkingTimeout);
-                            this._agentWorkingTimeout = setTimeout(() => { this.agentWorking = false; }, 600000);
-                        }
-                        if (event.data?.type === 'agent_done') {
-                            this.agentWorking = false;
-                            clearTimeout(this._agentWorkingTimeout);
+                            this._handleDashboardCommand('agent_navigate', event.data.payload || {});
+                        } else if (event.data?.type === 'dashboard_refresh') {
+                            this._handleDashboardCommand('dashboard_refresh', event.data.payload || {});
+                        } else if (event.data?.type === 'agent_working') {
+                            this._handleDashboardCommand('agent_working', event.data.payload || {});
+                        } else if (event.data?.type === 'agent_done') {
+                            this._handleDashboardCommand('agent_done', event.data.payload || {});
                         }
                         if (event.data?.type === 'chat_profile_change' && event.data.profile) {
                             this._chatProfile = event.data.profile;
@@ -452,6 +433,49 @@
                         }
                     });
 
+                    // Beta chat UI (same-document embed) bridge — replaces the
+                    // postMessage glue for users on the /chat-ui allowlist.
+                    if (!document.getElementById('agent-iframe')) {
+                        document.addEventListener('chat-ui:thread', (e) => {
+                            const newThreadId = e.detail && e.detail.threadId;
+                            if (!newThreadId) return;
+                            this._activeThreadId = newThreadId;
+                            this.pushContext();
+                            this._expectingBoundThread = null;
+                            this._ensureRfqBound();
+                            if (this._pendingRfqBind) {
+                                const isNewRfq = this._pendingNewRfq;
+                                this._pendingRfqBind = null;
+                                this._pendingNewRfq = false;
+                                // Binding already handled by _ensureRfqBound above,
+                                // but still handle the new_rfq intent trigger.
+                                if (isNewRfq) {
+                                    fetch('/api/agent-bridge', {
+                                        method: 'POST',
+                                        headers: {'Content-Type': 'application/json'},
+                                        credentials: 'same-origin',
+                                        body: JSON.stringify({action: {name: 'new_rfq', payload: {}}}),
+                                    }).catch(() => {});
+                                }
+                            }
+                        });
+                        document.addEventListener('chat-ui:profile', (e) => {
+                            this._chatProfile = (e.detail && e.detail.label) || 'Eagle Agent';
+                        });
+                        ['dashboard_refresh', 'agent_navigate', 'agent_working', 'agent_done'].forEach((cmd) => {
+                            document.addEventListener('dashboard:' + cmd, (e) => {
+                                this._handleDashboardCommand(cmd, (e.detail && e.detail.payload) || {});
+                            });
+                        });
+                        document.addEventListener('chat-ui:ready', () => {
+                            // The embed finished loading — re-run routing. Navigate
+                            // events dispatched before it existed were dropped.
+                            this._lastContextJson = null;
+                            this._lastContextIdentity = null;
+                            this.updateContext();
+                        });
+                    }
+
                     // Set initial context from the page (may switch iframe to an RFQ thread)
                     this.updateContext();
 
@@ -463,9 +487,8 @@
                             .then(r => r.json())
                             .then(data => {
                                 if (data.thread_id) {
-                                    if (this._setIframeSrc('/chat/thread/' + data.thread_id)) {
-                                        this._activeThreadId = data.thread_id;
-                                    }
+                                    this._navigateChat('/chat/thread/' + data.thread_id);
+                                    this._activeThreadId = data.thread_id;
                                 }
                             })
                             .catch(() => {});
@@ -568,6 +591,23 @@
                     return iframe;
                 },
 
+                // Single choke point for chat navigation across transports.
+                // Iframe users get a src swap; beta embed users get a DOM event
+                // the panel chat listens for ('/chat/thread/{id}' or '/chat').
+                _navigateChat(src) {
+                    const iframe = document.getElementById('agent-iframe');
+                    if (iframe) {
+                        iframe.src = src;
+                        return;
+                    }
+                    let threadId = null;
+                    const m = String(src || '').match(/\/thread\/([a-f0-9-]+)/i);
+                    if (m) threadId = m[1];
+                    document.dispatchEvent(new CustomEvent('chat-ui:navigate', {
+                        detail: { threadId: threadId, fresh: !threadId }
+                    }));
+                },
+
                 updateContext() {
                     // Read context from a data attribute on #main-content or its first child
                     const el = document.querySelector('[data-dashboard-context]');
@@ -593,16 +633,14 @@
                             this._lastContextIdentity = identity;
 
                             if (identityChanged) {
-                                // Switch the chat iframe to the RFQ's bound thread
+                                // Switch the chat to the RFQ's bound thread
                                 if (newCtx.thread_id && newCtx.thread_id !== this._activeThreadId) {
-                                    const iframe = this._setIframeSrc('/chat/thread/' + newCtx.thread_id);
-                                    if (iframe) {
-                                        this._activeThreadId = newCtx.thread_id;
-                                        // Flag: we expect the iframe to load this specific thread.
-                                        // If Chainlit reports a different thread_id back, it means
-                                        // the bound thread couldn't be resumed (stale/deleted).
-                                        this._expectingBoundThread = newCtx.thread_id;
-                                    }
+                                    this._navigateChat('/chat/thread/' + newCtx.thread_id);
+                                    this._activeThreadId = newCtx.thread_id;
+                                    // Flag: we expect the chat to load this specific thread.
+                                    // If Chainlit reports a different thread_id back, it means
+                                    // the bound thread couldn't be resumed (stale/deleted).
+                                    this._expectingBoundThread = newCtx.thread_id;
                                     // Track which RFQ owns this thread
                                     this._activeThreadRfqId = newCtx.id;
                                     // Auto-open the agent panel
@@ -625,7 +663,7 @@
                                         this._pendingRfqBind = newCtx.id;
                                         // Track whether this is a brand-new blank RFQ
                                         this._pendingNewRfq = !newCtx.customer;
-                                        this._setIframeSrc('/chat');
+                                        this._navigateChat('/chat');
                                     }
                                     if (this.agentState === 'closed') {
                                         this.agentState = 'panel';
@@ -642,7 +680,7 @@
                 pushContext() {
                     // Unwrap Alpine proxy to a plain object for postMessage/fetch
                     const ctx = JSON.parse(JSON.stringify(this.currentContext));
-                    // Include the active thread so the iframe can detect mismatches
+                    // Include the active thread so the chat can detect mismatches
                     ctx._activeThreadId = this._activeThreadId || null;
                     const iframe = document.getElementById('agent-iframe');
                     if (iframe?.contentWindow) {
@@ -650,9 +688,17 @@
                             type: 'dashboard_context',
                             payload: ctx
                         }, window.location.origin);
+                    } else {
+                        // Beta chat UI: same document — push straight to the server.
+                        fetch('/api/dashboard-context', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            credentials: 'same-origin',
+                            body: JSON.stringify(ctx),
+                        }).catch(() => {});
                     }
                     // The iframe listener (embedded.js) will push to the server,
-                    // so we don't need to duplicate the POST here.
+                    // so we don't need to duplicate the POST there.
                 },
 
                 updateActiveNav() {
@@ -672,6 +718,41 @@
                         link.classList.toggle('dark:hover:text-gray-200', !isActive);
                         link.classList.toggle('dark:hover:bg-gray-700', !isActive);
                     });
+                },
+
+                _handleDashboardCommand(type, payload) {
+                    payload = payload || {};
+                    if (type === 'agent_navigate') {
+                        const url = payload.url;
+                        if (url) {
+                            htmx.ajax('GET', '/partial' + url, {
+                                target: '#main-content',
+                                swap: 'innerHTML'
+                            });
+                            history.pushState({}, '', url);
+                            if (this.agentState === 'expanded') {
+                                this.agentState = 'panel';
+                            }
+                        }
+                    } else if (type === 'dashboard_refresh') {
+                        // Re-fetch the current partial to refresh displayed data
+                        const path = window.location.pathname;
+                        htmx.ajax('GET', '/partial' + path, {
+                            target: '#main-content',
+                            swap: 'innerHTML'
+                        });
+                        // Don't clear agentWorking here — tools send refresh
+                        // mid-process; only explicit agent_done should clear it.
+                    } else if (type === 'agent_working') {
+                        this.agentWorking = true;
+                        this.agentWorkingLabel = payload.label || 'Agent working...';
+                        // Reset safety timeout on each working signal
+                        clearTimeout(this._agentWorkingTimeout);
+                        this._agentWorkingTimeout = setTimeout(() => { this.agentWorking = false; }, 600000);
+                    } else if (type === 'agent_done') {
+                        this.agentWorking = false;
+                        clearTimeout(this._agentWorkingTimeout);
+                    }
                 },
 
                 _ensureRfqBound() {
@@ -699,8 +780,8 @@
                                 // Thread is already bound to another RFQ — start a fresh thread
                                 console.log('[bind] Thread already bound to another RFQ, starting fresh');
                                 this._activeThreadId = null;
-                                this._setIframeSrc('/chat');   // deliberately a fresh session
-                                // The new thread_id message from the iframe will trigger _ensureRfqBound again
+                                this._navigateChat('/chat');   // iframe: fresh session; beta: auto-create
+                                // The new thread_id signal will trigger _ensureRfqBound again
                             }
                         }).catch(() => {});
                     }

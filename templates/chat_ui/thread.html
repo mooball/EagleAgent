@@ -1,0 +1,275 @@
+{% extends "base.html" %}
+
+{% block title %}{{ thread.name }} — EagleAgent{% endblock %}
+
+{% block content %}
+<div class="pt-4 flex flex-col" style="height: calc(100vh - 7.5rem);">
+    <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2 min-w-0">
+            <a href="/chat-ui" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 p-1" title="Back to chats">←</a>
+            <h1 id="thread-name" class="text-lg font-semibold text-gray-800 dark:text-gray-100 truncate">{{ thread.name }}</h1>
+            <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">BETA</span>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+            <select id="agent-select"
+                    class="py-1.5 px-2 border-gray-200 rounded-lg text-xs dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                {% for key, spec in agents.items() %}
+                <option value="{{ key }}" {% if thread.metadata and thread.metadata.get('agent', 'eagle') == key %}selected{% endif %}>{{ spec.label }}</option>
+                {% endfor %}
+            </select>
+            <button type="button" id="stop-btn" hidden
+                    class="py-1.5 px-3 inline-flex items-center gap-x-1.5 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700">
+                ⏹ Stop
+            </button>
+            <button type="button" id="delete-btn"
+                    class="p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-600 dark:hover:text-red-400"
+                    title="Delete conversation">🗑</button>
+        </div>
+    </div>
+
+    <div id="messages"
+         class="flex-1 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3"></div>
+
+    <div id="error-bar" hidden
+         class="mt-2 rounded-lg bg-red-50 border border-red-200 p-3 text-xs text-red-700 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300"></div>
+
+    <div class="mt-2 flex items-end gap-2">
+        <textarea id="composer" rows="2" placeholder="Message…"
+                  class="flex-1 py-2 px-3 border-gray-200 rounded-lg text-sm resize-none dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400"></textarea>
+        <button type="button" id="send-btn"
+                class="py-2 px-4 inline-flex items-center gap-x-2 text-sm font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+            Send
+        </button>
+    </div>
+</div>
+
+<script type="application/json" id="chat-data">
+{{ {"thread_id": thread.id, "user_email": user.email, "steps": steps} | tojson }}
+</script>
+
+<script>
+(function () {
+    var DATA = JSON.parse(document.getElementById('chat-data').textContent);
+    var THREAD_ID = DATA.thread_id;
+    var USER_EMAIL = DATA.user_email;
+    var HISTORY = DATA.steps;
+    var container = document.getElementById('messages');
+    var composer = document.getElementById('composer');
+    var sendBtn = document.getElementById('send-btn');
+    var stopBtn = document.getElementById('stop-btn');
+    var errorBar = document.getElementById('error-bar');
+    var rows = {};
+    var eventSource = null;
+
+    function stripHtml(text) {
+        // Sanitise-on-read: legacy steps.output contains baked-in HTML
+        // (unsafe_allow_html era). Never render it as live HTML.
+        return String(text || '').replace(/<[^>]*>/g, '');
+    }
+
+    function renderMarkdown(text) {
+        var clean = stripHtml(text);
+        try {
+            if (window.marked && typeof window.marked.parse === 'function') {
+                var out = window.marked.parse(clean);
+                return typeof out === 'string' ? out : String(out);
+            }
+        } catch (err) {
+            console.error('[chat-ui] markdown render failed', err);
+        }
+        var esc = document.createElement('div');
+        esc.textContent = clean;
+        return esc.innerHTML;
+    }
+
+    function rowEl(id, author, transient) {
+        var div = document.createElement('div');
+        var isUser = author === USER_EMAIL;
+        if (transient) {
+            div.className = 'text-xs text-gray-400 dark:text-gray-500 italic';
+            return div;
+        }
+        var bubble = document.createElement('div');
+        bubble.className = isUser
+            ? 'ml-auto max-w-[80%] rounded-lg bg-blue-600 text-white px-3 py-2 text-sm whitespace-pre-wrap'
+            : 'mr-auto max-w-[80%] rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-3 py-2 chat-md';
+        div.appendChild(bubble);
+        div.className = 'flex ' + (isUser ? 'justify-end' : 'justify-start');
+        return {div: div, bubble: bubble};
+    }
+
+    function getRow(id, author, transient) {
+        if (rows[id]) { return rows[id]; }
+        var el = rowEl(id, author, transient);
+        rows[id] = el;
+        container.appendChild(el.div);
+        return el;
+    }
+
+    function setText(entry, text) {
+        entry._text = String(text || '');
+        if (entry.bubble) {
+            entry.bubble.innerHTML = renderMarkdown(entry._text);
+        } else {
+            entry.div.textContent = entry._text;
+        }
+    }
+
+    function scrollToBottom() {
+        container.scrollTop = container.scrollHeight;
+    }
+
+    function renderHistory() {
+        var live = {};
+        Object.keys(rows).forEach(function (id) {
+            if (rows[id]._live) { live[id] = rows[id]; }
+        });
+        container.innerHTML = '';
+        rows = {};
+        (HISTORY || []).forEach(function (step) {
+            if (live[step.id]) {
+                rows[step.id] = live[step.id];
+                container.appendChild(live[step.id].div);
+                delete live[step.id];
+                return;
+            }
+            if (step.type === 'user_message') {
+                setText(getRow(step.id, USER_EMAIL, false), step.output);
+            } else if (step.type === 'assistant_message' && step.output) {
+                setText(getRow(step.id, step.name || 'EagleAgent', false), step.output);
+            }
+        });
+        Object.keys(live).forEach(function (id) {
+            rows[id] = live[id];
+            container.appendChild(live[id].div);
+        });
+        scrollToBottom();
+    }
+
+    function showError(msg) {
+        errorBar.textContent = msg;
+        errorBar.hidden = false;
+    }
+
+    function clearError() {
+        errorBar.hidden = true;
+    }
+
+    function setRunning(running) {
+        sendBtn.disabled = running;
+        stopBtn.hidden = !running;
+    }
+
+    function openStream() {
+        if (eventSource) { eventSource.close(); }
+        eventSource = new EventSource('/chat-ui/threads/' + THREAD_ID + '/stream');
+
+        eventSource.addEventListener('message_start', function (e) {
+            var d = JSON.parse(e.data);
+            var entry = getRow(d.id, d.author || 'EagleAgent', !!d.transient);
+            entry._live = true;
+            if (d.content) { setText(entry, d.content); }
+        });
+        eventSource.addEventListener('token', function (e) {
+            var d = JSON.parse(e.data);
+            var row = rows[d.id];
+            if (row) { setText(row, (row._text || '') + d.text); }
+            scrollToBottom();
+        });
+        eventSource.addEventListener('message_update', function (e) {
+            var d = JSON.parse(e.data);
+            if (rows[d.id]) { setText(rows[d.id], d.content); }
+        });
+        eventSource.addEventListener('message_remove', function (e) {
+            var d = JSON.parse(e.data);
+            if (rows[d.id]) {
+                rows[d.id]._live = false;
+                rows[d.id].div.remove();
+                delete rows[d.id];
+            }
+        });
+        eventSource.addEventListener('message_end', function (e) {
+            var d = JSON.parse(e.data);
+            if (rows[d.id]) { setText(rows[d.id], d.content); }
+        });
+        eventSource.addEventListener('error', function (e) {
+            var d = {};
+            try { d = JSON.parse(e.data); } catch (err) {}
+            showError(d.message || 'Something went wrong.');
+        });
+        eventSource.addEventListener('done', function () {
+            if (eventSource) { eventSource.close(); eventSource = null; }
+            setRunning(false);
+            // Re-render canonical history (persisted steps) once the run ends.
+            fetch('/chat-ui/threads/' + THREAD_ID + '/messages', {credentials: 'same-origin'})
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    HISTORY = data.steps || [];
+                    renderHistory();
+                    Object.keys(rows).forEach(function (id) { rows[id]._live = false; });
+                })
+                .catch(function () {});
+        });
+    }
+
+    function send() {
+        var text = composer.value.trim();
+        if (!text) { return; }
+        clearError();
+        composer.value = '';
+        setRunning(true);
+        fetch('/chat-ui/threads/' + THREAD_ID + '/messages', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({
+                text: text,
+                agent: document.getElementById('agent-select').value
+            })
+        }).then(function (r) {
+            return r.json().then(function (data) { return {ok: r.ok, data: data}; });
+        }).then(function (res) {
+            if (!res.ok) {
+                setRunning(false);
+                showError(res.data.error || 'Failed to send message.');
+                composer.value = text;
+                return;
+            }
+            // Render the user message locally; server also persisted it.
+            var uid = 'user-' + Date.now();
+            var u = getRow(uid, USER_EMAIL, false);
+            setText(u, text);
+            scrollToBottom();
+            openStream();
+        }).catch(function () {
+            setRunning(false);
+            showError('Network error — please retry.');
+            composer.value = text;
+        });
+    }
+
+    sendBtn.addEventListener('click', send);
+    composer.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            send();
+        }
+    });
+
+    stopBtn.addEventListener('click', function () {
+        fetch('/chat-ui/threads/' + THREAD_ID + '/stop', {
+            method: 'POST', credentials: 'same-origin'
+        }).catch(function () {});
+    });
+
+    document.getElementById('delete-btn').addEventListener('click', function () {
+        if (!confirm('Delete this conversation? This cannot be undone.')) { return; }
+        fetch('/chat-ui/threads/' + THREAD_ID, {method: 'DELETE', credentials: 'same-origin'})
+            .then(function () { window.location.href = '/chat-ui'; });
+    });
+
+    renderHistory();
+    composer.focus();
+})();
+</script>
+{% endblock %}

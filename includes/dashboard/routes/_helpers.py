@@ -85,6 +85,14 @@ def _currency_symbol(code: str | None) -> str:
 
 templates.env.globals["currency_symbol"] = _currency_symbol
 
+
+def _is_beta_chat_user(email: str) -> bool:
+    """Template helper: is this user on the /chat-ui beta allowlist?"""
+    return (email or "").lower() in config.get_beta_chat_users()
+
+
+templates.env.globals["is_beta_chat_user"] = _is_beta_chat_user
+
 router = APIRouter()
 
 PAGE_SIZE = 50
