@@ -261,6 +261,19 @@ class Config:
         """Return admin emails as a list"""
         return [email.strip().lower() for email in cls.ADMIN_EMAILS.split(",") if email.strip()]
 
+    # Beta chat UI allowlist — who can use the /chat-ui SSE POC alongside
+    # Chainlit. Empty = feature off for everyone.
+    CHAT_UI_BETA_USERS = os.getenv("CHAT_UI_BETA_USERS", "")
+
+    @classmethod
+    def get_beta_chat_users(cls) -> list[str]:
+        """Return the beta chat allowlist as lowercase emails."""
+        return [
+            email.strip().lower()
+            for email in cls.CHAT_UI_BETA_USERS.split(",")
+            if email.strip()
+        ]
+
     @classmethod
     def to_dict(cls) -> dict:
         """Return all configuration values as a dictionary"""

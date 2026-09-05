@@ -1,8 +1,48 @@
 # Phase 0 — Baseline & Parity Contract
 
 > Parent: [plan-chatMigration.prompt.md](plan-chatMigration.prompt.md)
-> Status: **PROPOSAL — not approved, not started.**
-> Prerequisite phase (dependency bumps, `astream_events` v1 → v2) must land first.
+> Status: **MOSTLY COMPLETE** (updated 2026-09-05) — see "Current Position" below.
+> Remaining: Deliverable A sign-off (parity checklist) and the config "Drop" items at UI swap time.
+
+## Current Position (updated 2026-09-05)
+
+Phase 0 was implemented as part of the Phase 1 work on `main` (commits
+"Phase 1 Step 3–9" plus the Tailwind v4 / Preline frontend decision).
+What landed:
+
+- **Prerequisite** — `astream_events(version="v2")` in
+  `includes/chat/runner.py`; langchain 1.x / langgraph 1.x in `pyproject.toml`.
+- **Deliverable B — extraction** — `includes/chat/streaming_logic.py` holds
+  `plan_checkpoint_repair`, `detect_repetition`, `extract_ai_text`,
+  `plan_resume_backfill` (the `on_message` monolith is gone; app.py is now
+  ~750 lines with `main()` + `_make_chainlit_adapter()`).
+- **Deliverable B — tests** — `tests/chat/` covers streaming logic (incl.
+  §5.6 backfill cases inside `test_streaming_logic.py`), stream loop, action
+  callbacks, bridge dispatch, run lock, concurrent runs, middleware, context.
+  Attachment/document-processing tests also cover §5.8.
+- **Delete-all actions dropped** — `includes/chat/commands.py` deleted,
+  `ADMIN_ONLY_TOOLS` empty.
+- **Config reconciliations** — `max_size_mb = 50`, `max_files = 20`;
+  15-day session timeout matches `SessionMiddleware max_age` in `main.py`.
+- **Token footer** — token accounting lives in `runner.py` (running totals +
+  footer render).
+
+Decisions recorded:
+
+- **`rfq_dismiss` / `rfq_refresh` are KEPT for now** — both are registered
+  handlers and remain useful while the dashboard and chat are separate
+  frontends. Re-evaluate for removal once the unified frontend lands; they
+  may become unnecessary then.
+
+Still outstanding:
+
+- **Deliverable A** — the signed-off parity checklist document (see §2).
+  This remains the acceptance record for the whole migration.
+- **Config "Drop" items** (`unsafe_allow_html`, `edit_message`, latex,
+  thread sharing, favorites, audio) — still active in Chainlit config; they
+  disappear when Chainlit is replaced. Nothing to do until the UI swap.
+- §2's line-number references below predate the refactor and are kept only
+  as historical intent.
 
 ## Goal
 
@@ -177,8 +217,10 @@ Two consequences worth noting:
 
 #### Decisions this list forces
 
-- Is any of these dead? `rfq_dismiss` and `rfq_refresh` look vestigial — **check usage
-  before porting**, and drop rather than migrate if unused.
+- **DECIDED 2026-09-05:** `rfq_dismiss` and `rfq_refresh` are **kept** — both are
+  registered handlers used while dashboard and chat remain separate frontends.
+  Re-check whether they can be dropped once the unified frontend lands, rather
+  than carrying them forward forever.
 - `rfq_identify_items` serves two distinct UI affordances (all-items vs single-line).
   Confirm the payload shapes differ and both are covered.
 - Group B is the only reason a generic "action button" rendering mechanism is needed at

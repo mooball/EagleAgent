@@ -465,6 +465,14 @@ app.include_router(dashboard_router)
 
 
 # ---------------------------------------------------------------------------
+# Beta chat UI (SSE POC, allowlist-gated) — plan-chatMigration-beta
+# ---------------------------------------------------------------------------
+from includes.dashboard.routes.chat_ui import router as chat_ui_router
+
+app.include_router(chat_ui_router)
+
+
+# ---------------------------------------------------------------------------
 # Gmail Add-on API routes (OIDC-authenticated, domain-restricted)
 # ---------------------------------------------------------------------------
 from includes.dashboard.routes.addon import router as addon_router

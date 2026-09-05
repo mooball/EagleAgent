@@ -1,0 +1,388 @@
+<div id="chat-ui-embed-root" class="h-full flex flex-col bg-white dark:bg-gray-900">
+
+    <!-- Thread list -->
+    <div id="embed-list" class="h-full flex flex-col">
+        <div class="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700">
+            <span class="text-sm font-semibold text-gray-700 dark:text-gray-200">Chats</span>
+            <div class="flex items-center gap-1.5">
+                <select id="embed-new-agent" class="py-1 px-1.5 border-gray-200 rounded text-xs dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                    {% for key, spec in agents.items() %}
+                    <option value="{{ key }}">{{ spec.label }}</option>
+                    {% endfor %}
+                </select>
+                <button type="button" id="embed-new-btn"
+                        class="py-1 px-2.5 inline-flex items-center text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700">+ New</button>
+            </div>
+        </div>
+        <div id="embed-list-items" class="flex-1 overflow-y-auto"></div>
+    </div>
+
+    <!-- Thread view -->
+    <div id="embed-chat" class="h-full flex flex-col" hidden>
+        <div class="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700 gap-2">
+            <div class="flex items-center gap-1.5 min-w-0">
+                <button type="button" id="embed-back-btn"
+                        class="p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                        title="Back to chats">←</button>
+                <span id="embed-name" class="text-sm font-semibold text-gray-700 dark:text-gray-200 truncate"></span>
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0">
+                <select id="embed-agent-select"
+                        class="py-1 px-1.5 border-gray-200 rounded text-xs dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                    {% for key, spec in agents.items() %}
+                    <option value="{{ key }}">{{ spec.label }}</option>
+                    {% endfor %}
+                </select>
+                <button type="button" id="embed-stop-btn" hidden
+                        class="py-1 px-2 inline-flex items-center text-xs font-semibold rounded-md bg-red-600 text-white hover:bg-red-700">⏹ Stop</button>
+                <button type="button" id="embed-delete-btn"
+                        class="p-1 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-600 dark:hover:text-red-400"
+                        title="Delete conversation">🗑</button>
+            </div>
+        </div>
+        <div id="embed-messages" class="flex-1 overflow-y-auto p-3 space-y-3"></div>
+        <div id="embed-error" hidden
+             class="mx-3 mb-1 rounded-lg bg-red-50 border border-red-200 p-2 text-xs text-red-700 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300"></div>
+        <div class="p-2 flex items-end gap-1.5 border-t border-gray-200 dark:border-gray-700">
+            <textarea id="embed-composer" rows="2" placeholder="Message…"
+                      class="flex-1 py-1.5 px-2.5 border-gray-200 rounded-lg text-sm resize-none dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400"></textarea>
+            <button type="button" id="embed-send-btn"
+                    class="py-2 px-3 inline-flex items-center text-sm font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">Send</button>
+        </div>
+    </div>
+</div>
+
+<script type="application/json" id="chat-ui-embed-data">
+{{ embed_data | tojson }}
+</script>
+
+<script>
+(function () {
+    var DATA = JSON.parse(document.getElementById('chat-ui-embed-data').textContent);
+    var USER_EMAIL = DATA.user_email;
+    var AGENTS = DATA.agents;
+    var threads = DATA.threads || [];
+    var active = DATA.thread || null;
+    var history = DATA.steps || [];
+
+    var root = document.getElementById('chat-ui-embed-root');
+    var listEl = document.getElementById('embed-list');
+    var listItems = document.getElementById('embed-list-items');
+    var chatEl = document.getElementById('embed-chat');
+    var nameEl = document.getElementById('embed-name');
+    var messages = document.getElementById('embed-messages');
+    var composer = document.getElementById('embed-composer');
+    var sendBtn = document.getElementById('embed-send-btn');
+    var stopBtn = document.getElementById('embed-stop-btn');
+    var errorEl = document.getElementById('embed-error');
+    var agentSelect = document.getElementById('embed-agent-select');
+    var rows = {};
+    var eventSource = null;
+    var running = false;
+
+    function stripHtml(text) {
+        return String(text || '').replace(/<[^>]*>/g, '');
+    }
+
+    function renderMarkdown(text) {
+        var clean = stripHtml(text);
+        try {
+            if (window.marked && typeof window.marked.parse === 'function') {
+                var out = window.marked.parse(clean);
+                return typeof out === 'string' ? out : String(out);
+            }
+        } catch (err) {
+            console.error('[chat-ui] markdown render failed', err);
+        }
+        var esc = document.createElement('div');
+        esc.textContent = clean;
+        return esc.innerHTML;
+    }
+
+    function rowEl(id, author, transient) {
+        var div = document.createElement('div');
+        var isUser = author === USER_EMAIL;
+        if (transient) {
+            div.className = 'text-xs text-gray-400 dark:text-gray-500 italic';
+            return div;
+        }
+        var bubble = document.createElement('div');
+        bubble.className = isUser
+            ? 'ml-auto max-w-[85%] rounded-lg bg-blue-600 text-white px-3 py-2 text-sm whitespace-pre-wrap'
+            : 'mr-auto max-w-[85%] rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-3 py-2 chat-md';
+        div.appendChild(bubble);
+        div.className = 'flex ' + (isUser ? 'justify-end' : 'justify-start');
+        return {div: div, bubble: bubble};
+    }
+
+    function getRow(id, author, transient) {
+        if (rows[id]) { return rows[id]; }
+        var el = rowEl(id, author, transient);
+        rows[id] = el;
+        messages.appendChild(el.div);
+        return el;
+    }
+
+    function setText(entry, text) {
+        entry._text = String(text || '');
+        if (entry.bubble) {
+            entry.bubble.innerHTML = renderMarkdown(entry._text);
+        } else {
+            entry.div.textContent = entry._text;
+        }
+    }
+
+    function renderHistory() {
+        // Rows still streaming are reused in place: a history reload mid-run
+        // must not drop them, nor reorder them away from their position.
+        var live = {};
+        Object.keys(rows).forEach(function (id) {
+            if (rows[id]._live) { live[id] = rows[id]; }
+        });
+        messages.innerHTML = '';
+        rows = {};
+        (history || []).forEach(function (step) {
+            if (live[step.id]) {
+                rows[step.id] = live[step.id];
+                messages.appendChild(live[step.id].div);
+                delete live[step.id];
+                return;
+            }
+            if (step.type === 'user_message') {
+                setText(getRow(step.id, USER_EMAIL, false), step.output);
+            } else if (step.type === 'assistant_message' && step.output) {
+                setText(getRow(step.id, step.name || 'EagleAgent', false), step.output);
+            }
+        });
+        // Streaming rows not yet in the transcript belong at the end.
+        Object.keys(live).forEach(function (id) {
+            rows[id] = live[id];
+            messages.appendChild(live[id].div);
+        });
+        messages.scrollTop = messages.scrollHeight;
+    }
+
+    function showError(msg) { errorEl.textContent = msg; errorEl.hidden = false; }
+    function clearError() { errorEl.hidden = true; }
+
+    function setRunning(v) {
+        running = v;
+        sendBtn.disabled = v;
+        stopBtn.hidden = !v;
+    }
+
+    function setAgentSelect(key) {
+        if (key) { agentSelect.value = key; }
+    }
+
+    function agentLabel(key) {
+        var spec = AGENTS.find(function (a) { return a.key === key; });
+        return spec ? spec.label : (key || 'Eagle Agent');
+    }
+
+    function renderList() {
+        listItems.innerHTML = '';
+        if (!threads.length) {
+            var empty = document.createElement('div');
+            empty.className = 'p-6 text-center text-xs text-gray-400';
+            empty.textContent = 'No conversations yet.';
+            listItems.appendChild(empty);
+            return;
+        }
+        threads.forEach(function (t) {
+            var item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'w-full text-left px-3 py-2 border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/60';
+            var name = document.createElement('div');
+            name.className = 'text-sm text-gray-800 dark:text-gray-200 truncate';
+            name.textContent = t.name;
+            var sub = document.createElement('div');
+            sub.className = 'text-xs text-gray-400';
+            sub.textContent = agentLabel(t.agent);
+            item.appendChild(name);
+            item.appendChild(sub);
+            item.addEventListener('click', function () { showThread(t); });
+            listItems.appendChild(item);
+        });
+    }
+
+    function showList() {
+        active = null;
+        chatEl.hidden = true;
+        listEl.hidden = false;
+        refreshThreads();
+    }
+
+    function loadMessages(tid) {
+        if (running) { return; }  // never reload history mid-run
+        fetch('/chat-ui/threads/' + tid + '/messages', {credentials: 'same-origin'})
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                history = data.steps || [];
+                renderHistory();
+                // History is now authoritative; ids match the streamed rows.
+                Object.keys(rows).forEach(function (id) { rows[id]._live = false; });
+            })
+            .catch(function () {});
+    }
+
+    function showThread(t) {
+        active = t;
+        chatEl.hidden = false;
+        listEl.hidden = true;
+        nameEl.textContent = t.name || 'New chat';
+        setAgentSelect(t.agent);
+        loadMessages(t.id);
+        composer.focus();
+    }
+
+    function openThreadById(threadId) {
+        fetch('/chat-ui/threads/' + threadId + '/meta', {credentials: 'same-origin'})
+            .then(function (r) { return r.json(); })
+            .then(function (meta) {
+                if (!threads.some(function (t) { return t.id === meta.id; })) {
+                    threads.unshift({id: meta.id, name: meta.name, agent: meta.agent});
+                }
+                showThread({id: meta.id, name: meta.name, agent: meta.agent});
+            })
+            .catch(function () { showList(); });
+    }
+
+    function createThread() {
+        var form = new FormData();
+        form.append('agent', document.getElementById('embed-new-agent').value);
+        form.append('embed', '1');
+        fetch('/chat-ui/threads', {method: 'POST', credentials: 'same-origin', body: form})
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                var t = {id: data.thread_id, name: 'New chat', agent: data.agent};
+                threads.unshift(t);
+                showThread(t);
+                // Tell the dashboard shell so it can auto-bind to the current RFQ.
+                document.dispatchEvent(new CustomEvent('chat-ui:thread', {detail: {threadId: data.thread_id}}));
+            })
+            .catch(function () { showError('Could not create a conversation.'); });
+    }
+
+    function openStream(tid) {
+        if (eventSource) { eventSource.close(); }
+        eventSource = new EventSource('/chat-ui/threads/' + tid + '/stream');
+
+        eventSource.addEventListener('message_start', function (e) {
+            var d = JSON.parse(e.data);
+            var entry = getRow(d.id, d.author || 'EagleAgent', !!d.transient);
+            entry._live = true;
+            if (d.content) { setText(entry, d.content); }
+        });
+        eventSource.addEventListener('token', function (e) {
+            var d = JSON.parse(e.data);
+            var row = rows[d.id];
+            if (row) { setText(row, (row._text || '') + d.text); }
+            messages.scrollTop = messages.scrollHeight;
+        });
+        eventSource.addEventListener('message_update', function (e) {
+            var d = JSON.parse(e.data);
+            if (rows[d.id]) { setText(rows[d.id], d.content); }
+        });
+        eventSource.addEventListener('message_remove', function (e) {
+            var d = JSON.parse(e.data);
+            if (rows[d.id]) { rows[d.id]._live = false; rows[d.id].div.remove(); delete rows[d.id]; }
+        });
+        eventSource.addEventListener('message_end', function (e) {
+            var d = JSON.parse(e.data);
+            if (rows[d.id]) { setText(rows[d.id], d.content); }
+        });
+        eventSource.addEventListener('dashboard', function (e) {
+            var d = JSON.parse(e.data);
+            document.dispatchEvent(new CustomEvent('dashboard:' + d.command, {
+                detail: {payload: d.payload || {}}
+            }));
+        });
+        eventSource.addEventListener('error', function (e) {
+            var d = {};
+            try { d = JSON.parse(e.data); } catch (err) {}
+            showError(d.message || 'Something went wrong.');
+        });
+        eventSource.addEventListener('done', function () {
+            if (eventSource) { eventSource.close(); eventSource = null; }
+            setRunning(false);
+            if (active) { loadMessages(active.id); }
+        });
+    }
+
+    function send() {
+        if (!active) { return; }
+        var text = composer.value.trim();
+        if (!text) { return; }
+        clearError();
+        composer.value = '';
+        setRunning(true);
+        fetch('/chat-ui/threads/' + active.id + '/messages', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({text: text, agent: agentSelect.value})
+        }).then(function (r) {
+            return r.json().then(function (data) { return {ok: r.ok, data: data}; });
+        }).then(function (res) {
+            if (!res.ok) {
+                setRunning(false);
+                showError(res.data.error || 'Failed to send message.');
+                composer.value = text;
+                return;
+            }
+            var uid = 'user-' + Date.now();
+            setText(getRow(uid, USER_EMAIL, false), text);
+            messages.scrollTop = messages.scrollHeight;
+            openStream(active.id);
+        }).catch(function () {
+            setRunning(false);
+            showError('Network error — please retry.');
+            composer.value = text;
+        });
+    }
+
+    function refreshThreads() {
+        fetch('/chat-ui/embed-threads', {credentials: 'same-origin'})
+            .then(function (r) { return r.json(); })
+            .then(function (data) { threads = data.threads || []; renderList(); })
+            .catch(function () {});
+    }
+
+    // Dashboard shell → embed bridge (replaces the iframe postMessage glue)
+    document.addEventListener('chat-ui:navigate', function (e) {
+        var d = e.detail || {};
+        if (d.threadId) { openThreadById(d.threadId); }
+        else if (d.fresh) { createThread(); }
+        else { showList(); }
+    });
+
+    sendBtn.addEventListener('click', send);
+    composer.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+    stopBtn.addEventListener('click', function () {
+        if (!active) { return; }
+        fetch('/chat-ui/threads/' + active.id + '/stop', {method: 'POST', credentials: 'same-origin'}).catch(function () {});
+    });
+    document.getElementById('embed-back-btn').addEventListener('click', showList);
+    document.getElementById('embed-new-btn').addEventListener('click', createThread);
+    document.getElementById('embed-delete-btn').addEventListener('click', function () {
+        if (!active) { return; }
+        if (!confirm('Delete this conversation? This cannot be undone.')) { return; }
+        fetch('/chat-ui/threads/' + active.id, {method: 'DELETE', credentials: 'same-origin'})
+            .then(function () {
+                threads = threads.filter(function (t) { return t.id !== active.id; });
+                showList();
+            });
+    });
+    agentSelect.addEventListener('change', function () {
+        document.dispatchEvent(new CustomEvent('chat-ui:profile', {
+            detail: {key: agentSelect.value, label: agentLabel(agentSelect.value)}
+        }));
+    });
+
+    if (active) { showThread(active); } else { showList(); }
+    document.dispatchEvent(new CustomEvent('chat-ui:ready'));
+})();
+</script>
