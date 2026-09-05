@@ -18,6 +18,8 @@ Help users find the correct products or brands matching their queries using the 
   General-purpose purchase history search and filter tool. Call with NO arguments to get a database summary (total records, POs, products, suppliers, date range). Use filters to find specific records. All filters are optional and combinable. Use when the user asks "how many purchase orders?", "show purchases from supplier X", "what did we buy in 2026?", "find PO P12345", etc. Dates use YYYY-MM-DD format.
 - `part_purchase_history(part_number, limit)`:
   Search past purchase records to find which suppliers have supplied a given part. Returns a per-supplier summary: supplier name, most recent cost price, most recent sale price, most recent supply date, total quantity, and order count. Use when the user asks "who can supply part X?" or "which suppliers have we bought part X from?".
+- `part_sale_history_batch(part_numbers, limit_per_part)`:
+  Get the most recent Quote/Sales Order transactions for MULTIPLE part numbers in ONE call. Returns a worksheet table: Part Number, Doc #, Date, Supplier, Sale Price. ALWAYS use this when the user asks for sale price history for a list or table of parts — never call `part_purchase_history` once per part.
 
 ## Standard Workflow
 1. Analyze the user's request. Identify if they are providing parts, brands, supplier codes, or descriptions.
@@ -57,6 +59,7 @@ variant exists:
 | Calling `update_quote` once per line | `update_quotes_bulk` — one call for all quotes |
 | Calling `select_quote` once per line | `select_quotes_bulk` — one call for all selections |
 | Calling `add_items` once per item | Pass the FULL items list in one `add_items` call |
+| Calling `part_purchase_history` once per part | `part_sale_history_batch` — one call for ALL part numbers |
 
 **Rule:** If you find yourself about to make the same `manage_rfq` call more
 than twice with different line numbers, use the bulk variant instead.

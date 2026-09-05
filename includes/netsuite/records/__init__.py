@@ -16,6 +16,14 @@ from .item import (
     get_or_create_brand,
     set_vendor_price,
 )
+from .vendor import (
+    create_vendor,
+    ensure_vendor,
+    find_vendor_by_entity_id,
+    resolve_currency,
+    resolve_tax_item,
+    vendor_lookup_options,
+)
 
 __all__ = [
     "CreateResult",
@@ -30,4 +38,10 @@ __all__ = [
     "find_item_by_part_number",
     "get_or_create_brand",
     "set_vendor_price",
+    "create_vendor",
+    "ensure_vendor",
+    "find_vendor_by_entity_id",
+    "resolve_currency",
+    "resolve_tax_item",
+    "vendor_lookup_options",
 ]

@@ -26,6 +26,15 @@
   [role="button"]:not(:disabled) {
     cursor: pointer;
   }
+  /* Tailwind v4 preflight gives form controls border-width: 0; DaisyUI's base
+     used to supply a default 1px border (combined with the gray-200 default
+     border-color above). Restore it so bare input/select/textarea render
+     bordered without needing a `border` utility on every field. */
+  input:where(:not([type="button"], [type="reset"], [type="submit"])),
+  select,
+  textarea {
+    border-width: 1px;
+  }
 }
 
 /* ---- Custom (non-Tailwind) styles ---- */

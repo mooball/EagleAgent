@@ -16,7 +16,7 @@
         <div class="flex items-center gap-3 text-[11px] text-gray-500 dark:text-gray-400">
             <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500"></span> Ready</span>
             <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-500"></span> Missing requirements</span>
-            <span class="inline-flex items-center gap-1"><span class="px-1 py-0.5 rounded text-[9px] leading-none font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">NS</span> Needs to be created in NetSuite</span>
+            <span class="inline-flex items-center gap-1"><span class="px-1 py-0.5 rounded text-[9px] leading-none font-semibold bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">NS</span> Needs to be created in NetSuite</span>
             {% if rfq.opportunity_id %}
             <span class="inline-flex items-center gap-2">
                 {% if sync_can_sync %}
@@ -65,7 +65,10 @@
                             {% if item.part_number %}
                             <span class="font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">{{ item.part_number }}</span>
                             {% if not item.product_ns_id %}
-                            <span class="inline-flex items-center shrink-0 text-[9px] px-1 py-0.5 rounded font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 tooltip" data-tip="Part number needs to be created in NetSuite">NS</span>
+                            <span class="hs-tooltip inline-flex items-center shrink-0">
+                                <span class="hs-tooltip-toggle text-[9px] px-1 py-0.5 rounded font-semibold bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">NS</span>
+                                <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700 whitespace-nowrap" role="tooltip">Part number will be added to NetSuite</span>
+                            </span>
                             {% endif %}
                             {% else %}
                             <span class="font-mono text-xs text-red-500 dark:text-red-400 whitespace-nowrap">missing part number</span>
@@ -89,7 +92,10 @@
                         {% if item.brand %}
                         {{ item.brand }}
                         {% if not item.brand_ns_id and not item.brand_is_excluded %}
-                        <span class="ml-1 inline-flex items-center shrink-0 text-[9px] px-1 py-0.5 rounded font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 tooltip" data-tip="Brand needs to be created in NetSuite">NS</span>
+                        <span class="hs-tooltip inline-flex items-center shrink-0 ml-1">
+                            <span class="hs-tooltip-toggle text-[9px] px-1 py-0.5 rounded font-semibold bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">NS</span>
+                            <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700 whitespace-nowrap" role="tooltip">Brand will be added to NetSuite</span>
+                        </span>
                         {% endif %}
                         {% else %}
                         <span class="text-red-500 dark:text-red-400 font-medium">Missing</span>
@@ -126,12 +132,18 @@
                         <span class="inline-flex items-center gap-1">
                             <span>{{ sel.name }}</span>
                             {% if sel.near_matches %}
-                            <span class="tooltip shrink-0" data-tip="Possible duplicate: {{ sel.near_matches | map(attribute='name') | join(', ') }}">
+                            <span class="hs-tooltip inline-flex shrink-0">
                             <svg class="w-3 h-3 text-red-500 dark:text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"/></svg>
+                            <span class="hs-tooltip-content hidden z-50 max-w-xs py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700" role="tooltip">Possible duplicate: {{ sel.near_matches | map(attribute='name') | join(', ') }}</span>
                             </span>
                             {% endif %}
                             {% if not sel.ns_linked %}
-                            <span class="inline-flex items-center shrink-0 text-[9px] px-1 py-0.5 rounded font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 tooltip" data-tip="Supplier needs to be created in NetSuite">NS</span>
+                            <span class="hs-tooltip inline-flex">
+                            <button type="button" data-hs-overlay="#ns-supplier-modal"
+                                    @click="openNsSupplier({{ item.line }})"
+                                    class="ml-1 inline-flex items-center shrink-0 text-[9px] px-1 py-0.5 rounded font-semibold bg-red-100 text-red-700 border border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-600 hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors">NS+</button>
+                            <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700 whitespace-nowrap" role="tooltip">Add this Supplier to NetSuite</span>
+                            </span>
                             {% endif %}
                         </span>
                         {% else %}
@@ -145,6 +157,10 @@
                         <button type="button" @click.stop="openSyncStatus({{ item.line }})"
                                 class="inline-block w-3 h-3 rounded-full bg-green-500 hover:ring-2 hover:ring-green-300 transition-shadow cursor-pointer"
                                 title="Ready to sync — click for details"></button>
+                        {% elif item.sync_status == 'warning' %}
+                        <button type="button" @click.stop="openSyncStatus({{ item.line }})"
+                                class="inline-block w-3 h-3 rounded-full bg-amber-500 hover:ring-2 hover:ring-amber-300 transition-shadow cursor-pointer"
+                                title="Warnings — click for details"></button>
                         {% else %}
                         <button type="button" @click.stop="openSyncStatus({{ item.line }})"
                                 class="inline-block w-3 h-3 rounded-full bg-red-500 hover:ring-2 hover:ring-red-300 transition-shadow cursor-pointer"
@@ -212,8 +228,175 @@
                                 </template>
                             </div>
                         </template>
+                        <template x-for="w in (syncModal.item && syncModal.item.sync_warnings || [])" :key="w.key">
+                            <div class="flex items-start gap-2 text-sm">
+                                <span class="text-amber-500 shrink-0 font-semibold">!</span>
+                                <span class="text-amber-600 dark:text-amber-400" x-text="w.label"></span>
+                            </div>
+                        </template>
                     </div>
                 </template>
+            </div>
+        </div>
+    </div>
+
+    <!-- NetSuite supplier modal (Preline overlay) -->
+    <div id="ns-supplier-modal"
+         class="hs-overlay hidden size-full fixed top-0 start-0 z-[70] overflow-x-hidden overflow-y-auto pointer-events-none"
+         role="dialog" tabindex="-1">
+        <div class="hs-overlay-open:mt-7 hs-overlay-open:opacity-100 hs-overlay-open:duration-500 mt-0 opacity-0 ease-out transition-all sm:max-w-3xl sm:w-full m-3 sm:mx-auto pointer-events-auto">
+            <div class="bg-white border border-gray-200 rounded-xl shadow-2xl dark:bg-gray-800 dark:border-gray-700">
+                <div class="flex justify-between items-center py-3 px-4 border-b border-gray-200 dark:border-gray-700">
+                    <h3 class="font-bold text-gray-800 dark:text-white">Add supplier to NetSuite</h3>
+                    <button type="button" data-hs-overlay="#ns-supplier-modal"
+                            class="size-8 inline-flex justify-center items-center gap-x-2 rounded-full border border-transparent bg-gray-100 text-gray-800 hover:bg-gray-200 focus:outline-none focus:bg-gray-200 disabled:opacity-50 disabled:pointer-events-none dark:bg-neutral-700 dark:hover:bg-neutral-600 dark:text-neutral-400 dark:focus:bg-neutral-600">
+                        <svg class="shrink-0 size-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                    </button>
+                </div>
+                <form @submit.prevent="submitNsSupplier()" class="p-4">
+                    {# Duplicate warning — blocks submission until confirmed #}
+                    <div x-show="nsSup.duplicates.length" x-cloak
+                         class="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-700/60 dark:bg-amber-900/30 dark:text-amber-200">
+                        <p class="font-semibold mb-1">⚠ Possible duplicate supplier(s) — please check before submitting:</p>
+                        <ul class="list-disc pl-4 mb-2">
+                            <template x-for="d in nsSup.duplicates" :key="d.name">
+                                <li>
+                                    <span x-text="d.name"></span>
+                                    <span class="text-amber-700 dark:text-amber-300"
+                                          x-text="d.reasons && d.reasons.length ? ' — ' + d.reasons.join(', ') : ''"></span>
+                                </li>
+                            </template>
+                        </ul>
+                        <label class="flex items-start gap-2 font-medium">
+                            <input type="checkbox" x-model="nsSup.duplicateChecked"
+                                   class="mt-0.5 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-600">
+                            <span>I've checked — this is not a duplicate</span>
+                        </label>
+                    </div>
+
+                    {# Error banner #}
+                    <div x-show="nsSup.error" x-cloak x-text="nsSup.error"
+                         class="mb-4 rounded-lg bg-red-50 border border-red-200 p-3 text-xs text-red-700 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300"></div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="sm:col-span-2">
+                            <label class="block text-sm font-medium mb-2 text-gray-800 dark:text-neutral-200">Company name <span class="text-red-500">*</span></label>
+                            <input type="text" x-model="nsSup.name" required
+                                   class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                        </div>
+                        <div class="sm:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium mb-2 text-gray-800 dark:text-neutral-200">Country</label>
+                                <select id="ns-supplier-country" x-model="nsSup.country" @change="applyCountryCurrency($event)"
+                                        data-currency-map='{{ ns_country_currency | tojson }}'
+                                        class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                                    <option value="">—</option>
+                                    {% for group in ns_country_options %}
+                                    <optgroup label="{{ group.label }}">
+                                        {% for opt in group.options %}
+                                        <option value="{{ opt.code }}">{{ opt.name }}</option>
+                                        {% endfor %}
+                                    </optgroup>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2 text-gray-800 dark:text-neutral-200">Currency</label>
+                                <select x-model="nsSup.currency"
+                                        class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                                    {% for opt in ns_currency_options %}
+                                    <option value="{{ opt.name }}">{{ opt.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2 text-gray-800 dark:text-neutral-200">Terms</label>
+                                <select id="ns-supplier-terms" x-model="nsSup.terms_id"
+                                        class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                                    <option value="">—</option>
+                                    {% for opt in ns_terms_options %}
+                                    <option value="{{ opt.id }}">{{ opt.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        </div>
+                        <div class="sm:col-span-2">
+                            <label class="block text-sm font-medium mb-2 text-gray-800 dark:text-neutral-200">Address</label>
+                            <input type="text" x-model="nsSup.addr1" placeholder="Address line 1"
+                                   class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                            <input type="text" x-model="nsSup.addr2" placeholder="Address line 2"
+                                   class="mt-3 py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                        </div>
+                        <div class="sm:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium mb-2 text-gray-800 dark:text-neutral-200">City</label>
+                                <input type="text" x-model="nsSup.city"
+                                       class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2 text-gray-800 dark:text-neutral-200">State</label>
+                                <select x-show="isAustralia()" x-model="nsSup.state"
+                                        class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                                    <option value="">—</option>
+                                    {% for s in ns_au_states %}
+                                    <option value="{{ s }}">{{ s }}</option>
+                                    {% endfor %}
+                                </select>
+                                <input type="text" x-show="!isAustralia()" x-model="nsSup.state"
+                                       class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2 text-gray-800 dark:text-neutral-200">Zip / Postcode</label>
+                                <input type="text" x-model="nsSup.zip"
+                                       class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                            </div>
+                        </div>
+                        <div class="sm:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium mb-2 text-gray-800 dark:text-neutral-200">Contact name</label>
+                                <input type="text" x-model="nsSup.contact" placeholder="Person at the company"
+                                       class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2 text-gray-800 dark:text-neutral-200">Email</label>
+                                <input type="email" x-model="nsSup.email"
+                                       class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2 text-gray-800 dark:text-neutral-200">Web address</label>
+                                <input type="url" x-model="nsSup.url" placeholder="https://"
+                                       class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                            </div>
+                        </div>
+                        <div class="sm:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium mb-2 text-gray-800 dark:text-neutral-200">Phone</label>
+                                <input type="text" x-model="nsSup.phone"
+                                       class="py-2 px-3 block w-full border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
+                            </div>
+                            <div class="sm:col-span-2 flex items-end pb-1">
+                                <p class="text-xs text-gray-500 dark:text-neutral-400">
+                                    Tax item: <span class="font-medium text-gray-700 dark:text-neutral-200"
+                                    x-text="(nsSup.country || '').trim().toUpperCase() === 'AU' ? 'GST' : 'FREE'"></span>
+                                    (GST for Australian suppliers, FREE for international)
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-5 flex justify-end items-center gap-x-2">
+                        <button type="button" data-hs-overlay="#ns-supplier-modal"
+                                class="py-2 px-3 inline-flex items-center gap-x-2 text-sm font-medium rounded-lg border border-gray-200 bg-white text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:bg-gray-50 disabled:opacity-50 disabled:pointer-events-none dark:bg-neutral-900 dark:border-neutral-700 dark:text-white dark:hover:bg-neutral-800 dark:focus:bg-neutral-800">
+                            Cancel
+                        </button>
+                        <button type="submit"
+                                :disabled="nsSup.submitting || (nsSup.duplicates.length && !nsSup.duplicateChecked)"
+                                class="py-2 px-4 inline-flex items-center gap-x-2 text-sm font-semibold rounded-lg border border-transparent bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:bg-blue-700 disabled:opacity-50 disabled:pointer-events-none">
+                            <span x-show="nsSup.submitting" class="animate-spin inline-block size-4 border-[2px] border-current border-t-transparent rounded-full"></span>
+                            <span x-text="nsSup.submitting ? 'Adding…' : 'Add to NetSuite'"></span>
+                        </button>
+                    </div>
+                </form>
             </div>
         </div>
     </div>

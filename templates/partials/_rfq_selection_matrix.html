@@ -63,6 +63,7 @@
                 <th class="text-left px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap col-brand">Brand</th>
                 <th class="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap col-qty">Qty</th>
                 <th class="text-right px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap cost-sale-col">Cost</th>
+                <th class="text-right px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap cost-sale-col">Last</th>
                 <th class="text-right px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap cost-sale-col">Sale</th>
                 {% for name in supplier_names %}
                 {% set sm = (rfq.get('supplier_meta', {}) or {}).get(name, {}) %}
@@ -116,6 +117,19 @@
                            placeholder="0.00"
                            @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateItemPricing({{ item.line }}, 'cost_price', $el.value)"
                            @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
+                </td>
+
+                {# Last sale (history) — hover shows popover with date/vendor/document #}
+                {% set last_sale = item.last_sale %}
+                <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col">
+                    {% if last_sale %}
+                    <span x-data="{ t: null }" class="inline-block min-w-[60px] text-right cursor-default"
+                          @mouseenter="clearTimeout(t); $dispatch('show-last-sale', {price: '{{ (last_sale.price | currency) | replace("'", "\\'") }}', date: '{{ (last_sale.date or '') | replace("'", "\\'") }}', vendor: '{{ (last_sale.vendor or 'Unknown vendor') | replace("'", "\\'") }}', doc: '{{ (last_sale.doc_label ~ ((' ' ~ last_sale.doc_number) if last_sale.doc_number else '')) | replace("'", "\\'") }}', rect: JSON.stringify($el.getBoundingClientRect())})"
+                          @mouseleave="t = setTimeout(() => { t = null; $dispatch('hide-last-sale') }, 150)"
+                          @keep-last-sale.window="clearTimeout(t)">{{ last_sale.price | currency }}</span>
+                    {% else %}
+                    <span class="inline-block min-w-[60px] text-right text-gray-400">—</span>
+                    {% endif %}
                 </td>
 
                 {# Sale (editable) #}
@@ -220,6 +234,9 @@
                            @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
                 </td>
 
+                {# Freight Last (visual only) #}
+                <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col text-gray-400">—</td>
+
                 {# Freight Sale (visual only) #}
                 <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col" @click.stop>
                     <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right text-gray-400"
@@ -271,8 +288,9 @@
                     <div class="px-3 py-2.5 relative z-10 bg-gray-50 dark:bg-gray-700 freeze-shadow"
                          :style="'transform: translateX(' + scrollX + 'px)'">&nbsp;</div>
                 </td>
-                <td colspan="3" class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 bg-gray-50 dark:bg-gray-700">Totals</td>
+                <td colspan="4" class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 bg-gray-50 dark:bg-gray-700">Totals</td>
                 <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col">{{ ns.total_cost | currency }}</td>
+                <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col"></td>
                 <td class="px-3 py-2.5 text-right font-semibold text-gray-700 dark:text-gray-200 cost-sale-col">{{ ns.total_sale | currency }}</td>
                 {% for _ in supplier_names %}
                 <td class="col-supplier"></td>
@@ -311,6 +329,32 @@
         <template x-if="notes">
             <div class="mb-1.5"><span class="font-medium text-gray-500 dark:text-gray-400">Notes:</span> <span x-text="notes"></span></div>
         </template>
+    </div>
+</div>
+
+{# Last-sale popover — rendered outside table to escape overflow clipping.
+   Opened on hover of a Last cell; 150ms grace lets the mouse reach the popover. #}
+<div x-data="{ open: false, price: '', date: '', vendor: '', doc: '', top: '0px', left: '0px' }"
+     @show-last-sale.window="
+        const d = $event.detail;
+        const r = JSON.parse(d.rect);
+        top = (r.bottom + 4) + 'px';
+        left = Math.min(r.left, window.innerWidth - 300) + 'px';
+        price = d.price; date = d.date; vendor = d.vendor; doc = d.doc;
+        open = true;
+     "
+     @hide-last-sale.window="open = false"
+     @mouseenter="$dispatch('keep-last-sale')"
+     @mouseleave="open = false"
+     @keydown.escape.window="open = false">
+    <div x-show="open" x-cloak x-transition.opacity
+         :style="'position:fixed; top:' + top + '; left:' + left + '; z-index:9999; width:18rem;'"
+         class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg shadow-xl p-3 text-left text-xs text-gray-700 dark:text-gray-300"
+         style="word-wrap: break-word;">
+        <div class="font-semibold text-gray-900 dark:text-gray-100 mb-2 text-sm">Last sale <span class="font-mono" x-text="price"></span></div>
+        <div class="mb-1"><span class="font-medium text-gray-500 dark:text-gray-400">Date:</span> <span x-text="date"></span></div>
+        <div class="mb-1"><span class="font-medium text-gray-500 dark:text-gray-400">Vendor:</span> <span x-text="vendor"></span></div>
+        <div><span class="font-medium text-gray-500 dark:text-gray-400">Document:</span> <span x-text="doc"></span></div>
     </div>
 </div>
 {% else %}

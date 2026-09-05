@@ -6,23 +6,13 @@
     <title>{% block title %}EagleAgent{% endblock %}</title>
     <style>
         /* Establish cascade-layer order BEFORE any stylesheet loads:
-           daisyUI sits between Tailwind's components and utilities so
-           utility classes (bg-*, text-*, border-*) still win over
-           daisyUI component styles. */
-        @layer theme, base, components, daisyui, utilities;
+           Tailwind components sit before utilities so utility classes
+           (bg-*, text-*, border-*) still win. */
+        @layer theme, base, components, utilities;
     </style>
     <!-- Tailwind CSS: use pre-built file in prod, fall back to CDN for local dev -->
     <link rel="stylesheet" href="/public/tailwind.min.css?v={{ css_version | default('dev') }}"
           onerror="if(!window.__twFallback){window.__twFallback=1;var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4';document.head.appendChild(s);var st=document.createElement('style');st.type='text/tailwindcss';st.textContent='@custom-variant dark (&:where(.dark, .dark *));';document.head.appendChild(st)}">
-    <!-- DaisyUI CSS (tooltips/components — loaded after Tailwind) -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5/daisyui.css">
-    <style>
-        /* Keep DaisyUI tooltips above sticky table headers (z-10) */
-        .tooltip:before,
-        .tooltip:after {
-            z-index: 60;
-        }
-    </style>
     <script>
         // Restore theme before paint to prevent flash
         if (localStorage.theme === 'dark' || (!localStorage.theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
@@ -501,6 +491,12 @@
                         if (window.Alpine && event.detail && event.detail.target) {
                             Alpine.initTree(event.detail.target);
                         }
+                        // Re-initialize Preline components (overlays, tooltips,
+                        // dropdowns, ...) in swapped content — they only
+                        // auto-init on page load otherwise.
+                        if (window.HSStaticMethods) {
+                            window.HSStaticMethods.autoInit();
+                        }
                     });
                 },
 
@@ -872,6 +868,12 @@
                 editAllDirtyCount: 0,
                 syncMsg: '',
                 departments: [],
+                nsSup: {
+                    supplier_id: null, name: '', country: '', addr1: '', addr2: '',
+                    city: '', state: '', zip: '', phone: '', contact: '', email: '', url: '',
+                    terms_id: '', currency: 'AUD', duplicateChecked: false,
+                    duplicates: [], submitting: false, error: ''
+                },
                 copySupplierModal: { open: false, sourceLine: null, supplierName: '', items: [] },
                 brandSuppliersModal: { open: false, line: null, brand: '', suppliers: [] },
                 rfqId: '',
@@ -1387,12 +1389,11 @@
                 },
 
                 syncChecks: [
-                    {key: 'item', label: 'Matching NetSuite item'},
+                    {key: 'item', label: 'Part number set'},
                     {key: 'brand', label: 'Brand set'},
                     {key: 'department', label: 'Department set'},
                     {key: 'cost', label: 'Cost price set'},
                     {key: 'supplier', label: 'Supplier selected'},
-                    {key: 'supplier_duplicate', label: 'Not a known duplicate'},
                     {key: 'sale', label: 'Sale price set'},
                 ],
                 syncModal: { open: false, line: null, item: null },
@@ -1401,6 +1402,107 @@
                 },
                 closeSyncStatus() {
                     this.syncModal = { open: false, line: null, item: null };
+                },
+                openNsSupplier(line) {
+                    var item = this._items[line];
+                    var sel = (item && item.selected_supplier) || {};
+                    var termsId = '';
+                    var termsSelect = document.querySelector('#ns-supplier-terms');
+                    if (termsSelect && sel.supplier_terms) {
+                        var opt = Array.prototype.find.call(
+                            termsSelect.options,
+                            function (o) { return o.textContent.trim() === sel.supplier_terms; }
+                        );
+                        if (opt) { termsId = opt.value; }
+                    }
+                    this.nsSup = {
+                        supplier_id: sel.supplier_id || null,
+                        name: sel.supplier_name || sel.name || '',
+                        country: this._normalizeCountry(sel.supplier_country || ''),
+                        addr1: sel.supplier_addr1 || '',
+                        addr2: sel.supplier_addr2 || '',
+                        city: sel.supplier_city || '',
+                        state: sel.supplier_state || '',
+                        zip: sel.supplier_zip || '',
+                        phone: sel.supplier_phone || '',
+                        contact: sel.supplier_contact || '',
+                        email: sel.supplier_email || '',
+                        url: sel.supplier_url || '',
+                        terms_id: termsId,
+                        currency: sel.supplier_currency || 'AUD',
+                        duplicateChecked: false,
+                        duplicates: (sel.near_matches || []).map(function (d) {
+                            return { name: d.name, reasons: d.reasons || [] };
+                        }),
+                        submitting: false,
+                        error: ''
+                    };
+                },
+                isAustralia() {
+                    return (this.nsSup.country || '').trim().toUpperCase() === 'AU';
+                },
+                _normalizeCountry(value) {
+                    var val = (value || '').trim();
+                    if (!val) { return ''; }
+                    var upper = val.toUpperCase();
+                    var countryEl = document.querySelector('#ns-supplier-country');
+                    if (countryEl) {
+                        var opt = Array.prototype.find.call(
+                            countryEl.options,
+                            function (o) { return o.value === upper; }
+                        );
+                        if (opt) { return upper; }
+                        var optName = Array.prototype.find.call(
+                            countryEl.options,
+                            function (o) { return o.textContent.trim().toLowerCase() === val.toLowerCase(); }
+                        );
+                        if (optName) { return optName.value; }
+                    }
+                    return '';
+                },
+                applyCountryCurrency(evt) {
+                    var map = {};
+                    try { map = JSON.parse(evt.currentTarget.dataset.currencyMap || '{}'); } catch (e) {}
+                    var code = (this.nsSup.country || '').trim().toUpperCase();
+                    var cur = map[code];
+                    if (cur) { this.nsSup.currency = cur; }
+                },
+                submitNsSupplier() {
+                    var self = this;
+                    this.nsSup.submitting = true;
+                    this.nsSup.error = '';
+                    fetch('/partial/rfqs/' + this.rfqId + '/supplier-to-netsuite', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify({
+                            supplier_id: this.nsSup.supplier_id,
+                            name: this.nsSup.name,
+                            country: this.nsSup.country,
+                            addr1: this.nsSup.addr1, addr2: this.nsSup.addr2,
+                            city: this.nsSup.city, state: this.nsSup.state, zip: this.nsSup.zip,
+                            phone: this.nsSup.phone, contact_name: this.nsSup.contact || null,
+                            email: this.nsSup.email, url: this.nsSup.url,
+                            terms_id: this.nsSup.terms_id || null,
+                            currency: this.nsSup.currency || null,
+                            duplicate_checked: !!this.nsSup.duplicateChecked
+                        })
+                    }).then(async function (r) {
+                        self.nsSup.submitting = false;
+                        var data = await r.json().catch(function () { return {}; });
+                        if (!r.ok) {
+                            self.nsSup.error = data.error || 'Failed to add supplier to NetSuite.';
+                            return;
+                        }
+                        if (window.HSOverlay) { window.HSOverlay.close('#ns-supplier-modal'); }
+                        self.syncMsg = 'Supplier added to NetSuite ✓';
+                        clearTimeout(self._syncMsgTimer);
+                        self._syncMsgTimer = setTimeout(function () { self.syncMsg = ''; }, 5000);
+                        self.refreshQuotationTab();
+                    }).catch(function () {
+                        self.nsSup.submitting = false;
+                        self.nsSup.error = 'Network error — please retry.';
+                    });
                 },
                 syncIssue(item, key) {
                     return ((item && item.sync_issues) || []).some(function(i) { return i.key === key; });

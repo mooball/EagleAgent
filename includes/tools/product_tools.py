@@ -710,6 +710,102 @@ async def part_purchase_history(part_number: str, limit: int = 20) -> str:
     return await asyncio.to_thread(_do_part_purchase_history, part_number, limit)
 
 
+def _do_part_sale_history_batch(part_numbers: list[str], limit_per_part: int = 3) -> str:
+    """Executes batched sale-history lookup for multiple part numbers."""
+    parts = [p.strip() for p in (part_numbers or []) if p and p.strip()]
+    if not parts:
+        return "No part numbers provided."
+    limit_per_part = max(1, min(int(limit_per_part or 3), 10))
+
+    norms: dict[str, str] = {}
+    conds = []
+    for pn in parts:
+        norm = normalize_part_number(pn)
+        if not norm:
+            continue
+        norms[pn] = norm
+        conds.append(_norm_expr(Product.part_number).ilike(f"%{norm}%"))
+    if not conds:
+        return "No valid part numbers provided."
+
+    session = get_session()
+    try:
+        rows = (
+            session.query(
+                Product.part_number,
+                Transaction.doc_number,
+                Transaction.date,
+                Transaction.price,
+                Supplier.name.label("supplier_name"),
+            )
+            .join(Transaction, Transaction.product_id == Product.id)
+            .join(Supplier, Transaction.supplier_id == Supplier.id)
+            .filter(
+                or_(*conds),
+                Transaction.doc_type.in_(("Quote", "SalesOrder")),
+                Transaction.price.isnot(None),
+            )
+            .order_by(Transaction.date.desc().nulls_last())
+            .all()
+        )
+    finally:
+        session.close()
+
+    # Rows are globally date-ordered; assign each to the first matching part.
+    per_part: dict[str, list] = {pn: [] for pn in parts}
+    for r in rows:
+        rn = normalize_part_number(r.part_number or "")
+        for pn, norm in norms.items():
+            if norm and norm in rn:
+                if len(per_part[pn]) < limit_per_part:
+                    per_part[pn].append(r)
+                break
+
+    lines = [
+        f"Sale history for {len(parts)} part(s) — most recent {limit_per_part} "
+        "Quote/Sales Order transaction(s) per part:",
+        "",
+        "| # | Part Number | Doc # | Date | Supplier | Sale Price |",
+        "|---|-------------|-------|------|----------|------------|",
+    ]
+    idx = 0
+    for pn in parts:
+        if not per_part[pn]:
+            idx += 1
+            lines.append(f"| {idx} | {pn} | — | — | — | No sale history |")
+            continue
+        for r in per_part[pn]:
+            idx += 1
+            date_str = r.date.strftime("%-d %b %Y") if r.date else "N/A"
+            price_str = f"${r.price:,.2f}" if r.price is not None else "N/A"
+            lines.append(
+                f"| {idx} | {r.part_number} | {r.doc_number or 'N/A'} "
+                f"| {date_str} | {r.supplier_name or 'N/A'} | {price_str} |"
+            )
+    return "\n".join(lines)
+
+
+@tool
+async def part_sale_history_batch(part_numbers: list[str], limit_per_part: int = 3) -> str:
+    """
+    Get the most recent sale transactions (Quotes and Sales Orders) for MULTIPLE
+    part numbers in a single tool call.
+
+    Returns one worksheet-style table with columns: Part Number, Doc #,
+    Date, Supplier and Sale Price — most recent first, up to limit_per_part rows
+    per part number. Parts without history appear as "No sale history".
+
+    ALWAYS use this instead of calling part_purchase_history once per part when
+    the user provides a list or table of part numbers (e.g. "last sale price
+    history for these 50 parts") — one call handles them all.
+
+    Args:
+        part_numbers: List of part numbers to look up (e.g. ['123-ABC', '456-DEF']).
+        limit_per_part: Max sale rows per part number (default 3, max 10).
+    """
+    return await asyncio.to_thread(_do_part_sale_history_batch, part_numbers, limit_per_part)
+
+
 def _do_search_purchase_history(
     part_number: str = None,
     supplier: str = None,
@@ -929,6 +1025,82 @@ def _find_product_by_code(part_number: str, brand: str = None) -> Optional[dict]
         return None
     finally:
         session.close()
+
+
+def last_sale_for_part_numbers(part_numbers: list[str]) -> dict[str, dict]:
+    """Latest sale transaction (Quote or SalesOrder) per part number.
+
+    Duplicate-aware: matches ALL product rows whose normalised part_number or
+    supplier_code equals the normalised query. Inactive products still count —
+    sale history is history. Returns ``{part_number: {...}}`` for part numbers
+    that have at least one matching Quote/SalesOrder transaction:
+
+        {"price": float, "date": "YYYY-MM-DD" | None, "vendor": str,
+         "doc_type": "Quote" | "SalesOrder", "doc_label": "Quote" | "Sale",
+         "doc_number": str}
+    """
+    pns = {pn.strip() for pn in (part_numbers or []) if pn and pn.strip()}
+    if not pns:
+        return {}
+
+    norms: dict[str, str] = {}
+    conds = []
+    for pn in pns:
+        norm = normalize_part_number(pn)
+        if not norm:
+            continue
+        norms[pn] = norm
+        conds.append(_norm_expr(Product.part_number).ilike(norm))
+        conds.append(_norm_expr(Product.supplier_code).ilike(norm))
+    if not conds:
+        return {}
+
+    session = get_session()
+    try:
+        rows = (
+            session.query(
+                Product.part_number,
+                Product.supplier_code,
+                Transaction.price,
+                Transaction.date,
+                Transaction.doc_type,
+                Transaction.doc_number,
+                Supplier.name.label("vendor_name"),
+            )
+            .join(Transaction, Transaction.product_id == Product.id)
+            .join(Supplier, Transaction.supplier_id == Supplier.id)
+            .filter(
+                or_(*conds),
+                Transaction.doc_type.in_(("Quote", "SalesOrder")),
+                Transaction.price.isnot(None),
+            )
+            .order_by(Transaction.date.desc().nulls_last())
+            .all()
+        )
+    finally:
+        session.close()
+
+    result: dict[str, dict] = {}
+    for r in rows:
+        # Rows are globally date-ordered, so the first hit per part number
+        # is that part number's latest sale.
+        for pn, norm in norms.items():
+            pn_norm = normalize_part_number(r.part_number or "")
+            sc_norm = normalize_part_number(r.supplier_code or "")
+            if pn_norm != norm and sc_norm != norm:
+                continue
+            if pn in result:
+                break
+            result[pn] = {
+                "price": float(r.price),
+                "date": str(r.date) if r.date else None,
+                "vendor": r.vendor_name or "",
+                "doc_type": r.doc_type,
+                "doc_label": "Quote" if r.doc_type == "Quote" else "Sale",
+                "doc_number": r.doc_number,
+            }
+            break
+    return result
 
 
 # Brand names treated as "no brand" during classification — never looked up.
