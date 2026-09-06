@@ -442,6 +442,26 @@
                             this._activeThreadId = newThreadId;
                             this.pushContext();
                             this._expectingBoundThread = null;
+
+                            // Hard-bound mode: while on an RFQ, the panel's
+                            // active thread is the RFQ's thread. (Re)bind when
+                            // they differ (new RFQ, cleared thread, recovery).
+                            const ctx = this.currentContext;
+                            if (ctx && ctx.view === 'rfq_detail' && ctx.id
+                                    && ctx.thread_id && ctx.thread_id !== newThreadId) {
+                                fetch('/api/rfq-thread', {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    credentials: 'same-origin',
+                                    body: JSON.stringify({rfq_id: ctx.id, thread_id: newThreadId}),
+                                }).then(resp => {
+                                    if (resp.ok) {
+                                        this.currentContext.thread_id = newThreadId;
+                                        this._activeThreadRfqId = ctx.id;
+                                        this.pushContext();
+                                    }
+                                }).catch(() => {});
+                            }
                             this._ensureRfqBound();
                             if (this._pendingRfqBind) {
                                 const isNewRfq = this._pendingNewRfq;
@@ -462,6 +482,14 @@
                         document.addEventListener('chat-ui:profile', (e) => {
                             this._chatProfile = (e.detail && e.detail.label) || 'Eagle Agent';
                         });
+                        document.addEventListener('chat-ui:open-rfq', (e) => {
+                            // The user clicked an RFQ-bound thread in the
+                            // Chats list — take the whole UI to its RFQ.
+                            const rfqId = e.detail && e.detail.rfqId;
+                            if (rfqId) {
+                                this._handleDashboardCommand('agent_navigate', {url: '/rfqs/' + rfqId});
+                            }
+                        });
                         ['dashboard_refresh', 'agent_navigate', 'agent_working', 'agent_done'].forEach((cmd) => {
                             document.addEventListener('dashboard:' + cmd, (e) => {
                                 this._handleDashboardCommand(cmd, (e.detail && e.detail.payload) || {});
@@ -472,6 +500,9 @@
                             // events dispatched before it existed were dropped.
                             this._lastContextJson = null;
                             this._lastContextIdentity = null;
+                            if (this._lastNavigate && this._activeThreadId) {
+                                this._navigateChat(this._lastNavigate);
+                            }
                             this.updateContext();
                         });
                     }
@@ -595,6 +626,7 @@
                 // Iframe users get a src swap; beta embed users get a DOM event
                 // the panel chat listens for ('/chat/thread/{id}' or '/chat').
                 _navigateChat(src) {
+                    this._lastNavigate = src || null;
                     const iframe = document.getElementById('agent-iframe');
                     if (iframe) {
                         iframe.src = src;
@@ -648,23 +680,17 @@
                                         this.agentState = 'panel';
                                     }
                                 }
-                                // No thread bound yet for this RFQ — create one on demand
+                                // No thread bound yet for this RFQ — create one on demand.
+                                // Hard-bound mode: every RFQ gets its own thread.
+                                // Never reuse the currently open thread for a different
+                                // RFQ; start fresh and bind the new one.
                                 if (newCtx.view === 'rfq_detail' && newCtx.id && !newCtx.thread_id) {
-                                    // If the active thread belongs to a different RFQ, don't reuse it
-                                    if (this._activeThreadId && this._activeThreadRfqId && this._activeThreadRfqId !== newCtx.id) {
-                                        // Start a fresh thread for this new RFQ
-                                        console.log('[bind] Active thread belongs to', this._activeThreadRfqId, '— starting fresh for', newCtx.id);
-                                        this._activeThreadId = null;
-                                        this._activeThreadRfqId = null;
-                                    }
-                                    if (this._activeThreadId) {
-                                        this._ensureRfqBound();
-                                    } else {
-                                        this._pendingRfqBind = newCtx.id;
-                                        // Track whether this is a brand-new blank RFQ
-                                        this._pendingNewRfq = !newCtx.customer;
-                                        this._navigateChat('/chat');
-                                    }
+                                    this._activeThreadId = null;
+                                    this._activeThreadRfqId = null;
+                                    this._pendingRfqBind = newCtx.id;
+                                    // Track whether this is a brand-new blank RFQ
+                                    this._pendingNewRfq = !newCtx.customer;
+                                    this._navigateChat('/chat');
                                     if (this.agentState === 'closed') {
                                         this.agentState = 'panel';
                                     }
@@ -690,6 +716,14 @@
                         }, window.location.origin);
                     } else {
                         // Beta chat UI: same document — push straight to the server.
+                        // Tell the embed where we are so it can enforce the RFQ lock.
+                        document.dispatchEvent(new CustomEvent('chat-ui:context', {
+                            detail: {
+                                view: ctx.view || null,
+                                rfq_id: ctx.view === 'rfq_detail' ? (ctx.id || null) : null,
+                                thread_id: ctx.view === 'rfq_detail' ? (ctx.thread_id || null) : null,
+                            }
+                        }));
                         fetch('/api/dashboard-context', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},

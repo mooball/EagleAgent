@@ -173,6 +173,29 @@ async def bind_rfq_thread(request: Request, user: dict = Depends(require_user)):
     return JSONResponse({"ok": True, "rfq_id": rfq_id, "thread_id": thread_id})
 
 
+@router.delete("/api/rfq-thread")
+async def unbind_rfq_thread(rfq_id: str, user: dict = Depends(require_user)):
+    """Remove the binding between this RFQ and its thread.
+
+    The thread itself is kept (it remains a normal chat). Used by the beta
+    chat UI's "Clear thread" action, which then creates and binds a fresh one.
+    """
+    session = _helpers.get_session()
+    try:
+        deleted = (
+            session.query(RFQThread)
+            .filter(
+                RFQThread.rfq_number == rfq_id,
+                RFQThread.user_email == user["email"],
+            )
+            .delete()
+        )
+        session.commit()
+    finally:
+        session.close()
+    return JSONResponse({"ok": True, "cleared": bool(deleted)})
+
+
 # ---------------------------------------------------------------------------
 # Gmail attachment proxy
 # ---------------------------------------------------------------------------
