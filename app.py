@@ -716,7 +716,10 @@ async def main(message: cl.Message):
         intent_context = get_intent_context("find_supplier")
 
     from includes.dashboard.context import format_context_for_prompt
-    dashboard_ctx = format_context_for_prompt(user_id)
+    dashboard_ctx = format_context_for_prompt(
+        user_id,
+        thread_id=cl.user_session.get("thread_id") or cl.context.session.thread_id,
+    )
 
     active_graph = cl.user_session.get("active_graph", _graph())
 

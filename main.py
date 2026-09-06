@@ -484,6 +484,7 @@ app.include_router(addon_router)
 # Dashboard context API (called by embedded.js in the Chainlit iframe)
 # ---------------------------------------------------------------------------
 from includes.dashboard.context import set_context as _set_dashboard_context
+from includes.dashboard.context import set_thread_context as _set_thread_dashboard_context
 
 
 @app.post("/api/dashboard-context")
@@ -495,6 +496,11 @@ async def update_dashboard_context(request: Request):
     body = await request.json()
     logger.info(f"Dashboard context updated for {user['email']}: {body}")
     _set_dashboard_context(user["email"], body)
+    # Thread-keyed entry isolates multi-tab contexts: two tabs on different
+    # RFQs have different threads and must never overwrite each other.
+    thread_id = body.get("_activeThreadId")
+    if thread_id:
+        _set_thread_dashboard_context(thread_id, body)
     return Response(status_code=204)
 
 
@@ -528,18 +534,21 @@ async def stop_agent(request: Request):
 
 
 @app.get("/api/dashboard-context")
-async def get_dashboard_context(request: Request):
-    """Debug: return the stored context for the current user."""
+async def get_dashboard_context(request: Request, thread_id: str | None = None):
+    """Debug: return the stored context for the current user (or thread)."""
     user = get_current_user(request)
     if not user:
         return Response(status_code=401)
-    from includes.dashboard.context import get_context
-    ctx = get_context(user["email"])
+    from includes.dashboard.context import lookup_context
     from includes.dashboard.context import format_context_for_prompt
-    formatted = format_context_for_prompt(user["email"])
+    ctx = lookup_context(user["email"], thread_id or None)
+    formatted = format_context_for_prompt(user["email"], thread_id=thread_id or None)
     import json
     return Response(
-        content=json.dumps({"email": user["email"], "context": ctx, "formatted": formatted}, default=str),
+        content=json.dumps(
+            {"email": user["email"], "thread_id": thread_id, "context": ctx, "formatted": formatted},
+            default=str,
+        ),
         media_type="application/json",
     )
 
