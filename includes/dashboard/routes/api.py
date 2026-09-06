@@ -70,15 +70,18 @@ def _lookup_rfq_thread_id(rfq_number: str, user_email: str) -> str | None:
         ).first()
 
         if row:
-            # Verify the thread is owned by this user
+            # Verify the thread is owned by this user (or exists at all —
+            # a deleted thread leaves a stale binding that must be repaired).
             owner = session.execute(
                 text('SELECT "userIdentifier" FROM threads WHERE id = :tid'),
                 {"tid": row.thread_id},
             ).scalar()
-            if owner and owner != user_email:
+            if owner is None or owner != user_email:
                 logger.warning(
-                    "RFQ %s: removing stale thread binding %s (owned by %s, not %s)",
-                    rfq_number, row.thread_id, owner, user_email,
+                    "RFQ %s: removing stale thread binding %s (%s)",
+                    rfq_number,
+                    row.thread_id,
+                    "thread missing" if owner is None else f"owned by {owner}, not {user_email}",
                 )
                 session.delete(row)
                 session.commit()

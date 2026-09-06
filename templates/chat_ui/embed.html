@@ -431,7 +431,12 @@
                 }
                 showThread({id: meta.id, name: meta.name, agent: meta.agent});
             })
-            .catch(function () { if (!lock) { showList(); } });
+            .catch(function () {
+                // Bound thread missing (deleted) — self-heal while locked:
+                // create a fresh thread; the shell rebinds it to this RFQ.
+                if (lock) { createThread(); return; }
+                showList();
+            });
     }
 
     function createThread() {
