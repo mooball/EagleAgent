@@ -490,6 +490,11 @@
                                 this._handleDashboardCommand('agent_navigate', {url: '/rfqs/' + rfqId});
                             }
                         });
+                        document.addEventListener('chat-ui:leave-rfq', () => {
+                            // A plain thread was picked from the list while on an
+                            // RFQ — leave the RFQ so the anchor can take over.
+                            this._handleDashboardCommand('agent_navigate', {url: '/rfqs'});
+                        });
                         ['dashboard_refresh', 'agent_navigate', 'agent_working', 'agent_done'].forEach((cmd) => {
                             document.addEventListener('dashboard:' + cmd, (e) => {
                                 this._handleDashboardCommand(cmd, (e.detail && e.detail.payload) || {});
@@ -510,11 +515,11 @@
                     // Set initial context from the page (may switch iframe to an RFQ thread)
                     this.updateContext();
 
-                    // Resume the user's most recent persisted thread — but only if
-                    // updateContext() didn't already switch to an RFQ-bound thread
-                    // or start an on-demand bind (_pendingRfqBind).
+                    // Resume the user's current thread (non-RFQ anchor) — but
+                    // only if updateContext() didn't already switch to an
+                    // RFQ-bound thread or start an on-demand bind.
                     if (!this._activeThreadId && !this._pendingRfqBind) {
-                        fetch('/api/latest-thread', { credentials: 'same-origin' })
+                        fetch('/chat-ui/current-thread', { credentials: 'same-origin' })
                             .then(r => r.json())
                             .then(data => {
                                 if (data.thread_id) {
@@ -694,6 +699,23 @@
                                     if (this.agentState === 'closed') {
                                         this.agentState = 'panel';
                                     }
+                                }
+
+                                // Leaving an RFQ: anchor the panel on the user's
+                                // current thread (one per user, non-RFQ home base).
+                                const wasRfq = this._lastView === 'rfq_detail';
+                                this._lastView = newCtx.view;
+                                if (wasRfq && newCtx.view && newCtx.view !== 'rfq_detail') {
+                                    fetch('/chat-ui/current-thread', {credentials: 'same-origin'})
+                                        .then(r => r.json())
+                                        .then(data => {
+                                            if (data.thread_id && data.thread_id !== this._activeThreadId) {
+                                                this._navigateChat('/chat/thread/' + data.thread_id);
+                                                this._activeThreadId = data.thread_id;
+                                                this._activeThreadRfqId = null;
+                                            }
+                                        })
+                                        .catch(() => {});
                                 }
                             }
                         } catch (e) {

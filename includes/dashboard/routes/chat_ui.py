@@ -18,6 +18,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from sqlalchemy import text
 
 from includes.chat import transcript
 from includes.chat.context import chat_context
@@ -37,6 +38,62 @@ _active_runs: dict[str, dict[str, Any]] = {}
 
 def _cancel_key(thread_id: str) -> str:
     return f"chat-ui:{thread_id}"
+
+
+# ── Current-thread anchor (one per user, non-RFQ home base) ────────────────
+
+
+def _get_current_thread_id(user_email: str) -> str | None:
+    from . import _helpers
+
+    session = _helpers.get_session()
+    try:
+        return session.execute(
+            text(
+                "SELECT thread_id FROM chat_ui_current_threads "
+                "WHERE user_email = :email"
+            ),
+            {"email": user_email},
+        ).scalar()
+    finally:
+        session.close()
+
+
+def _set_current_thread_id(user_email: str, thread_id: str) -> None:
+    from . import _helpers
+
+    session = _helpers.get_session()
+    try:
+        session.execute(
+            text(
+                "INSERT INTO chat_ui_current_threads "
+                "(user_email, thread_id, updated_at) VALUES (:email, :tid, NOW()) "
+                "ON CONFLICT (user_email) DO UPDATE "
+                "SET thread_id = EXCLUDED.thread_id, updated_at = NOW()"
+            ),
+            {"email": user_email, "tid": thread_id},
+        )
+        session.commit()
+    finally:
+        session.close()
+
+
+async def _current_thread_id_or_create(user: dict) -> str:
+    """The user's current thread, created on first use (stale ids repaired)."""
+    email = user["email"]
+    thread_id = _get_current_thread_id(email)
+    if thread_id:
+        existing = await transcript.get_thread(thread_id, email)
+        if existing is not None:
+            return thread_id
+    thread_id = await transcript.create_thread(
+        email,
+        user_name=user.get("name"),
+        name="Current chat",
+        agent_key="eagle",
+    )
+    _set_current_thread_id(email, thread_id)
+    return thread_id
 
 
 def _intent_route(intent_name: str) -> tuple[str, str]:
@@ -244,6 +301,31 @@ async def thread_page(
 # ── Thread CRUD ────────────────────────────────────────────────────────────
 
 
+@router.get("/current-thread")
+async def current_thread(user: dict = Depends(require_user)):
+    """The user's current (non-RFQ) thread — created on first use."""
+    await _guard(user)
+    thread_id = await _current_thread_id_or_create(user)
+    return JSONResponse({"thread_id": thread_id})
+
+
+@router.post("/current-thread")
+async def set_current_thread(
+    request: Request, user: dict = Depends(require_user)
+):
+    """Point the user's current thread at an existing (owned) thread."""
+    await _guard(user)
+    body = await request.json()
+    thread_id = str(body.get("thread_id") or "")
+    if not thread_id:
+        return JSONResponse({"error": "thread_id required"}, status_code=400)
+    existing = await transcript.get_thread(thread_id, user["email"])
+    if existing is None:
+        return JSONResponse({"error": "Thread not found"}, status_code=404)
+    _set_current_thread_id(user["email"], thread_id)
+    return JSONResponse({"ok": True, "thread_id": thread_id})
+
+
 @router.post("/threads")
 async def create_thread(
     request: Request, user: dict = Depends(require_user)
@@ -325,12 +407,10 @@ async def embed_threads(user: dict = Depends(require_user)):
     await _guard(user)
     threads = await transcript.list_threads(user["email"])
     bindings = _rfq_binding_map(user["email"])
+    rfq_meta = _rfq_meta_by_number(list(bindings.values()))
     return JSONResponse(
         {
-            "threads": [
-                {"id": t["id"], "name": t["name"], "agent": t["agent"], "rfq_id": bindings.get(t["id"])}
-                for t in threads
-            ]
+            "threads": [_thread_payload(t, bindings, rfq_meta) for t in threads]
         }
     )
 
@@ -361,6 +441,56 @@ def _rfq_binding_map(user_email: str) -> dict[str, str]:
         session.close()
 
 
+def _rfq_meta_by_number(rfq_numbers: list[str]) -> dict[str, dict]:
+    """rfq_number -> {title, op_number} for the bound-thread list pill."""
+    if not rfq_numbers:
+        return {}
+    from includes.dashboard.models import RFQ, Opportunity
+    from . import _helpers
+
+    session = _helpers.get_session()
+    try:
+        rfqs = session.query(RFQ).filter(RFQ.rfq_number.in_(rfq_numbers)).all()
+        opp_ids = [r.opportunity_id for r in rfqs if r.opportunity_id]
+        opps: dict = {}
+        if opp_ids:
+            opps = {
+                o.id: o
+                for o in session.query(Opportunity).filter(Opportunity.id.in_(opp_ids)).all()
+            }
+        meta: dict[str, dict] = {}
+        for r in rfqs:
+            op_number = None
+            if r.opportunity_id and r.opportunity_id in opps:
+                op_number = opps[r.opportunity_id].opportunity_number
+            meta[r.rfq_number] = {
+                "title": r.title,
+                "op_number": op_number,
+                "customer": r.customer,
+            }
+        return meta
+    finally:
+        session.close()
+
+
+def _thread_payload(t: dict, bindings: dict, rfq_meta: dict) -> dict:
+    """A thread dict for the client, annotated with RFQ details when bound."""
+    payload = {
+        "id": t["id"],
+        "name": t["name"],
+        "agent": t["agent"],
+        "rfq_id": bindings.get(t["id"]),
+        "last_activity": t.get("last_activity"),
+    }
+    rfq_id = payload["rfq_id"]
+    if rfq_id:
+        meta = rfq_meta.get(rfq_id) or {}
+        payload["rfq_title"] = meta.get("title")
+        payload["op_number"] = meta.get("op_number")
+        payload["rfq_customer"] = meta.get("customer")
+    return payload
+
+
 def _command_data() -> list[dict]:
     """Composer command menu: every agent's composer intents plus a prefill.
 
@@ -386,6 +516,7 @@ def _command_data() -> list[dict]:
 def _embed_data(user: dict, threads: list[dict], thread: dict | None, steps: list[dict]) -> dict:
     """JSON payload embedded into the panel template (Jinja can't build it)."""
     bindings = _rfq_binding_map(user["email"])
+    rfq_meta = _rfq_meta_by_number(list(bindings.values()))
     thread_data = (
         {
             "id": thread["id"],
@@ -400,10 +531,8 @@ def _embed_data(user: dict, threads: list[dict], thread: dict | None, steps: lis
         "user_email": user["email"],
         "agents": _agent_options(),
         "commands": _command_data(),
-        "threads": [
-            {"id": t["id"], "name": t["name"], "agent": t["agent"], "rfq_id": bindings.get(t["id"])}
-            for t in threads
-        ],
+        "current_thread_id": _get_current_thread_id(user["email"]),
+        "threads": [_thread_payload(t, bindings, rfq_meta) for t in threads],
         "thread": thread_data,
         "steps": steps,
     }
@@ -618,6 +747,9 @@ async def post_message(
     step_id = await transcript.create_step(
         thread_id, type_="user_message", name=user["email"], output=text
     )
+
+    # Track the agent that will handle this turn — the thread list shows it.
+    await transcript.update_thread_agent(thread_id, agent_key)
 
     # Attach pending uploads to the persisted step (matches Chainlit's forId).
     for fid in attached_ids:

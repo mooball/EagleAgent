@@ -6,7 +6,7 @@
 <div class="pt-4 flex flex-col" style="height: calc(100vh - 7.5rem);">
     <div class="flex items-center justify-between mb-2">
         <div class="flex items-center gap-2 min-w-0">
-            <a href="/chat-ui" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 p-1" title="Back to chats">←</a>
+            <a href="/chat-ui" class="px-2.5 py-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800" title="Back to chats">←</a>
             <h1 id="thread-name" class="text-lg font-semibold text-gray-800 dark:text-gray-100 truncate">{{ thread.name }}</h1>
             <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">BETA</span>
         </div>
@@ -15,9 +15,6 @@
                     class="py-1.5 px-3 inline-flex items-center gap-x-1.5 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700">
                 ⏹ Stop
             </button>
-            <button type="button" id="delete-btn"
-                    class="p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-600 dark:hover:text-red-400"
-                    title="Delete conversation">🗑</button>
         </div>
     </div>
 
@@ -380,12 +377,6 @@
         fetch('/chat-ui/threads/' + THREAD_ID + '/stop', {
             method: 'POST', credentials: 'same-origin'
         }).catch(function () {});
-    });
-
-    document.getElementById('delete-btn').addEventListener('click', function () {
-        if (!confirm('Delete this conversation? This cannot be undone.')) { return; }
-        fetch('/chat-ui/threads/' + THREAD_ID, {method: 'DELETE', credentials: 'same-origin'})
-            .then(function () { window.location.href = '/chat-ui'; });
     });
 
     renderCommands();

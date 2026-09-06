@@ -43,9 +43,6 @@
                 <button type="button" data-action="rename"
                         class="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                         title="Rename">✎</button>
-                <button type="button" data-action="delete"
-                        class="p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-600 dark:hover:text-red-400"
-                        title="Delete">🗑</button>
             </div>
         </li>
         {% endfor %}
@@ -73,11 +70,6 @@
             var name = prompt('Rename thread:', '');
             if (!name || !name.trim()) { return; }
             request('PATCH', '/chat-ui/threads/' + id, {name: name.trim()})
-                .then(function () { window.location.reload(); });
-        });
-        li.querySelector('[data-action="delete"]').addEventListener('click', function () {
-            if (!confirm('Delete this conversation? This cannot be undone.')) { return; }
-            request('DELETE', '/chat-ui/threads/' + id)
                 .then(function () { window.location.reload(); });
         });
     });

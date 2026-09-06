@@ -82,12 +82,19 @@ async def create_thread(
 
 
 async def list_threads(user_email: str, limit: int = 100) -> list[dict]:
-    """Threads owned by the user, newest first."""
+    """Threads owned by the user, most recently active first.
+
+    Activity = the latest step's createdAt, falling back to the thread's
+    createdAt (empty threads sort by when they were created).
+    """
     dl = await _data_layer()
     rows = await dl.execute_sql(
-        'SELECT "id","name","createdAt","metadata" FROM threads '
-        'WHERE "userIdentifier" = :email '
-        'ORDER BY "createdAt" DESC LIMIT :limit',
+        'SELECT t."id", t."name", t."createdAt", t."metadata", '
+        'COALESCE((SELECT MAX(s."createdAt") FROM steps s '
+        'WHERE s."threadId" = t."id"), t."createdAt") AS "activity" '
+        'FROM threads t '
+        'WHERE t."userIdentifier" = :email '
+        'ORDER BY "activity" DESC LIMIT :limit',
         {"email": user_email, "limit": limit},
     )
     threads: list[dict] = []
@@ -103,6 +110,7 @@ async def list_threads(user_email: str, limit: int = 100) -> list[dict]:
                 "id": row.get("id"),
                 "name": row.get("name") or "Untitled",
                 "created_at": row.get("createdAt"),
+                "last_activity": row.get("activity"),
                 "agent": (metadata or {}).get("agent", "eagle"),
             }
         )
@@ -139,6 +147,12 @@ async def get_thread(thread_id: str, user_email: str) -> Optional[dict]:
 async def rename_thread(thread_id: str, name: str) -> None:
     dl = await _data_layer()
     await dl.update_thread(thread_id=thread_id, name=name)
+
+
+async def update_thread_agent(thread_id: str, agent_key: str) -> None:
+    """Record the agent that handled the latest turn (list shows it)."""
+    dl = await _data_layer()
+    await dl.update_thread(thread_id=thread_id, metadata={"agent": agent_key})
 
 
 async def delete_thread(thread_id: str) -> None:
