@@ -515,11 +515,15 @@
                     // Set initial context from the page (may switch iframe to an RFQ thread)
                     this.updateContext();
 
-                    // Resume the user's current thread (non-RFQ anchor) — but
-                    // only if updateContext() didn't already switch to an
-                    // RFQ-bound thread or start an on-demand bind.
+                    // Resume on load: Chainlit iframe users get their most
+                    // recent thread; beta embed users get their current-thread
+                    // anchor. Only if updateContext() didn't already switch to
+                    // an RFQ-bound thread or start an on-demand bind.
                     if (!this._activeThreadId && !this._pendingRfqBind) {
-                        fetch('/chat-ui/current-thread', { credentials: 'same-origin' })
+                        const endpoint = document.getElementById('agent-iframe')
+                            ? '/api/latest-thread'
+                            : '/chat-ui/current-thread';
+                        fetch(endpoint, { credentials: 'same-origin' })
                             .then(r => r.json())
                             .then(data => {
                                 if (data.thread_id) {
@@ -702,10 +706,13 @@
                                 }
 
                                 // Leaving an RFQ: anchor the panel on the user's
-                                // current thread (one per user, non-RFQ home base).
+                                // current thread (one per user, non-RFQ home
+                                // base). Beta embed only — the iframe keeps its
+                                // own session untouched.
                                 const wasRfq = this._lastView === 'rfq_detail';
                                 this._lastView = newCtx.view;
-                                if (wasRfq && newCtx.view && newCtx.view !== 'rfq_detail') {
+                                if (wasRfq && newCtx.view && newCtx.view !== 'rfq_detail'
+                                        && !document.getElementById('agent-iframe')) {
                                     fetch('/chat-ui/current-thread', {credentials: 'same-origin'})
                                         .then(r => r.json())
                                         .then(data => {
