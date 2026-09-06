@@ -232,6 +232,38 @@ class TestRunFlow:
         assert mocks["create_step"].call_args.kwargs["type_"] == "user_message"
         assert mocks["create_step"].call_args.kwargs["output"] == "find a widget"
 
+    def test_message_with_intent_routes_to_owning_agent(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        monkeypatch.setattr(chat_ui, "_active_runs", {})
+        monkeypatch.setattr(chat_ui, "_run_task", AsyncMock())
+        _login(client)
+        resp = client.post(
+            "/chat-ui/threads/t1/messages",
+            json={"text": "research this widget", "intent": "research_product_info"},
+        )
+        assert resp.status_code == 200
+        args = chat_ui._run_task.call_args
+        assert args.args[3] == "research"
+        assert args.kwargs["intent_context"]
+
+    def test_message_with_unknown_intent_falls_back_to_default(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        monkeypatch.setattr(chat_ui, "_active_runs", {})
+        monkeypatch.setattr(chat_ui, "_run_task", AsyncMock())
+        _login(client)
+        resp = client.post(
+            "/chat-ui/threads/t1/messages",
+            json={"text": "hello", "intent": "not_a_real_intent"},
+        )
+        assert resp.status_code == 200
+        args = chat_ui._run_task.call_args
+        assert args.args[3] == "eagle"
+        assert args.kwargs["intent_context"] == ""
+
     def test_stream_with_no_active_run_yields_done(self, client, monkeypatch):
         _patch_transcript(monkeypatch)
         _login(client)

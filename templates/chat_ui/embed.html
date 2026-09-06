@@ -5,11 +5,6 @@
         <div class="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700">
             <span class="text-sm font-semibold text-gray-700 dark:text-gray-200">Chats</span>
             <div class="flex items-center gap-1.5">
-                <select id="embed-new-agent" class="py-1 px-1.5 border-gray-200 rounded text-xs dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
-                    {% for key, spec in agents.items() %}
-                    <option value="{{ key }}">{{ spec.label }}</option>
-                    {% endfor %}
-                </select>
                 <button type="button" id="embed-new-btn"
                         class="py-1 px-2.5 inline-flex items-center text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700">+ New</button>
             </div>
@@ -59,7 +54,6 @@
                                     <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                                 </svg>
                             </button>
-                            <input type="file" id="embed-file-input" multiple hidden>
                             <div class="relative inline-flex">
                                 <button type="button" id="embed-tools-btn" title="Commands"
                                         class="flex justify-center items-center gap-x-1 py-1.5 px-2 text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-neutral-800 rounded-lg">
@@ -74,11 +68,11 @@
                                 <div id="embed-tools-menu" role="menu" hidden
                                      class="absolute bottom-full start-0 mb-1.5 z-11 w-60 bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-700 rounded-xl shadow-lg p-1"></div>
                             </div>
+                            <input type="file" id="embed-file-input" multiple hidden>
+                            <div id="embed-intent-chip" class="flex items-center gap-x-1.5 min-w-0" hidden></div>
                         </div>
                         <!-- Agent + send -->
                         <div class="flex items-center gap-x-1">
-                            <select id="embed-agent-select" title="Switch agent"
-                                    class="py-1.5 ps-2.5 pe-7 text-xs text-gray-700 dark:text-gray-300 bg-transparent border-0 rounded-lg hover:bg-gray-100 dark:hover:bg-neutral-800 focus:outline-hidden"></select>
                             <button type="button" id="embed-send-btn" title="Send"
                                     class="inline-flex shrink-0 justify-center items-center size-8 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:pointer-events-none">
                                 <span class="sr-only">Send</span>
@@ -118,7 +112,6 @@
     var sendBtn = document.getElementById('embed-send-btn');
     var stopBtn = document.getElementById('embed-stop-btn');
     var errorEl = document.getElementById('embed-error');
-    var agentSelect = document.getElementById('embed-agent-select');
     var toolsBtn = document.getElementById('embed-tools-btn');
     var toolsMenu = document.getElementById('embed-tools-menu');
     var backBtn = document.getElementById('embed-back-btn');
@@ -128,6 +121,7 @@
     var attachBtn = document.getElementById('embed-attach-btn');
     var fileInput = document.getElementById('embed-file-input');
     var pendingEl = document.getElementById('embed-pending-files');
+    var intentChip = document.getElementById('embed-intent-chip');
     var composerBox = document.getElementById('embed-composer-box');
     var rows = {};
     var eventSource = null;
@@ -135,16 +129,7 @@
     var lock = null;           // {rfq_id, thread_id} while on an RFQ
     var creatingThread = false;
     var pendingFiles = [];     // {id,name,type,mime,url,size,status,objectUrl}
-
-    function renderAgentOptions() {
-        agentSelect.innerHTML = '';
-        (DATA.agents || []).forEach(function (a) {
-            var opt = document.createElement('option');
-            opt.value = a.key;
-            opt.textContent = a.label;
-            agentSelect.appendChild(opt);
-        });
-    }
+    var pendingIntent = null;  // {name,label,icon} for the next message only
 
     function autoresizeComposer() {
         composer.style.height = 'auto';
@@ -152,12 +137,52 @@
     }
 
     function useCommand(cmd) {
-        setAgentSelect(cmd.agent);
-        agentSelect.dispatchEvent(new Event('change'));
+        // One-shot command: routes the NEXT message only, then falls back to
+        // the default agent. No persistent select to leak state.
+        pendingIntent = {name: cmd.name, label: cmd.label, icon: cmd.icon || '⚡'};
         composer.value = cmd.prefill || (cmd.label + ': ');
         composer.focus();
         autoresizeComposer();
         toolsMenu.hidden = true;
+        renderIntentChip();
+        // Keep the shell's profile in sync (binding gate uses Eagle profile).
+        document.dispatchEvent(new CustomEvent('chat-ui:profile', {
+            detail: {key: cmd.agent, label: agentLabel(cmd.agent)}
+        }));
+    }
+
+    function renderIntentChip() {
+        intentChip.innerHTML = '';
+        if (!pendingIntent) { intentChip.hidden = true; return; }
+        intentChip.hidden = false;
+        var chip = document.createElement('div');
+        chip.className = 'flex items-center gap-1 rounded-lg bg-blue-50 dark:bg-blue-900/30 px-2 py-1 text-xs text-blue-700 dark:text-blue-300 max-w-[150px]';
+        var icon = document.createElement('span');
+        icon.className = 'shrink-0';
+        icon.textContent = pendingIntent.icon;
+        var label = document.createElement('span');
+        label.className = 'truncate';
+        label.textContent = pendingIntent.label;
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '✕';
+        remove.title = 'Clear command';
+        remove.className = 'text-blue-400 hover:text-blue-700 dark:hover:text-blue-200 px-0.5';
+        remove.addEventListener('click', function () { clearIntent(); });
+        chip.appendChild(icon);
+        chip.appendChild(label);
+        chip.appendChild(remove);
+        intentChip.appendChild(chip);
+    }
+
+    function clearIntent() {
+        pendingIntent = null;
+        composer.value = '';
+        autoresizeComposer();
+        renderIntentChip();
+        document.dispatchEvent(new CustomEvent('chat-ui:profile', {
+            detail: {key: 'eagle', label: agentLabel('eagle')}
+        }));
     }
 
     function renderCommands() {
@@ -196,7 +221,11 @@
         try {
             if (window.marked && typeof window.marked.parse === 'function') {
                 var out = window.marked.parse(clean);
-                return typeof out === 'string' ? out : String(out);
+                var str = typeof out === 'string' ? out : String(out);
+                // Re-mark the runner's agent summary footer: its inline styles
+                // are stripped by sanitise-on-read, so the CSS class does the work.
+                str = str.replace(/<p>Agent: /g, '<p class="agent-footer">Agent: ');
+                return str;
             }
         } catch (err) {
             console.error('[chat-ui] markdown render failed', err);
@@ -215,7 +244,7 @@
         }
         var bubble = document.createElement('div');
         bubble.className = isUser
-            ? 'ml-auto max-w-[85%] rounded-lg bg-blue-600 text-white px-3 py-2 text-sm whitespace-pre-wrap'
+            ? 'ml-auto max-w-[85%] rounded-lg bg-blue-600 text-white px-3 py-2 text-sm'
             : 'mr-auto max-w-[85%] rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-3 py-2 chat-md';
         div.appendChild(bubble);
         div.className = 'flex ' + (isUser ? 'justify-end' : 'justify-start');
@@ -301,10 +330,6 @@
         stopBtn.hidden = !v;
     }
 
-    function setAgentSelect(key) {
-        if (key) { agentSelect.value = key; }
-    }
-
     function agentLabel(key) {
         var spec = AGENTS.find(function (a) { return a.key === key; });
         return spec ? spec.label : (key || 'Eagle Agent');
@@ -379,7 +404,6 @@
         chatEl.hidden = false;
         listEl.hidden = true;
         nameEl.textContent = t.name || 'New chat';
-        setAgentSelect(t.agent);
         loadMessages(t.id);
         composer.focus();
     }
@@ -414,9 +438,9 @@
         if (creatingThread) { return; }
         creatingThread = true;
         var form = new FormData();
-        // RFQ threads are always Eagle Agent's — locked mode hard-pins it.
-        var agent = lock ? 'eagle' : document.getElementById('embed-new-agent').value;
-        form.append('agent', agent);
+        // All threads start on the default (Eagle) agent; commands route
+        // per turn via the intent mechanism.
+        form.append('agent', 'eagle');
         form.append('embed', '1');
         fetch('/chat-ui/threads', {method: 'POST', credentials: 'same-origin', body: form})
             .then(function (r) { return r.json(); })
@@ -489,7 +513,8 @@
         composer.value = '';
         autoresizeComposer();
         setRunning(true);
-        var payload = {text: text, agent: agentSelect.value};
+        var payload = {text: text};
+        if (pendingIntent) { payload.intent = pendingIntent.name; }
         if (readyFiles.length) {
             payload.file_ids = readyFiles.map(function (f) { return f.id; });
         }
@@ -515,6 +540,8 @@
             }));
             pendingFiles = [];
             renderPending();
+            pendingIntent = null;
+            renderIntentChip();
             messages.scrollTop = messages.scrollHeight;
             openStream(active.id);
         }).catch(function () {
@@ -657,13 +684,6 @@
         clearBtn.hidden = !lock;
         lockBadge.hidden = !lock;
         if (!lock) { return; }
-        // RFQ threads belong to the Eagle Agent — pin the profile so the
-        // shell's bind chain (_ensureRfqBound) is never blocked by a stale
-        // Research/Internal selection.
-        if (agentSelect.value !== 'eagle') {
-            agentSelect.value = 'eagle';
-            agentSelect.dispatchEvent(new Event('change'));
-        }
         if (lock.thread_id) {
             if (!active || active.id !== lock.thread_id) {
                 openThreadById(lock.thread_id);
@@ -752,15 +772,10 @@
             showError('Could not clear the thread binding.');
         });
     });
-    agentSelect.addEventListener('change', function () {
-        document.dispatchEvent(new CustomEvent('chat-ui:profile', {
-            detail: {key: agentSelect.value, label: agentLabel(agentSelect.value)}
-        }));
-    });
 
-    renderAgentOptions();
     renderCommands();
     autoresizeComposer();
     if (active) { showThread(active); } else { showList(); }
-    document.dispatchEvent(new CustomEvent('chat-ui:ready'));})();
+    document.dispatchEvent(new CustomEvent('chat-ui:ready'));
+})();
 </script>

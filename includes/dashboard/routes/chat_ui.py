@@ -23,7 +23,7 @@ from includes.chat import transcript
 from includes.chat.context import chat_context
 from includes.chat.context_sse import SseChatContext
 from includes.chat.runner import RunInProgress, run_turn
-from includes.agents.registry import AGENTS, resolve
+from includes.agents.registry import AGENTS, default_agent, resolve
 
 from ._helpers import require_user
 
@@ -37,6 +37,20 @@ _active_runs: dict[str, dict[str, Any]] = {}
 
 def _cancel_key(thread_id: str) -> str:
     return f"chat-ui:{thread_id}"
+
+
+def _intent_route(intent_name: str) -> tuple[str, str]:
+    """Map a composer command (intent name) onto (agent_key, intent_context).
+
+    The agent registry is the single routing table: whichever agent declares
+    the intent owns the turn. Unknown intents fall back to the default agent
+    with no extra context.
+    """
+    for key, spec in AGENTS.items():
+        intents = spec.command_intents()
+        if intent_name in intents:
+            return key, intents[intent_name]["context"]
+    return default_agent().key, ""
 
 
 async def _guard(user: dict) -> None:
@@ -126,6 +140,7 @@ async def _run_task(
     queue: asyncio.Queue,
     files: list[dict] | None = None,
     file_metadata: list[dict] | None = None,
+    intent_context: str = "",
 ) -> None:
     """One agent turn, streaming events into ``queue``. Mirrors app.py's
     main() adapter minus the Chainlit session."""
@@ -143,9 +158,9 @@ async def _run_task(
             cancel_key=_cancel_key(thread_id),
         )
 
-        # Eagle Agent defaults to supplier lookup, matching app.py.
-        intent_context = ""
-        if agent_key == "eagle":
+        # Eagle Agent defaults to supplier lookup, matching app.py — unless a
+        # command already supplied an intent context.
+        if not intent_context and agent_key == "eagle":
             from includes.prompts import get_intent_context
 
             intent_context = get_intent_context("find_supplier") or ""
@@ -542,6 +557,14 @@ async def post_message(
     text = (body.get("text") or "").strip()
     agent_key = resolve(str(body.get("agent") or "")).key
 
+    # Command routing: the Tools dropdown sends an intent name; the registry
+    # decides the owning agent and its prompt context. Plain messages keep
+    # the thread's default agent.
+    intent_name = str(body.get("intent") or "")
+    intent_context = ""
+    if intent_name:
+        agent_key, intent_context = _intent_route(intent_name)
+
     file_ids = [str(fid) for fid in (body.get("file_ids") or []) if str(fid)]
 
     # Process pending uploads before persisting the turn: the agent gets the
@@ -610,6 +633,7 @@ async def post_message(
             queue,
             files=processed_files or None,
             file_metadata=file_metadata or None,
+            intent_context=intent_context,
         )
     )
     _active_runs[thread_id] = {"queue": queue, "task": task}
