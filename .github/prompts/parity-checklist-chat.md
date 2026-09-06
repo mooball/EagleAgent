@@ -67,9 +67,10 @@ All are **Keep** unless you decide otherwise.
       `assistant_message` steps from the checkpoint (`plan_resume_backfill`).
       This is the load-bearing part of "resume", not the list itself.
 - [ ] B2 Thread auto-naming (`"{RFQ} — {customer}"`)
-- [x] B3 Chat profile switcher (3 agents)
+- [x] B3 Agent choice — removed from the UI; routing is command-driven
+      (one-shot intents map to the owning agent server-side)
 - [x] B4 Composer command buttons per profile (`INTENTS` / `RESEARCH_INTENTS`)
-      *(beta: Tools dropdown with prefills in the panel)*
+      *(Tools dropdown with prefills; a chip shows the active command)*
 - [ ] B5 Welcome message variants (first-visit × known-name × 3 profiles)
 - [x] B6 Transient "⏳ Using {tool}… (xN)" progress line
 - [ ] B7 Token/cost footer (becomes structured metadata — not raw HTML)

@@ -202,13 +202,15 @@ No POC migrations needed.
 - [x] Tool-progress line "⏳ Using {tool}… (xN)"
 - [x] Stop button + cooperative cancellation
 - [x] `RunInProgress` surfaced gracefully (409 → friendly message)
-- [x] Chat profile switcher (3 agents) — composer select in the panel
+- [x] Agent routing via Tools commands — one-shot intent: server maps the
+      command to its owning agent + intent context; plain messages use the
+      default agent (no user-facing agent select)
 - [x] Dark mode (follows dashboard theme)
 
 **Added during the beta (beyond the original POC scope):**
 
-- [x] Compact Preline-style composer (agent select + Tools dropdown with
-      command prefills + small send button)
+- [x] Compact Preline-style composer (attach button, Tools dropdown with
+      command prefills, small send button)
 - [x] **File uploads** — ✚ button + drag-drop onto the composer, optimistic
       thumbnails, Chainlit-identical `elements` persistence, legacy attachment
       rendering (was listed "Out" below; moved in)
