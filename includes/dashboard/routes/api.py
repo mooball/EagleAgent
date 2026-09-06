@@ -70,15 +70,18 @@ def _lookup_rfq_thread_id(rfq_number: str, user_email: str) -> str | None:
         ).first()
 
         if row:
-            # Verify the thread is owned by this user
+            # Verify the thread is owned by this user (or exists at all —
+            # a deleted thread leaves a stale binding that must be repaired).
             owner = session.execute(
                 text('SELECT "userIdentifier" FROM threads WHERE id = :tid'),
                 {"tid": row.thread_id},
             ).scalar()
-            if owner and owner != user_email:
+            if owner is None or owner != user_email:
                 logger.warning(
-                    "RFQ %s: removing stale thread binding %s (owned by %s, not %s)",
-                    rfq_number, row.thread_id, owner, user_email,
+                    "RFQ %s: removing stale thread binding %s (%s)",
+                    rfq_number,
+                    row.thread_id,
+                    "thread missing" if owner is None else f"owned by {owner}, not {user_email}",
                 )
                 session.delete(row)
                 session.commit()
@@ -171,6 +174,29 @@ async def bind_rfq_thread(request: Request, user: dict = Depends(require_user)):
         session.close()
 
     return JSONResponse({"ok": True, "rfq_id": rfq_id, "thread_id": thread_id})
+
+
+@router.delete("/api/rfq-thread")
+async def unbind_rfq_thread(rfq_id: str, user: dict = Depends(require_user)):
+    """Remove the binding between this RFQ and its thread.
+
+    The thread itself is kept (it remains a normal chat). Used by the beta
+    chat UI's "Clear thread" action, which then creates and binds a fresh one.
+    """
+    session = _helpers.get_session()
+    try:
+        deleted = (
+            session.query(RFQThread)
+            .filter(
+                RFQThread.rfq_number == rfq_id,
+                RFQThread.user_email == user["email"],
+            )
+            .delete()
+        )
+        session.commit()
+    finally:
+        session.close()
+    return JSONResponse({"ok": True, "cleared": bool(deleted)})
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,12 @@
 """Tests for the dashboard context in-memory store."""
 
-from includes.dashboard.context import set_context, get_context, format_context_for_prompt
+from includes.dashboard.context import (
+    set_context,
+    get_context,
+    set_thread_context,
+    lookup_context,
+    format_context_for_prompt,
+)
 
 
 class TestSetAndGetContext:
@@ -21,6 +27,39 @@ class TestSetAndGetContext:
         set_context("u2@example.com", {"view": "b"})
         assert get_context("u1@example.com")["view"] == "a"
         assert get_context("u2@example.com")["view"] == "b"
+
+
+class TestThreadContextIsolation:
+    def test_threads_isolated(self):
+        set_thread_context("thread-a", {"view": "rfq_detail", "id": "RFQ-A"})
+        set_thread_context("thread-b", {"view": "rfq_detail", "id": "RFQ-B"})
+        assert lookup_context("t@example.com", "thread-a")["id"] == "RFQ-A"
+        assert lookup_context("t@example.com", "thread-b")["id"] == "RFQ-B"
+
+    def test_unknown_thread_falls_back_to_user_entry(self):
+        set_context("t@example.com", {"view": "dashboard"})
+        assert lookup_context("t@example.com", "thread-x") == {"view": "dashboard"}
+
+    def test_no_thread_falls_back_to_user_entry(self):
+        set_context("t@example.com", {"view": "rfq_list"})
+        assert lookup_context("t@example.com", None) == {"view": "rfq_list"}
+
+    def test_thread_entry_wins_over_user_entry(self):
+        set_context("t@example.com", {"view": "dashboard"})
+        set_thread_context("thread-a", {"view": "rfq_detail", "id": "RFQ-A"})
+        assert lookup_context("t@example.com", "thread-a")["id"] == "RFQ-A"
+
+    def test_format_prefers_thread_context(self):
+        set_context("t@example.com", {"view": "dashboard"})
+        set_thread_context("thread-a", {"view": "rfq_detail", "id": "RFQ-2026-1"})
+        out = format_context_for_prompt("t@example.com", thread_id="thread-a")
+        assert "RFQ-2026-1" in out
+        # Without a thread, the user-level entry is used
+        assert "dashboard" in format_context_for_prompt("t@example.com")
+
+    def test_empty_thread_id_ignored(self):
+        set_thread_context("", {"view": "rfq_detail", "id": "RFQ-EMPTY"})
+        assert lookup_context("empty-thread@example.com", None) is None
 
 
 class TestFormatContextForPrompt:

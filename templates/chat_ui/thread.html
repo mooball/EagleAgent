@@ -6,24 +6,15 @@
 <div class="pt-4 flex flex-col" style="height: calc(100vh - 7.5rem);">
     <div class="flex items-center justify-between mb-2">
         <div class="flex items-center gap-2 min-w-0">
-            <a href="/chat-ui" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 p-1" title="Back to chats">←</a>
+            <a href="/chat-ui" class="px-2.5 py-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800" title="Back to chats">←</a>
             <h1 id="thread-name" class="text-lg font-semibold text-gray-800 dark:text-gray-100 truncate">{{ thread.name }}</h1>
             <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">BETA</span>
         </div>
         <div class="flex items-center gap-2 shrink-0">
-            <select id="agent-select"
-                    class="py-1.5 px-2 border-gray-200 rounded-lg text-xs dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
-                {% for key, spec in agents.items() %}
-                <option value="{{ key }}" {% if thread.metadata and thread.metadata.get('agent', 'eagle') == key %}selected{% endif %}>{{ spec.label }}</option>
-                {% endfor %}
-            </select>
             <button type="button" id="stop-btn" hidden
                     class="py-1.5 px-3 inline-flex items-center gap-x-1.5 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700">
                 ⏹ Stop
             </button>
-            <button type="button" id="delete-btn"
-                    class="p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-600 dark:hover:text-red-400"
-                    title="Delete conversation">🗑</button>
         </div>
     </div>
 
@@ -33,18 +24,50 @@
     <div id="error-bar" hidden
          class="mt-2 rounded-lg bg-red-50 border border-red-200 p-3 text-xs text-red-700 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300"></div>
 
-    <div class="mt-2 flex items-end gap-2">
-        <textarea id="composer" rows="2" placeholder="Message…"
-                  class="flex-1 py-2 px-3 border-gray-200 rounded-lg text-sm resize-none dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400"></textarea>
-        <button type="button" id="send-btn"
-                class="py-2 px-4 inline-flex items-center gap-x-2 text-sm font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
-            Send
-        </button>
+    <div class="mt-2">
+        <div class="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-700 rounded-2xl shadow-xs transition-colors focus-within:border-blue-400 dark:focus-within:border-blue-600">
+            <label for="composer" class="sr-only">Message…</label>
+            <div class="pb-1.5 px-2">
+                <textarea id="composer" rows="1" placeholder="Message…"
+                          class="max-h-36 mt-2 pt-3 pb-1.5 ps-2 pe-4 block w-full bg-transparent border-transparent resize-none text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-hidden focus:border-transparent focus:ring-transparent overflow-y-auto"></textarea>
+                <div class="pt-1 flex justify-between items-center gap-x-1">
+                    <!-- Tools (commands) -->
+                    <div class="flex items-center gap-x-1">
+                        <div class="relative inline-flex">
+                            <button type="button" id="tools-btn" title="Commands"
+                                    class="flex justify-center items-center gap-x-1 py-1.5 px-2 text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-neutral-800 rounded-lg">
+                                <svg class="shrink-0 size-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M14 17H5" />
+                                    <path d="M19 7h-9" />
+                                    <circle cx="17" cy="17" r="3" />
+                                    <circle cx="7" cy="7" r="3" />
+                                </svg>
+                                Tools
+                            </button>
+                            <div id="tools-menu" role="menu" hidden
+                                 class="absolute bottom-full start-0 mb-1.5 z-11 w-60 bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-700 rounded-xl shadow-lg p-1"></div>
+                        </div>
+                        <div id="intent-chip" class="flex items-center gap-x-1.5 min-w-0" hidden></div>
+                    </div>
+                    <!-- Agent + send -->
+                    <div class="flex items-center gap-x-1">
+                        <button type="button" id="send-btn" title="Send"
+                                class="inline-flex shrink-0 justify-center items-center size-8 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:pointer-events-none">
+                            <span class="sr-only">Send</span>
+                            <svg class="shrink-0 size-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="m5 12 7-7 7 7" />
+                                <path d="M12 19V5" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
 <script type="application/json" id="chat-data">
-{{ {"thread_id": thread.id, "user_email": user.email, "steps": steps} | tojson }}
+{{ {"thread_id": thread.id, "user_email": user.email, "steps": steps, "agents": agent_options, "commands": commands, "thread_agent": thread_agent} | tojson }}
 </script>
 
 <script>
@@ -58,8 +81,86 @@
     var sendBtn = document.getElementById('send-btn');
     var stopBtn = document.getElementById('stop-btn');
     var errorBar = document.getElementById('error-bar');
+    var toolsBtn = document.getElementById('tools-btn');
+    var toolsMenu = document.getElementById('tools-menu');
+    var intentChip = document.getElementById('intent-chip');
     var rows = {};
     var eventSource = null;
+    var pendingIntent = null;  // {name,label,icon} for the next message only
+
+    function autoresizeComposer() {
+        composer.style.height = 'auto';
+        composer.style.height = Math.min(composer.scrollHeight, 144) + 'px';
+    }
+
+    function useCommand(cmd) {
+        // One-shot command: routes the NEXT message only, then falls back to
+        // the default agent. No persistent select to leak state.
+        pendingIntent = {name: cmd.name, label: cmd.label, icon: cmd.icon || '⚡'};
+        composer.value = cmd.prefill || (cmd.label + ': ');
+        composer.focus();
+        autoresizeComposer();
+        toolsMenu.hidden = true;
+        renderIntentChip();
+    }
+
+    function renderIntentChip() {
+        intentChip.innerHTML = '';
+        if (!pendingIntent) { intentChip.hidden = true; return; }
+        intentChip.hidden = false;
+        var chip = document.createElement('div');
+        chip.className = 'flex items-center gap-1 rounded-lg bg-blue-50 dark:bg-blue-900/30 px-2 py-1 text-xs text-blue-700 dark:text-blue-300 max-w-[150px]';
+        var icon = document.createElement('span');
+        icon.className = 'shrink-0';
+        icon.textContent = pendingIntent.icon;
+        var label = document.createElement('span');
+        label.className = 'truncate';
+        label.textContent = pendingIntent.label;
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '✕';
+        remove.title = 'Clear command';
+        remove.className = 'text-blue-400 hover:text-blue-700 dark:hover:text-blue-200 px-0.5';
+        remove.addEventListener('click', function () { clearIntent(); });
+        chip.appendChild(icon);
+        chip.appendChild(label);
+        chip.appendChild(remove);
+        intentChip.appendChild(chip);
+    }
+
+    function clearIntent() {
+        pendingIntent = null;
+        composer.value = '';
+        autoresizeComposer();
+        renderIntentChip();
+    }
+
+    function renderCommands() {
+        toolsMenu.innerHTML = '';
+        var cmds = DATA.commands || [];
+        if (!cmds.length) { toolsBtn.hidden = true; return; }
+        cmds.forEach(function (cmd) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'w-full flex items-start gap-x-2.5 py-1.5 px-2 rounded-lg text-start hover:bg-gray-100 dark:hover:bg-neutral-800';
+            var icon = document.createElement('span');
+            icon.className = 'shrink-0 text-xs leading-5';
+            icon.textContent = cmd.icon || '⚡';
+            var body = document.createElement('span');
+            var lab = document.createElement('span');
+            lab.className = 'block text-xs font-medium text-gray-800 dark:text-gray-200';
+            lab.textContent = cmd.label;
+            var desc = document.createElement('span');
+            desc.className = 'block text-[11px] text-gray-400 dark:text-gray-500';
+            desc.textContent = cmd.description;
+            body.appendChild(lab);
+            body.appendChild(desc);
+            btn.appendChild(icon);
+            btn.appendChild(body);
+            btn.addEventListener('click', function () { useCommand(cmd); });
+            toolsMenu.appendChild(btn);
+        });
+    }
 
     function stripHtml(text) {
         // Sanitise-on-read: legacy steps.output contains baked-in HTML
@@ -72,7 +173,11 @@
         try {
             if (window.marked && typeof window.marked.parse === 'function') {
                 var out = window.marked.parse(clean);
-                return typeof out === 'string' ? out : String(out);
+                var str = typeof out === 'string' ? out : String(out);
+                // Re-mark the runner's agent summary footer: its inline styles
+                // are stripped by sanitise-on-read, so the CSS class does the work.
+                str = str.replace(/<p>Agent: /g, '<p class="agent-footer">Agent: ');
+                return str;
             }
         } catch (err) {
             console.error('[chat-ui] markdown render failed', err);
@@ -91,7 +196,7 @@
         }
         var bubble = document.createElement('div');
         bubble.className = isUser
-            ? 'ml-auto max-w-[80%] rounded-lg bg-blue-600 text-white px-3 py-2 text-sm whitespace-pre-wrap'
+            ? 'ml-auto max-w-[80%] rounded-lg bg-blue-600 text-white px-3 py-2 text-sm'
             : 'mr-auto max-w-[80%] rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-3 py-2 chat-md';
         div.appendChild(bubble);
         div.className = 'flex ' + (isUser ? 'justify-end' : 'justify-start');
@@ -217,15 +322,15 @@
         if (!text) { return; }
         clearError();
         composer.value = '';
+        autoresizeComposer();
         setRunning(true);
+        var payload = {text: text};
+        if (pendingIntent) { payload.intent = pendingIntent.name; }
         fetch('/chat-ui/threads/' + THREAD_ID + '/messages', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             credentials: 'same-origin',
-            body: JSON.stringify({
-                text: text,
-                agent: document.getElementById('agent-select').value
-            })
+            body: JSON.stringify(payload)
         }).then(function (r) {
             return r.json().then(function (data) { return {ok: r.ok, data: data}; });
         }).then(function (res) {
@@ -239,6 +344,8 @@
             var uid = 'user-' + Date.now();
             var u = getRow(uid, USER_EMAIL, false);
             setText(u, text);
+            pendingIntent = null;
+            renderIntentChip();
             scrollToBottom();
             openStream();
         }).catch(function () {
@@ -255,6 +362,16 @@
             send();
         }
     });
+    composer.addEventListener('input', autoresizeComposer);
+    toolsBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        toolsMenu.hidden = !toolsMenu.hidden;
+    });
+    document.addEventListener('click', function (e) {
+        if (!toolsMenu.hidden && !toolsMenu.contains(e.target) && !toolsBtn.contains(e.target)) {
+            toolsMenu.hidden = true;
+        }
+    });
 
     stopBtn.addEventListener('click', function () {
         fetch('/chat-ui/threads/' + THREAD_ID + '/stop', {
@@ -262,12 +379,8 @@
         }).catch(function () {});
     });
 
-    document.getElementById('delete-btn').addEventListener('click', function () {
-        if (!confirm('Delete this conversation? This cannot be undone.')) { return; }
-        fetch('/chat-ui/threads/' + THREAD_ID, {method: 'DELETE', credentials: 'same-origin'})
-            .then(function () { window.location.href = '/chat-ui'; });
-    });
-
+    renderCommands();
+    autoresizeComposer();
     renderHistory();
     composer.focus();
 })();

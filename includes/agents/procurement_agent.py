@@ -99,8 +99,8 @@ class ProcurementAgent(BaseSubAgent):
         if not rfq_id:
             user_id = state.get("user_id", "")
             if user_id:
-                from includes.dashboard.context import get_context
-                ctx = get_context(user_id)
+                from includes.dashboard.context import lookup_context
+                ctx = lookup_context(user_id, state.get("thread_id"))
                 if ctx and ctx.get("id", "").startswith("RFQ-"):
                     rfq_id = ctx["id"]
         if not rfq_id:

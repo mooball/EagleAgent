@@ -1,9 +1,11 @@
 # Plan: Beta Coexistence — New Chat UI Behind a Feature Flag
 
 > Parent: [plan-chatMigration.prompt.md](plan-chatMigration.prompt.md)
-> Status: **PROPOSED** (2026-09-05). Goal: de-risk the migration by running the
-> new chat UI **alongside** Chainlit in production, exposed only to a small
-> allowlist of user accounts.
+> Status: **VALIDATED** (2026-09-06). The beta POC shipped behind the flag and
+> was validated in production on Railway. The goal — de-risk the migration by
+> running the new chat UI **alongside** Chainlit, exposed only to a small
+> allowlist — is met. Remaining migration work is tracked in
+> [parity-checklist-chat.md](parity-checklist-chat.md).
 >
 > **This is a delivery-strategy overlay on Phases 2–3, not a parallel design.**
 > The architecture is already decided in the parent plan and is not reopened here:
@@ -121,18 +123,20 @@ this conversation”), not as a stack trace or a silent failure.
 
 ---
 
-## New Pieces (all additive)
+## New Pieces (all additive, as built)
 
 ```
 includes/chat/
   context_sse.py        ← ChatContext implementation over an SSE queue
-  transcript.py         ← Track A read/write adapter over `threads` / `steps`
-includes/dashboard/routes/chat_ui.py   ← /chat-ui routes (page + SSE)
+  transcript.py         ← Track A read/write adapter over `threads` / `steps` / `elements`
+includes/dashboard/routes/chat_ui.py   ← /chat-ui routes (pages, CRUD, SSE, uploads)
+includes/dashboard/routes/api.py       ← +DELETE /api/rfq-thread (unbind only)
 templates/chat_ui/
-  index.html            ← thread list
-  thread.html           ← single thread view
-  partials/…            ← message rows, composer
-main.py                 ← +include_router(chat_ui_router), +allowlist middleware
+  embed.html            ← the dashboard-panel UI (primary beta surface)
+  index.html            ← standalone thread list
+  thread.html           ← standalone thread view (lags the panel; see notes)
+main.py                 ← +include_router(chat_ui_router); /api/dashboard-context stores
+                           thread-keyed entries
 ```
 
 ### SSE endpoint sketch
@@ -159,7 +163,7 @@ No new login surface.
 
 ### Known limitation — dashboard action buttons are orphaned in the POC
 
-**Accepted 2026-09-05.** `dispatch_action()` in
+**Accepted 2026-09-05, still current 2026-09-06.** `dispatch_action()` in
 [includes/agent_bridge.py](includes/agent_bridge.py) resolves its target via
 `WebsocketSession.get_by_id(session_id)` + `init_ws_context()` — a hard Chainlit
 websocket dependency. A beta user working in `/chat-ui` has **no Chainlit
@@ -185,24 +189,43 @@ No POC migrations needed.
 
 ## POC Scope
 
-**In:**
+**In — all shipped and validated (2026-09-06):**
 
-- [ ] Allowlist middleware + env var
-- [ ] Thread list (create / rename / delete / resume) read from `threads`
-- [ ] **Thread id invariant preserved** on creation (see above)
-- [ ] Single thread view: history rendered from `steps`, **sanitised on read**
-- [ ] Composer → POST message → streamed tokens via SSE
-- [ ] Tool-progress line "⏳ Using {tool}… (xN)"
-- [ ] Stop button + cooperative cancellation
-- [ ] `RunInProgress` surfaced gracefully (409 → friendly message)
-- [ ] Welcome message + chat profile switcher (3 agents) — minimal
-- [ ] Dark mode (follows dashboard theme)
+- [x] Allowlist middleware + env var
+- [x] Thread list (create / resume / delete) read from `threads`
+  - Rename is wired on the standalone page; **pending in the panel** (PATCH
+    endpoint exists server-side) — only remaining POC-scope gap.
+- [x] **Thread id invariant preserved** on creation (verified across
+      `threads.id` / checkpoint / `rfq_threads` / `rfqs`)
+- [x] Single thread view: history rendered from `steps`, **sanitised on read**
+- [x] Composer → POST message → streamed tokens via SSE
+- [x] Tool-progress line "⏳ Using {tool}… (xN)"
+- [x] Stop button + cooperative cancellation
+- [x] `RunInProgress` surfaced gracefully (409 → friendly message)
+- [x] Agent routing via Tools commands — one-shot intent: server maps the
+      command to its owning agent + intent context; plain messages use the
+      default agent (no user-facing agent select)
+- [x] Dark mode (follows dashboard theme)
+
+**Added during the beta (beyond the original POC scope):**
+
+- [x] Compact Preline-style composer (attach button, Tools dropdown with
+      command prefills, small send button)
+- [x] **File uploads** — ✚ button + drag-drop onto the composer, optimistic
+      thumbnails, Chainlit-identical `elements` persistence, legacy attachment
+      rendering (was listed "Out" below; moved in)
+- [x] **RFQ hard-binding** — on an RFQ the panel is locked to that RFQ's
+      thread: no escape to thread history, Clear (unbind+recreate) instead of
+      delete, 🔗 badges on bound threads in the list, clicking a bound thread
+      navigates the whole dashboard to its RFQ
+- [x] **Thread-keyed dashboard context** — `thread:{id}` entries in the
+      dashboard-context store end the multi-tab last-writer-wins problem (both
+      transports push `_activeThreadId`; both read with their own thread id)
 
 **Out (later phases, still behind the flag):**
 
-- Dashboard action buttons reaching the new UI (Phase 5 — orphaned in POC, see above)
+- Dashboard action buttons reaching the new UI (Phase 5 — orphaned in POC, see below)
 - Chat-emitted action buttons (Phase 4 machinery)
-- File uploads (server checks already exist; UI later)
 - Token footer / structured metadata
 - Thread auto-naming polish
 - `steps` schema tidy-ups (post-cutover)
@@ -212,14 +235,17 @@ No POC migrations needed.
 
 ## Rollout & Rollback
 
-1. Land branch → deploy to Railway with `CHAT_UI_BETA_USERS` = 1–2 accounts.
-2. Verify: Chainlit at `/chat` unchanged for everyone else; beta users see the
-   "New chat (beta)" link.
-3. Test SSE under the Railway proxy (the known unknown), stop button,
-   cross-UI thread visibility, and the thread-id invariant.
-4. Iterate parity features behind the flag.
-5. **Rollback at any time:** clear the env var (service restart) — Chainlit
-   remains the only UI and still reads its own tables.
+1. ✅ Landed the branch → deployed to Railway with `CHAT_UI_BETA_USERS` =
+   1 account (2026-09-05).
+2. ✅ Chainlit at `/chat` unchanged for everyone else. Note: the planned
+   "New chat (beta)" nav link was **superseded** — beta users get the panel
+   embed in place of the iframe instead of an extra link.
+3. ✅ Validated on Railway: SSE through the proxy, stop button, cross-UI
+   thread visibility, thread-id invariant, deep-link resume, RFQ hard-binding,
+   multi-tab context isolation, file uploads.
+4. ✅ Rollback drill passed: clearing the env var returns everyone to the
+   Chainlit iframe.
+5. Iterate parity features behind the flag (see parity checklist).
 6. **End state:** once the signed-off parity checklist is complete, swap
    `/chat` to the new UI and remove Chainlit + its adapter.
 
@@ -240,25 +266,25 @@ No POC migrations needed.
 
 ---
 
-## Open Questions
+## Open Questions — all answered
 
-- Path: `/chat-ui` OK, or prefer `/chat/beta`?
-- Allowlist source: env var vs a DB-backed `beta_users` table (env var first —
-  simplest, editable on Railway at the cost of a restart)?
-- Writer parity: do new-UI writes need to stay Chainlit-readable (i.e. keep
-  populating Chainlit-only columns) during the beta, or is read-compatibility
-  enough?
+- Path: `/chat-ui` ✅ (panel embed on the dashboard replaces the iframe for
+  beta users; standalone pages still served at `/chat-ui`).
+- Allowlist source: env var ✅ (`CHAT_UI_BETA_USERS`, comma-separated).
+- Writer parity: new-UI writes stay Chainlit-readable ✅ — steps use Chainlit's
+  own upsert shape, threads/elements use the same tables, cross-UI visibility
+  verified both ways.
 
 ## Testing
 
-- `tests/chat/test_sse_context.py` — context_sse buffers tokens/tool/error
-  events in order; queue overflow behaviour.
-- `tests/test_chat_ui_routes.py` — allowlist middleware (allowed / denied /
-  feature-off), page renders, SSE endpoint streams with the fake event
-  sequence already used by `test_stream_loop.py`.
-- **Sanitisation test** — a `steps.output` row containing the legacy token-footer
-  `<div>` renders as text/markdown, never as live HTML.
-- **Invariant test** — thread created via `/chat-ui` yields matching
-  `threads.id` / checkpoint `thread_id` / `rfq_threads.thread_id`.
-- Manual: beta account on Railway — SSE through proxy, stop, resume,
-  cross-UI thread visibility.
+- ✅ `tests/chat/test_sse_context.py` — context_sse event contract, persisted
+  step id as message id, transient non-persistence, cancellation.
+- ✅ `tests/test_chat_ui_routes.py` — allowlist gate, thread CRUD, 409, SSE
+  done, stop, embed routes, **uploads** (persist/type/delete/message attach).
+- ✅ `tests/test_dashboard_context.py` — thread-keyed context isolation
+  (thread entries win, email fallback).
+- ⚠️ **Sanitisation test (B12a)** — verified by inspection only; no automated
+  test yet.
+- ⚠️ **Invariant test** — validated manually in prod; no automated test.
+- ✅ Manual on Railway: SSE through proxy, stop, resume, cross-UI thread
+  visibility, rollback.

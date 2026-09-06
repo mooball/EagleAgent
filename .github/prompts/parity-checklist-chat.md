@@ -8,6 +8,11 @@
 > starting suggestion — review, change as needed, and tick the decision.
 > The signed-off version of this file is the acceptance record for the whole
 > migration: anything NOT on the signed-off list is out of scope.
+>
+> **Beta progress (2026-09-06):** rows with `[x]` or ✅ notes are working in the
+> beta panel today; unticked rows remain for the parity phase. The beta POC
+> itself is VALIDATED — see
+> [plan-chatMigration-beta.prompt.md](plan-chatMigration-beta.prompt.md).
 
 ---
 
@@ -36,18 +41,18 @@ Legend: **K** = keep (must work in the new UI) · **D** = drop ·
 | A8 | `features.allow_thread_sharing` | false | **D** | |
 | A9 | `features.favorites` | false | **D** | |
 | A10 | `features.audio.enabled` | false | **D** | |
-| A11 | `spontaneous_file_upload.accept` | images, PDF, text, audio, xlsx/xls | **K** | Enforce **server-side** after migration. |
-| A12 | `spontaneous_file_upload.max_files` | 20 | **K** | |
+| A11 | `spontaneous_file_upload.accept` | images, PDF, text, audio, xlsx/xls | **K** | ✅ Server-side via `process_file` (50MB cap); beta UI uploads done. |
+| A12 | `spontaneous_file_upload.max_files` | 20 | **K** | No hard server-side count yet — beta allows multi-select without a cap. |
 | A13 | `spontaneous_file_upload.max_size_mb` | 50 | **K** | Reconciled 2026-08-16 (`MAX_FILE_SIZE_MB` 100 → 50). |
 | A14 | `project.session_timeout` | 7200 | **N/A** | Stateless after migration. |
 | A15 | `project.user_session_timeout` | 1296000 | **K** | Must stay matched to `SessionMiddleware max_age` in `main.py` (currently 15 days ✓). |
-| A16 | `project.transports` | `["websocket"]` | **N/A** | Replaced by SSE. The Railway-proxy reason it exists **still applies to SSE** — must be verified. |
+| A16 | `project.transports` | `["websocket"]` | **N/A** | ✅ Replaced by SSE — verified through the Railway proxy in beta. |
 | A17 | `project.allow_origins` | `["*"]` | **C** | Tighten to same-origin after migration. |
 | A18 | `UI.confirm_new_chat` | true | **K** | Our own "new chat" confirmation (prevents accidental thread reset). |
 | A19 | `UI.cot` | hidden | **C** | Decide how reasoning is displayed in the new UI (currently hidden entirely). |
 | A20 | `UI.custom_css` / `UI.custom_js` | `/public/stylesheet.css`, `/public/embedded.js` | **C** | Review what these do (theme tweaks, embed widget?); reimplement as own frontend assets, not verbatim. |
 | A21 | `UI.alert_style` | classic | **D** | |
-| A22 | `UI.default_theme` + dark toggle | light + user toggle | **K** | Dark mode must work in the new UI. |
+| A22 | `UI.default_theme` + dark toggle | light + user toggle | **K** | ✅ Dark mode works in the beta panel. |
 
 ---
 
@@ -55,32 +60,36 @@ Legend: **K** = keep (must work in the new UI) · **D** = drop ·
 
 All are **Keep** unless you decide otherwise.
 
-- [ ] B1 Thread list: create / rename / delete / resume
+- [x] B1 Thread list: create / rename / delete / resume
+      *(beta: rename wired on the standalone page; pending in the panel —
+      `PATCH /chat-ui/threads/{id}` exists)*
 - [ ] B1a **Resume backfill reconciliation** — `on_chat_resume` backfills missing
       `assistant_message` steps from the checkpoint (`plan_resume_backfill`).
       This is the load-bearing part of "resume", not the list itself.
 - [ ] B2 Thread auto-naming (`"{RFQ} — {customer}"`)
-- [ ] B3 Chat profile switcher (3 agents)
-- [ ] B4 Composer command buttons per profile (`INTENTS` / `RESEARCH_INTENTS`)
+- [x] B3 Agent choice — removed from the UI; routing is command-driven
+      (one-shot intents map to the owning agent server-side)
+- [x] B4 Composer command buttons per profile (`INTENTS` / `RESEARCH_INTENTS`)
+      *(Tools dropdown with prefills; a chip shows the active command)*
 - [ ] B5 Welcome message variants (first-visit × known-name × 3 profiles)
-- [ ] B6 Transient "⏳ Using {tool}… (xN)" progress line
+- [x] B6 Transient "⏳ Using {tool}… (xN)" progress line
 - [ ] B7 Token/cost footer (becomes structured metadata — not raw HTML)
-- [ ] B8 Stop button + cooperative cancellation
-- [ ] B9 File upload → vision/text extraction (PDF pages, xlsx, images)
-- [ ] B9a **Attachment serving/rendering** — existing `elements` rows render via
+- [x] B8 Stop button + cooperative cancellation
+- [x] B9 File upload → vision/text extraction (PDF pages, xlsx, images)
+- [x] B9a **Attachment serving/rendering** — existing `elements` rows render via
       `/files/{objectKey}`. Note `ATTACHMENT_RETENTION_DAYS` means some old
       links are already dead (not a regression).
 - [ ] B10 Browser screenshot inline image in chat
-- [ ] B11 Dark mode; sidebar collapse state
-- [ ] B12 Markdown + code block rendering
-- [ ] B12a **Sanitised rendering of historical messages** — legacy `steps.output`
+- [x] B11 Dark mode; sidebar collapse state *(beta: dark mode ✓)*
+- [x] B12 Markdown + code block rendering
+- [x] B12a **Sanitised rendering of historical messages** — legacy `steps.output`
       contains baked-in HTML (token footer) from `unsafe_allow_html = true`.
       Never render as raw HTML. Correctness **and** XSS concern.
 - [ ] B13 New-chat confirmation (A18)
 - [ ] B14 Copy-to-clipboard on messages / code blocks (free in Chainlit today)
 - [ ] B15 Message timestamps
 - [ ] B16 Avatars — `/avatar` endpoint, `data/avatar_cache/`, `/public/avatars/`
-- [ ] B17 `RunInProgress` handling — per-thread lock already exists; surface a
+- [x] B17 `RunInProgress` handling — per-thread lock already exists; surface a
       friendly "run already active" state rather than an error
 - [ ] B18 Feedback (thumbs up/down) — **DROP** (decided 2026-09-05). Chainlit's
       `feedbacks` table exists in the schema but is unused; not carried forward.
@@ -92,7 +101,12 @@ Notes / proposals:
 - **B10** — verify the exact rendering path (screenshot produced by
   `browser_tools`; confirm it is attached as an inline image element).
 - **B12a** — required even for the beta POC, since viewing historical threads is
-  in scope there.
+  in scope there. Implemented (sanitise-on-read) but no automated test yet.
+- **C-A** — still orphaned to Chainlit during the beta (Phase 5); documented in
+  the beta plan. Beta users keep `/chat` available for those flows.
+- **Beta extras shipped beyond parity:** RFQ hard-binding (lock/Clear/🔗
+  badges), thread-keyed dashboard context (multi-tab isolation), compact
+  Preline-style composer.
 
 ---
 

@@ -5,11 +5,6 @@
         <div class="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700">
             <span class="text-sm font-semibold text-gray-700 dark:text-gray-200">Chats</span>
             <div class="flex items-center gap-1.5">
-                <select id="embed-new-agent" class="py-1 px-1.5 border-gray-200 rounded text-xs dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
-                    {% for key, spec in agents.items() %}
-                    <option value="{{ key }}">{{ spec.label }}</option>
-                    {% endfor %}
-                </select>
                 <button type="button" id="embed-new-btn"
                         class="py-1 px-2.5 inline-flex items-center text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700">+ New</button>
             </div>
@@ -22,32 +17,71 @@
         <div class="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700 gap-2">
             <div class="flex items-center gap-1.5 min-w-0">
                 <button type="button" id="embed-back-btn"
-                        class="p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                        class="px-2.5 py-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                         title="Back to chats">←</button>
+                <span id="embed-lock-badge" hidden
+                      class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                      title="Bound to this RFQ">🔗</span>
                 <span id="embed-name" class="text-sm font-semibold text-gray-700 dark:text-gray-200 truncate"></span>
             </div>
             <div class="flex items-center gap-1.5 shrink-0">
-                <select id="embed-agent-select"
-                        class="py-1 px-1.5 border-gray-200 rounded text-xs dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400">
-                    {% for key, spec in agents.items() %}
-                    <option value="{{ key }}">{{ spec.label }}</option>
-                    {% endfor %}
-                </select>
                 <button type="button" id="embed-stop-btn" hidden
                         class="py-1 px-2 inline-flex items-center text-xs font-semibold rounded-md bg-red-600 text-white hover:bg-red-700">⏹ Stop</button>
-                <button type="button" id="embed-delete-btn"
-                        class="p-1 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-600 dark:hover:text-red-400"
-                        title="Delete conversation">🗑</button>
+                <button type="button" id="embed-clear-btn" hidden
+                        class="py-1 px-2 inline-flex items-center gap-x-1 text-xs font-semibold rounded-md bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60"
+                        title="Start a fresh thread">↺ Clear</button>
             </div>
         </div>
         <div id="embed-messages" class="flex-1 overflow-y-auto p-3 space-y-3"></div>
         <div id="embed-error" hidden
              class="mx-3 mb-1 rounded-lg bg-red-50 border border-red-200 p-2 text-xs text-red-700 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300"></div>
-        <div class="p-2 flex items-end gap-1.5 border-t border-gray-200 dark:border-gray-700">
-            <textarea id="embed-composer" rows="2" placeholder="Message…"
-                      class="flex-1 py-1.5 px-2.5 border-gray-200 rounded-lg text-sm resize-none dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400"></textarea>
-            <button type="button" id="embed-send-btn"
-                    class="py-2 px-3 inline-flex items-center text-sm font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">Send</button>
+        <div class="p-2 border-t border-gray-200 dark:border-gray-700">
+            <div id="embed-composer-box" class="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-700 rounded-2xl shadow-xs transition-colors focus-within:border-blue-400 dark:focus-within:border-blue-600">
+                <label for="embed-composer" class="sr-only">Message…</label>
+                <div class="pb-1.5 px-2">
+                    <textarea id="embed-composer" rows="1" placeholder="Message…"
+                              class="max-h-36 mt-2 pt-3 pb-1.5 ps-2 pe-4 block w-full bg-transparent border-transparent resize-none text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-hidden focus:border-transparent focus:ring-transparent overflow-y-auto"></textarea>
+                    <div id="embed-pending-files" class="flex flex-wrap gap-1.5 px-1 pb-1" hidden></div>
+                    <div class="pt-1 flex justify-between items-center gap-x-1">
+                        <!-- Attach + Tools (commands) -->
+                        <div class="flex items-center gap-x-1">
+                            <button type="button" id="embed-attach-btn" title="Attach files"
+                                    class="flex justify-center items-center size-7 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-neutral-800 rounded-lg">
+                                <svg class="shrink-0 size-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                                </svg>
+                            </button>
+                            <div class="relative inline-flex">
+                                <button type="button" id="embed-tools-btn" title="Commands"
+                                        class="flex justify-center items-center gap-x-1 py-1.5 px-2 text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-neutral-800 rounded-lg">
+                                    <svg class="shrink-0 size-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M14 17H5" />
+                                        <path d="M19 7h-9" />
+                                        <circle cx="17" cy="17" r="3" />
+                                        <circle cx="7" cy="7" r="3" />
+                                    </svg>
+                                    Tools
+                                </button>
+                                <div id="embed-tools-menu" role="menu" hidden
+                                     class="absolute bottom-full start-0 mb-1.5 z-11 w-60 bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-700 rounded-xl shadow-lg p-1"></div>
+                            </div>
+                            <input type="file" id="embed-file-input" multiple hidden>
+                            <div id="embed-intent-chip" class="flex items-center gap-x-1.5 min-w-0" hidden></div>
+                        </div>
+                        <!-- Agent + send -->
+                        <div class="flex items-center gap-x-1">
+                            <button type="button" id="embed-send-btn" title="Send"
+                                    class="inline-flex shrink-0 justify-center items-center size-8 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:pointer-events-none">
+                                <span class="sr-only">Send</span>
+                                <svg class="shrink-0 size-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m5 12 7-7 7 7" />
+                                    <path d="M12 19V5" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -75,10 +109,105 @@
     var sendBtn = document.getElementById('embed-send-btn');
     var stopBtn = document.getElementById('embed-stop-btn');
     var errorEl = document.getElementById('embed-error');
-    var agentSelect = document.getElementById('embed-agent-select');
+    var toolsBtn = document.getElementById('embed-tools-btn');
+    var toolsMenu = document.getElementById('embed-tools-menu');
+    var backBtn = document.getElementById('embed-back-btn');
+    var clearBtn = document.getElementById('embed-clear-btn');
+    var lockBadge = document.getElementById('embed-lock-badge');
+    var attachBtn = document.getElementById('embed-attach-btn');
+    var fileInput = document.getElementById('embed-file-input');
+    var pendingEl = document.getElementById('embed-pending-files');
+    var intentChip = document.getElementById('embed-intent-chip');
+    var composerBox = document.getElementById('embed-composer-box');
     var rows = {};
     var eventSource = null;
     var running = false;
+    var lock = null;           // {rfq_id, thread_id} while on an RFQ
+    var creatingThread = false;
+    var pendingFiles = [];     // {id,name,type,mime,url,size,status,objectUrl}
+    var pendingIntent = null;  // {name,label,icon} for the next message only
+    var currentThreadId = DATA.current_thread_id || null;
+
+    function autoresizeComposer() {
+        composer.style.height = 'auto';
+        composer.style.height = Math.min(composer.scrollHeight, 144) + 'px';
+    }
+
+    function useCommand(cmd) {
+        // One-shot command: routes the NEXT message only, then falls back to
+        // the default agent. No persistent select to leak state.
+        pendingIntent = {name: cmd.name, label: cmd.label, icon: cmd.icon || '⚡'};
+        composer.value = cmd.prefill || (cmd.label + ': ');
+        composer.focus();
+        autoresizeComposer();
+        toolsMenu.hidden = true;
+        renderIntentChip();
+        // Keep the shell's profile in sync (binding gate uses Eagle profile).
+        document.dispatchEvent(new CustomEvent('chat-ui:profile', {
+            detail: {key: cmd.agent, label: agentLabel(cmd.agent)}
+        }));
+    }
+
+    function renderIntentChip() {
+        intentChip.innerHTML = '';
+        if (!pendingIntent) { intentChip.hidden = true; return; }
+        intentChip.hidden = false;
+        var chip = document.createElement('div');
+        chip.className = 'flex items-center gap-1 rounded-lg bg-blue-50 dark:bg-blue-900/30 px-2 py-1 text-xs text-blue-700 dark:text-blue-300 max-w-[150px]';
+        var icon = document.createElement('span');
+        icon.className = 'shrink-0';
+        icon.textContent = pendingIntent.icon;
+        var label = document.createElement('span');
+        label.className = 'truncate';
+        label.textContent = pendingIntent.label;
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '✕';
+        remove.title = 'Clear command';
+        remove.className = 'text-blue-400 hover:text-blue-700 dark:hover:text-blue-200 px-0.5';
+        remove.addEventListener('click', function () { clearIntent(); });
+        chip.appendChild(icon);
+        chip.appendChild(label);
+        chip.appendChild(remove);
+        intentChip.appendChild(chip);
+    }
+
+    function clearIntent() {
+        pendingIntent = null;
+        composer.value = '';
+        autoresizeComposer();
+        renderIntentChip();
+        document.dispatchEvent(new CustomEvent('chat-ui:profile', {
+            detail: {key: 'eagle', label: agentLabel('eagle')}
+        }));
+    }
+
+    function renderCommands() {
+        toolsMenu.innerHTML = '';
+        var cmds = DATA.commands || [];
+        if (!cmds.length) { toolsBtn.hidden = true; return; }
+        cmds.forEach(function (cmd) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'w-full flex items-start gap-x-2.5 py-1.5 px-2 rounded-lg text-start hover:bg-gray-100 dark:hover:bg-neutral-800';
+            var icon = document.createElement('span');
+            icon.className = 'shrink-0 text-xs leading-5';
+            icon.textContent = cmd.icon || '⚡';
+            var body = document.createElement('span');
+            var lab = document.createElement('span');
+            lab.className = 'block text-xs font-medium text-gray-800 dark:text-gray-200';
+            lab.textContent = cmd.label;
+            var desc = document.createElement('span');
+            desc.className = 'block text-[11px] text-gray-400 dark:text-gray-500';
+            desc.textContent = cmd.description;
+            body.appendChild(lab);
+            body.appendChild(desc);
+            btn.appendChild(icon);
+            btn.appendChild(body);
+            btn.addEventListener('click', function () { useCommand(cmd); });
+            toolsMenu.appendChild(btn);
+        });
+    }
 
     function stripHtml(text) {
         return String(text || '').replace(/<[^>]*>/g, '');
@@ -89,7 +218,11 @@
         try {
             if (window.marked && typeof window.marked.parse === 'function') {
                 var out = window.marked.parse(clean);
-                return typeof out === 'string' ? out : String(out);
+                var str = typeof out === 'string' ? out : String(out);
+                // Re-mark the runner's agent summary footer: its inline styles
+                // are stripped by sanitise-on-read, so the CSS class does the work.
+                str = str.replace(/<p>Agent: /g, '<p class="agent-footer">Agent: ');
+                return str;
             }
         } catch (err) {
             console.error('[chat-ui] markdown render failed', err);
@@ -108,7 +241,7 @@
         }
         var bubble = document.createElement('div');
         bubble.className = isUser
-            ? 'ml-auto max-w-[85%] rounded-lg bg-blue-600 text-white px-3 py-2 text-sm whitespace-pre-wrap'
+            ? 'ml-auto max-w-[85%] rounded-lg bg-blue-600 text-white px-3 py-2 text-sm'
             : 'mr-auto max-w-[85%] rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-3 py-2 chat-md';
         div.appendChild(bubble);
         div.className = 'flex ' + (isUser ? 'justify-end' : 'justify-start');
@@ -132,6 +265,27 @@
         }
     }
 
+    function renderAttachments(bubble, files) {
+        (files || []).forEach(function (f) {
+            if (!f || !f.url) { return; }
+            if (f.type === 'image') {
+                var img = document.createElement('img');
+                img.src = f.url;
+                img.alt = f.name || 'image';
+                img.className = 'block max-w-[220px] rounded-lg mt-1.5';
+                bubble.appendChild(img);
+            } else {
+                var a = document.createElement('a');
+                a.href = f.url;
+                a.download = f.name || 'file';
+                a.target = '_blank';
+                a.className = 'flex items-center gap-1.5 mt-1.5 text-xs underline';
+                a.textContent = '📎 ' + (f.name || 'file');
+                bubble.appendChild(a);
+            }
+        });
+    }
+
     function renderHistory() {
         // Rows still streaming are reused in place: a history reload mid-run
         // must not drop them, nor reorder them away from their position.
@@ -150,8 +304,10 @@
             }
             if (step.type === 'user_message') {
                 setText(getRow(step.id, USER_EMAIL, false), step.output);
+                renderAttachments(rows[step.id].bubble, step.files);
             } else if (step.type === 'assistant_message' && step.output) {
                 setText(getRow(step.id, step.name || 'EagleAgent', false), step.output);
+                renderAttachments(rows[step.id].bubble, step.files);
             }
         });
         // Streaming rows not yet in the transcript belong at the end.
@@ -171,13 +327,122 @@
         stopBtn.hidden = !v;
     }
 
-    function setAgentSelect(key) {
-        if (key) { agentSelect.value = key; }
+    function updateControls() {
+        // The back arrow is always available — the list's 🔗 badges make it
+        // a natural RFQ switcher even while locked.
+        backBtn.hidden = false;
+        lockBadge.hidden = !lock;
+        // Clear shows on RFQ-locked threads and on the current thread.
+        clearBtn.hidden = !(lock || (active && active.id === currentThreadId));
+    }
+
+    function setCurrentThread(tid) {
+        currentThreadId = tid;
+        updateControls();
+        fetch('/chat-ui/current-thread', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({thread_id: tid}),
+        }).catch(function () {});
     }
 
     function agentLabel(key) {
         var spec = AGENTS.find(function (a) { return a.key === key; });
         return spec ? spec.label : (key || 'Eagle Agent');
+    }
+
+    var LIST_GROUPS = [
+        {key: 'today', label: 'Today'},
+        {key: 'week', label: 'This week'},
+        {key: 'month', label: 'This month'},
+        {key: 'previous', label: 'Previous'}
+    ];
+
+    function bucketFor(iso) {
+        if (!iso) { return 'previous'; }
+        var d = new Date(iso);
+        var now = new Date();
+        var dayStart = function (x) { return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
+        if (dayStart(d) === dayStart(now)) { return 'today'; }
+        // Monday-start week
+        var monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
+        if (d >= monday) { return 'week'; }
+        if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) { return 'month'; }
+        return 'previous';
+    }
+
+    function activityLabel(iso) {
+        if (!iso) { return ''; }
+        var d = new Date(iso);
+        if (bucketFor(iso) === 'today') {
+            return d.toLocaleTimeString(undefined, {hour: '2-digit', minute: '2-digit'});
+        }
+        if (bucketFor(iso) === 'week') {
+            return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];
+        }
+        return d.toLocaleDateString(undefined, {day: 'numeric', month: 'short'});
+    }
+
+    function threadItem(t) {
+        var item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'w-full text-left px-3 py-2 border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/60';
+        var line1 = document.createElement('div');
+        line1.className = 'flex items-center gap-1.5 min-w-0';
+        if (t.rfq_id) {
+            var pill = document.createElement('span');
+            pill.className = 'shrink-0 inline-flex items-center px-1 py-px rounded text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300';
+            pill.textContent = t.op_number ? (t.rfq_id + ' / ' + t.op_number) : t.rfq_id;
+            line1.appendChild(pill);
+            item.title = 'Bound to ' + t.rfq_id + ' — opens the RFQ';
+        }
+        var name = document.createElement('span');
+        name.className = 'truncate text-sm font-medium text-gray-800 dark:text-gray-200';
+        name.textContent = t.rfq_id ? (t.rfq_customer || t.name || t.rfq_id) : (t.name || 'Untitled');
+        line1.appendChild(name);
+        var date = document.createElement('span');
+        date.className = 'ml-auto shrink-0 text-[11px] text-gray-400 dark:text-gray-500';
+        date.textContent = activityLabel(t.last_activity);
+        line1.appendChild(date);
+        var line2 = document.createElement('div');
+        line2.className = 'flex items-center gap-1.5 min-w-0 mt-0.5';
+        if (t.rfq_id && t.rfq_title) {
+            var sub = document.createElement('span');
+            sub.className = 'truncate text-xs text-gray-400 dark:text-gray-500';
+            sub.textContent = t.rfq_title;
+            line2.appendChild(sub);
+        }
+        var agent = document.createElement('span');
+        agent.className = 'ml-auto shrink-0 text-xs text-gray-400 dark:text-gray-500';
+        agent.textContent = agentLabel(t.agent);
+        line2.appendChild(agent);
+        var main = document.createElement('div');
+        main.className = 'flex-1 min-w-0';
+        main.appendChild(line1);
+        main.appendChild(line2);
+        item.appendChild(main);
+        item.addEventListener('click', function () {
+            if (t.rfq_id) {
+                if (lock && lock.rfq_id === t.rfq_id) {
+                    // Already viewing this RFQ — just return to its thread.
+                    showThread(t);
+                    return;
+                }
+                // RFQ-bound thread: move the whole UI to its RFQ.
+                document.dispatchEvent(new CustomEvent('chat-ui:open-rfq', {detail: {rfqId: t.rfq_id}}));
+            } else if (lock) {
+                // Plain thread picked while on an RFQ: leave the RFQ
+                // (hard binding) and open it as the current thread.
+                document.dispatchEvent(new CustomEvent('chat-ui:leave-rfq'));
+                showThread(t);
+                setCurrentThread(t.id);
+            } else {
+                showThread(t);
+                setCurrentThread(t.id);
+            }
+        });
+        return item;
     }
 
     function renderList() {
@@ -189,20 +454,19 @@
             listItems.appendChild(empty);
             return;
         }
+        var grouped = {};
         threads.forEach(function (t) {
-            var item = document.createElement('button');
-            item.type = 'button';
-            item.className = 'w-full text-left px-3 py-2 border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/60';
-            var name = document.createElement('div');
-            name.className = 'text-sm text-gray-800 dark:text-gray-200 truncate';
-            name.textContent = t.name;
-            var sub = document.createElement('div');
-            sub.className = 'text-xs text-gray-400';
-            sub.textContent = agentLabel(t.agent);
-            item.appendChild(name);
-            item.appendChild(sub);
-            item.addEventListener('click', function () { showThread(t); });
-            listItems.appendChild(item);
+            var key = bucketFor(t.last_activity);
+            (grouped[key] = grouped[key] || []).push(t);
+        });
+        LIST_GROUPS.forEach(function (g) {
+            var items = grouped[g.key] || [];
+            if (!items.length) { return; }
+            var header = document.createElement('div');
+            header.className = 'px-3 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500';
+            header.textContent = g.label;
+            listItems.appendChild(header);
+            items.forEach(function (t) { listItems.appendChild(threadItem(t)); });
         });
     }
 
@@ -231,8 +495,8 @@
         chatEl.hidden = false;
         listEl.hidden = true;
         nameEl.textContent = t.name || 'New chat';
-        setAgentSelect(t.agent);
         loadMessages(t.id);
+        updateControls();
         composer.focus();
     }
 
@@ -240,28 +504,62 @@
         fetch('/chat-ui/threads/' + threadId + '/meta', {credentials: 'same-origin'})
             .then(function (r) { return r.json(); })
             .then(function (meta) {
+                if (meta.rfq_id) {
+                    if (lock && lock.rfq_id !== meta.rfq_id) {
+                        // Bound to an RFQ we're not locked to — move the whole UI there.
+                        document.dispatchEvent(new CustomEvent('chat-ui:open-rfq', {detail: {rfqId: meta.rfq_id}}));
+                        return;
+                    }
+                    // Our RFQ's thread (lock not yet applied is fine) — display it.
+                    if (!threads.some(function (t) { return t.id === meta.id; })) {
+                        threads.unshift({id: meta.id, name: meta.name, agent: meta.agent,
+                                         rfq_id: meta.rfq_id, last_activity: new Date().toISOString()});
+                    }
+                    showThread({id: meta.id, name: meta.name, agent: meta.agent, rfq_id: meta.rfq_id});
+                    return;
+                }
+                // Plain thread — the current-thread anchor when leaving an
+                // RFQ (the lock clears via the context event right after).
                 if (!threads.some(function (t) { return t.id === meta.id; })) {
-                    threads.unshift({id: meta.id, name: meta.name, agent: meta.agent});
+                    threads.unshift({id: meta.id, name: meta.name, agent: meta.agent,
+                                     last_activity: new Date().toISOString()});
                 }
                 showThread({id: meta.id, name: meta.name, agent: meta.agent});
+                setCurrentThread(meta.id);
             })
-            .catch(function () { showList(); });
+            .catch(function () {
+                // Bound thread missing (deleted) — self-heal while locked:
+                // create a fresh thread; the shell rebinds it to this RFQ.
+                if (lock) { createThread(); return; }
+                showList();
+            });
     }
 
     function createThread() {
+        if (creatingThread) { return; }
+        creatingThread = true;
         var form = new FormData();
-        form.append('agent', document.getElementById('embed-new-agent').value);
+        // All threads start on the default (Eagle) agent; commands route
+        // per turn via the intent mechanism.
+        form.append('agent', 'eagle');
         form.append('embed', '1');
         fetch('/chat-ui/threads', {method: 'POST', credentials: 'same-origin', body: form})
             .then(function (r) { return r.json(); })
             .then(function (data) {
-                var t = {id: data.thread_id, name: 'New chat', agent: data.agent};
+                creatingThread = false;
+                var t = {id: data.thread_id, name: 'New chat', agent: data.agent,
+                         last_activity: new Date().toISOString()};
                 threads.unshift(t);
                 showThread(t);
-                // Tell the dashboard shell so it can auto-bind to the current RFQ.
+                // New threads become the current (non-RFQ) anchor.
+                setCurrentThread(data.thread_id);
+                // Tell the dashboard shell so it can bind/re-bind on an RFQ.
                 document.dispatchEvent(new CustomEvent('chat-ui:thread', {detail: {threadId: data.thread_id}}));
             })
-            .catch(function () { showError('Could not create a conversation.'); });
+            .catch(function () {
+                creatingThread = false;
+                showError('Could not create a conversation.');
+            });
     }
 
     function openStream(tid) {
@@ -313,15 +611,22 @@
     function send() {
         if (!active) { return; }
         var text = composer.value.trim();
-        if (!text) { return; }
+        var readyFiles = pendingFiles.filter(function (f) { return f.status === 'done' && f.id; });
+        if (!text && !readyFiles.length) { return; }
         clearError();
         composer.value = '';
+        autoresizeComposer();
         setRunning(true);
+        var payload = {text: text};
+        if (pendingIntent) { payload.intent = pendingIntent.name; }
+        if (readyFiles.length) {
+            payload.file_ids = readyFiles.map(function (f) { return f.id; });
+        }
         fetch('/chat-ui/threads/' + active.id + '/messages', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             credentials: 'same-origin',
-            body: JSON.stringify({text: text, agent: agentSelect.value})
+            body: JSON.stringify(payload)
         }).then(function (r) {
             return r.json().then(function (data) { return {ok: r.ok, data: data}; });
         }).then(function (res) {
@@ -332,7 +637,15 @@
                 return;
             }
             var uid = 'user-' + Date.now();
-            setText(getRow(uid, USER_EMAIL, false), text);
+            var entry = getRow(uid, USER_EMAIL, false);
+            setText(entry, text);
+            renderAttachments(entry.bubble, readyFiles.map(function (f) {
+                return {id: f.id, type: f.type, name: f.name, url: f.url, mime: f.mime, size: f.size};
+            }));
+            pendingFiles = [];
+            renderPending();
+            pendingIntent = null;
+            renderIntentChip();
             messages.scrollTop = messages.scrollHeight;
             openStream(active.id);
         }).catch(function () {
@@ -349,17 +662,187 @@
             .catch(function () {});
     }
 
+    // ── File attachments ───────────────────────────────────────────────────
+
+    function renderPending() {
+        pendingEl.innerHTML = '';
+        pendingFiles.forEach(function (entry) {
+            pendingEl.appendChild(pendingChip(entry));
+        });
+        pendingEl.hidden = !pendingFiles.length;
+    }
+
+    function pendingChip(entry) {
+        var chip = document.createElement('div');
+        chip.className = 'flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-neutral-700 bg-gray-50 dark:bg-neutral-800 px-1.5 py-1 text-xs text-gray-700 dark:text-gray-300 max-w-[180px]';
+        var thumb = document.createElement('span');
+        thumb.className = 'shrink-0 size-6 rounded overflow-hidden bg-gray-200 dark:bg-neutral-700 flex items-center justify-center text-gray-500';
+        if (entry.objectUrl) {
+            var img = document.createElement('img');
+            img.src = entry.objectUrl;
+            img.className = 'size-6 object-cover';
+            thumb.appendChild(img);
+        } else {
+            thumb.textContent = entry.type === 'image' ? '🖼' : '📎';
+        }
+        var label = document.createElement('span');
+        label.className = 'truncate';
+        label.textContent = entry.name;
+        var status = document.createElement('span');
+        status.className = 'shrink-0';
+        if (entry.status === 'uploading') {
+            status.className += ' size-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin';
+        } else if (entry.status === 'done') {
+            status.className += ' text-green-600';
+            status.textContent = '✓';
+        } else {
+            status.className += ' text-red-500';
+            status.textContent = '⚠';
+        }
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '×';
+        remove.title = 'Remove';
+        remove.className = 'shrink-0 text-gray-400 hover:text-red-500 px-0.5';
+        remove.addEventListener('click', function () { removePending(entry); });
+        chip.appendChild(thumb);
+        chip.appendChild(label);
+        chip.appendChild(status);
+        chip.appendChild(remove);
+        return chip;
+    }
+
+    function uploadOne(file, entry) {
+        var fd = new FormData();
+        fd.append('thread_id', active.id);
+        fd.append('files', file, file.name);
+        fetch('/chat-ui/upload', {method: 'POST', credentials: 'same-origin', body: fd})
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                var up = (data.files && data.files[0]) || {};
+                if (entry.objectUrl) {
+                    URL.revokeObjectURL(entry.objectUrl);
+                    entry.objectUrl = null;
+                }
+                entry.id = up.id || null;
+                entry.url = up.url || null;
+                entry.type = up.type || entry.type;
+                entry.status = entry.id ? 'done' : 'error';
+                renderPending();
+            })
+            .catch(function () {
+                entry.status = 'error';
+                renderPending();
+            });
+    }
+
+    function uploadFiles(fileList) {
+        if (!active) { return; }
+        Array.prototype.forEach.call(fileList || [], function (file) {
+            var entry = {
+                id: null, name: file.name, type: null, mime: file.type || '',
+                url: null, size: file.size, status: 'uploading', objectUrl: null
+            };
+            if (file.type && file.type.indexOf('image/') === 0) {
+                entry.objectUrl = URL.createObjectURL(file);
+            }
+            pendingFiles.push(entry);
+            renderPending();
+            uploadOne(file, entry);
+        });
+    }
+
+    function removePending(entry) {
+        var idx = pendingFiles.indexOf(entry);
+        if (idx >= 0) { pendingFiles.splice(idx, 1); }
+        if (entry.objectUrl) { URL.revokeObjectURL(entry.objectUrl); }
+        if (entry.id) {
+            fetch('/chat-ui/files/' + encodeURIComponent(entry.id)
+                + '?thread_id=' + encodeURIComponent(active.id),
+                {method: 'DELETE', credentials: 'same-origin'})
+                .catch(function () {});
+        }
+        renderPending();
+    }
+
     // Dashboard shell → embed bridge (replaces the iframe postMessage glue)
     document.addEventListener('chat-ui:navigate', function (e) {
         var d = e.detail || {};
+        if (lock) {
+            // RFQ-locked: ignore fresh/list navigation; thread navigation is
+            // filtered by openThreadById (matches lock or redirects to RFQ).
+            if (d.threadId) { openThreadById(d.threadId); }
+            return;
+        }
         if (d.threadId) { openThreadById(d.threadId); }
         else if (d.fresh) { createThread(); }
         else { showList(); }
     });
 
+    // RFQ lock state — the shell is the source of truth for where we are.
+    function applyLock(next) {
+        if (JSON.stringify(next || null) === JSON.stringify(lock || null)) { return; }
+        lock = next || null;
+        updateControls();
+        if (!lock) { return; }
+        if (lock.thread_id) {
+            if (!active || active.id !== lock.thread_id) {
+                openThreadById(lock.thread_id);
+            }
+        } else if (!creatingThread) {
+            // No thread for this RFQ yet — create, bind, display.
+            createThread();
+        }
+    }
+
+    document.addEventListener('chat-ui:context', function (e) {
+        var d = e.detail || {};
+        applyLock(
+            d.view === 'rfq_detail' && d.rfq_id
+                ? {rfq_id: d.rfq_id, thread_id: d.thread_id || null}
+                : null
+        );
+    });
+
     sendBtn.addEventListener('click', send);
     composer.addEventListener('keydown', function (e) {
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+    composer.addEventListener('input', autoresizeComposer);
+    attachBtn.addEventListener('click', function () { fileInput.click(); });
+    fileInput.addEventListener('change', function () {
+        if (fileInput.files && fileInput.files.length) {
+            uploadFiles(fileInput.files);
+            fileInput.value = '';
+        }
+    });
+    ['dragenter', 'dragover'].forEach(function (ev) {
+        composerBox.addEventListener(ev, function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            composerBox.classList.add('ring-2', 'ring-blue-400');
+        });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+        composerBox.addEventListener(ev, function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            composerBox.classList.remove('ring-2', 'ring-blue-400');
+        });
+    });
+    composerBox.addEventListener('drop', function (e) {
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+            uploadFiles(e.dataTransfer.files);
+        }
+    });
+    toolsBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        toolsMenu.hidden = !toolsMenu.hidden;
+    });
+    document.addEventListener('click', function (e) {
+        if (!toolsMenu.hidden && !toolsMenu.contains(e.target) && !toolsBtn.contains(e.target)) {
+            toolsMenu.hidden = true;
+        }
     });
     stopBtn.addEventListener('click', function () {
         if (!active) { return; }
@@ -367,21 +850,29 @@
     });
     document.getElementById('embed-back-btn').addEventListener('click', showList);
     document.getElementById('embed-new-btn').addEventListener('click', createThread);
-    document.getElementById('embed-delete-btn').addEventListener('click', function () {
-        if (!active) { return; }
-        if (!confirm('Delete this conversation? This cannot be undone.')) { return; }
-        fetch('/chat-ui/threads/' + active.id, {method: 'DELETE', credentials: 'same-origin'})
-            .then(function () {
-                threads = threads.filter(function (t) { return t.id !== active.id; });
-                showList();
+    clearBtn.addEventListener('click', function () {
+        if (lock && lock.rfq_id) {
+            // RFQ-locked: unbind and start a fresh RFQ thread.
+            if (!confirm('Start a fresh thread for this RFQ? The current conversation stays in Chats.')) { return; }
+            fetch('/api/rfq-thread?rfq_id=' + encodeURIComponent(lock.rfq_id), {
+                method: 'DELETE', credentials: 'same-origin'
+            }).then(function (r) {
+                if (!r.ok) { throw new Error('unbind failed'); }
+                // Binding removed — create a fresh thread; the shell binds it.
+                createThread();
+            }).catch(function () {
+                showError('Could not clear the thread binding.');
             });
-    });
-    agentSelect.addEventListener('change', function () {
-        document.dispatchEvent(new CustomEvent('chat-ui:profile', {
-            detail: {key: agentSelect.value, label: agentLabel(agentSelect.value)}
-        }));
+            return;
+        }
+        // Current (non-RFQ) thread: replace with a fresh one.
+        if (!active) { return; }
+        if (!confirm('Start a fresh current thread? The current conversation stays in Chats.')) { return; }
+        createThread();
     });
 
+    renderCommands();
+    autoresizeComposer();
     if (active) { showThread(active); } else { showList(); }
     document.dispatchEvent(new CustomEvent('chat-ui:ready'));
 })();

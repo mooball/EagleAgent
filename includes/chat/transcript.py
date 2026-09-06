@@ -82,12 +82,19 @@ async def create_thread(
 
 
 async def list_threads(user_email: str, limit: int = 100) -> list[dict]:
-    """Threads owned by the user, newest first."""
+    """Threads owned by the user, most recently active first.
+
+    Activity = the latest step's createdAt, falling back to the thread's
+    createdAt (empty threads sort by when they were created).
+    """
     dl = await _data_layer()
     rows = await dl.execute_sql(
-        'SELECT "id","name","createdAt","metadata" FROM threads '
-        'WHERE "userIdentifier" = :email '
-        'ORDER BY "createdAt" DESC LIMIT :limit',
+        'SELECT t."id", t."name", t."createdAt", t."metadata", '
+        'COALESCE((SELECT MAX(s."createdAt") FROM steps s '
+        'WHERE s."threadId" = t."id"), t."createdAt") AS "activity" '
+        'FROM threads t '
+        'WHERE t."userIdentifier" = :email '
+        'ORDER BY "activity" DESC LIMIT :limit',
         {"email": user_email, "limit": limit},
     )
     threads: list[dict] = []
@@ -103,6 +110,7 @@ async def list_threads(user_email: str, limit: int = 100) -> list[dict]:
                 "id": row.get("id"),
                 "name": row.get("name") or "Untitled",
                 "created_at": row.get("createdAt"),
+                "last_activity": row.get("activity"),
                 "agent": (metadata or {}).get("agent", "eagle"),
             }
         )
@@ -139,6 +147,12 @@ async def get_thread(thread_id: str, user_email: str) -> Optional[dict]:
 async def rename_thread(thread_id: str, name: str) -> None:
     dl = await _data_layer()
     await dl.update_thread(thread_id=thread_id, name=name)
+
+
+async def update_thread_agent(thread_id: str, agent_key: str) -> None:
+    """Record the agent that handled the latest turn (list shows it)."""
+    dl = await _data_layer()
+    await dl.update_thread(thread_id=thread_id, metadata={"agent": agent_key})
 
 
 async def delete_thread(thread_id: str) -> None:
@@ -273,3 +287,105 @@ async def update_step(step_id: str, output: str) -> None:
 async def delete_step(step_id: str) -> None:
     dl = await _data_layer()
     await dl.execute_sql('DELETE FROM steps WHERE "id" = :id', {"id": step_id})
+
+
+# ── Elements (file attachments) ────────────────────────────────────────────
+# Mirrors Chainlit's own persistence: an upload creates an elements row with
+# forId NULL; sending attaches the row to the persisted user step. Both UIs
+# read the same rows, so legacy attachments render identically.
+
+ELEMENT_COLUMNS = (
+    '"id","type","name","url","display","objectKey","mime","size","forId"'
+)
+
+
+def _element_dict(row: dict) -> dict:
+    return {
+        "id": row.get("id"),
+        "type": row.get("type"),
+        "name": row.get("name"),
+        "url": row.get("url"),
+        "display": row.get("display"),
+        "object_key": row.get("objectKey"),
+        "mime": row.get("mime"),
+        "size": row.get("size"),
+        "for_id": row.get("forId"),
+    }
+
+
+async def create_element(
+    thread_id: str,
+    *,
+    element_id: str,
+    name: str,
+    type_: str,
+    mime: str,
+    url: str,
+    object_key: str,
+    size: str = "medium",
+) -> None:
+    """Persist an uploaded file's element row (forId NULL = pending attach)."""
+    dl = await _data_layer()
+    await dl.execute_sql(
+        'INSERT INTO elements '
+        '("id","threadId","type","name","url","display","objectKey",'
+        '"chainlitKey","mime","size","forId") '
+        "VALUES (:id, :tid, :type, :name, :url, 'inline', :object_key, "
+        ":id, :mime, :size, NULL)",
+        {
+            "id": element_id,
+            "tid": thread_id,
+            "type": type_,
+            "name": name,
+            "url": url,
+            "object_key": object_key,
+            "mime": mime,
+            "size": size,
+        },
+    )
+
+
+async def attach_element(element_id: str, step_id: str, thread_id: str) -> bool:
+    """Link a pending element to a persisted step. Returns success."""
+    dl = await _data_layer()
+    await dl.execute_sql(
+        'UPDATE elements SET "forId" = :step '
+        'WHERE "id" = :eid AND "threadId" = :tid AND "forId" IS NULL',
+        {"eid": element_id, "step": step_id, "tid": thread_id},
+    )
+    rows = await dl.execute_sql(
+        'SELECT "id" FROM elements WHERE "id" = :eid AND "forId" = :step',
+        {"eid": element_id, "step": step_id},
+    )
+    return bool(rows)
+
+
+async def list_elements(thread_id: str) -> list[dict]:
+    """All elements in a thread, attached or pending."""
+    dl = await _data_layer()
+    rows = await dl.execute_sql(
+        f'SELECT {ELEMENT_COLUMNS} FROM elements WHERE "threadId" = :tid',
+        {"tid": thread_id},
+    )
+    return [_element_dict(row) for row in rows or []]
+
+
+async def get_element(element_id: str, thread_id: str) -> Optional[dict]:
+    dl = await _data_layer()
+    rows = await dl.execute_sql(
+        f'SELECT {ELEMENT_COLUMNS} FROM elements '
+        'WHERE "id" = :eid AND "threadId" = :tid',
+        {"eid": element_id, "tid": thread_id},
+    )
+    return _element_dict(rows[0]) if rows else None
+
+
+async def delete_element(element_id: str, thread_id: str) -> bool:
+    """Delete a PENDING element only (never one attached to a step)."""
+    dl = await _data_layer()
+    rows = await dl.execute_sql(
+        'DELETE FROM elements WHERE "id" = :eid AND "threadId" = :tid '
+        'AND "forId" IS NULL RETURNING "id"',
+        {"eid": element_id, "tid": thread_id},
+    )
+    return bool(rows)

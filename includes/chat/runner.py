@@ -141,6 +141,9 @@ async def _run_turn_locked(
     inputs: dict[str, Any] = {
         "messages": [HumanMessage(content=message_content)],
         "user_id": ctx.user_email,
+        # Thread id travels with the state so agents can resolve the
+        # thread-scoped dashboard context (multi-tab isolation).
+        "thread_id": ctx.thread_id,
         # Always present, so a stale intent cannot survive in the checkpoint.
         "intent_context": intent_context or "",
     }

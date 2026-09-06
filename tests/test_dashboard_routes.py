@@ -664,6 +664,24 @@ class TestLookupRFQThreadId:
             assert result == "new-thread"
             session.delete.assert_not_called()
 
+    def test_stale_binding_with_missing_thread_is_repaired(self):
+        """Binding exists but the thread row is gone — remove and recreate."""
+        from includes.dashboard.routes import _lookup_rfq_thread_id
+        with patch("includes.dashboard.routes._helpers.get_session") as mock_gs:
+            session = MagicMock()
+            row = MagicMock()
+            row.thread_id = "ghost-thread"
+            session.query.return_value.filter.return_value.first.return_value = row
+            # Ownership check: thread row missing → None
+            session.execute.return_value.scalar.return_value = None
+            mock_gs.return_value = session
+
+            result = _lookup_rfq_thread_id("RFQ-2026-0001", "user@eagle.com")
+            # Stale binding removed, fresh thread created
+            session.delete.assert_called_once_with(row)
+            assert result is not None
+            assert result != "ghost-thread"
+
 
 # ============================================================================
 # Admin supplier-dedup queue (A2)

@@ -54,6 +54,20 @@ def allowlist(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def current_thread_store(monkeypatch):
+    """Keep /chat-ui routes off the real DB (table lives in a migration)."""
+    import includes.dashboard.routes.chat_ui as chat_ui
+
+    store: dict[str, str] = {}
+    monkeypatch.setattr(chat_ui, "_get_current_thread_id", lambda email: store.get(email))
+    monkeypatch.setattr(
+        chat_ui, "_set_current_thread_id", lambda email, tid: store.__setitem__(email, tid)
+    )
+    monkeypatch.setattr(chat_ui, "_rfq_meta_by_number", lambda numbers: {})
+    return store
+
+
 def _login(client, email="tom@eagle-exports.com"):
     client.get(f"/_test/login?email={email}")
 
@@ -65,10 +79,12 @@ def _patch_transcript(monkeypatch, **overrides):
             "id": "t1", "name": "New chat", "metadata": {"agent": "eagle"},
         }),
         "get_steps": AsyncMock(return_value=[]),
+        "list_elements": AsyncMock(return_value=[]),
         "create_thread": AsyncMock(return_value="t1"),
         "rename_thread": AsyncMock(return_value=None),
         "delete_thread": AsyncMock(return_value=None),
         "create_step": AsyncMock(return_value="s1"),
+        "update_thread_agent": AsyncMock(return_value=None),
     }
     defaults.update(overrides)
     for name, mock in defaults.items():
@@ -231,6 +247,40 @@ class TestRunFlow:
         assert mocks["create_step"].call_args.kwargs["type_"] == "user_message"
         assert mocks["create_step"].call_args.kwargs["output"] == "find a widget"
 
+    def test_message_with_intent_routes_to_owning_agent(self, client, monkeypatch):
+        mocks = _patch_transcript(monkeypatch)
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        monkeypatch.setattr(chat_ui, "_active_runs", {})
+        monkeypatch.setattr(chat_ui, "_run_task", AsyncMock())
+        _login(client)
+        resp = client.post(
+            "/chat-ui/threads/t1/messages",
+            json={"text": "research this widget", "intent": "research_product_info"},
+        )
+        assert resp.status_code == 200
+        args = chat_ui._run_task.call_args
+        assert args.args[3] == "research"
+        assert args.kwargs["intent_context"]
+        # Thread metadata tracks the last agent used
+        assert mocks["update_thread_agent"].call_args.args == ("t1", "research")
+
+    def test_message_with_unknown_intent_falls_back_to_default(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        monkeypatch.setattr(chat_ui, "_active_runs", {})
+        monkeypatch.setattr(chat_ui, "_run_task", AsyncMock())
+        _login(client)
+        resp = client.post(
+            "/chat-ui/threads/t1/messages",
+            json={"text": "hello", "intent": "not_a_real_intent"},
+        )
+        assert resp.status_code == 200
+        args = chat_ui._run_task.call_args
+        assert args.args[3] == "eagle"
+        assert args.kwargs["intent_context"] == ""
+
     def test_stream_with_no_active_run_yields_done(self, client, monkeypatch):
         _patch_transcript(monkeypatch)
         _login(client)
@@ -250,3 +300,172 @@ class TestRunFlow:
             resp = client.post("/chat-ui/threads/t1/stop")
         assert resp.status_code == 200
         req.assert_awaited_once_with("chat-ui:t1")
+
+
+class TestCurrentThread:
+    def test_get_creates_when_missing(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        _login(client)
+        resp = client.get("/chat-ui/current-thread")
+        assert resp.status_code == 200
+        assert resp.json()["thread_id"] == "t1"  # create_thread mock
+
+    def test_get_returns_existing(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        monkeypatch.setattr(chat_ui, "_get_current_thread_id", lambda email: "t9")
+        _login(client)
+        resp = client.get("/chat-ui/current-thread")
+        assert resp.status_code == 200
+        assert resp.json()["thread_id"] == "t9"
+
+    def test_get_repairs_stale_thread(self, client, monkeypatch):
+        _patch_transcript(monkeypatch, get_thread=AsyncMock(return_value=None))
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        monkeypatch.setattr(chat_ui, "_get_current_thread_id", lambda email: "gone")
+        _login(client)
+        resp = client.get("/chat-ui/current-thread")
+        assert resp.status_code == 200
+        assert resp.json()["thread_id"] == "t1"  # recreated
+
+    def test_set_requires_owned_thread(self, client, monkeypatch):
+        _patch_transcript(monkeypatch, get_thread=AsyncMock(return_value=None))
+        _login(client)
+        resp = client.post("/chat-ui/current-thread", json={"thread_id": "nope"})
+        assert resp.status_code == 404
+
+    def test_set_ok(self, client, monkeypatch, current_thread_store):
+        _patch_transcript(monkeypatch)
+        _login(client)
+        resp = client.post("/chat-ui/current-thread", json={"thread_id": "t1"})
+        assert resp.status_code == 200
+        assert current_thread_store["tom@eagle-exports.com"] == "t1"
+
+
+class TestUploads:
+    def test_upload_requires_thread(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        _login(client)
+        resp = client.post(
+            "/chat-ui/upload", files={"files": ("a.txt", b"hello", "text/plain")}
+        )
+        assert resp.status_code == 400
+
+    def test_upload_persists_element_and_file(self, client, monkeypatch, tmp_path):
+        _patch_transcript(monkeypatch)
+        monkeypatch.setattr(
+            "includes.chat.transcript.ensure_user", AsyncMock(return_value="uid1")
+        )
+        monkeypatch.setattr(
+            "includes.chat.transcript.create_element", AsyncMock(return_value=None)
+        )
+        monkeypatch.setattr("config.settings.Config.DATA_DIR", str(tmp_path))
+        _login(client)
+        resp = client.post(
+            "/chat-ui/upload",
+            data={"thread_id": "t1"},
+            files=[("files", ("a.txt", b"hello world", "text/plain"))],
+        )
+        assert resp.status_code == 200
+        f = resp.json()["files"][0]
+        assert f["name"] == "a.txt"
+        assert f["type"] == "file"
+        assert f["url"].startswith("/files/uid1/")
+        object_key = f["url"].removeprefix("/files/")
+        assert (tmp_path / "attachments" / object_key).read_bytes() == b"hello world"
+
+    def test_upload_image_gets_image_type(self, client, monkeypatch, tmp_path):
+        _patch_transcript(monkeypatch)
+        monkeypatch.setattr(
+            "includes.chat.transcript.ensure_user", AsyncMock(return_value="uid1")
+        )
+        monkeypatch.setattr(
+            "includes.chat.transcript.create_element", AsyncMock(return_value=None)
+        )
+        monkeypatch.setattr("config.settings.Config.DATA_DIR", str(tmp_path))
+        _login(client)
+        resp = client.post(
+            "/chat-ui/upload",
+            data={"thread_id": "t1"},
+            files=[("files", ("pic.png", b"\x89PNG", "image/png"))],
+        )
+        assert resp.status_code == 200
+        assert resp.json()["files"][0]["type"] == "image"
+
+    def test_delete_pending_file(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        monkeypatch.setattr(
+            "includes.chat.transcript.get_element",
+            AsyncMock(
+                return_value={
+                    "id": "e1", "type": "file", "name": "a.txt", "url": "/files/x",
+                    "display": "inline", "mime": "text/plain", "size": "small",
+                    "for_id": None, "object_key": "uid1/e1/a.txt",
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            "includes.chat.transcript.delete_element", AsyncMock(return_value=True)
+        )
+        _login(client)
+        resp = client.delete("/chat-ui/files/e1?thread_id=t1")
+        assert resp.status_code == 200
+
+    def test_delete_attached_file_rejected(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        monkeypatch.setattr(
+            "includes.chat.transcript.get_element",
+            AsyncMock(
+                return_value={
+                    "id": "e1", "type": "file", "name": "a.txt", "url": "/files/x",
+                    "display": "inline", "mime": "text/plain", "size": "small",
+                    "for_id": "s1", "object_key": "uid1/e1/a.txt",
+                }
+            ),
+        )
+        _login(client)
+        resp = client.delete("/chat-ui/files/e1?thread_id=t1")
+        assert resp.status_code == 400
+
+    def test_message_with_file_ids_attaches_and_processes(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        import includes.dashboard.routes.chat_ui as chat_ui
+        from includes.chat import transcript as tmod
+
+        monkeypatch.setattr(chat_ui, "_active_runs", {})
+        monkeypatch.setattr(chat_ui, "_run_task", AsyncMock())
+        monkeypatch.setattr(
+            "includes.chat.transcript.list_elements",
+            AsyncMock(
+                return_value=[
+                    {
+                        "id": "e1", "type": "file", "name": "a.txt", "url": "/files/x",
+                        "display": "inline", "mime": "text/plain", "size": "small",
+                        "for_id": None, "object_key": "uid1/e1/a.txt",
+                    }
+                ]
+            ),
+        )
+        monkeypatch.setattr(chat_ui, "_read_file_bytes", lambda path: b"hello")
+        monkeypatch.setattr(
+            "includes.chat.document_processing.process_file",
+            lambda data, mime, name: {
+                "filename": name, "mime_type": mime,
+                "processed_type": "text", "content": "hello",
+            },
+        )
+        monkeypatch.setattr(
+            "includes.chat.transcript.attach_element", AsyncMock(return_value=True)
+        )
+        _login(client)
+        resp = client.post(
+            "/chat-ui/threads/t1/messages",
+            json={"text": "check this", "file_ids": ["e1"]},
+        )
+        assert resp.status_code == 200
+        assert tmod.attach_element.call_args.args == ("e1", "s1", "t1")
+        kwargs = chat_ui._run_task.call_args.kwargs
+        assert kwargs["files"][0]["processed_type"] == "text"
+        assert kwargs["file_metadata"][0]["name"] == "a.txt"

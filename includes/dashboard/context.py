@@ -1,10 +1,21 @@
 """
 Dashboard context store.
 
-Holds the current dashboard view context per user so the agent can
-inject it into its system prompt.  Updated from the Chainlit iframe
-via ``POST /api/dashboard-context`` and read by ``app.py`` at message
-time.
+Holds the current dashboard view context so the agent can inject it into
+its system prompt.  Updated via ``POST /api/dashboard-context`` (from the
+Chainlit iframe and the beta chat UI) and read at message time by ``app.py``
+and the chat-ui router.
+
+Two key families live in the store:
+
+- ``thread:{thread_id}`` — the context as seen from a specific chat thread
+  (each push carries ``_activeThreadId``).  This isolates multi-tab use:
+  two tabs on different RFQs have different threads, so their contexts no
+  longer overwrite each other.
+- the plain user email — a per-user fallback for pushes that predate thread
+  keying or arrive with no active thread.
+
+Reads prefer the thread key and fall back to the email key.
 
 The store is in-process memory — perfectly fine for a single-worker
 deployment.  If we later move to multiple workers, switch to Redis or
@@ -21,7 +32,7 @@ from typing import Any, Dict, Optional
 import threading
 
 _lock = threading.Lock()
-_store: Dict[str, tuple[Dict[str, Any], float]] = {}  # email → (context, timestamp)
+_store: Dict[str, tuple[Dict[str, Any], float]] = {}  # key → (context, timestamp)
 
 _CONTEXT_TTL = int(os.getenv("DASHBOARD_CONTEXT_TTL", "1800"))  # 30 minutes
 
@@ -47,6 +58,36 @@ def get_context(user_email: str) -> Optional[Dict[str, Any]]:
         return ctx
 
 
+def set_thread_context(thread_id: str, context: Dict[str, Any]) -> None:
+    """Store context keyed by chat thread id.
+
+    Each tab's chat thread gets its own dashboard context, so two tabs on
+    different RFQs no longer overwrite each other's context.
+    """
+    if not thread_id:
+        return
+    with _lock:
+        _store[f"thread:{thread_id}"] = (context, time.time())
+        # Opportunistic cleanup of expired entries
+        _cleanup_expired_locked()
+
+
+def lookup_context(
+    user_email: str, thread_id: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Return the context for this thread, falling back to the user entry."""
+    if thread_id:
+        key = f"thread:{thread_id}"
+        with _lock:
+            entry = _store.get(key)
+            if entry is not None:
+                ctx, ts = entry
+                if time.time() - ts <= _CONTEXT_TTL:
+                    return ctx
+                del _store[key]
+    return get_context(user_email)
+
+
 def _cleanup_expired_locked() -> None:
     """Remove all expired entries.  Must be called while holding _lock."""
     now = time.time()
@@ -55,12 +96,15 @@ def _cleanup_expired_locked() -> None:
         del _store[email]
 
 
-def format_context_for_prompt(user_email: str) -> str:
+def format_context_for_prompt(
+    user_email: str, thread_id: Optional[str] = None
+) -> str:
     """Return a prompt fragment describing the user's current dashboard view.
 
-    Returns an empty string if no context is set.
+    Prefers the thread-keyed context (multi-tab isolation); falls back to the
+    per-user entry.  Returns an empty string if no context is set.
     """
-    ctx = get_context(user_email)
+    ctx = lookup_context(user_email, thread_id)
     if not ctx or not ctx.get("view"):
         return ""
 
