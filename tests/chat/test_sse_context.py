@@ -128,6 +128,45 @@ class TestSseChatContext:
         assert ctx.get("x") is None
         ctx.set("x", 1)
         assert ctx.get("x") == 1
+
+    async def test_say_with_actions_emits_and_persists(self, queue):
+        from includes.chat.context import ActionSpec
+
+        create = AsyncMock(return_value="step-1")
+        actions = [
+            ActionSpec(
+                name="rfq_dismiss",
+                label="No thanks",
+                payload={"rfq_id": "RFQ-1"},
+                tooltip="Dismiss this prompt",
+            )
+        ]
+        with patch("includes.chat.context_sse.transcript.create_step", new=create):
+            handle = await self._ctx(queue).say("choose", actions=actions)
+
+        expected = [
+            {
+                "name": "rfq_dismiss",
+                "label": "No thanks",
+                "payload": {"rfq_id": "RFQ-1"},
+                "tooltip": "Dismiss this prompt",
+            }
+        ]
+        # Persisted into step metadata so buttons survive a reload.
+        assert create.call_args.kwargs["metadata"] == {"actions": expected}
+        (event,) = await _drain(queue, 1)
+        assert event["event"] == "message_start"
+        assert event["data"]["actions"] == expected
+        assert handle.id == "step-1"
+
+    async def test_say_without_actions_emits_empty_list(self, queue):
+        create = AsyncMock(return_value="step-1")
+        with patch("includes.chat.context_sse.transcript.create_step", new=create):
+            await self._ctx(queue).say("hi")
+        # No metadata when there are no buttons.
+        assert create.call_args.kwargs["metadata"] is None
+        (event,) = await _drain(queue, 1)
+        assert event["data"]["actions"] == []
         other = self._ctx(queue)
         assert other.get("x") is None
 

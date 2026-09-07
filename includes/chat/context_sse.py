@@ -19,6 +19,21 @@ from includes.chat.context import ActionSpec
 logger = logging.getLogger(__name__)
 
 
+def _serialize_actions(actions: list[ActionSpec] | None) -> list[dict]:
+    """ActionSpec → JSON-safe dicts for the SSE payload and step metadata."""
+    if not actions:
+        return []
+    return [
+        {
+            "name": a.name,
+            "label": a.label,
+            "payload": a.payload or {},
+            "tooltip": a.tooltip,
+        }
+        for a in actions
+    ]
+
+
 class SseMessageHandle:
     """A message streamed to the browser and persisted to `steps`.
 
@@ -107,12 +122,13 @@ class SseChatContext:
     ) -> SseMessageHandle:
         """Send a message. Persisted immediately, like Chainlit's send().
 
-        ``actions`` are accepted but not rendered in the POC — chat-emitted
-        action buttons are out of scope until the unified frontend lands.
+        ``actions`` are emitted in the message_start event and persisted in the
+        step metadata, so chat-emitted buttons survive a reload.
         ``transient`` messages (tool-progress lines) are never persisted:
         the runner removes them, and they are not part of the transcript.
         """
         step_name = author or "EagleAgent"
+        action_data = _serialize_actions(actions)
         step_id: str | None = None
         if not transient:
             try:
@@ -121,6 +137,7 @@ class SseChatContext:
                     type_="assistant_message",
                     name=step_name,
                     output=text,
+                    metadata={"actions": action_data} if action_data else None,
                 )
             except Exception as exc:
                 # Never break the run over persistence — the client still sees it.
@@ -135,6 +152,7 @@ class SseChatContext:
                     "author": step_name,
                     "content": text,
                     "transient": transient,
+                    "actions": action_data,
                 },
             }
         )

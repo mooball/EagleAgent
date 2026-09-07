@@ -257,6 +257,106 @@ async def _run_task(
         _active_runs.pop(thread_id, None)
 
 
+# ── Action dispatch (transport-neutral) ────────────────────────────────────
+# Dashboard RFQ buttons and chat-emitted action buttons share this path. The
+# handlers themselves are transport-neutral (payload, ctx); only the context
+# construction differed, and this builds the SSE variant.
+
+
+def _action_handler(action_name: str):
+    """The transport-neutral handler for an action name, or None."""
+    from includes.chat.rfq_actions import RFQ_ACTIONS
+
+    handler = RFQ_ACTIONS.get(action_name)
+    if handler is not None:
+        return handler
+    from includes.chat.actions import get_action
+
+    action = get_action(action_name)
+    return action.handler if action is not None else None
+
+
+async def _execute_action(
+    ctx: Any,
+    action_name: str,
+    payload: dict,
+    queue: asyncio.Queue,
+) -> None:
+    """Run one action handler inside the thread's SSE context."""
+    try:
+        handler = _action_handler(action_name)
+        if handler is None:
+            await queue.put(
+                {
+                    "event": "error",
+                    "data": {"message": f"Unknown action: {action_name}"},
+                }
+            )
+            return
+        with chat_context(ctx):
+            await handler(payload, ctx)
+    except Exception:
+        logger.exception("[chat-ui] action %s failed", action_name)
+        await queue.put(
+            {
+                "event": "error",
+                "data": {"message": f"Action {action_name} failed — please try again."},
+            }
+        )
+    finally:
+        await queue.put({"event": "done", "data": {}})
+        _active_runs.pop(ctx.thread_id, None)
+
+
+async def dispatch_action_to_thread(
+    user: dict,
+    thread_id: str,
+    action_name: str,
+    payload: dict,
+) -> dict:
+    """Dispatch a dashboard/chat action into the SSE chat for a thread.
+
+    Runs outside a graph turn (like Chainlit's dispatch). Registers the run
+    in ``_active_runs`` so the stream endpoint can drain its events and the
+    busy check serialises it against message turns. Returns immediately —
+    the client opens the SSE stream to watch progress.
+    """
+    from includes.graph import setup_globals
+
+    # Ownership: never run an action in someone else's thread.
+    thread = await transcript.get_thread(thread_id, user["email"])
+    if thread is None:
+        return {"error": "Thread not found", "status_code": 404}
+
+    if _action_handler(action_name) is None:
+        return {"error": f"Unknown action: {action_name}", "status_code": 422}
+
+    run = _active_runs.get(thread_id)
+    if run and not run["task"].done():
+        return {
+            "error": "Still working on the previous message — one moment.",
+            "status_code": 409,
+        }
+
+    await setup_globals()
+    graph = resolve("eagle").graph()
+    queue: asyncio.Queue = asyncio.Queue()
+    ctx = SseChatContext(
+        thread_id=thread_id,
+        user_email=user["email"],
+        agent="eagle",
+        queue=queue,
+        cancel_key=_cancel_key(thread_id),
+    )
+    # Chainlit's session supplies this; the SSE scratch must too — the
+    # find-all-suppliers handler re-enters the graph with it.
+    ctx.set("active_graph", graph)
+
+    task = asyncio.create_task(_execute_action(ctx, action_name, payload, queue))
+    _active_runs[thread_id] = {"queue": queue, "task": task}
+    return {"started": True, "thread_id": thread_id}
+
+
 # ── Pages ──────────────────────────────────────────────────────────────────
 
 
@@ -770,6 +870,29 @@ async def post_message(
     )
     _active_runs[thread_id] = {"queue": queue, "task": task}
     return JSONResponse({"ok": True})
+
+
+@router.post("/threads/{thread_id}/action")
+async def thread_action(
+    request: Request, thread_id: str, user: dict = Depends(require_user)
+):
+    """A chat-emitted action button click — same dispatch layer as the bridge."""
+    await _guard(user)
+    await _owned_thread(thread_id, user)
+
+    body = await request.json()
+    action_name = str(body.get("name") or "")
+    if not action_name:
+        return JSONResponse({"error": "Action name required"}, status_code=400)
+    payload = body.get("payload") or {}
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Payload must be an object"}, status_code=400)
+
+    result = await dispatch_action_to_thread(user, thread_id, action_name, payload)
+    status_code = result.pop("status_code", 200)
+    if status_code != 200:
+        return JSONResponse(result, status_code=status_code)
+    return JSONResponse(result)
 
 
 @router.get("/threads/{thread_id}/stream")

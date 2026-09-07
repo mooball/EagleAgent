@@ -344,6 +344,44 @@ class TestCurrentThread:
         assert current_thread_store["tom@eagle-exports.com"] == "t1"
 
 
+class TestThreadAction:
+    def test_action_requires_name(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        _login(client)
+        resp = client.post("/chat-ui/threads/t1/action", json={"payload": {}})
+        assert resp.status_code == 400
+
+    def test_action_dispatches(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        dispatched = AsyncMock(return_value={"started": True, "thread_id": "t1"})
+        monkeypatch.setattr(chat_ui, "dispatch_action_to_thread", dispatched)
+        _login(client)
+        resp = client.post(
+            "/chat-ui/threads/t1/action",
+            json={"name": "rfq_dismiss", "payload": {"rfq_id": "RFQ-1"}},
+        )
+        assert resp.status_code == 200
+        dispatched.assert_awaited_once()
+        args = dispatched.await_args.args
+        assert args[1] == "t1"
+        assert args[2] == "rfq_dismiss"
+
+    def test_action_error_propagates(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        monkeypatch.setattr(
+            chat_ui,
+            "dispatch_action_to_thread",
+            AsyncMock(return_value={"error": "busy", "status_code": 409}),
+        )
+        _login(client)
+        resp = client.post("/chat-ui/threads/t1/action", json={"name": "x", "payload": {}})
+        assert resp.status_code == 409
+
+
 class TestUploads:
     def test_upload_requires_thread(self, client, monkeypatch):
         _patch_transcript(monkeypatch)

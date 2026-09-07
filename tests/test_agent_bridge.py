@@ -42,9 +42,16 @@ class TestHandleBridgeRequest:
         assert response.status_code == 401
     @patch("main.get_current_user", return_value={"email": "user@eagle.com"})
     async def test_requires_chainlit_session(self, mock_user):
-        """Missing Chainlit session cookie should return 400."""
+        """Missing Chainlit session cookie should return 400.
+
+        The body is parsed first now (the beta chat_ui branch needs it before
+        the cookie check), so a valid body must accompany the request.
+        """
         request = AsyncMock()
         request.cookies = {}
+        request.json = AsyncMock(return_value={
+            "action": {"name": "rfq_find_suppliers", "payload": {}}
+        })
 
         response = await handle_bridge_request(request)
 

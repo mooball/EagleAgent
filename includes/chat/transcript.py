@@ -176,6 +176,12 @@ async def get_steps(thread_id: str) -> list[dict]:
     )
     steps: list[dict] = []
     for row in rows or []:
+        metadata = row.get("metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
         steps.append(
             {
                 "id": row.get("id"),
@@ -184,7 +190,7 @@ async def get_steps(thread_id: str) -> list[dict]:
                 "output": row.get("output") or "",
                 "input": row.get("input") or "",
                 "created_at": row.get("createdAt"),
-                "metadata": row.get("metadata") or {},
+                "metadata": metadata,
                 "parent_id": row.get("parentId"),
                 "is_error": bool(row.get("isError")),
                 "streaming": bool(row.get("streaming")),
