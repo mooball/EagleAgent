@@ -1267,3 +1267,90 @@ class TestSwapSupplier:
         assert entry["near_miss_names"] == ["TNT Express"]
 
 
+# ---------------------------------------------------------------------------
+# Write-path guard: hallucinated supplier ids never get stored
+# ---------------------------------------------------------------------------
+
+class TestAddSuppliersIdGuard:
+    """Regression (2026-09-07): the agent invented supplier ids like
+    'sup_1597' or '926' in add_supplier/add_suppliers_bulk calls; they were
+    persisted verbatim and later crashed RFQ page renders."""
+
+    @pytest.fixture
+    def db_session(self):
+        from includes.dashboard.database import _sync_url
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        from sqlalchemy import event
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _make_rfq(self, session):
+        rfq = RFQ(
+            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            customer="Test Customer",
+            created_by="tester",
+            created_date=datetime.now(timezone.utc),
+        )
+        session.add(rfq)
+        session.flush()
+        session.add(RFQItem(rfq_id=rfq.id, line=1, input_description="desc"))
+        session.flush()
+        return rfq
+
+    def test_bogus_ids_are_stripped_before_persist(self, db_session):
+        from includes.tools.rfq_crud import _add_suppliers_to_line_core
+        from sqlalchemy.orm.attributes import flag_modified
+
+        rfq = self._make_rfq(db_session)
+        line_item = db_session.query(RFQItem).filter(
+            RFQItem.rfq_id == rfq.id, RFQItem.line == 1
+        ).first()
+
+        real_id = str(uuid.uuid4())
+        data = {
+            "suppliers": [
+                {"name": "Porter Equipment Australia", "supplier_id": "sup_1597",
+                 "contacts": [{"url": "https://porterce.com.au"}]},
+                {"name": "Real Linked Co", "supplier_id": real_id,
+                 "contacts": [{"url": "https://realco.example"}]},
+            ]
+        }
+        # Matching/pricing hit the real DB in prod; no-op them here.
+        with patch("includes.tools.quote_tools._match_suppliers_to_db"), \
+             patch("includes.tools.quote_tools._enrich_supplier_pricing"):
+            added, updated, skipped, error = _add_suppliers_to_line_core(
+                db_session, rfq, line_item, data
+            )
+
+        assert error is None
+        stored = {s["name"]: s for s in line_item.suppliers}
+        assert "sup_1597" not in stored["Porter Equipment Australia"].values()
+        assert stored["Porter Equipment Australia"].get("supplier_id") is None
+        # Valid UUIDs are untouched.
+        assert stored["Real Linked Co"]["supplier_id"] == real_id
+        assert stored["Real Linked Co"]["db_match"] == "exact"
+
+    def test_valid_uuid_passthrough(self, db_session):
+        from includes.tools.rfq_crud import _add_suppliers_to_line_core
+        from includes.tools.rfq_crud import _is_valid_uuid_id
+
+        assert _is_valid_uuid_id(str(uuid.uuid4()))
+        assert not _is_valid_uuid_id("sup_1597")
+        assert not _is_valid_uuid_id("926")
+        assert not _is_valid_uuid_id(None)
+
+
+

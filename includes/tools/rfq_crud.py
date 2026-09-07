@@ -7,6 +7,7 @@ All public names are re-exported from quote_tools.py for backward compatibility.
 import datetime
 import logging
 import threading
+import uuid
 
 from functools import wraps
 from typing import Any
@@ -16,6 +17,20 @@ from sqlalchemy.exc import SQLAlchemyError
 from includes.tools.product_tools import normalize_part_number
 
 logger = logging.getLogger(__name__)
+
+
+def _is_valid_uuid_id(value: object) -> bool:
+    """True if value round-trips as a Postgres UUID.
+
+    The agent sometimes invents supplier ids ("sup_1597", "926") when
+    composing add_supplier/add_suppliers_bulk calls — those must never be
+    stored: downstream renderers feed supplier_id into UUID columns.
+    """
+    try:
+        uuid.UUID(str(value))
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1122,6 +1137,16 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
         if sup.get("currency") and not sup.get("cost_currency"):
             sup["cost_currency"] = sup["currency"]
         name = (sup.get("name") or "").strip()
+        # A hallucinated id must never be persisted — treat it as absent so
+        # DB matching resolves the real record by name (2026-09-07 incident:
+        # the agent invented "sup_1597"-style ids that crashed RFQ renders).
+        sid = sup.get("supplier_id")
+        if sid and not _is_valid_uuid_id(sid):
+            logger.warning(
+                "[add-suppliers] dropping non-UUID supplier_id %r for '%s' — will match by name",
+                sid, name,
+            )
+            sup["supplier_id"] = None
         has_db_link = bool(sup.get("supplier_id"))
         if not has_db_link and name.lower() in _bad_names:
             skipped_names.append(name or "Unknown")
