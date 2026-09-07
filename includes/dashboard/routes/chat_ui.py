@@ -321,16 +321,20 @@ async def _run_task(
 
 
 def _action_handler(action_name: str):
-    """The transport-neutral handler for an action name, or None."""
+    """The transport-neutral handler for an action name: ``(callable, kind)``.
+
+    kind is ``"rfq"`` (signature ``handler(payload, ctx)``) or ``"registry"``
+    (signature ``handler(ctx, payload=...)``). Returns None when unknown.
+    """
     from includes.chat.rfq_actions import RFQ_ACTIONS
 
     handler = RFQ_ACTIONS.get(action_name)
     if handler is not None:
-        return handler
+        return (handler, "rfq")
     from includes.chat.actions import get_action
 
     action = get_action(action_name)
-    return action.handler if action is not None else None
+    return (action.handler, "registry") if action is not None else None
 
 
 async def _execute_action(
@@ -343,8 +347,8 @@ async def _execute_action(
     try:
         # P3: hydrate persisted scratch so per-button counters advance.
         await ctx.load_scratch()
-        handler = _action_handler(action_name)
-        if handler is None:
+        resolved = _action_handler(action_name)
+        if resolved is None:
             await queue.put(
                 {
                     "event": "error",
@@ -352,8 +356,12 @@ async def _execute_action(
                 }
             )
             return
+        handler, kind = resolved
         with chat_context(ctx):
-            await handler(payload, ctx)
+            if kind == "registry":
+                await handler(ctx, payload=payload)
+            else:
+                await handler(payload, ctx)
     except Exception:
         logger.exception("[chat-ui] action %s failed", action_name)
         await queue.put(
@@ -514,7 +522,23 @@ async def create_thread(
         agent_key=agent_key,
     )
     if str(form.get("embed") or "") == "1":
-        # Embedded panel flow — the embed JS navigates itself.
+        # Embedded panel flow — the embed JS navigates itself. Persist the
+        # default Eagle welcome so new threads open with parity to Chainlit.
+        name_part = user.get("name")
+        welcome = (
+            f"Hello {name_part}! I can help you find suppliers. Give me a part "
+            "number, brand name, supplier name, or description and I'll search "
+            "our database."
+            if name_part
+            else "Hello! I can help you find suppliers. Give me a part number, "
+            "brand name, supplier name, or description and I'll search our database."
+        )
+        await transcript.create_step(
+            thread_id,
+            type_="assistant_message",
+            name="EagleAgent",
+            output=welcome,
+        )
         return JSONResponse({"thread_id": thread_id, "agent": agent_key})
     return RedirectResponse(f"/chat-ui/threads/{thread_id}", status_code=303)
 

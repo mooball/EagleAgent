@@ -167,3 +167,34 @@ class TestActionTools:
         assert "New Conversation" in result
         # Non-admin should not see delete
         assert "Delete All" not in result
+
+
+# ============================================================================
+# Cancel handlers (P5 ports from Chainlit callbacks)
+# ============================================================================
+
+class TestCancelHandlers:
+    async def test_cancel_run_script_messages_cancel(self, make_chat_ctx):
+        ctx = make_chat_ctx()
+        await get_action("cancel_run_script").handler(
+            ctx, payload={"script_name": "update_embeddings"}
+        )
+        assert any("update_embeddings" in m and "Cancelled" in m for m in ctx.texts)
+
+    async def test_cancel_job_cancels_and_confirms(self, make_chat_ctx):
+        ctx = make_chat_ctx()
+        job = MagicMock()
+        job.id = "abcd1234-abcd-abcd-abcd-abcd1234abcd"
+        job.script_name = "sync_net_suite"
+        cancel = AsyncMock(return_value=job)
+        with patch("includes.graph.job_runner.cancel", new=cancel):
+            await get_action("cancel_job").handler(ctx, payload={"job_id": "j1"})
+        cancel.assert_awaited_once_with("j1")
+        assert any("abcd1234" in m and "Cancelled job" in m for m in ctx.texts)
+
+    async def test_cancel_job_unknown_job_messages_error(self, make_chat_ctx):
+        ctx = make_chat_ctx()
+        cancel = AsyncMock(side_effect=ValueError("no such job"))
+        with patch("includes.graph.job_runner.cancel", new=cancel):
+            await get_action("cancel_job").handler(ctx, payload={"job_id": "j1"})
+        assert any("Could not cancel" in m for m in ctx.texts)

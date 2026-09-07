@@ -211,9 +211,71 @@ class SseChatContext:
         )
 
     async def image(self, path: str, *, name: str) -> None:
-        # POC: persist the 📸 marker like Chainlit; inline image rendering of
-        # the file itself is a later checklist item (B10).
-        await self.say(f"📸 {name}")
+        """Persist an image (e.g. browser screenshot) as an attached element.
+
+        P5/B10 — the element row plus the attached step lets the embed render
+        the image inline exactly like an upload. Falls back to the 📸 marker
+        if the file is missing or persistence fails.
+        """
+        import os
+        import shutil
+
+        try:
+            if not os.path.exists(path):
+                await self.say(f"📸 {name}", author="EagleAgent")
+                return
+            user_id = await transcript.ensure_user(self.user_email)
+            element_id = str(uuid.uuid4())
+            safe_name = os.path.basename(name or path)[:200] or "image.png"
+            object_key = f"{user_id}/{element_id}/{safe_name}"
+            from config import config
+
+            dest = os.path.join(config.DATA_DIR, "attachments", object_key)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            await asyncio.to_thread(shutil.copyfile, path, dest)
+
+            await transcript.create_element(
+                self.thread_id,
+                element_id=element_id,
+                name=safe_name,
+                type_="image",
+                mime="image/png",
+                url=f"/files/{object_key}",
+                object_key=object_key,
+                size="medium",
+            )
+            step_id = await transcript.create_step(
+                self.thread_id,
+                type_="assistant_message",
+                name="EagleAgent",
+                output=f"📸 {name}",
+            )
+            await transcript.attach_element(element_id, step_id, self.thread_id)
+            await self._queue.put(
+                {
+                    "event": "message_start",
+                    "data": {
+                        "id": step_id,
+                        "author": "EagleAgent",
+                        "content": f"📸 {name}",
+                        "transient": False,
+                        "actions": [],
+                        "files": [
+                            {
+                                "id": element_id,
+                                "type": "image",
+                                "name": safe_name,
+                                "url": f"/files/{object_key}",
+                                "mime": "image/png",
+                                "size": "medium",
+                            }
+                        ],
+                    },
+                }
+            )
+        except Exception as exc:
+            logger.warning("[chat-ui] image persist failed: %s", exc)
+            await self.say(f"📸 {name}", author="EagleAgent")
 
     async def notify_dashboard(self, command: str, payload: dict | None = None) -> None:
         # Same-document beta UI: the embed forwards this to the dashboard shell

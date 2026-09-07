@@ -84,7 +84,9 @@ class TestDispatchActionToThread:
         async def fake_handler(payload, ctx):
             calls.append((payload, ctx.thread_id, ctx.get("active_graph")))
 
-        monkeypatch.setattr(chat_ui, "_action_handler", lambda name: fake_handler)
+        monkeypatch.setattr(
+            chat_ui, "_action_handler", lambda name: (fake_handler, "rfq")
+        )
 
         result = await chat_ui.dispatch_action_to_thread(
             USER, "t1", "x", {"rfq_id": "RFQ-1"}
@@ -111,7 +113,9 @@ class TestDispatchActionToThread:
         async def boom(payload, ctx):
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(chat_ui, "_action_handler", lambda name: boom)
+        monkeypatch.setattr(
+            chat_ui, "_action_handler", lambda name: (boom, "rfq")
+        )
 
         result = await chat_ui.dispatch_action_to_thread(USER, "t1", "x", {})
         assert result["started"] is True
@@ -121,6 +125,36 @@ class TestDispatchActionToThread:
         assert run["queue"].get_nowait()["event"] == "error"
         assert run["queue"].get_nowait()["event"] == "done"
         assert "t1" not in chat_ui._active_runs
+
+    async def test_registry_handler_receives_ctx_first(self, monkeypatch):
+        """Registry actions (new_conversation, cancel_job…) have the
+        (ctx, payload=…) shape — dispatch must not call them RFQ-style."""
+        monkeypatch.setattr(
+            "includes.chat.transcript.get_thread",
+            AsyncMock(return_value={"id": "t1"}),
+        )
+        _patch_scratch(monkeypatch)
+        _patch_graph(monkeypatch)
+
+        calls = []
+
+        async def registry_handler(ctx, payload=None):
+            calls.append((ctx.thread_id, payload))
+
+        monkeypatch.setattr(
+            chat_ui,
+            "_action_handler",
+            lambda name: (registry_handler, "registry"),
+        )
+
+        result = await chat_ui.dispatch_action_to_thread(
+            USER, "t1", "cancel_job", {"job_id": "j1"}
+        )
+        assert result["started"] is True
+        run = chat_ui._active_runs["t1"]
+        await run["task"]
+        assert calls == [("t1", {"job_id": "j1"})]
+        assert run["queue"].get_nowait()["event"] == "done"
 
 
 class TestHandleBridgeRequestRouting:

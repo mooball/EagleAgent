@@ -617,3 +617,28 @@ class TestCheckpointBackfill:
         resp = client.get("/chat-ui/threads/t1/messages")
         assert resp.status_code == 200
         graph.aget_state.assert_not_awaited()
+
+
+class TestEmbedWelcome:
+    """P5: new embed threads open with a persisted welcome message."""
+
+    def test_embed_thread_creation_persists_welcome(self, client, monkeypatch):
+        mocks = _patch_transcript(monkeypatch)
+        _login(client)
+        resp = client.post(
+            "/chat-ui/threads", data={"agent": "eagle", "embed": "1"}
+        )
+        assert resp.status_code == 200
+        mocks["create_step"].assert_awaited_once()
+        kwargs = mocks["create_step"].call_args.kwargs
+        assert kwargs["type_"] == "assistant_message"
+        assert "find suppliers" in kwargs["output"]
+
+    def test_non_embed_creation_does_not_persist_welcome(self, client, monkeypatch):
+        mocks = _patch_transcript(monkeypatch)
+        _login(client)
+        resp = client.post(
+            "/chat-ui/threads", data={"agent": "eagle"}, follow_redirects=False
+        )
+        assert resp.status_code == 303
+        mocks["create_step"].assert_not_awaited()

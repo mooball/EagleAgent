@@ -234,12 +234,12 @@ async def on_rfq_identify_items(payload: dict, ctx: ChatContext) -> None:
                          "match": "specific"},
                         user_id,
                     )
-                match_desc = ", ".join(
+                match_desc = "\n".join(
                     f"line {v['line']} → {v['part_number']} ({v['brand']})" for v in validated
                 )
-                msg = f"Found {len(validated)} item(s) in our product database: {match_desc}."
+                msg = f"Found {len(validated)} item(s) in our product database:\n{match_desc}."
                 if need_web:
-                    msg += f" Checking {len(need_web)} remaining item(s) online for discrepancies..."
+                    msg += f"\nChecking {len(need_web)} remaining item(s) online for discrepancies..."
                 await ctx.say(msg, author="EagleAgent")
                 await ctx.notify_dashboard("dashboard_refresh")
 

@@ -3,7 +3,7 @@
 > Parent: [plan-chatMigration.prompt.md](plan-chatMigration.prompt.md)
 > Predecessor: [plan-chatMigration-beta.prompt.md](plan-chatMigration-beta.prompt.md) (VALIDATED)
 > Acceptance record: [parity-checklist-chat.md](parity-checklist-chat.md)
-> Status: **IN PROGRESS** (2026-09-07). P1 ✅, P2 ✅, P3 ✅, P4 ✅, Fix 1 ✅, Fix 2 ✅.
+> Status: **IN PROGRESS** (2026-09-07). P1 ✅, P2 ✅, P3 ✅, P4 ✅, P5 ✅, Fix 1 ✅, Fix 2 ✅.
 > Scope: everything between "beta validated" and "Chainlit deleted".
 
 ---
@@ -42,7 +42,7 @@ The two shared touch points in this whole plan are:
 | 2 | Chat-emitted action buttons (C-B) discarded by `SseChatContext.say()` | Blocker | P2 ✅ |
 | 3 | `ctx.get/set` scratch dies with the run (Chainlit's persists per session) | Correctness | P3 ✅ |
 | 4 | No checkpoint resume backfill in the new UI | Correctness | P4 ✅ |
-| 5 | Welcome messages, `ctx.image()`, system actions, rename, timestamps… | Polish | P5 |
+| 5 | Welcome messages, `ctx.image()`, system actions, rename, timestamps… | Polish | P5 ✅ |
 | 6 | Everyone still on Chainlit by default | Rollout | P6 |
 | 7 | Chainlit code still present | Cleanup | P7 |
 
@@ -310,6 +310,24 @@ which kill in-flight runs — `_active_runs` is in-process.
 | Thread rename in panel | `PATCH /chat-ui/threads/{id}` exists | UI only |
 | Auto-naming (B2) | `ctx.rename_thread` implemented | `"{RFQ} — {customer}"` |
 | Token footer as data (B7) | [runner.py:451](../../includes/chat/runner.py) builds an HTML `<div>` | Currently re-marked client-side via `.agent-footer`; optional structured metadata |
+
+### Done (2026-09-07)
+- **Welcome (B5 partial):** `POST /chat-ui/threads` embed flow persists the
+  default Eagle welcome step, so new threads open like Chainlit.
+  Welcome-back stays display-only in Chainlit — not ported (non-persisted).
+- **`ctx.image()` (B10):** copies the file into `attachments/`, creates an
+  element row, attaches it to a persisted step, and streams `files` in
+  `message_start`; embed renders them via `renderAttachments` (live + history).
+  Falls back to the 📸 marker on failure.
+- **`cancel_run_script` / `cancel_job`:** neutral registry handlers added
+  (`cancel_job` calls `job_runner.cancel`). Also FIXED a dispatch bug —
+  `_action_handler` now returns `(handler, kind)` so registry handlers get
+  `(ctx, payload=…)` instead of the RFQ-style `(payload, ctx)`;
+  `new_conversation` would have crashed before this.
+- **Thread rename UI:** ✏️ button in the embed header → `PATCH` rename.
+- **Auto-naming:** on successful RFQ bind the shell renames the thread to
+  `"{rfq_number} — {customer}"` via `_autoNameThread`.
+- **Token footer (B7):** left as-is (client CSS re-marking) — optional.
 | Timestamps / copy button / avatars (B14–B16) | `embed.html` | Chainlit freebies, now ours |
 
 ### Risk

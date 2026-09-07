@@ -248,3 +248,49 @@ class TestPersistentScratch:
         with patch("includes.agent_bridge.clear_stop", new=clear):
             ctx.reset_cancel()
         clear.assert_called_once_with("chat-ui:t1")
+
+
+class TestImageAttachment:
+    """P5/B10: ctx.image() persists an element and streams its file info."""
+
+    def _ctx(self, queue):
+        from includes.chat.context_sse import SseChatContext
+
+        return SseChatContext(
+            thread_id="t1",
+            user_email="tom@eagle-exports.com",
+            agent="eagle",
+            queue=queue,
+            cancel_key="chat-ui:t1",
+        )
+
+    async def test_image_persists_element_and_emits_files(self, queue, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake image bytes")
+        create_element = AsyncMock()
+        attach_element = AsyncMock(return_value=True)
+        create_step = AsyncMock(return_value="step-9")
+        ensure_user = AsyncMock(return_value="uid-1")
+        with patch("includes.chat.context_sse.transcript.create_element", new=create_element), \
+             patch("includes.chat.context_sse.transcript.attach_element", new=attach_element), \
+             patch("includes.chat.context_sse.transcript.create_step", new=create_step), \
+             patch("includes.chat.context_sse.transcript.ensure_user", new=ensure_user):
+            ctx = self._ctx(queue)
+            await ctx.image(str(img), name="screenshot.png")
+
+        create_element.assert_awaited_once()
+        element_id = create_element.call_args.kwargs["element_id"]
+        attach_element.assert_awaited_once_with(element_id, "step-9", "t1")
+        (event,) = await _drain(queue, 1)
+        assert event["event"] == "message_start"
+        assert event["data"]["files"][0]["type"] == "image"
+        assert event["data"]["files"][0]["id"] == element_id
+
+    async def test_image_missing_file_falls_back_to_marker(self, queue):
+        with patch("includes.chat.context_sse.transcript.create_element", new=AsyncMock()):
+            ctx = self._ctx(queue)
+            await ctx.image("/nonexistent/x.png", name="x.png")
+        (event,) = await _drain(queue, 1)
+        assert event["event"] == "message_start"
+        assert "📸" in event["data"]["content"]
+        assert not event["data"].get("files")
