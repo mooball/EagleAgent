@@ -186,6 +186,56 @@ async def _steps_with_files(thread_id: str) -> list[dict]:
     return steps
 
 
+async def _backfill_checkpoint_steps(thread_id: str, agent_key: str) -> None:
+    """P4 — recover transcript gaps left by deploys/restarts.
+
+    The LangGraph checkpoint is the source of truth; steps fall behind when
+    the process dies mid-stream (the in-process queue never drains). Any AI
+    responses present in the checkpoint but missing from the transcript are
+    persisted as ``recovered_from_checkpoint`` steps. Best-effort — never
+    blocks the messages endpoint.
+    """
+    if thread_id in _active_runs:
+        return  # a live run owns the transcript right now
+
+    from includes.chat.streaming_logic import extract_ai_text, plan_resume_backfill
+
+    try:
+        from includes.graph import setup_globals
+
+        await setup_globals()
+        graph = resolve(agent_key or "eagle").graph()
+        ckpt = await graph.aget_state(
+            {"configurable": {"thread_id": thread_id}}
+        )
+        messages = (ckpt.values or {}).get("messages") if ckpt else None
+        if not messages:
+            return
+
+        existing = await transcript.get_steps(thread_id)
+        missing = plan_resume_backfill(messages, existing)
+        if not missing:
+            return
+
+        for ai_msg in missing:
+            text = extract_ai_text(ai_msg)
+            if not text:
+                continue
+            await transcript.create_step(
+                thread_id,
+                type_="assistant_message",
+                name="EagleAgent",
+                output=text,
+                metadata={"recovered_from_checkpoint": True},
+            )
+        logger.info(
+            "[chat-ui] back-filled %d checkpoint message(s) for thread %s",
+            len(missing), thread_id[:8],
+        )
+    except Exception as exc:
+        logger.warning("[chat-ui] checkpoint backfill failed: %s", exc)
+
+
 # ── Run orchestration ──────────────────────────────────────────────────────
 
 
@@ -498,7 +548,9 @@ async def thread_messages(
     thread_id: str, user: dict = Depends(require_user)
 ):
     await _guard(user)
-    await _owned_thread(thread_id, user)
+    thread = await _owned_thread(thread_id, user)
+    agent_key = (thread.get("metadata") or {}).get("agent", "eagle")
+    await _backfill_checkpoint_steps(thread_id, agent_key)
     steps = await _steps_with_files(thread_id)
     return JSONResponse({"steps": steps})
 

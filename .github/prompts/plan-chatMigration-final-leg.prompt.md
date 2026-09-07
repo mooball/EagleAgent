@@ -3,7 +3,7 @@
 > Parent: [plan-chatMigration.prompt.md](plan-chatMigration.prompt.md)
 > Predecessor: [plan-chatMigration-beta.prompt.md](plan-chatMigration-beta.prompt.md) (VALIDATED)
 > Acceptance record: [parity-checklist-chat.md](parity-checklist-chat.md)
-> Status: **IN PROGRESS** (2026-09-07). P1 ✅, P2 ✅, P3 ✅, Fix 1 ✅, Fix 2 ✅.
+> Status: **IN PROGRESS** (2026-09-07). P1 ✅, P2 ✅, P3 ✅, P4 ✅, Fix 1 ✅, Fix 2 ✅.
 > Scope: everything between "beta validated" and "Chainlit deleted".
 
 ---
@@ -41,7 +41,7 @@ The two shared touch points in this whole plan are:
 | 1 | Dashboard action buttons (C-A1–9) can't reach the new UI | Blocker | P1 ✅ |
 | 2 | Chat-emitted action buttons (C-B) discarded by `SseChatContext.say()` | Blocker | P2 ✅ |
 | 3 | `ctx.get/set` scratch dies with the run (Chainlit's persists per session) | Correctness | P3 ✅ |
-| 4 | No checkpoint resume backfill in the new UI | Correctness | P4 |
+| 4 | No checkpoint resume backfill in the new UI | Correctness | P4 ✅ |
 | 5 | Welcome messages, `ctx.image()`, system actions, rename, timestamps… | Polish | P5 |
 | 6 | Everyone still on Chainlit by default | Rollout | P6 |
 | 7 | Chainlit code still present | Cleanup | P7 |
@@ -285,6 +285,17 @@ which kill in-flight runs — `_active_runs` is in-process.
 
 ### Risk
 **LOW–MEDIUM** — reuses proven logic; needs `setup_globals()` for the graph.
+
+### Done (2026-09-07)
+- `_backfill_checkpoint_steps(thread_id, agent_key)` in `chat_ui.py`: skips
+  while a run is live, reads the checkpoint via the thread's agent graph,
+  diffs with `plan_resume_backfill`, and persists the gap as
+  `assistant_message` steps with `recovered_from_checkpoint: True`.
+- Called from `GET /chat-ui/threads/{id}/messages` before returning steps
+  (thread agent resolved from metadata). Best-effort — failures never block
+  the endpoint.
+- Tests: `tests/test_chat_ui_routes.py::TestCheckpointBackfill` (backfill,
+  no-gap no-op, skip-while-live).
 
 ---
 

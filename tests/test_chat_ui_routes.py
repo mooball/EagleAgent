@@ -547,3 +547,73 @@ class TestActiveRuns:
         resp = client.get("/chat-ui/active-runs")
         assert resp.status_code == 200
         assert resp.json()["threads"] == []
+
+
+class TestCheckpointBackfill:
+    """P4: messages endpoint recovers steps lost when a run died mid-stream."""
+
+    def _patch_graph_state(self, monkeypatch, messages=None):
+        graph = MagicMock()
+        state = MagicMock()
+        state.values = {"messages": messages}
+        graph.aget_state = AsyncMock(return_value=state)
+        spec = MagicMock()
+        spec.graph.return_value = graph
+        monkeypatch.setattr("includes.dashboard.routes.chat_ui.resolve", lambda key: spec)
+        monkeypatch.setattr("includes.graph.setup_globals", AsyncMock())
+        return graph
+
+    def test_backfills_missing_ai_messages(self, client, monkeypatch):
+        from langchain_core.messages import AIMessage
+
+        mocks = _patch_transcript(
+            monkeypatch,
+            get_steps=AsyncMock(return_value=[
+                {"id": "s1", "type": "user_message", "name": "u",
+                 "output": "hi", "metadata": {}},
+            ]),
+        )
+        graph = self._patch_graph_state(monkeypatch, messages=[
+            AIMessage(content="answer one"), AIMessage(content="answer two"),
+        ])
+        _login(client)
+        resp = client.get("/chat-ui/threads/t1/messages")
+        assert resp.status_code == 200
+        graph.aget_state.assert_awaited_once()
+        assert mocks["create_step"].call_count == 2
+        metas = [c.kwargs.get("metadata") for c in mocks["create_step"].call_args_list]
+        assert all(m == {"recovered_from_checkpoint": True} for m in metas)
+
+    def test_no_gap_writes_nothing(self, client, monkeypatch):
+        from langchain_core.messages import AIMessage
+
+        mocks = _patch_transcript(
+            monkeypatch,
+            get_steps=AsyncMock(return_value=[
+                {"id": "s1", "type": "assistant_message",
+                 "name": "EagleAgent", "output": "answer one",
+                 "metadata": {}},
+            ]),
+        )
+        self._patch_graph_state(monkeypatch, messages=[AIMessage(content="answer one")])
+        _login(client)
+        resp = client.get("/chat-ui/threads/t1/messages")
+        assert resp.status_code == 200
+        mocks["create_step"].assert_not_awaited()
+
+    def test_skips_while_run_is_live(self, client, monkeypatch):
+        import includes.dashboard.routes.chat_ui as chat_ui
+        from langchain_core.messages import AIMessage
+
+        _patch_transcript(monkeypatch)
+        task = MagicMock()
+        task.done.return_value = False
+        monkeypatch.setattr(
+            chat_ui, "_active_runs",
+            {"t1": {"queue": MagicMock(), "task": task}},
+        )
+        graph = self._patch_graph_state(monkeypatch, messages=[AIMessage(content="x")])
+        _login(client)
+        resp = client.get("/chat-ui/threads/t1/messages")
+        assert resp.status_code == 200
+        graph.aget_state.assert_not_awaited()
