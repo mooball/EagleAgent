@@ -32,6 +32,16 @@ def _patch_graph(monkeypatch):
     return graph
 
 
+def _patch_scratch(monkeypatch):
+    """Keep dispatch runs from touching the real thread metadata store."""
+    monkeypatch.setattr(
+        "includes.chat.transcript.get_thread_scratch", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr(
+        "includes.chat.transcript.save_thread_scratch", AsyncMock()
+    )
+
+
 class TestDispatchActionToThread:
     @patch("includes.chat.transcript.get_thread")
     async def test_unknown_thread(self, mock_get_thread):
@@ -66,6 +76,7 @@ class TestDispatchActionToThread:
             "includes.chat.transcript.get_thread",
             AsyncMock(return_value={"id": "t1"}),
         )
+        _patch_scratch(monkeypatch)
         graph = _patch_graph(monkeypatch)
 
         calls = []
@@ -94,6 +105,7 @@ class TestDispatchActionToThread:
             "includes.chat.transcript.get_thread",
             AsyncMock(return_value={"id": "t1"}),
         )
+        _patch_scratch(monkeypatch)
         _patch_graph(monkeypatch)
 
         async def boom(payload, ctx):

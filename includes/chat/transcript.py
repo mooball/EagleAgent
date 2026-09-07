@@ -117,6 +117,39 @@ async def list_threads(user_email: str, limit: int = 100) -> list[dict]:
     return threads
 
 
+async def get_thread_scratch(thread_id: str) -> dict:
+    """The thread's persisted scratch dict (P3 — replaces Chainlit's
+    user_session survival across runs, scoped per thread)."""
+    dl = await _data_layer()
+    rows = await dl.execute_sql(
+        'SELECT "metadata" FROM threads WHERE "id" = :tid',
+        {"tid": thread_id},
+    )
+    raw = None
+    if rows and rows[0]:
+        raw = rows[0].get("metadata")
+    metadata: dict = {}
+    if isinstance(raw, str):
+        try:
+            metadata = json.loads(raw)
+        except json.JSONDecodeError:
+            metadata = {}
+    elif isinstance(raw, dict):
+        metadata = raw
+    scratch = metadata.get("scratch") or {}
+    return scratch if isinstance(scratch, dict) else {}
+
+
+async def save_thread_scratch(thread_id: str, scratch: dict) -> None:
+    """Persist the scratch dict onto the thread's metadata.
+
+    The data layer merges metadata shallowly, so the ``scratch`` key is
+    replaced wholesale and other keys (e.g. ``agent``) are preserved.
+    """
+    dl = await _data_layer()
+    await dl.update_thread(thread_id=thread_id, metadata={"scratch": scratch})
+
+
 async def get_thread(thread_id: str, user_email: str) -> Optional[dict]:
     """A thread row, but only if owned by ``user_email`` (ownership guard)."""
     dl = await _data_layer()

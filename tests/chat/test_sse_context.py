@@ -129,6 +129,71 @@ class TestSseChatContext:
         ctx.set("x", 1)
         assert ctx.get("x") == 1
 
+
+class TestPersistentScratch:
+    """P3: scratch survives across runs via thread metadata."""
+
+    def _ctx(self, queue):
+        from includes.chat.context_sse import SseChatContext
+
+        return SseChatContext(
+            thread_id="t1",
+            user_email="tom@eagle-exports.com",
+            agent="eagle",
+            queue=queue,
+            cancel_key="chat-ui:t1",
+        )
+
+    async def test_load_scratch_hydrates_from_transcript(self, queue):
+        get_scratch = AsyncMock(return_value={"pipeline_fixes_RFQ-1": 2})
+        with patch("includes.chat.context_sse.transcript.get_thread_scratch", new=get_scratch):
+            ctx = self._ctx(queue)
+            await ctx.load_scratch()
+        get_scratch.assert_awaited_once_with("t1")
+        assert ctx.get("pipeline_fixes_RFQ-1") == 2
+
+    async def test_load_preserves_keys_seeded_before_load(self, queue):
+        """active_graph is set by dispatch BEFORE load_scratch — the merge
+        must keep it, or pipeline-resume handlers crash with graph=None."""
+        get_scratch = AsyncMock(return_value={"counter": 1})
+        with patch("includes.chat.context_sse.transcript.get_thread_scratch", new=get_scratch):
+            ctx = self._ctx(queue)
+            ctx.set("active_graph", object())
+            await ctx.load_scratch()
+        assert ctx.get("counter") == 1
+        assert ctx.get("active_graph") is not None
+
+    async def test_flush_persists_only_json_safe_values(self, queue):
+        save_scratch = AsyncMock()
+        get_scratch = AsyncMock(return_value={})
+        with patch("includes.chat.context_sse.transcript.get_thread_scratch", new=get_scratch), \
+             patch("includes.chat.context_sse.transcript.save_thread_scratch", new=save_scratch):
+            ctx = self._ctx(queue)
+            await ctx.load_scratch()
+            ctx.set("counter", 3)
+            ctx.set("active_graph", object())  # not JSON-safe — must be dropped
+            await ctx.flush_scratch()
+        save_scratch.assert_awaited_once()
+        assert save_scratch.call_args.args[1] == {"counter": 3}
+
+    async def test_flush_skipped_when_not_dirty(self, queue):
+        save_scratch = AsyncMock()
+        with patch("includes.chat.context_sse.transcript.save_thread_scratch", new=save_scratch):
+            ctx = self._ctx(queue)
+            await ctx.flush_scratch()
+        save_scratch.assert_not_awaited()
+
+    async def test_load_failure_keeps_run_working(self, queue):
+        with patch(
+            "includes.chat.context_sse.transcript.get_thread_scratch",
+            new=AsyncMock(side_effect=RuntimeError("db down")),
+        ):
+            ctx = self._ctx(queue)
+            await ctx.load_scratch()
+        assert ctx.get("x") is None
+        ctx.set("x", 1)
+        assert ctx.get("x") == 1
+
     async def test_say_with_actions_emits_and_persists(self, queue):
         from includes.chat.context import ActionSpec
 

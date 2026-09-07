@@ -78,6 +78,8 @@ def _patch_transcript(monkeypatch, **overrides):
         "get_thread": AsyncMock(return_value={
             "id": "t1", "name": "New chat", "metadata": {"agent": "eagle"},
         }),
+        "get_thread_scratch": AsyncMock(return_value={}),
+        "save_thread_scratch": AsyncMock(return_value=None),
         "get_steps": AsyncMock(return_value=[]),
         "list_elements": AsyncMock(return_value=[]),
         "create_thread": AsyncMock(return_value="t1"),

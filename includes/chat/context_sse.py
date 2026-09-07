@@ -9,6 +9,7 @@ same Chainlit `steps` table via :mod:`includes.chat.transcript` — the Track A
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from typing import Any
@@ -32,6 +33,15 @@ def _serialize_actions(actions: list[ActionSpec] | None) -> list[dict]:
         }
         for a in actions
     ]
+
+
+def _json_safe(value: Any) -> bool:
+    """True if value survives json.dumps (thread metadata is JSON)."""
+    try:
+        json.dumps(value)
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 class SseMessageHandle:
@@ -111,6 +121,42 @@ class SseChatContext:
         self._queue = queue
         self._cancel_key = cancel_key
         self._scratch: dict[str, Any] = {}
+        self._scratch_loaded = False
+        self._scratch_dirty = False
+
+    async def load_scratch(self) -> None:
+        """Hydrate the scratch dict from the thread's metadata (P3).
+
+        Called at the start of every run, so counters like
+        ``pipeline_fixes_{rfq_id}`` survive across separate button clicks.
+        Failures never break the run — the scratch just starts empty.
+        """
+        if self._scratch_loaded:
+            return
+        try:
+            persisted = await transcript.get_thread_scratch(self.thread_id)
+            # Merge persisted values UNDER the in-memory dict: keys seeded
+            # before load (e.g. active_graph) must survive, and per-run state
+            # wins over stale persisted copies.
+            self._scratch = {**persisted, **self._scratch}
+        except Exception as exc:
+            logger.warning("[chat-ui] scratch load failed: %s", exc)
+        self._scratch_loaded = True
+
+    async def flush_scratch(self) -> None:
+        """Persist the scratch dict at the end of the run (P3).
+
+        Only JSON-safe values are written — in-memory objects like
+        ``active_graph`` never reach thread metadata.
+        """
+        if not self._scratch_dirty:
+            return
+        try:
+            safe = {k: v for k, v in self._scratch.items() if _json_safe(v)}
+            await transcript.save_thread_scratch(self.thread_id, safe)
+            self._scratch_dirty = False
+        except Exception as exc:
+            logger.warning("[chat-ui] scratch flush failed: %s", exc)
 
     async def say(
         self,
@@ -190,6 +236,7 @@ class SseChatContext:
 
     def set(self, key: str, value: Any) -> None:
         self._scratch[key] = value
+        self._scratch_dirty = True
 
     @property
     def cancelled(self) -> bool:

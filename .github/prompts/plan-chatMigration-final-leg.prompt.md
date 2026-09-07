@@ -3,7 +3,7 @@
 > Parent: [plan-chatMigration.prompt.md](plan-chatMigration.prompt.md)
 > Predecessor: [plan-chatMigration-beta.prompt.md](plan-chatMigration-beta.prompt.md) (VALIDATED)
 > Acceptance record: [parity-checklist-chat.md](parity-checklist-chat.md)
-> Status: **IN PROGRESS** (2026-09-07). P1 ✅, P2 ✅, Fix 1 ✅, Fix 2 ✅.
+> Status: **IN PROGRESS** (2026-09-07). P1 ✅, P2 ✅, P3 ✅, Fix 1 ✅, Fix 2 ✅.
 > Scope: everything between "beta validated" and "Chainlit deleted".
 
 ---
@@ -40,7 +40,7 @@ The two shared touch points in this whole plan are:
 |---|---|---|---|
 | 1 | Dashboard action buttons (C-A1–9) can't reach the new UI | Blocker | P1 ✅ |
 | 2 | Chat-emitted action buttons (C-B) discarded by `SseChatContext.say()` | Blocker | P2 ✅ |
-| 3 | `ctx.get/set` scratch dies with the run (Chainlit's persists per session) | Correctness | P3 |
+| 3 | `ctx.get/set` scratch dies with the run (Chainlit's persists per session) | Correctness | P3 ✅ |
 | 4 | No checkpoint resume backfill in the new UI | Correctness | P4 |
 | 5 | Welcome messages, `ctx.image()`, system actions, rename, timestamps… | Polish | P5 |
 | 6 | Everyone still on Chainlit by default | Rollout | P6 |
@@ -254,6 +254,17 @@ Chainlit sets this in `user_session`; the SSE path must supply it explicitly
 
 ### Risk
 **MEDIUM** — silent wrong behaviour if missed; cheap to test directly.
+
+### Done (2026-09-07)
+- `transcript.get_thread_scratch` / `save_thread_scratch` (merged into
+  `threads.metadata` by the data layer).
+- `SseChatContext.load_scratch` (start of run, **merges under** in-memory keys
+  so `active_graph` survives — that order bug was caught by the suite) and
+  `flush_scratch` (end of run, JSON-safe values only).
+- Both run paths (`_run_task`, `_execute_action`) load then flush; `_run_task`
+  now also seeds `active_graph` (the audit item).
+- Tests: `tests/chat/test_sse_context.py::TestPersistentScratch` (hydrate,
+  preseed-preservation, JSON-safe flush, no-op flush, load failure).
 
 ---
 

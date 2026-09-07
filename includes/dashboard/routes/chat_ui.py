@@ -214,6 +214,10 @@ async def _run_task(
             queue=queue,
             cancel_key=_cancel_key(thread_id),
         )
+        # P3: hydrate persisted scratch (counters survive across runs) and
+        # supply the graph for handlers that re-enter it (pipeline resume).
+        await ctx.load_scratch()
+        ctx.set("active_graph", graph)
 
         # Eagle Agent defaults to supplier lookup, matching app.py — unless a
         # command already supplied an intent context.
@@ -253,6 +257,9 @@ async def _run_task(
             }
         )
     finally:
+        # P3: persist scratch before announcing completion.
+        if "ctx" in locals():
+            await ctx.flush_scratch()
         await queue.put({"event": "done", "data": {}})
         _active_runs.pop(thread_id, None)
 
@@ -284,6 +291,8 @@ async def _execute_action(
 ) -> None:
     """Run one action handler inside the thread's SSE context."""
     try:
+        # P3: hydrate persisted scratch so per-button counters advance.
+        await ctx.load_scratch()
         handler = _action_handler(action_name)
         if handler is None:
             await queue.put(
@@ -304,6 +313,7 @@ async def _execute_action(
             }
         )
     finally:
+        await ctx.flush_scratch()
         await queue.put({"event": "done", "data": {}})
         _active_runs.pop(ctx.thread_id, None)
 
