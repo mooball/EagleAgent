@@ -798,6 +798,13 @@
                             }
                         }
                     } else if (type === 'dashboard_refresh') {
+                        // Refresh the page being viewed only when it belongs
+                        // to the thread that emitted the event — otherwise a
+                        // run on RFQ A would re-render the RFQ B page the
+                        // user is looking at (snap-back / refresh storm).
+                        const src = payload._source_thread;
+                        const ctx = this.currentContext;
+                        if (src && ctx && ctx.thread_id && src !== ctx.thread_id) return;
                         // Re-fetch the current partial to refresh displayed data
                         const path = window.location.pathname;
                         htmx.ajax('GET', '/partial' + path, {
@@ -1210,14 +1217,36 @@
                     }
                     // Signal the dashboard that agent work has started
                     window.dispatchEvent(new CustomEvent('agent-working', { detail: { label: action.label || 'Agent working...' } }));
+                    var isIframe = !!document.getElementById('agent-iframe');
+                    var body = { action: action };
+                    if (!isIframe) {
+                        // Beta chat UI: tell the bridge to dispatch into the
+                        // SSE chat, and open the panel's stream on that thread.
+                        body.chat_ui = true;
+                        if (dashCtx && dashCtx.thread_id) {
+                            document.dispatchEvent(new CustomEvent('chat-ui:action-started', {
+                                detail: { threadId: dashCtx.thread_id }
+                            }));
+                        }
+                    }
                     fetch('/api/agent-bridge', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         credentials: 'same-origin',
-                        body: JSON.stringify({ action: action }),
+                        body: JSON.stringify(body),
                     }).then(function(resp) {
-                        if (!resp.ok) resp.json().then(function(d) { console.error('[bridge]', d.error); });
-                        else if (refreshAfter) {
+                        if (!resp.ok) {
+                            resp.json().then(function(d) {
+                                console.error('[bridge]', d.error);
+                                if (!isIframe) {
+                                    document.dispatchEvent(new CustomEvent('chat-ui:action-failed', {
+                                        detail: { error: d.error || 'Action failed' }
+                                    }));
+                                }
+                            });
+                        } else if (refreshAfter && isIframe) {
+                            // Beta: dashboard_refresh events from the run drive
+                            // updates; only the iframe path refreshes here.
                             htmx.ajax('GET', '/partial/rfqs/' + rfqId, { target: '#main-content' });
                         }
                     }).catch(function(err) {

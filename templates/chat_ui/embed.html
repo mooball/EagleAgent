@@ -122,6 +122,8 @@
     var rows = {};
     var eventSource = null;
     var running = false;
+    var runThreadId = null;    // thread whose turn is currently running
+    var streamThreadId = null; // thread the open EventSource belongs to
     var lock = null;           // {rfq_id, thread_id} while on an RFQ
     var creatingThread = false;
     var pendingFiles = [];     // {id,name,type,mime,url,size,status,objectUrl}
@@ -239,13 +241,60 @@
             div.className = 'text-xs text-gray-400 dark:text-gray-500 italic';
             return div;
         }
+        var inner = document.createElement('div');
+        inner.className = 'max-w-[85%] ' + (isUser ? 'ml-auto' : 'mr-auto');
         var bubble = document.createElement('div');
         bubble.className = isUser
-            ? 'ml-auto max-w-[85%] rounded-lg bg-blue-600 text-white px-3 py-2 text-sm'
-            : 'mr-auto max-w-[85%] rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-3 py-2 chat-md';
-        div.appendChild(bubble);
-        div.className = 'flex ' + (isUser ? 'justify-end' : 'justify-start');
-        return {div: div, bubble: bubble};
+            ? 'rounded-lg bg-blue-600 text-white px-3 py-2 text-sm'
+            : 'rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-3 py-2 chat-md';
+        inner.appendChild(bubble);
+        var actionsEl = document.createElement('div');
+        actionsEl.className = 'flex flex-wrap gap-1 mt-1.5';
+        inner.appendChild(actionsEl);
+        div.appendChild(inner);
+        div.className = 'flex';
+        return {div: div, bubble: bubble, actionsEl: actionsEl};
+    }
+
+    function renderActions(entry, actions) {
+        if (!entry.actionsEl || !actions || !actions.length) { return; }
+        entry.actionsEl.innerHTML = '';
+        actions.forEach(function (a) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.setAttribute('data-chat-action', a.name);
+            btn.className = 'px-2 py-1 rounded-lg text-xs font-medium bg-gray-100 dark:bg-neutral-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-neutral-700 hover:bg-gray-200 dark:hover:bg-neutral-700 disabled:opacity-50';
+            btn.textContent = a.label;
+            if (a.tooltip) { btn.title = a.tooltip; }
+            btn.addEventListener('click', function () { sendAction(a); });
+            entry.actionsEl.appendChild(btn);
+        });
+    }
+
+    function sendAction(a) {
+        if (!active || running) { return; }
+        clearError();
+        setRunning(true);
+        fetch('/chat-ui/threads/' + active.id + '/action', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({name: a.name, payload: a.payload || {}})
+        }).then(function (r) {
+            return r.json().then(function (data) { return {ok: r.ok, data: data}; });
+        }).then(function (res) {
+            if (!res.ok) {
+                setRunning(false);
+                showError(res.data.error || 'Action failed.');
+                return;
+            }
+            // The bridge registered the run — drain its events.
+            runThreadId = active.id;
+            openStream(active.id);
+        }).catch(function () {
+            setRunning(false);
+            showError('Network error — please retry.');
+        });
     }
 
     function getRow(id, author, transient) {
@@ -308,6 +357,10 @@
             } else if (step.type === 'assistant_message' && step.output) {
                 setText(getRow(step.id, step.name || 'EagleAgent', false), step.output);
                 renderAttachments(rows[step.id].bubble, step.files);
+                renderActions(
+                    rows[step.id],
+                    (step.metadata && step.metadata.actions) || []
+                );
             }
         });
         // Streaming rows not yet in the transcript belong at the end.
@@ -323,8 +376,13 @@
 
     function setRunning(v) {
         running = v;
+        if (!v) { runThreadId = null; }
         sendBtn.disabled = v;
-        stopBtn.hidden = !v;
+        var actionBtns = document.querySelectorAll('[data-chat-action]');
+        for (var i = 0; i < actionBtns.length; i++) {
+            actionBtns[i].disabled = v;
+        }
+        updateControls();
     }
 
     function updateControls() {
@@ -334,6 +392,8 @@
         lockBadge.hidden = !lock;
         // Clear shows on RFQ-locked threads and on the current thread.
         clearBtn.hidden = !(lock || (active && active.id === currentThreadId));
+        // Stop targets the running thread — never a thread being viewed.
+        stopBtn.hidden = !(running && active && active.id === runThreadId);
     }
 
     function setCurrentThread(tid) {
@@ -477,8 +537,15 @@
         refreshThreads();
     }
 
+    function hasLiveRows() {
+        return Object.keys(rows).some(function (id) { return rows[id]._live; });
+    }
+
     function loadMessages(tid) {
-        if (running) { return; }  // never reload history mid-run
+        // Reloading the running thread's history mid-stream would blank its
+        // live rows; any other thread loads normally, so navigating away and
+        // back while a turn runs still shows the right conversation.
+        if (running && tid === runThreadId && streamThreadId === tid && hasLiveRows()) { return; }
         fetch('/chat-ui/threads/' + tid + '/messages', {credentials: 'same-origin'})
             .then(function (r) { return r.json(); })
             .then(function (data) {
@@ -491,6 +558,12 @@
     }
 
     function showThread(t) {
+        if (!active || active.id !== t.id) {
+            // Switching threads: drop the previous thread's rows (live rows
+            // included) so a running thread's stream can't bleed into this one.
+            messages.innerHTML = '';
+            rows = {};
+        }
         active = t;
         chatEl.hidden = false;
         listEl.hidden = true;
@@ -564,45 +637,61 @@
 
     function openStream(tid) {
         if (eventSource) { eventSource.close(); }
+        streamThreadId = tid;
         eventSource = new EventSource('/chat-ui/threads/' + tid + '/stream');
+        // Only the thread being viewed renders events. The stream stays open
+        // while you look at other threads so the run's completion (done) is
+        // never missed; on return, history covers what scrolled past.
+        var visible = function () { return active && active.id === streamThreadId; };
 
         eventSource.addEventListener('message_start', function (e) {
             var d = JSON.parse(e.data);
+            if (!visible()) { return; }
             var entry = getRow(d.id, d.author || 'EagleAgent', !!d.transient);
             entry._live = true;
             if (d.content) { setText(entry, d.content); }
+            if (d.actions && d.actions.length) { renderActions(entry, d.actions); }
         });
         eventSource.addEventListener('token', function (e) {
             var d = JSON.parse(e.data);
+            if (!visible()) { return; }
             var row = rows[d.id];
             if (row) { setText(row, (row._text || '') + d.text); }
             messages.scrollTop = messages.scrollHeight;
         });
         eventSource.addEventListener('message_update', function (e) {
             var d = JSON.parse(e.data);
+            if (!visible()) { return; }
             if (rows[d.id]) { setText(rows[d.id], d.content); }
         });
         eventSource.addEventListener('message_remove', function (e) {
             var d = JSON.parse(e.data);
+            if (!visible()) { return; }
             if (rows[d.id]) { rows[d.id]._live = false; rows[d.id].div.remove(); delete rows[d.id]; }
         });
         eventSource.addEventListener('message_end', function (e) {
             var d = JSON.parse(e.data);
+            if (!visible()) { return; }
             if (rows[d.id]) { setText(rows[d.id], d.content); }
         });
         eventSource.addEventListener('dashboard', function (e) {
             var d = JSON.parse(e.data);
+            // Tag with the source thread so the shell can scope refreshes to
+            // the RFQ that owns this run (no cross-RFQ page stomping).
             document.dispatchEvent(new CustomEvent('dashboard:' + d.command, {
-                detail: {payload: d.payload || {}}
+                detail: {payload: Object.assign({}, d.payload || {}, {_source_thread: streamThreadId})}
             }));
         });
         eventSource.addEventListener('error', function (e) {
             var d = {};
             try { d = JSON.parse(e.data); } catch (err) {}
+            if (!visible()) { return; }
             showError(d.message || 'Something went wrong.');
         });
         eventSource.addEventListener('done', function () {
             if (eventSource) { eventSource.close(); eventSource = null; }
+            streamThreadId = null;
+            runThreadId = null;
             setRunning(false);
             if (active) { loadMessages(active.id); }
         });
@@ -610,6 +699,7 @@
 
     function send() {
         if (!active) { return; }
+        if (running) { return; }  // one turn at a time in this panel
         var text = composer.value.trim();
         var readyFiles = pendingFiles.filter(function (f) { return f.status === 'done' && f.id; });
         if (!text && !readyFiles.length) { return; }
@@ -647,6 +737,7 @@
             pendingIntent = null;
             renderIntentChip();
             messages.scrollTop = messages.scrollHeight;
+            runThreadId = active.id;
             openStream(active.id);
         }).catch(function () {
             setRunning(false);
@@ -769,14 +860,38 @@
     document.addEventListener('chat-ui:navigate', function (e) {
         var d = e.detail || {};
         if (lock) {
-            // RFQ-locked: ignore fresh/list navigation; thread navigation is
-            // filtered by openThreadById (matches lock or redirects to RFQ).
+            // RFQ-locked: thread navigation is filtered by openThreadById
+            // (matches lock or redirects to RFQ). Explicit list navigation
+            // still responds so the panel never feels stuck.
             if (d.threadId) { openThreadById(d.threadId); }
+            else if (d.fresh) { showList(); }
             return;
         }
         if (d.threadId) { openThreadById(d.threadId); }
         else if (d.fresh) { createThread(); }
         else { showList(); }
+    });
+
+    // Dashboard action buttons (beta): the bridge registers the run first,
+    // then the stream drains its queued events — so connecting late still
+    // replays the whole action.
+    document.addEventListener('chat-ui:action-started', function (e) {
+        var tid = e.detail && e.detail.threadId;
+        if (!tid) { return; }
+        if (!active || active.id !== tid) {
+            openThreadById(tid);
+        }
+        if (running && runThreadId && runThreadId !== tid) {
+            // Another turn is already streaming — don't hijack its stream.
+            // This run still executes server-side and its steps persist.
+            return;
+        }
+        runThreadId = tid;
+        setRunning(true);
+        openStream(tid);
+    });
+    document.addEventListener('chat-ui:action-failed', function (e) {
+        showError((e.detail && e.detail.error) || 'Action failed');
     });
 
     // RFQ lock state — the shell is the source of truth for where we are.
