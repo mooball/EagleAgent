@@ -208,6 +208,33 @@ function fetchBackend(path, payload) {
 }
 
 // ============================================================
+// Diagnostics: run from the editor to exercise the fetch path
+// ============================================================
+
+/**
+ * Run this manually from the Apps Script editor (select `__diagnoseBackend`
+ * in the toolbar dropdown, click Run) to test backend connectivity and
+ * auth without going through the Gmail card. Read the result in
+ * View → Logs (or the Executions page row for __diagnoseBackend).
+ */
+function __diagnoseBackend() {
+  try {
+    var token = ScriptApp.getIdentityToken();
+    Logger.log('identity token present: ' + !!token);
+    var result = fetchBackend('/api/addon/context', {
+      gmail_message_id: '__diagnostic__',
+      gmail_thread_id: '__diagnostic__'
+    });
+    Logger.log('backend ok: ' + JSON.stringify(result));
+    return 'OK — see logs';
+  } catch (err) {
+    Logger.log('DIAGNOSE FAILED: ' + ((err && err.message) ? err.message : String(err)));
+    Logger.log('STACK: ' + ((err && err.stack) ? err.stack : '(none)'));
+    return 'FAILED — see logs: ' + ((err && err.message) ? err.message : String(err));
+  }
+}
+
+// ============================================================
 // Helper: Refresh context card and pop to root
 // ============================================================
 
@@ -1170,49 +1197,63 @@ function onSelectEntity(e) {
  * and returns updated context — use it to auto-refresh the card.
  */
 function onCreateRfq(e) {
-  var result;
   try {
-    result = fetchBackend('/api/addon/create-rfq', {
+    Logger.log('[onCreateRfq] start, params=' + JSON.stringify(e.parameters || {}));
+    var result = fetchBackend('/api/addon/create-rfq', {
       gmail_message_id: e.parameters.messageId,
       gmail_thread_id: e.parameters.threadId
     });
+    Logger.log('[onCreateRfq] result=' + JSON.stringify(result));
+
+    if (result.status === 'error') {
+      Logger.log('[onCreateRfq] backend error: ' + (result.message || ''));
+      return CardService.newActionResponseBuilder()
+        .setNotification(
+          CardService.newNotification().setText(result.message || 'Failed to create RFQ')
+        )
+        .build();
+    }
+
+    if (!result || !result.context) {
+      Logger.log('[onCreateRfq] missing context in result');
+      return CardService.newActionResponseBuilder()
+        .setNotification(
+          CardService.newNotification().setText('Backend returned no context — please retry.')
+        )
+        .build();
+    }
+
+    // Clear cache so next card open gets fresh data
+    if (isCacheEnabled()) {
+      CacheService.getUserCache().remove('ctx:' + e.parameters.messageId);
+    }
+
+    // Build refreshed card from the context returned by the backend
+    var card = buildContextCard(
+      result.context,
+      e.parameters.messageId,
+      e.parameters.threadId,
+      e.parameters.subject,
+      e.parameters.sender,
+      false
+    );
+
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation().pushCard(card))
+      .setNotification(
+        CardService.newNotification().setText(result.message || 'RFQ + OP created!')
+      )
+      .build();
   } catch (err) {
+    var msg = (err && err.message) ? err.message : String(err);
+    var stack = (err && err.stack) ? String(err.stack).split('\n').slice(0, 3).join(' | ') : '';
+    Logger.log('[onCreateRfq] FAILED: ' + msg + ' :: ' + stack);
     return CardService.newActionResponseBuilder()
       .setNotification(
-        CardService.newNotification().setText('Error: ' + err.message)
+        CardService.newNotification().setText('Create failed: ' + msg)
       )
       .build();
   }
-
-  if (result.status === 'error') {
-    return CardService.newActionResponseBuilder()
-      .setNotification(
-        CardService.newNotification().setText(result.message || 'Failed to create RFQ')
-      )
-      .build();
-  }
-
-  // Clear cache so next card open gets fresh data
-  if (isCacheEnabled()) {
-    CacheService.getUserCache().remove('ctx:' + e.parameters.messageId);
-  }
-
-  // Build refreshed card from the context returned by the backend
-  var card = buildContextCard(
-    result.context,
-    e.parameters.messageId,
-    e.parameters.threadId,
-    e.parameters.subject,
-    e.parameters.sender,
-    false
-  );
-
-  return CardService.newActionResponseBuilder()
-    .setNavigation(CardService.newNavigation().pushCard(card))
-    .setNotification(
-      CardService.newNotification().setText(result.message || 'RFQ + OP created!')
-    )
-    .build();
 }
 
 /**

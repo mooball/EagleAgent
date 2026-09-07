@@ -78,6 +78,8 @@ def _patch_transcript(monkeypatch, **overrides):
         "get_thread": AsyncMock(return_value={
             "id": "t1", "name": "New chat", "metadata": {"agent": "eagle"},
         }),
+        "get_thread_scratch": AsyncMock(return_value={}),
+        "save_thread_scratch": AsyncMock(return_value=None),
         "get_steps": AsyncMock(return_value=[]),
         "list_elements": AsyncMock(return_value=[]),
         "create_thread": AsyncMock(return_value="t1"),
@@ -344,6 +346,44 @@ class TestCurrentThread:
         assert current_thread_store["tom@eagle-exports.com"] == "t1"
 
 
+class TestThreadAction:
+    def test_action_requires_name(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        _login(client)
+        resp = client.post("/chat-ui/threads/t1/action", json={"payload": {}})
+        assert resp.status_code == 400
+
+    def test_action_dispatches(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        dispatched = AsyncMock(return_value={"started": True, "thread_id": "t1"})
+        monkeypatch.setattr(chat_ui, "dispatch_action_to_thread", dispatched)
+        _login(client)
+        resp = client.post(
+            "/chat-ui/threads/t1/action",
+            json={"name": "rfq_dismiss", "payload": {"rfq_id": "RFQ-1"}},
+        )
+        assert resp.status_code == 200
+        dispatched.assert_awaited_once()
+        args = dispatched.await_args.args
+        assert args[1] == "t1"
+        assert args[2] == "rfq_dismiss"
+
+    def test_action_error_propagates(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        monkeypatch.setattr(
+            chat_ui,
+            "dispatch_action_to_thread",
+            AsyncMock(return_value={"error": "busy", "status_code": 409}),
+        )
+        _login(client)
+        resp = client.post("/chat-ui/threads/t1/action", json={"name": "x", "payload": {}})
+        assert resp.status_code == 409
+
+
 class TestUploads:
     def test_upload_requires_thread(self, client, monkeypatch):
         _patch_transcript(monkeypatch)
@@ -469,3 +509,136 @@ class TestUploads:
         kwargs = chat_ui._run_task.call_args.kwargs
         assert kwargs["files"][0]["processed_type"] == "text"
         assert kwargs["file_metadata"][0]["name"] == "a.txt"
+
+
+class TestActiveRuns:
+    """GET /chat-ui/active-runs: busy badges + post-reload run recovery."""
+
+    def test_lists_only_owned_live_runs(self, client, monkeypatch):
+        import asyncio
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        mocks = _patch_transcript(monkeypatch)
+        done_task = MagicMock()
+        done_task.done.return_value = True
+        live_task = MagicMock()
+        live_task.done.return_value = False
+        monkeypatch.setattr(chat_ui, "_active_runs", {
+            "owned-live": {"queue": asyncio.Queue(), "task": live_task},
+            "other-live": {"queue": asyncio.Queue(), "task": live_task},
+            "owned-done": {"queue": asyncio.Queue(), "task": done_task},
+        })
+
+        async def fake_get_thread(tid, email):
+            return {"id": tid} if tid == "owned-live" else None
+
+        mocks["get_thread"].side_effect = fake_get_thread
+        _login(client)
+        resp = client.get("/chat-ui/active-runs")
+        assert resp.status_code == 200
+        assert resp.json()["threads"] == ["owned-live"]
+
+    def test_empty_when_nothing_running(self, client, monkeypatch):
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        _patch_transcript(monkeypatch)
+        monkeypatch.setattr(chat_ui, "_active_runs", {})
+        _login(client)
+        resp = client.get("/chat-ui/active-runs")
+        assert resp.status_code == 200
+        assert resp.json()["threads"] == []
+
+
+class TestCheckpointBackfill:
+    """P4: messages endpoint recovers steps lost when a run died mid-stream."""
+
+    def _patch_graph_state(self, monkeypatch, messages=None):
+        graph = MagicMock()
+        state = MagicMock()
+        state.values = {"messages": messages}
+        graph.aget_state = AsyncMock(return_value=state)
+        spec = MagicMock()
+        spec.graph.return_value = graph
+        monkeypatch.setattr("includes.dashboard.routes.chat_ui.resolve", lambda key: spec)
+        monkeypatch.setattr("includes.graph.setup_globals", AsyncMock())
+        return graph
+
+    def test_backfills_missing_ai_messages(self, client, monkeypatch):
+        from langchain_core.messages import AIMessage
+
+        mocks = _patch_transcript(
+            monkeypatch,
+            get_steps=AsyncMock(return_value=[
+                {"id": "s1", "type": "user_message", "name": "u",
+                 "output": "hi", "metadata": {}},
+            ]),
+        )
+        graph = self._patch_graph_state(monkeypatch, messages=[
+            AIMessage(content="answer one"), AIMessage(content="answer two"),
+        ])
+        _login(client)
+        resp = client.get("/chat-ui/threads/t1/messages")
+        assert resp.status_code == 200
+        graph.aget_state.assert_awaited_once()
+        assert mocks["create_step"].call_count == 2
+        metas = [c.kwargs.get("metadata") for c in mocks["create_step"].call_args_list]
+        assert all(m == {"recovered_from_checkpoint": True} for m in metas)
+
+    def test_no_gap_writes_nothing(self, client, monkeypatch):
+        from langchain_core.messages import AIMessage
+
+        mocks = _patch_transcript(
+            monkeypatch,
+            get_steps=AsyncMock(return_value=[
+                {"id": "s1", "type": "assistant_message",
+                 "name": "EagleAgent", "output": "answer one",
+                 "metadata": {}},
+            ]),
+        )
+        self._patch_graph_state(monkeypatch, messages=[AIMessage(content="answer one")])
+        _login(client)
+        resp = client.get("/chat-ui/threads/t1/messages")
+        assert resp.status_code == 200
+        mocks["create_step"].assert_not_awaited()
+
+    def test_skips_while_run_is_live(self, client, monkeypatch):
+        import includes.dashboard.routes.chat_ui as chat_ui
+        from langchain_core.messages import AIMessage
+
+        _patch_transcript(monkeypatch)
+        task = MagicMock()
+        task.done.return_value = False
+        monkeypatch.setattr(
+            chat_ui, "_active_runs",
+            {"t1": {"queue": MagicMock(), "task": task}},
+        )
+        graph = self._patch_graph_state(monkeypatch, messages=[AIMessage(content="x")])
+        _login(client)
+        resp = client.get("/chat-ui/threads/t1/messages")
+        assert resp.status_code == 200
+        graph.aget_state.assert_not_awaited()
+
+
+class TestEmbedWelcome:
+    """P5: new embed threads open with a persisted welcome message."""
+
+    def test_embed_thread_creation_persists_welcome(self, client, monkeypatch):
+        mocks = _patch_transcript(monkeypatch)
+        _login(client)
+        resp = client.post(
+            "/chat-ui/threads", data={"agent": "eagle", "embed": "1"}
+        )
+        assert resp.status_code == 200
+        mocks["create_step"].assert_awaited_once()
+        kwargs = mocks["create_step"].call_args.kwargs
+        assert kwargs["type_"] == "assistant_message"
+        assert "find suppliers" in kwargs["output"]
+
+    def test_non_embed_creation_does_not_persist_welcome(self, client, monkeypatch):
+        mocks = _patch_transcript(monkeypatch)
+        _login(client)
+        resp = client.post(
+            "/chat-ui/threads", data={"agent": "eagle"}, follow_redirects=False
+        )
+        assert resp.status_code == 303
+        mocks["create_step"].assert_not_awaited()

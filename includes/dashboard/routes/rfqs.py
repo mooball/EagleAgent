@@ -1,6 +1,7 @@
 """RFQ routes: list, detail, create, update items/suppliers, price history."""
 
 import asyncio
+import logging
 import math
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -23,6 +24,67 @@ def _department_options() -> list[dict]:
 
 RFQ_PAGE_SIZE = 25
 RFQ_ALLOWED_TABS = {"items", "suppliers", "communications", "selection", "quotation", "quotation-old"}
+
+logger = logging.getLogger(__name__)
+
+
+class _BulkShortCircuit(Exception):
+    """Raised inside _commit_bulk_with_retry's apply_fn to abort with a response."""
+
+    def __init__(self, response):
+        self.response = response
+
+
+def _is_valid_uuid(value: object) -> bool:
+    """True if value round-trips as a Postgres UUID.
+
+    Legacy rows carry supplier ids like ``sup_1597`` or ``"926"`` that break
+    ``Supplier.id.in_(...)`` with InvalidTextRepresentation — those must never
+    reach a UUID column.
+    """
+    try:
+        from uuid import UUID
+
+        UUID(str(value))
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def _is_deadlock(exc: BaseException) -> bool:
+    """True if the exception chain contains a deadlock/serialization failure."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if cur.__class__.__name__ in ("DeadlockDetected", "SerializationFailure"):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+async def _commit_bulk_with_retry(session, apply_fn, attempts: int = 3) -> None:
+    """Commit a bulk JSONB mutation, retrying on Postgres deadlocks.
+
+    ``apply_fn`` must re-read current state and re-apply the mutation on every
+    call (ORM objects go stale after rollback). Deterministic row order inside
+    apply_fn (order_by id) keeps lock ordering consistent between concurrent
+    writers, and the retry covers the remaining races.
+    """
+    for attempt in range(attempts):
+        try:
+            apply_fn()
+            session.commit()
+            return
+        except Exception as exc:
+            session.rollback()
+            if attempt == attempts - 1 or not _is_deadlock(exc):
+                raise
+            logger.warning(
+                "[rfq] deadlock on bulk write (attempt %d/%d) — retrying",
+                attempt + 1, attempts,
+            )
+            await asyncio.sleep(0.1 * (2 ** attempt))
 
 
 # ---------------------------------------------------------------------------
@@ -85,9 +147,12 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
     for item in rfq.get("items", []):
         for sup in item.get("suppliers", []):
             sid = sup.get("supplier_id")
-            if sid:
-                by_id.setdefault(sid, []).append(sup)
+            if sid and _is_valid_uuid(sid):
+                by_id.setdefault(str(sid), []).append(sup)
             else:
+                # No id, or a legacy non-UUID id (e.g. "sup_1597", "926") —
+                # name matching still enriches the entry and repairs the
+                # in-memory id below.
                 name = (sup.get("name") or "").strip().lower()
                 if name:
                     by_name.setdefault(name, []).append(sup)
@@ -191,7 +256,7 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                     for sup in sup_list:
                         if matched_contacts:
                             merge_supplier_contacts(sup, matched_contacts)
-                        if not sup.get("supplier_id"):
+                        if not _is_valid_uuid(sup.get("supplier_id")):
                             sup["supplier_id"] = str(matched.id)
                         if scp.get("tier") and not sup.get("tier"):
                             sup["tier"] = scp["tier"]
@@ -211,10 +276,10 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
 
         # Near-miss details for the RFQ supplier popup (display only)
         near_ids = {
-            sup["supplier_id"]
+            str(sup["supplier_id"])
             for item in rfq.get("items", [])
             for sup in item.get("suppliers", [])
-            if sup.get("db_match") == "near_miss" and sup.get("supplier_id")
+            if sup.get("db_match") == "near_miss" and _is_valid_uuid(sup.get("supplier_id"))
         }
         near_matches_by_sup: dict[str, list] = {}
         if near_ids:
@@ -485,8 +550,8 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
         supplier_ids = set()
         for item in items:
             for sup in (item.get("suppliers") or []):
-                if sup.get("supplier_id"):
-                    supplier_ids.add(sup["supplier_id"])
+                if _is_valid_uuid(sup.get("supplier_id")):
+                    supplier_ids.add(str(sup["supplier_id"]))
         suppliers = {}
         if supplier_ids:
             rows = session.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()
@@ -1922,27 +1987,34 @@ async def partial_rfq_shortlist_all(
         if not rfq:
             return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
 
-        items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()
-        count = 0
-        for item in items:
-            suppliers = list(item.suppliers or [])
-            changed = False
-            for sup in suppliers:
-                if isinstance(sup, dict) and sup.get("status") not in ("dropped", "shortlisted"):
-                    sup["status"] = "shortlisted"
-                    if sup.get("quote_status") is None:
-                        sup["quote_status"] = "unquoted"
-                    # Copy supplier's currency to quote_currency if not already set
-                    if not sup.get("quote_currency"):
-                        sup_currency = sup.get("currency")
-                        if sup_currency:
-                            sup["quote_currency"] = sup_currency
-                    changed = True
-                    count += 1
-            if changed:
-                item.suppliers = suppliers
-                flag_modified(item, "suppliers")
-        session.commit()
+        def _apply():
+            # Deterministic row order keeps lock ordering consistent with
+            # other bulk writers; the helper retries on deadlock.
+            items = (
+                session.query(RFQItem)
+                .filter(RFQItem.rfq_id == rfq.id)
+                .order_by(RFQItem.id)
+                .all()
+            )
+            for item in items:
+                suppliers = list(item.suppliers or [])
+                changed = False
+                for sup in suppliers:
+                    if isinstance(sup, dict) and sup.get("status") not in ("dropped", "shortlisted"):
+                        sup["status"] = "shortlisted"
+                        if sup.get("quote_status") is None:
+                            sup["quote_status"] = "unquoted"
+                        # Copy supplier's currency to quote_currency if not already set
+                        if not sup.get("quote_currency"):
+                            sup_currency = sup.get("currency")
+                            if sup_currency:
+                                sup["quote_currency"] = sup_currency
+                        changed = True
+                if changed:
+                    item.suppliers = suppliers
+                    flag_modified(item, "suppliers")
+
+        await _commit_bulk_with_retry(session, _apply)
     except Exception:
         session.rollback()
         raise
@@ -1966,6 +2038,7 @@ async def partial_rfq_drop_supplier_all(
     supplier_name = (form.get("supplier_name") or "").strip()
     if not supplier_name:
         return HTMLResponse("<p>Missing supplier name.</p>", status_code=400)
+    name_lower = supplier_name.lower()
 
     session = _helpers.get_session()
     try:
@@ -1973,20 +2046,26 @@ async def partial_rfq_drop_supplier_all(
         if not rfq:
             return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
 
-        items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()
-        name_lower = supplier_name.lower()
-        for item in items:
-            suppliers = list(item.suppliers or [])
-            changed = False
-            for sup in suppliers:
-                if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
-                    if sup.get("status") != "dropped":
-                        sup["status"] = "dropped"
-                        changed = True
-            if changed:
-                item.suppliers = suppliers
-                flag_modified(item, "suppliers")
-        session.commit()
+        def _apply():
+            items = (
+                session.query(RFQItem)
+                .filter(RFQItem.rfq_id == rfq.id)
+                .order_by(RFQItem.id)
+                .all()
+            )
+            for item in items:
+                suppliers = list(item.suppliers or [])
+                changed = False
+                for sup in suppliers:
+                    if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
+                        if sup.get("status") != "dropped":
+                            sup["status"] = "dropped"
+                            changed = True
+                if changed:
+                    item.suppliers = suppliers
+                    flag_modified(item, "suppliers")
+
+        await _commit_bulk_with_retry(session, _apply)
     except Exception:
         session.rollback()
         raise
@@ -2010,6 +2089,7 @@ async def partial_rfq_shortlist_supplier_all_items(
     supplier_name = (form.get("supplier_name") or "").strip()
     if not supplier_name:
         return HTMLResponse("<p>Missing supplier name.</p>", status_code=400)
+    name_lower = supplier_name.lower()
 
     session = _helpers.get_session()
     try:
@@ -2017,28 +2097,32 @@ async def partial_rfq_shortlist_supplier_all_items(
         if not rfq:
             return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
 
-        items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()
-        name_lower = supplier_name.lower()
-        count = 0
-        for item in items:
-            suppliers = list(item.suppliers or [])
-            changed = False
-            for sup in suppliers:
-                if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
-                    if sup.get("status") != "shortlisted":
-                        sup["status"] = "shortlisted"
-                        if sup.get("quote_status") is None:
-                            sup["quote_status"] = "unquoted"
-                        if not sup.get("quote_currency"):
-                            sup_currency = sup.get("currency")
-                            if sup_currency:
-                                sup["quote_currency"] = sup_currency
-                        changed = True
-                        count += 1
-            if changed:
-                item.suppliers = suppliers
-                flag_modified(item, "suppliers")
-        session.commit()
+        def _apply():
+            items = (
+                session.query(RFQItem)
+                .filter(RFQItem.rfq_id == rfq.id)
+                .order_by(RFQItem.id)
+                .all()
+            )
+            for item in items:
+                suppliers = list(item.suppliers or [])
+                changed = False
+                for sup in suppliers:
+                    if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
+                        if sup.get("status") != "shortlisted":
+                            sup["status"] = "shortlisted"
+                            if sup.get("quote_status") is None:
+                                sup["quote_status"] = "unquoted"
+                            if not sup.get("quote_currency"):
+                                sup_currency = sup.get("currency")
+                                if sup_currency:
+                                    sup["quote_currency"] = sup_currency
+                            changed = True
+                if changed:
+                    item.suppliers = suppliers
+                    flag_modified(item, "suppliers")
+
+        await _commit_bulk_with_retry(session, _apply)
     except Exception:
         session.rollback()
         raise
@@ -2067,6 +2151,7 @@ async def partial_rfq_copy_supplier_to_all(
     supplier_name = (form.get("supplier_name") or "").strip()
     if not supplier_name:
         return HTMLResponse("<p>Missing supplier name.</p>", status_code=400)
+    name_lower = supplier_name.lower()
 
     session = _helpers.get_session()
     try:
@@ -2074,55 +2159,65 @@ async def partial_rfq_copy_supplier_to_all(
         if not rfq:
             return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
 
-        items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()
-
-        # Find the source supplier dict
-        source_sup = None
-        name_lower = supplier_name.lower()
-        for item in items:
-            if item.line == source_line:
-                for sup in (item.suppliers or []):
-                    if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
-                        source_sup = sup
-                        break
-                break
-
-        if not source_sup:
-            return HTMLResponse("<p>Supplier not found on source item.</p>", status_code=404)
-
-        # Copy to all other items (skip if already present)
-        for item in items:
-            if item.line == source_line:
-                continue
-            suppliers = list(item.suppliers or [])
-            already_present = any(
-                isinstance(s, dict) and (s.get("name") or "").lower() == name_lower
-                for s in suppliers
+        def _apply():
+            items = (
+                session.query(RFQItem)
+                .filter(RFQItem.rfq_id == rfq.id)
+                .order_by(RFQItem.id)
+                .all()
             )
-            if already_present:
-                continue
-            # Create a fresh copy without item-specific pricing
-            new_sup = {
-                "name": source_sup.get("name", ""),
-                "status": "shortlisted",
-                "supplier_id": source_sup.get("supplier_id"),
-                "contacts": source_sup.get("contacts", []),
-                "country": source_sup.get("country"),
-                "currency": source_sup.get("currency"),
-                "tier": source_sup.get("tier"),
-                "category": source_sup.get("category"),
-                "source": source_sup.get("source"),
-                "is_new": source_sup.get("is_new", False),
-                "price": None,
-                "price_type": None,
-                "lead_time": source_sup.get("lead_time"),
-                "notes": None,
-            }
-            suppliers.append(new_sup)
-            item.suppliers = suppliers
-            flag_modified(item, "suppliers")
 
-        session.commit()
+            # Find the source supplier dict (re-read each attempt)
+            source_sup = None
+            for item in items:
+                if item.line == source_line:
+                    for sup in (item.suppliers or []):
+                        if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
+                            source_sup = sup
+                            break
+                    break
+
+            if not source_sup:
+                raise _BulkShortCircuit(
+                    HTMLResponse("<p>Supplier not found on source item.</p>", status_code=404)
+                )
+
+            # Copy to all other items (skip if already present)
+            for item in items:
+                if item.line == source_line:
+                    continue
+                suppliers = list(item.suppliers or [])
+                already_present = any(
+                    isinstance(s, dict) and (s.get("name") or "").lower() == name_lower
+                    for s in suppliers
+                )
+                if already_present:
+                    continue
+                # Create a fresh copy without item-specific pricing
+                new_sup = {
+                    "name": source_sup.get("name", ""),
+                    "status": "shortlisted",
+                    "supplier_id": source_sup.get("supplier_id"),
+                    "contacts": source_sup.get("contacts", []),
+                    "country": source_sup.get("country"),
+                    "currency": source_sup.get("currency"),
+                    "tier": source_sup.get("tier"),
+                    "category": source_sup.get("category"),
+                    "source": source_sup.get("source"),
+                    "is_new": source_sup.get("is_new", False),
+                    "price": None,
+                    "price_type": None,
+                    "lead_time": source_sup.get("lead_time"),
+                    "notes": None,
+                }
+                suppliers.append(new_sup)
+                item.suppliers = suppliers
+                flag_modified(item, "suppliers")
+
+        await _commit_bulk_with_retry(session, _apply)
+    except _BulkShortCircuit as sc:
+        session.rollback()
+        return sc.response
     except Exception:
         session.rollback()
         raise
@@ -2444,6 +2539,7 @@ async def partial_rfq_copy_supplier_to_items(
 
     if not target_lines:
         return HTMLResponse("<p>No target items specified.</p>", status_code=400)
+    name_lower = supplier_name.lower()
 
     session = _helpers.get_session()
     try:
@@ -2451,54 +2547,64 @@ async def partial_rfq_copy_supplier_to_items(
         if not rfq:
             return HTMLResponse("<p>RFQ not found.</p>", status_code=404)
 
-        items = session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()
-
-        # Find the source supplier dict
-        source_sup = None
-        name_lower = supplier_name.lower()
-        for item in items:
-            if item.line == source_line:
-                for sup in (item.suppliers or []):
-                    if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
-                        source_sup = sup
-                        break
-                break
-
-        if not source_sup:
-            return HTMLResponse("<p>Supplier not found on source item.</p>", status_code=404)
-
-        target_set = set(target_lines)
-        for item in items:
-            if item.line not in target_set or item.line == source_line:
-                continue
-            suppliers = list(item.suppliers or [])
-            already_present = any(
-                isinstance(s, dict) and (s.get("name") or "").lower() == name_lower
-                for s in suppliers
+        def _apply():
+            items = (
+                session.query(RFQItem)
+                .filter(RFQItem.rfq_id == rfq.id)
+                .order_by(RFQItem.id)
+                .all()
             )
-            if already_present:
-                continue
-            new_sup = {
-                "name": source_sup.get("name", ""),
-                "status": "shortlisted",
-                "supplier_id": source_sup.get("supplier_id"),
-                "contacts": source_sup.get("contacts", []),
-                "country": source_sup.get("country"),
-                "currency": source_sup.get("currency"),
-                "tier": source_sup.get("tier"),
-                "category": source_sup.get("category"),
-                "source": source_sup.get("source"),
-                "is_new": source_sup.get("is_new", False),
-                "price": None,
-                "price_type": None,
-                "lead_time": source_sup.get("lead_time"),
-                "notes": None,
-            }
-            suppliers.append(new_sup)
-            item.suppliers = suppliers
-            flag_modified(item, "suppliers")
 
-        session.commit()
+            # Find the source supplier dict (re-read each attempt)
+            source_sup = None
+            for item in items:
+                if item.line == source_line:
+                    for sup in (item.suppliers or []):
+                        if isinstance(sup, dict) and (sup.get("name") or "").lower() == name_lower:
+                            source_sup = sup
+                            break
+                    break
+
+            if not source_sup:
+                raise _BulkShortCircuit(
+                    HTMLResponse("<p>Supplier not found on source item.</p>", status_code=404)
+                )
+
+            target_set = set(target_lines)
+            for item in items:
+                if item.line not in target_set or item.line == source_line:
+                    continue
+                suppliers = list(item.suppliers or [])
+                already_present = any(
+                    isinstance(s, dict) and (s.get("name") or "").lower() == name_lower
+                    for s in suppliers
+                )
+                if already_present:
+                    continue
+                new_sup = {
+                    "name": source_sup.get("name", ""),
+                    "status": "shortlisted",
+                    "supplier_id": source_sup.get("supplier_id"),
+                    "contacts": source_sup.get("contacts", []),
+                    "country": source_sup.get("country"),
+                    "currency": source_sup.get("currency"),
+                    "tier": source_sup.get("tier"),
+                    "category": source_sup.get("category"),
+                    "source": source_sup.get("source"),
+                    "is_new": source_sup.get("is_new", False),
+                    "price": None,
+                    "price_type": None,
+                    "lead_time": source_sup.get("lead_time"),
+                    "notes": None,
+                }
+                suppliers.append(new_sup)
+                item.suppliers = suppliers
+                flag_modified(item, "suppliers")
+
+        await _commit_bulk_with_retry(session, _apply)
+    except _BulkShortCircuit as sc:
+        session.rollback()
+        return sc.response
     except Exception:
         session.rollback()
         raise

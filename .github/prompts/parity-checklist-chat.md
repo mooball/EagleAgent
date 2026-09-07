@@ -13,6 +13,9 @@
 > beta panel today; unticked rows remain for the parity phase. The beta POC
 > itself is VALIDATED — see
 > [plan-chatMigration-beta.prompt.md](plan-chatMigration-beta.prompt.md).
+> The sequenced plan for closing the remaining rows (and retiring Chainlit) is
+> [plan-chatMigration-final-leg.prompt.md](plan-chatMigration-final-leg.prompt.md).
+> **§E sign-off is the gate for deleting Chainlit.**
 
 ---
 
@@ -60,9 +63,10 @@ Legend: **K** = keep (must work in the new UI) · **D** = drop ·
 
 All are **Keep** unless you decide otherwise.
 
-- [x] B1 Thread list: create / rename / delete / resume
-      *(beta: rename wired on the standalone page; pending in the panel —
-      `PATCH /chat-ui/threads/{id}` exists)*
+- [x] B1 Thread list: create / resume
+      *(rename wired on the standalone page; pending in the panel —
+      `PATCH /chat-ui/threads/{id}` exists. Delete intentionally removed
+      2026-09-06 — threads are kept, archiving later.)*
 - [ ] B1a **Resume backfill reconciliation** — `on_chat_resume` backfills missing
       `assistant_message` steps from the checkpoint (`plan_resume_backfill`).
       This is the load-bearing part of "resume", not the list itself.
@@ -105,8 +109,15 @@ Notes / proposals:
 - **C-A** — still orphaned to Chainlit during the beta (Phase 5); documented in
   the beta plan. Beta users keep `/chat` available for those flows.
 - **Beta extras shipped beyond parity:** RFQ hard-binding (lock/Clear/🔗
-  badges), thread-keyed dashboard context (multi-tab isolation), compact
-  Preline-style composer.
+  badges), thread-keyed dashboard context (multi-tab isolation),
+  command-driven agent routing, file uploads, current-thread anchor,
+  activity-grouped thread list, compact Preline-style composer.
+
+- **C-B** — chat-emitted buttons landed 2026-09-07: `say(actions=…)` serialises
+  `ActionSpec`s into `message_start` + step `metadata`; the embed renders them
+  under the bubble and POSTs clicks to `/chat-ui/threads/{id}/action` →
+  `dispatch_action_to_thread`. Per-action runtime verification (D-table) still
+  pending.
 
 ---
 
@@ -116,6 +127,11 @@ Notes / proposals:
 user-facing capability and must be individually verified.
 
 ### C-A. Dashboard-initiated (9 call sites via `/api/agent-bridge`)
+
+> ✅ **Beta dispatch landed (2026-09-07).** For allowlisted users with the
+> embed, the bridge now routes these actions into the SSE chat for the RFQ's
+> bound thread (`dispatch_action_to_thread`); everyone else keeps the Chainlit
+> session path unchanged. Handlers are untouched.
 
 | # | Action | Trigger in UI | Proposed |
 |---|---|---|---|
@@ -169,10 +185,8 @@ Side-effect: the agent can no longer invoke a destructive delete via
 - [ ] D2 `rfq_identify_items` payload shapes (C-A2 vs C-A3) — confirm both covered.
 - [ ] D3 Supplier-search menu (C-B8–C-B12) — treat as one component, not five buttons.
 - [ ] D4 B10 screenshot rendering path.
-- [ ] D5 SSE on Railway proxy — replicate/verify the WebSocket-only reason (A16).
-- [ ] D6 **Thread id invariant** — `threads.id` == LangGraph `thread_id` ==
-      `rfq_threads.thread_id` == `rfqs.thread_id` must hold for threads created
-      by the new UI.
+- [x] D5 SSE on Railway proxy — ✅ verified in beta (also A16).
+- [x] D6 **Thread id invariant** — ✅ verified across all four ids on prod.
 - [ ] D7 Stale artefacts to clean up en route (parent §12): `chainlit_datalayer.db`,
       `chainlit.md`, 23 stock locale files.
 

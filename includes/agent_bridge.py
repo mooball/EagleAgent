@@ -284,14 +284,6 @@ async def handle_bridge_request(request: Request) -> Response:
     if not user:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
 
-    # Read Chainlit session ID from cookie
-    session_id = request.cookies.get("X-Chainlit-Session-id")
-    if not session_id:
-        return JSONResponse(
-            {"error": "No Chainlit session. Please open the chat panel first."},
-            status_code=400,
-        )
-
     # Parse the action
     try:
         body = await request.json()
@@ -304,6 +296,33 @@ async def handle_bridge_request(request: Request) -> Response:
         return JSONResponse({"error": "Missing action name"}, status_code=400)
 
     payload = action_data.get("payload", {})
+
+    # Beta chat UI: dashboard/chat actions dispatch into the SSE chat for the
+    # RFQ's bound thread. The dashboard adds chat_ui + _thread_id hints; only
+    # allowlisted users can take this path — everyone else falls through to
+    # the Chainlit session dispatch below, byte-for-byte unchanged.
+    if body.get("chat_ui") and payload.get("_thread_id"):
+        from config import config
+
+        if user["email"].lower() in config.get_beta_chat_users():
+            from includes.dashboard.routes.chat_ui import dispatch_action_to_thread
+
+            result = await dispatch_action_to_thread(
+                user, str(payload["_thread_id"]), action_name, payload
+            )
+            status_code = result.pop("status_code", 200)
+            if status_code != 200:
+                return JSONResponse(result, status_code=status_code)
+            return JSONResponse(result)
+
+    # Read Chainlit session ID from cookie
+    session_id = request.cookies.get("X-Chainlit-Session-id")
+    if not session_id:
+        return JSONResponse(
+            {"error": "No Chainlit session. Please open the chat panel first."},
+            status_code=400,
+        )
+
     logger.info(f"[agent_bridge] {user['email']} → {action_name}")
 
     result = await dispatch_action(session_id, action_name, payload)

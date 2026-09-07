@@ -167,6 +167,49 @@ async def handle_new_conversation(ctx: ChatContext, **_kwargs: Any) -> None:
     )
 
 
+@register_action(
+    name="cancel_run_script",
+    label="Cancel",
+    description="Cancel the pending script run",
+    icon="close",
+    admin_only=False,
+)
+async def handle_cancel_run_script(
+    ctx: ChatContext, payload: dict | None = None, **_kwargs: Any
+) -> None:
+    """Cancel button from the run_script confirmation prompt."""
+    script_name = (payload or {}).get("script_name", "")
+    text = f"Cancelled — `{script_name}` was not started." if script_name else "Cancelled."
+    await ctx.say(text, author="EagleAgent")
+
+
+@register_action(
+    name="cancel_job",
+    label="Cancel",
+    description="Cancel the running background job",
+    icon="close",
+    admin_only=False,
+)
+async def handle_cancel_job(
+    ctx: ChatContext, payload: dict | None = None, **_kwargs: Any
+) -> None:
+    """Cancel button attached to job start messages."""
+    job_id = (payload or {}).get("job_id", "")
+    if not job_id:
+        await ctx.say("Could not cancel: missing job id.", author="EagleAgent")
+        return
+    try:
+        from includes.graph import job_runner
+
+        job = await job_runner.cancel(job_id)
+        await ctx.say(
+            f"Cancelled job `{job.id[:8]}` ({job.script_name}).",
+            author="EagleAgent",
+        )
+    except ValueError as exc:
+        await ctx.say(f"Could not cancel: {exc}", author="EagleAgent")
+
+
 # ---------------------------------------------------------------------------
 # Procurement intent action handlers
 # ---------------------------------------------------------------------------

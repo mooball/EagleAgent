@@ -1,6 +1,8 @@
 # Plan: Beta Coexistence — New Chat UI Behind a Feature Flag
 
 > Parent: [plan-chatMigration.prompt.md](plan-chatMigration.prompt.md)
+> Successor: [plan-chatMigration-final-leg.prompt.md](plan-chatMigration-final-leg.prompt.md)
+> — the remaining work (action dispatch, parity, cutover) is planned there.
 > Status: **VALIDATED** (2026-09-06). The beta POC shipped behind the flag and
 > was validated in production on Railway. The goal — de-risk the migration by
 > running the new chat UI **alongside** Chainlit, exposed only to a small
@@ -192,9 +194,10 @@ No POC migrations needed.
 **In — all shipped and validated (2026-09-06):**
 
 - [x] Allowlist middleware + env var
-- [x] Thread list (create / resume / delete) read from `threads`
-  - Rename is wired on the standalone page; **pending in the panel** (PATCH
-    endpoint exists server-side) — only remaining POC-scope gap.
+- [x] Thread list (create / resume) read from `threads`
+  - **Delete intentionally removed from all chat UIs** (threads are kept;
+    archiving-into-summary is a later idea). Rename is wired on the
+    standalone page; **pending in the panel** (PATCH endpoint exists).
 - [x] **Thread id invariant preserved** on creation (verified across
       `threads.id` / checkpoint / `rfq_threads` / `rfqs`)
 - [x] Single thread view: history rendered from `steps`, **sanitised on read**
@@ -221,6 +224,22 @@ No POC migrations needed.
 - [x] **Thread-keyed dashboard context** — `thread:{id}` entries in the
       dashboard-context store end the multi-tab last-writer-wins problem (both
       transports push `_activeThreadId`; both read with their own thread id)
+- [x] **Current-thread anchor** — one non-RFQ thread per user, persisted in a
+      `chat_ui_current_threads` table (alembic migration `a7f3c9d2e1b4`).
+      Leaving an RFQ anchors the panel on it; +New / Clear / clicking a
+      history thread set it; stale ids self-heal like RFQ bindings.
+- [x] **Activity-ordered, grouped thread list** — Today / This week /
+      This month / Previous, each row showing its activity date. Bound rows
+      show a `[RFQ / OP]` pill + customer name + RFQ title; the last agent
+      used per thread is tracked in `threads.metadata.agent`.
+- [x] **RFQ switcher via the list** — back arrow re-enabled on RFQs; bound
+      threads navigate the whole dashboard to their RFQ, the current RFQ's
+      row returns to its thread, picking a plain thread leaves the RFQ.
+- [x] **Non-beta isolation** — page-load resume is transport-aware (iframe
+      keeps `/api/latest-thread`; beta gets `/chat-ui/current-thread`).
+      Production-safety scan 2026-09-06: no other non-beta impacts found.
+- [x] UI polish — agent summary footer styled via `.agent-footer`, user-bubble
+      whitespace fix, two-line list rows, wider back-button target.
 
 **Out (later phases, still behind the flag):**
 

@@ -801,6 +801,9 @@ def create_quote_tools(user_id: str) -> list:
                           price, price_type, currency, lead_time, notes,
                           purchase_ref; OR suppliers (list of dicts with those
                           same keys) to add multiple at once.
+                          ⚠️ supplier_id is an internal database UUID. NEVER
+                          invent one — omit it and the system matches the
+                          supplier by name automatically.
                           contacts: list of dicts, each with any of: url
                           (website), email, phone, city, state, country.
                           MANDATORY: you MUST include contacts with at least
@@ -861,7 +864,8 @@ def create_quote_tools(user_id: str) -> list:
           add_suppliers_bulk — Add suppliers to multiple lines at once. data
                           keys: entries (required, list of dicts with line,
                           name, and optional supplier fields same as
-                          add_supplier). Grouped by line internally.
+                          add_supplier — including the supplier_id rule:
+                          never invent it, omit it). Grouped by line internally.
                           ⚠️ Max 200 entries per call.
                           Example: {"entries": [{"line": 1, "name": "Acme"},
                           {"line": 3, "name": "WidgetCo", "price": 45.50}]}

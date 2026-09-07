@@ -186,6 +186,56 @@ async def _steps_with_files(thread_id: str) -> list[dict]:
     return steps
 
 
+async def _backfill_checkpoint_steps(thread_id: str, agent_key: str) -> None:
+    """P4 — recover transcript gaps left by deploys/restarts.
+
+    The LangGraph checkpoint is the source of truth; steps fall behind when
+    the process dies mid-stream (the in-process queue never drains). Any AI
+    responses present in the checkpoint but missing from the transcript are
+    persisted as ``recovered_from_checkpoint`` steps. Best-effort — never
+    blocks the messages endpoint.
+    """
+    if thread_id in _active_runs:
+        return  # a live run owns the transcript right now
+
+    from includes.chat.streaming_logic import extract_ai_text, plan_resume_backfill
+
+    try:
+        from includes.graph import setup_globals
+
+        await setup_globals()
+        graph = resolve(agent_key or "eagle").graph()
+        ckpt = await graph.aget_state(
+            {"configurable": {"thread_id": thread_id}}
+        )
+        messages = (ckpt.values or {}).get("messages") if ckpt else None
+        if not messages:
+            return
+
+        existing = await transcript.get_steps(thread_id)
+        missing = plan_resume_backfill(messages, existing)
+        if not missing:
+            return
+
+        for ai_msg in missing:
+            text = extract_ai_text(ai_msg)
+            if not text:
+                continue
+            await transcript.create_step(
+                thread_id,
+                type_="assistant_message",
+                name="EagleAgent",
+                output=text,
+                metadata={"recovered_from_checkpoint": True},
+            )
+        logger.info(
+            "[chat-ui] back-filled %d checkpoint message(s) for thread %s",
+            len(missing), thread_id[:8],
+        )
+    except Exception as exc:
+        logger.warning("[chat-ui] checkpoint backfill failed: %s", exc)
+
+
 # ── Run orchestration ──────────────────────────────────────────────────────
 
 
@@ -214,6 +264,10 @@ async def _run_task(
             queue=queue,
             cancel_key=_cancel_key(thread_id),
         )
+        # P3: hydrate persisted scratch (counters survive across runs) and
+        # supply the graph for handlers that re-enter it (pipeline resume).
+        await ctx.load_scratch()
+        ctx.set("active_graph", graph)
 
         # Eagle Agent defaults to supplier lookup, matching app.py — unless a
         # command already supplied an intent context.
@@ -253,8 +307,122 @@ async def _run_task(
             }
         )
     finally:
+        # P3: persist scratch before announcing completion.
+        if "ctx" in locals():
+            await ctx.flush_scratch()
         await queue.put({"event": "done", "data": {}})
         _active_runs.pop(thread_id, None)
+
+
+# ── Action dispatch (transport-neutral) ────────────────────────────────────
+# Dashboard RFQ buttons and chat-emitted action buttons share this path. The
+# handlers themselves are transport-neutral (payload, ctx); only the context
+# construction differed, and this builds the SSE variant.
+
+
+def _action_handler(action_name: str):
+    """The transport-neutral handler for an action name: ``(callable, kind)``.
+
+    kind is ``"rfq"`` (signature ``handler(payload, ctx)``) or ``"registry"``
+    (signature ``handler(ctx, payload=...)``). Returns None when unknown.
+    """
+    from includes.chat.rfq_actions import RFQ_ACTIONS
+
+    handler = RFQ_ACTIONS.get(action_name)
+    if handler is not None:
+        return (handler, "rfq")
+    from includes.chat.actions import get_action
+
+    action = get_action(action_name)
+    return (action.handler, "registry") if action is not None else None
+
+
+async def _execute_action(
+    ctx: Any,
+    action_name: str,
+    payload: dict,
+    queue: asyncio.Queue,
+) -> None:
+    """Run one action handler inside the thread's SSE context."""
+    try:
+        # P3: hydrate persisted scratch so per-button counters advance.
+        await ctx.load_scratch()
+        resolved = _action_handler(action_name)
+        if resolved is None:
+            await queue.put(
+                {
+                    "event": "error",
+                    "data": {"message": f"Unknown action: {action_name}"},
+                }
+            )
+            return
+        handler, kind = resolved
+        with chat_context(ctx):
+            if kind == "registry":
+                await handler(ctx, payload=payload)
+            else:
+                await handler(payload, ctx)
+    except Exception:
+        logger.exception("[chat-ui] action %s failed", action_name)
+        await queue.put(
+            {
+                "event": "error",
+                "data": {"message": f"Action {action_name} failed — please try again."},
+            }
+        )
+    finally:
+        await ctx.flush_scratch()
+        await queue.put({"event": "done", "data": {}})
+        _active_runs.pop(ctx.thread_id, None)
+
+
+async def dispatch_action_to_thread(
+    user: dict,
+    thread_id: str,
+    action_name: str,
+    payload: dict,
+) -> dict:
+    """Dispatch a dashboard/chat action into the SSE chat for a thread.
+
+    Runs outside a graph turn (like Chainlit's dispatch). Registers the run
+    in ``_active_runs`` so the stream endpoint can drain its events and the
+    busy check serialises it against message turns. Returns immediately —
+    the client opens the SSE stream to watch progress.
+    """
+    from includes.graph import setup_globals
+
+    # Ownership: never run an action in someone else's thread.
+    thread = await transcript.get_thread(thread_id, user["email"])
+    if thread is None:
+        return {"error": "Thread not found", "status_code": 404}
+
+    if _action_handler(action_name) is None:
+        return {"error": f"Unknown action: {action_name}", "status_code": 422}
+
+    run = _active_runs.get(thread_id)
+    if run and not run["task"].done():
+        return {
+            "error": "Still working on the previous message — one moment.",
+            "status_code": 409,
+        }
+
+    await setup_globals()
+    graph = resolve("eagle").graph()
+    queue: asyncio.Queue = asyncio.Queue()
+    ctx = SseChatContext(
+        thread_id=thread_id,
+        user_email=user["email"],
+        agent="eagle",
+        queue=queue,
+        cancel_key=_cancel_key(thread_id),
+    )
+    # Chainlit's session supplies this; the SSE scratch must too — the
+    # find-all-suppliers handler re-enters the graph with it.
+    ctx.set("active_graph", graph)
+
+    task = asyncio.create_task(_execute_action(ctx, action_name, payload, queue))
+    _active_runs[thread_id] = {"queue": queue, "task": task}
+    return {"started": True, "thread_id": thread_id}
 
 
 # ── Pages ──────────────────────────────────────────────────────────────────
@@ -326,6 +494,20 @@ async def set_current_thread(
     return JSONResponse({"ok": True, "thread_id": thread_id})
 
 
+@router.get("/active-runs")
+async def active_runs(user: dict = Depends(require_user)):
+    """Threads with a live turn/action — busy badges and post-reload recovery."""
+    await _guard(user)
+    live: list[str] = []
+    for tid, run in _active_runs.items():
+        if run["task"].done():
+            continue
+        thread = await transcript.get_thread(tid, user["email"])
+        if thread is not None:
+            live.append(tid)
+    return JSONResponse({"threads": live})
+
+
 @router.post("/threads")
 async def create_thread(
     request: Request, user: dict = Depends(require_user)
@@ -340,7 +522,23 @@ async def create_thread(
         agent_key=agent_key,
     )
     if str(form.get("embed") or "") == "1":
-        # Embedded panel flow — the embed JS navigates itself.
+        # Embedded panel flow — the embed JS navigates itself. Persist the
+        # default Eagle welcome so new threads open with parity to Chainlit.
+        name_part = user.get("name")
+        welcome = (
+            f"Hello {name_part}! I can help you find suppliers. Give me a part "
+            "number, brand name, supplier name, or description and I'll search "
+            "our database."
+            if name_part
+            else "Hello! I can help you find suppliers. Give me a part number, "
+            "brand name, supplier name, or description and I'll search our database."
+        )
+        await transcript.create_step(
+            thread_id,
+            type_="assistant_message",
+            name="EagleAgent",
+            output=welcome,
+        )
         return JSONResponse({"thread_id": thread_id, "agent": agent_key})
     return RedirectResponse(f"/chat-ui/threads/{thread_id}", status_code=303)
 
@@ -374,7 +572,9 @@ async def thread_messages(
     thread_id: str, user: dict = Depends(require_user)
 ):
     await _guard(user)
-    await _owned_thread(thread_id, user)
+    thread = await _owned_thread(thread_id, user)
+    agent_key = (thread.get("metadata") or {}).get("agent", "eagle")
+    await _backfill_checkpoint_steps(thread_id, agent_key)
     steps = await _steps_with_files(thread_id)
     return JSONResponse({"steps": steps})
 
@@ -770,6 +970,29 @@ async def post_message(
     )
     _active_runs[thread_id] = {"queue": queue, "task": task}
     return JSONResponse({"ok": True})
+
+
+@router.post("/threads/{thread_id}/action")
+async def thread_action(
+    request: Request, thread_id: str, user: dict = Depends(require_user)
+):
+    """A chat-emitted action button click — same dispatch layer as the bridge."""
+    await _guard(user)
+    await _owned_thread(thread_id, user)
+
+    body = await request.json()
+    action_name = str(body.get("name") or "")
+    if not action_name:
+        return JSONResponse({"error": "Action name required"}, status_code=400)
+    payload = body.get("payload") or {}
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Payload must be an object"}, status_code=400)
+
+    result = await dispatch_action_to_thread(user, thread_id, action_name, payload)
+    status_code = result.pop("status_code", 200)
+    if status_code != 200:
+        return JSONResponse(result, status_code=status_code)
+    return JSONResponse(result)
 
 
 @router.get("/threads/{thread_id}/stream")

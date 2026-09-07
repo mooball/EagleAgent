@@ -128,6 +128,110 @@ class TestSseChatContext:
         assert ctx.get("x") is None
         ctx.set("x", 1)
         assert ctx.get("x") == 1
+
+
+class TestPersistentScratch:
+    """P3: scratch survives across runs via thread metadata."""
+
+    def _ctx(self, queue):
+        from includes.chat.context_sse import SseChatContext
+
+        return SseChatContext(
+            thread_id="t1",
+            user_email="tom@eagle-exports.com",
+            agent="eagle",
+            queue=queue,
+            cancel_key="chat-ui:t1",
+        )
+
+    async def test_load_scratch_hydrates_from_transcript(self, queue):
+        get_scratch = AsyncMock(return_value={"pipeline_fixes_RFQ-1": 2})
+        with patch("includes.chat.context_sse.transcript.get_thread_scratch", new=get_scratch):
+            ctx = self._ctx(queue)
+            await ctx.load_scratch()
+        get_scratch.assert_awaited_once_with("t1")
+        assert ctx.get("pipeline_fixes_RFQ-1") == 2
+
+    async def test_load_preserves_keys_seeded_before_load(self, queue):
+        """active_graph is set by dispatch BEFORE load_scratch — the merge
+        must keep it, or pipeline-resume handlers crash with graph=None."""
+        get_scratch = AsyncMock(return_value={"counter": 1})
+        with patch("includes.chat.context_sse.transcript.get_thread_scratch", new=get_scratch):
+            ctx = self._ctx(queue)
+            ctx.set("active_graph", object())
+            await ctx.load_scratch()
+        assert ctx.get("counter") == 1
+        assert ctx.get("active_graph") is not None
+
+    async def test_flush_persists_only_json_safe_values(self, queue):
+        save_scratch = AsyncMock()
+        get_scratch = AsyncMock(return_value={})
+        with patch("includes.chat.context_sse.transcript.get_thread_scratch", new=get_scratch), \
+             patch("includes.chat.context_sse.transcript.save_thread_scratch", new=save_scratch):
+            ctx = self._ctx(queue)
+            await ctx.load_scratch()
+            ctx.set("counter", 3)
+            ctx.set("active_graph", object())  # not JSON-safe — must be dropped
+            await ctx.flush_scratch()
+        save_scratch.assert_awaited_once()
+        assert save_scratch.call_args.args[1] == {"counter": 3}
+
+    async def test_flush_skipped_when_not_dirty(self, queue):
+        save_scratch = AsyncMock()
+        with patch("includes.chat.context_sse.transcript.save_thread_scratch", new=save_scratch):
+            ctx = self._ctx(queue)
+            await ctx.flush_scratch()
+        save_scratch.assert_not_awaited()
+
+    async def test_load_failure_keeps_run_working(self, queue):
+        with patch(
+            "includes.chat.context_sse.transcript.get_thread_scratch",
+            new=AsyncMock(side_effect=RuntimeError("db down")),
+        ):
+            ctx = self._ctx(queue)
+            await ctx.load_scratch()
+        assert ctx.get("x") is None
+        ctx.set("x", 1)
+        assert ctx.get("x") == 1
+
+    async def test_say_with_actions_emits_and_persists(self, queue):
+        from includes.chat.context import ActionSpec
+
+        create = AsyncMock(return_value="step-1")
+        actions = [
+            ActionSpec(
+                name="rfq_dismiss",
+                label="No thanks",
+                payload={"rfq_id": "RFQ-1"},
+                tooltip="Dismiss this prompt",
+            )
+        ]
+        with patch("includes.chat.context_sse.transcript.create_step", new=create):
+            handle = await self._ctx(queue).say("choose", actions=actions)
+
+        expected = [
+            {
+                "name": "rfq_dismiss",
+                "label": "No thanks",
+                "payload": {"rfq_id": "RFQ-1"},
+                "tooltip": "Dismiss this prompt",
+            }
+        ]
+        # Persisted into step metadata so buttons survive a reload.
+        assert create.call_args.kwargs["metadata"] == {"actions": expected}
+        (event,) = await _drain(queue, 1)
+        assert event["event"] == "message_start"
+        assert event["data"]["actions"] == expected
+        assert handle.id == "step-1"
+
+    async def test_say_without_actions_emits_empty_list(self, queue):
+        create = AsyncMock(return_value="step-1")
+        with patch("includes.chat.context_sse.transcript.create_step", new=create):
+            await self._ctx(queue).say("hi")
+        # No metadata when there are no buttons.
+        assert create.call_args.kwargs["metadata"] is None
+        (event,) = await _drain(queue, 1)
+        assert event["data"]["actions"] == []
         other = self._ctx(queue)
         assert other.get("x") is None
 
@@ -144,3 +248,49 @@ class TestSseChatContext:
         with patch("includes.agent_bridge.clear_stop", new=clear):
             ctx.reset_cancel()
         clear.assert_called_once_with("chat-ui:t1")
+
+
+class TestImageAttachment:
+    """P5/B10: ctx.image() persists an element and streams its file info."""
+
+    def _ctx(self, queue):
+        from includes.chat.context_sse import SseChatContext
+
+        return SseChatContext(
+            thread_id="t1",
+            user_email="tom@eagle-exports.com",
+            agent="eagle",
+            queue=queue,
+            cancel_key="chat-ui:t1",
+        )
+
+    async def test_image_persists_element_and_emits_files(self, queue, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake image bytes")
+        create_element = AsyncMock()
+        attach_element = AsyncMock(return_value=True)
+        create_step = AsyncMock(return_value="step-9")
+        ensure_user = AsyncMock(return_value="uid-1")
+        with patch("includes.chat.context_sse.transcript.create_element", new=create_element), \
+             patch("includes.chat.context_sse.transcript.attach_element", new=attach_element), \
+             patch("includes.chat.context_sse.transcript.create_step", new=create_step), \
+             patch("includes.chat.context_sse.transcript.ensure_user", new=ensure_user):
+            ctx = self._ctx(queue)
+            await ctx.image(str(img), name="screenshot.png")
+
+        create_element.assert_awaited_once()
+        element_id = create_element.call_args.kwargs["element_id"]
+        attach_element.assert_awaited_once_with(element_id, "step-9", "t1")
+        (event,) = await _drain(queue, 1)
+        assert event["event"] == "message_start"
+        assert event["data"]["files"][0]["type"] == "image"
+        assert event["data"]["files"][0]["id"] == element_id
+
+    async def test_image_missing_file_falls_back_to_marker(self, queue):
+        with patch("includes.chat.context_sse.transcript.create_element", new=AsyncMock()):
+            ctx = self._ctx(queue)
+            await ctx.image("/nonexistent/x.png", name="x.png")
+        (event,) = await _drain(queue, 1)
+        assert event["event"] == "message_start"
+        assert "📸" in event["data"]["content"]
+        assert not event["data"].get("files")

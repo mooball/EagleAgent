@@ -9,6 +9,7 @@ same Chainlit `steps` table via :mod:`includes.chat.transcript` — the Track A
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from typing import Any
@@ -17,6 +18,30 @@ from includes.chat import transcript
 from includes.chat.context import ActionSpec
 
 logger = logging.getLogger(__name__)
+
+
+def _serialize_actions(actions: list[ActionSpec] | None) -> list[dict]:
+    """ActionSpec → JSON-safe dicts for the SSE payload and step metadata."""
+    if not actions:
+        return []
+    return [
+        {
+            "name": a.name,
+            "label": a.label,
+            "payload": a.payload or {},
+            "tooltip": a.tooltip,
+        }
+        for a in actions
+    ]
+
+
+def _json_safe(value: Any) -> bool:
+    """True if value survives json.dumps (thread metadata is JSON)."""
+    try:
+        json.dumps(value)
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 class SseMessageHandle:
@@ -96,6 +121,42 @@ class SseChatContext:
         self._queue = queue
         self._cancel_key = cancel_key
         self._scratch: dict[str, Any] = {}
+        self._scratch_loaded = False
+        self._scratch_dirty = False
+
+    async def load_scratch(self) -> None:
+        """Hydrate the scratch dict from the thread's metadata (P3).
+
+        Called at the start of every run, so counters like
+        ``pipeline_fixes_{rfq_id}`` survive across separate button clicks.
+        Failures never break the run — the scratch just starts empty.
+        """
+        if self._scratch_loaded:
+            return
+        try:
+            persisted = await transcript.get_thread_scratch(self.thread_id)
+            # Merge persisted values UNDER the in-memory dict: keys seeded
+            # before load (e.g. active_graph) must survive, and per-run state
+            # wins over stale persisted copies.
+            self._scratch = {**persisted, **self._scratch}
+        except Exception as exc:
+            logger.warning("[chat-ui] scratch load failed: %s", exc)
+        self._scratch_loaded = True
+
+    async def flush_scratch(self) -> None:
+        """Persist the scratch dict at the end of the run (P3).
+
+        Only JSON-safe values are written — in-memory objects like
+        ``active_graph`` never reach thread metadata.
+        """
+        if not self._scratch_dirty:
+            return
+        try:
+            safe = {k: v for k, v in self._scratch.items() if _json_safe(v)}
+            await transcript.save_thread_scratch(self.thread_id, safe)
+            self._scratch_dirty = False
+        except Exception as exc:
+            logger.warning("[chat-ui] scratch flush failed: %s", exc)
 
     async def say(
         self,
@@ -107,12 +168,13 @@ class SseChatContext:
     ) -> SseMessageHandle:
         """Send a message. Persisted immediately, like Chainlit's send().
 
-        ``actions`` are accepted but not rendered in the POC — chat-emitted
-        action buttons are out of scope until the unified frontend lands.
+        ``actions`` are emitted in the message_start event and persisted in the
+        step metadata, so chat-emitted buttons survive a reload.
         ``transient`` messages (tool-progress lines) are never persisted:
         the runner removes them, and they are not part of the transcript.
         """
         step_name = author or "EagleAgent"
+        action_data = _serialize_actions(actions)
         step_id: str | None = None
         if not transient:
             try:
@@ -121,6 +183,7 @@ class SseChatContext:
                     type_="assistant_message",
                     name=step_name,
                     output=text,
+                    metadata={"actions": action_data} if action_data else None,
                 )
             except Exception as exc:
                 # Never break the run over persistence — the client still sees it.
@@ -135,6 +198,7 @@ class SseChatContext:
                     "author": step_name,
                     "content": text,
                     "transient": transient,
+                    "actions": action_data,
                 },
             }
         )
@@ -147,9 +211,71 @@ class SseChatContext:
         )
 
     async def image(self, path: str, *, name: str) -> None:
-        # POC: persist the 📸 marker like Chainlit; inline image rendering of
-        # the file itself is a later checklist item (B10).
-        await self.say(f"📸 {name}")
+        """Persist an image (e.g. browser screenshot) as an attached element.
+
+        P5/B10 — the element row plus the attached step lets the embed render
+        the image inline exactly like an upload. Falls back to the 📸 marker
+        if the file is missing or persistence fails.
+        """
+        import os
+        import shutil
+
+        try:
+            if not os.path.exists(path):
+                await self.say(f"📸 {name}", author="EagleAgent")
+                return
+            user_id = await transcript.ensure_user(self.user_email)
+            element_id = str(uuid.uuid4())
+            safe_name = os.path.basename(name or path)[:200] or "image.png"
+            object_key = f"{user_id}/{element_id}/{safe_name}"
+            from config import config
+
+            dest = os.path.join(config.DATA_DIR, "attachments", object_key)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            await asyncio.to_thread(shutil.copyfile, path, dest)
+
+            await transcript.create_element(
+                self.thread_id,
+                element_id=element_id,
+                name=safe_name,
+                type_="image",
+                mime="image/png",
+                url=f"/files/{object_key}",
+                object_key=object_key,
+                size="medium",
+            )
+            step_id = await transcript.create_step(
+                self.thread_id,
+                type_="assistant_message",
+                name="EagleAgent",
+                output=f"📸 {name}",
+            )
+            await transcript.attach_element(element_id, step_id, self.thread_id)
+            await self._queue.put(
+                {
+                    "event": "message_start",
+                    "data": {
+                        "id": step_id,
+                        "author": "EagleAgent",
+                        "content": f"📸 {name}",
+                        "transient": False,
+                        "actions": [],
+                        "files": [
+                            {
+                                "id": element_id,
+                                "type": "image",
+                                "name": safe_name,
+                                "url": f"/files/{object_key}",
+                                "mime": "image/png",
+                                "size": "medium",
+                            }
+                        ],
+                    },
+                }
+            )
+        except Exception as exc:
+            logger.warning("[chat-ui] image persist failed: %s", exc)
+            await self.say(f"📸 {name}", author="EagleAgent")
 
     async def notify_dashboard(self, command: str, payload: dict | None = None) -> None:
         # Same-document beta UI: the embed forwards this to the dashboard shell
@@ -172,6 +298,7 @@ class SseChatContext:
 
     def set(self, key: str, value: Any) -> None:
         self._scratch[key] = value
+        self._scratch_dirty = True
 
     @property
     def cancelled(self) -> bool:
