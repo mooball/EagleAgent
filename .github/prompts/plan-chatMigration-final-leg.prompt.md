@@ -3,8 +3,8 @@
 > Parent: [plan-chatMigration.prompt.md](plan-chatMigration.prompt.md)
 > Predecessor: [plan-chatMigration-beta.prompt.md](plan-chatMigration-beta.prompt.md) (VALIDATED)
 > Acceptance record: [parity-checklist-chat.md](parity-checklist-chat.md)
-> Status: **PROPOSED** (2026-09-07). Scope: everything between "beta validated"
-> and "Chainlit deleted".
+> Status: **IN PROGRESS** (2026-09-07). P1 ✅, P2 ✅, Fix 1 ✅, Fix 2 planned.
+> Scope: everything between "beta validated" and "Chainlit deleted".
 
 ---
 
@@ -38,8 +38,8 @@ The two shared touch points in this whole plan are:
 
 | # | Gap | Severity | Phase |
 |---|---|---|---|
-| 1 | Dashboard action buttons (C-A1–9) can't reach the new UI | Blocker | P1 |
-| 2 | Chat-emitted action buttons (C-B) discarded by `SseChatContext.say()` | Blocker | P2 |
+| 1 | Dashboard action buttons (C-A1–9) can't reach the new UI | Blocker | P1 ✅ |
+| 2 | Chat-emitted action buttons (C-B) discarded by `SseChatContext.say()` | Blocker | P2 ✅ |
 | 3 | `ctx.get/set` scratch dies with the run (Chainlit's persists per session) | Correctness | P3 |
 | 4 | No checkpoint resume backfill in the new UI | Correctness | P4 |
 | 5 | Welcome messages, `ctx.image()`, system actions, rename, timestamps… | Polish | P5 |
@@ -49,6 +49,14 @@ The two shared touch points in this whole plan are:
 ---
 
 ## P1 — Transport-neutral action dispatch (the one architectural piece)
+
+> **Status: DONE (2026-09-07).** `dispatch_action_to_thread` lives in
+> `includes/dashboard/routes/chat_ui.py` rather than a new `includes/chat/dispatch.py`
+> — it shares `_active_runs` and `_cancel_key`, so locality beats the original
+> file layout. `handle_bridge_request` routes on `body.chat_ui` + allowlist +
+> `payload._thread_id`; `_sendAction` sends the hint and fires
+> `chat-ui:action-started`; the embed opens the stream on that thread. The
+> Chainlit path is untouched. Tests: `tests/test_bridge_dispatch_sse.py`.
 
 **Why it's smaller than it looks:** all 21 handlers in `RFQ_ACTIONS`
 ([includes/chat/rfq_actions.py:1067](../../includes/chat/rfq_actions.py)) already
@@ -141,19 +149,80 @@ Emit sites:
 | [includes/chat/actions.py:140](../../includes/chat/actions.py) | Help / action menu |
 
 ### Hook points
-1. **`includes/chat/context_sse.py:~110`** — `say()` currently documents
-   *"`actions` are accepted but not rendered in the POC"*. Emit them in the
-   `message_start` event payload as
-   `actions: [{name, label, payload, tooltip}]`, and persist them into the step
-   `metadata` so they survive a reload.
-2. **`templates/chat_ui/embed.html`** — render buttons under the bubble in
-   `setText`/`renderHistory`; read `step.metadata.actions` on history load.
-3. **NEW `POST /chat-ui/threads/{id}/action`** in `chat_ui.py` → `dispatch_to_thread`
+1. **`includes/chat/context_sse.py:~110`** — `say()` now serializes `ActionSpec`s
+   via `_serialize_actions()` and emits them in the `message_start` event payload as
+   `actions: [{name, label, payload, tooltip}]`, and persists them into the step
+   `metadata` (`transcript.get_steps` parses the JSON metadata back out) so they
+   survive a reload.
+2. **`templates/chat_ui/embed.html`** — buttons render under the bubble via
+   `renderActions()` (wired into `message_start` and `renderHistory` from
+   `step.metadata.actions`); `sendAction()` POSTs to the endpoint and re-opens
+   the event stream on success; `setRunning()` disables action buttons while a
+   run is live.
+3. **`POST /chat-ui/threads/{id}/action`** in `chat_ui.py` → `dispatch_action_to_thread`
    from P1. One dispatch layer serves both directions.
 
+**Done** — buttons on historical messages stay live (decision: yes). Tests:
+`tests/chat/test_sse_context.py` (actions in message_start + metadata, empty
+list when none) and `tests/test_chat_ui_routes.py::TestThreadAction` (400/200/
+409).
+
 ### Risk
-**MEDIUM** — plumbing on top of P1. Decide (open question) whether buttons on
-historical messages stay live; proposed: yes.
+**MEDIUM** — landed on top of P1. Buttons on historical messages stay live.
+
+---
+
+## Fix 1 — Navigation stability while a run is live ✅
+
+**Bug report (2026-09-07):** start a long action on RFQ A, navigate to RFQ B
+via the Chats list — the panel showed A's live stream under B's header, and
+navigation froze (clicking back on A did nothing) until a server restart.
+
+**Root causes:**
+1. `loadMessages()` bailed whenever `running` — thread switches mid-run never
+   rendered the new thread (stale rows stayed, still fed by A's open stream).
+2. `dashboard_refresh` re-rendered `window.location.pathname` at dispatch
+   time — a run on A re-rendered the page for B the user was viewing, and the
+   context identity flip-flop re-navigated the panel (snap-back loop).
+
+**Fixes (client-only):**
+- `embed.html` tracks `runThreadId`/`streamThreadId`; `showThread()` clears the
+  pane on switch; `loadMessages()` only skips the running thread's own live
+  view; stream handlers render only when their thread is on screen (stream
+  stays open so `done` is never missed); stop button shows only on the running
+  thread; `chat-ui:navigate` with `fresh` responds while locked.
+- `dashboard:` events carry `_source_thread`; `base.html` scopes
+  `dashboard_refresh` to the emitting thread's page.
+
+---
+
+## Fix 2 — Multi-run concurrency (3–4 simultaneous RFQ tasks) — PLANNED
+
+**Goal:** staff run several RFQ/thread actions at once and navigate freely.
+The server already supports this (per-thread `_active_runs`, per-thread 409
+busy checks, replay-on-connect queues); only the client models one global
+`running` flag and one visible stream.
+
+**Work items:**
+1. **Per-thread run state** — replace the global `running` boolean with
+   `runs = {thread_id: true}`. Composer / stop / action buttons enable or
+   disable per active thread; `sendAction`/`send` currently bail globally.
+2. **Single visible stream, switched on view** — leaving a thread closes its
+   EventSource (its queue buffers server-side; the run continues); returning
+   reconnects and replays. Browser limits (~6 HTTP/1.1 connections) make one
+   stream safer than N open ones. Remove the Fix 1 guard in
+   `chat-ui:action-started` that ignores a second run.
+3. **`loadMessages` per-thread** — guard becomes `runs[tid] && streamThreadId === tid`.
+4. **`GET /chat-ui/active-runs`** — list the user's running thread ids (scan
+   `_active_runs`, filter by ownership) so the thread list can show busy
+   spinners, and a fresh page load still shows what's running.
+5. **Cosmetics** — the shell's `agentWorking` badge stays global (any
+   background work); `agent_done` from one run may clear it while another
+   runs (acceptable, or track a count later).
+
+**Known server-side assumptions to re-verify:** `setup_globals()` idempotence
+under concurrent dispatch, graph checkpointer per-thread isolation (both
+appear safe: `pg_pool` max 10, LangGraph per-thread configs).
 
 ---
 

@@ -113,6 +113,12 @@ Notes / proposals:
   command-driven agent routing, file uploads, current-thread anchor,
   activity-grouped thread list, compact Preline-style composer.
 
+- **C-B** — chat-emitted buttons landed 2026-09-07: `say(actions=…)` serialises
+  `ActionSpec`s into `message_start` + step `metadata`; the embed renders them
+  under the bubble and POSTs clicks to `/chat-ui/threads/{id}/action` →
+  `dispatch_action_to_thread`. Per-action runtime verification (D-table) still
+  pending.
+
 ---
 
 ## C. Action buttons
@@ -121,6 +127,11 @@ Notes / proposals:
 user-facing capability and must be individually verified.
 
 ### C-A. Dashboard-initiated (9 call sites via `/api/agent-bridge`)
+
+> ✅ **Beta dispatch landed (2026-09-07).** For allowlisted users with the
+> embed, the bridge now routes these actions into the SSE chat for the RFQ's
+> bound thread (`dispatch_action_to_thread`); everyone else keeps the Chainlit
+> session path unchanged. Handlers are untouched.
 
 | # | Action | Trigger in UI | Proposed |
 |---|---|---|---|
