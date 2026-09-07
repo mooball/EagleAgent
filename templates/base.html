@@ -863,7 +863,10 @@
 
                 _autoNameThread(threadId) {
                     // Beta embed only — name a freshly bound thread after its
-                    // RFQ: "RFQ-2026-1234 — Acme Pty Ltd". Best-effort.
+                    // RFQ: "RFQ-2026-1234 — Acme Pty Ltd". Best-effort. The
+                    // Chainlit path names threads on resume (app.py), and
+                    // /chat-ui rejects non-allowlisted users anyway.
+                    if (document.getElementById('agent-iframe')) return;
                     const ctx = this.currentContext;
                     if (!ctx || ctx.view !== 'rfq_detail' || !ctx.id) return;
                     const label = ctx.id + (ctx.customer ? ' — ' + ctx.customer : '');
