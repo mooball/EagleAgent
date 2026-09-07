@@ -177,6 +177,23 @@ async def get_thread(thread_id: str, user_email: str) -> Optional[dict]:
     }
 
 
+async def filter_owned_threads(thread_ids: list[str], user_email: str) -> list[str]:
+    """The subset of ``thread_ids`` owned by the user, in one query."""
+    if not thread_ids:
+        return []
+    dl = await _data_layer()
+    placeholders = ", ".join(f":id{i}" for i in range(len(thread_ids)))
+    params: dict[str, Any] = {f"id{i}": tid for i, tid in enumerate(thread_ids)}
+    params["email"] = user_email
+    rows = await dl.execute_sql(
+        f'SELECT "id" FROM threads WHERE "id" IN ({placeholders}) '
+        'AND "userIdentifier" = :email',
+        params,
+    )
+    owned = {row.get("id") for row in rows or []}
+    return [tid for tid in thread_ids if tid in owned]
+
+
 async def rename_thread(thread_id: str, name: str) -> None:
     dl = await _data_layer()
     await dl.update_thread(thread_id=thread_id, name=name)

@@ -217,6 +217,7 @@ class SseChatContext:
         the image inline exactly like an upload. Falls back to the 📸 marker
         if the file is missing or persistence fails.
         """
+        import mimetypes
         import os
         import shutil
 
@@ -228,6 +229,7 @@ class SseChatContext:
             element_id = str(uuid.uuid4())
             safe_name = os.path.basename(name or path)[:200] or "image.png"
             object_key = f"{user_id}/{element_id}/{safe_name}"
+            mime = mimetypes.guess_type(safe_name)[0] or "image/png"
             from config import config
 
             dest = os.path.join(config.DATA_DIR, "attachments", object_key)
@@ -239,7 +241,7 @@ class SseChatContext:
                 element_id=element_id,
                 name=safe_name,
                 type_="image",
-                mime="image/png",
+                mime=mime,
                 url=f"/files/{object_key}",
                 object_key=object_key,
                 size="medium",
@@ -266,7 +268,7 @@ class SseChatContext:
                                 "type": "image",
                                 "name": safe_name,
                                 "url": f"/files/{object_key}",
-                                "mime": "image/png",
+                                "mime": mime,
                                 "size": "medium",
                             }
                         ],

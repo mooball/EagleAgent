@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 # Allow `uv run python scripts/...` to import the app package.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import create_engine, func, text
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import Session, attributes, sessionmaker
 
 
