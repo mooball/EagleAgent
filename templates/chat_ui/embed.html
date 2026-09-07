@@ -6,7 +6,10 @@
             <span class="text-sm font-semibold text-gray-700 dark:text-gray-200">Chats</span>
             <div class="flex items-center gap-1.5">
                 <button type="button" id="embed-new-btn"
-                        class="py-1 px-2.5 inline-flex items-center text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700">+ New</button>
+                        class="inline-flex items-center gap-x-1 py-1 px-2.5 text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700">
+                    <svg class="shrink-0 size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5v15m7.5-7.5h-15" /></svg>
+                    New
+                </button>
             </div>
         </div>
         <div id="embed-list-items" class="flex-1 overflow-y-auto"></div>
@@ -18,18 +21,33 @@
             <div class="flex items-center gap-1.5 min-w-0">
                 <button type="button" id="embed-back-btn"
                         class="px-2.5 py-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                        title="Back to chats">←</button>
+                        title="Back to chats">
+                    <svg class="shrink-0 size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                </button>
                 <span id="embed-lock-badge" hidden
-                      class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
-                      title="Bound to this RFQ">🔗</span>
+                      class="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                      title="Bound to this RFQ">
+                    <svg class="shrink-0 size-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244" /></svg>
+                </span>
                 <span id="embed-name" class="text-sm font-semibold text-gray-700 dark:text-gray-200 truncate"></span>
             </div>
             <div class="flex items-center gap-1.5 shrink-0">
                 <button type="button" id="embed-stop-btn" hidden
-                        class="py-1 px-2 inline-flex items-center text-xs font-semibold rounded-md bg-red-600 text-white hover:bg-red-700">⏹ Stop</button>
+                        class="inline-flex items-center gap-x-1 py-1 px-2 text-xs font-semibold rounded-md bg-red-600 text-white hover:bg-red-700">
+                    <svg class="shrink-0 size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5.25" y="5.25" width="13.5" height="13.5" rx="2.25" /></svg>
+                    Stop
+                </button>
+                <button type="button" id="embed-rename-btn" hidden
+                        class="py-1 px-2 inline-flex items-center text-xs font-semibold rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200"
+                        title="Rename thread">
+                    <svg class="shrink-0 size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                </button>
                 <button type="button" id="embed-clear-btn" hidden
-                        class="py-1 px-2 inline-flex items-center gap-x-1 text-xs font-semibold rounded-md bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60"
-                        title="Start a fresh thread">↺ Clear</button>
+                        class="inline-flex items-center gap-x-1 py-1 px-2 text-xs font-semibold rounded-md bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60"
+                        title="Start a fresh thread">
+                    <svg class="shrink-0 size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
+                    Clear
+                </button>
             </div>
         </div>
         <div id="embed-messages" class="flex-1 overflow-y-auto p-3 space-y-3"></div>
@@ -108,6 +126,7 @@
     var composer = document.getElementById('embed-composer');
     var sendBtn = document.getElementById('embed-send-btn');
     var stopBtn = document.getElementById('embed-stop-btn');
+    var renameBtn = document.getElementById('embed-rename-btn');
     var errorEl = document.getElementById('embed-error');
     var toolsBtn = document.getElementById('embed-tools-btn');
     var toolsMenu = document.getElementById('embed-tools-menu');
@@ -128,6 +147,36 @@
     var pendingFiles = [];     // {id,name,type,mime,url,size,status,objectUrl}
     var pendingIntent = null;  // {name,label,icon} for the next message only
     var currentThreadId = DATA.current_thread_id || null;
+
+    // Chainlit parity: single newlines render as line breaks (the agent's
+    // plain-text lists like "Line 1 → …\nLine 2 → …" each get their own line).
+    if (window.marked) {
+        window.marked.setOptions({gfm: true, breaks: true});
+    }
+
+    // Flat outline icons (Heroicons-style), matching the dashboard chrome.
+    var ICON_SVG = {
+        photo: '<svg class="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" /></svg>',
+        doc: '<svg class="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" /></svg>',
+        paperclip: '<svg class="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13" /></svg>',
+        x: '<svg class="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18 18 6M6 6l12 12" /></svg>',
+        check: '<svg class="size-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.75 6 6 9-13.5" /></svg>',
+        warn: '<svg class="size-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>'
+    };
+
+    // Prompt-config command icons are emoji — render their flat equivalents.
+    var CMD_ICON_SVG = {
+        '📦': '<svg class="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 7.5-9-5.25L3 7.5m18 0-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9" /></svg>',
+        '🔍': '<svg class="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>',
+        '🔎': '<svg class="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>',
+        '📋': '<svg class="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25Z" /></svg>',
+        '🌐': '<svg class="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m-18.432 0A8.959 8.959 0 0 1 3 12c0-.778.099-1.533.284-2.253" /></svg>',
+        '⚡': '<svg class="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z" /></svg>'
+    };
+
+    function cmdIconSvg(emoji) {
+        return CMD_ICON_SVG[emoji] || CMD_ICON_SVG['⚡'];
+    }
 
     function autoresizeComposer() {
         composer.style.height = 'auto';
@@ -156,14 +205,14 @@
         var chip = document.createElement('div');
         chip.className = 'flex items-center gap-1 rounded-lg bg-blue-50 dark:bg-blue-900/30 px-2 py-1 text-xs text-blue-700 dark:text-blue-300 max-w-[150px]';
         var icon = document.createElement('span');
-        icon.className = 'shrink-0';
-        icon.textContent = pendingIntent.icon;
+        icon.className = 'shrink-0 flex items-center';
+        icon.innerHTML = cmdIconSvg(pendingIntent.icon);
         var label = document.createElement('span');
         label.className = 'truncate';
         label.textContent = pendingIntent.label;
         var remove = document.createElement('button');
         remove.type = 'button';
-        remove.textContent = '✕';
+        remove.innerHTML = ICON_SVG.x.replace('size-3.5', 'size-3');
         remove.title = 'Clear command';
         remove.className = 'text-blue-400 hover:text-blue-700 dark:hover:text-blue-200 px-0.5';
         remove.addEventListener('click', function () { clearIntent(); });
@@ -191,10 +240,10 @@
             var btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'w-full flex items-start gap-x-2.5 py-1.5 px-2 rounded-lg text-start hover:bg-gray-100 dark:hover:bg-neutral-800';
-            var icon = document.createElement('span');
-            icon.className = 'shrink-0 text-xs leading-5';
-            icon.textContent = cmd.icon || '⚡';
-            var body = document.createElement('span');
+        var icon = document.createElement('span');
+        icon.className = 'shrink-0 flex items-center';
+        icon.innerHTML = cmdIconSvg(cmd.icon);
+        var body = document.createElement('span');
             var lab = document.createElement('span');
             lab.className = 'block text-xs font-medium text-gray-800 dark:text-gray-200';
             lab.textContent = cmd.label;
@@ -210,26 +259,79 @@
         });
     }
 
-    function stripHtml(text) {
-        return String(text || '').replace(/<[^>]*>/g, '');
+    // Agent tools (RFQ renders, job reports) emit HTML for tables, lists and
+    // code blocks. marked passes raw HTML through unchanged, so those render
+    // like Chainlit; everything is sanitised to a strict allowlist first.
+    var HTML_ALLOWED = {
+        TABLE: 1, THEAD: 1, TBODY: 1, TR: 1, TH: 1, TD: 1, UL: 1, OL: 1, LI: 1,
+        PRE: 1, CODE: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1, BLOCKQUOTE: 1,
+        DIV: 1, P: 1, SPAN: 1, STRONG: 1, B: 1, EM: 1, I: 1, U: 1, S: 1,
+        BR: 1, HR: 1, A: 1, IMG: 1, SUP: 1, SUB: 1, DEL: 1
+    };
+
+    function sanitizeHtml(html) {
+        var doc = new DOMParser().parseFromString('<div>' + html + '</div>', 'text/html');
+        var root = doc.body;
+        doc.querySelectorAll('script,style,iframe,object,embed,link,meta,form,input,button,svg,math').forEach(function (el) {
+            el.remove();
+        });
+        function clean(node) {
+            Array.prototype.slice.call(node.children || []).forEach(function (child) {
+                var tag = (child.tagName || '').toUpperCase();
+                if (!HTML_ALLOWED[tag]) {
+                    // Unwrap disallowed tags — keep their text content.
+                    var frag = document.createDocumentFragment();
+                    while (child.firstChild) { frag.appendChild(child.firstChild); }
+                    child.replaceWith(frag);
+                    clean(node);
+                    return;
+                }
+                Array.prototype.slice.call(child.attributes || []).forEach(function (attr) {
+                    var name = attr.name.toLowerCase();
+                    if (tag === 'A' && name === 'href') {
+                        if (!/^(https?:|mailto:)/i.test(child.getAttribute('href') || '')) {
+                            child.removeAttribute('href');
+                        }
+                        return;
+                    }
+                    if (tag === 'A' && name === 'title') { return; }
+                    if (tag === 'IMG' && (name === 'src' || name === 'alt')) { return; }
+                    child.removeAttribute(name);
+                });
+                clean(child);
+            });
+        }
+        clean(root);
+        return root.innerHTML;
     }
 
     function renderMarkdown(text) {
-        var clean = stripHtml(text);
+        var raw = String(text || '');
         try {
             if (window.marked && typeof window.marked.parse === 'function') {
-                var out = window.marked.parse(clean);
+                // marked parses markdown AND passes embedded HTML through
+                // unchanged — so agent HTML (tables, lists, <pre>) and
+                // markdown in the same message both render. The result is
+                // sanitised to a strict allowlist before it hits the DOM.
+                var work = raw.replace(
+                    /(^|\n)(?!\n)(\s*[-*+] |\s*\d+\. )/g, '$1\n$2'
+                );
+                // Legacy messages list matches comma-separated — split each
+                // "…, line N → …" onto its own line (retroactive formatting).
+                work = work.replace(/,\s*((?:line|item)\s+\d+\s*→)/gi, '\n$1');
+                var out = window.marked.parse(work);
                 var str = typeof out === 'string' ? out : String(out);
-                // Re-mark the runner's agent summary footer: its inline styles
-                // are stripped by sanitise-on-read, so the CSS class does the work.
-                str = str.replace(/<p>Agent: /g, '<p class="agent-footer">Agent: ');
+                str = sanitizeHtml(str);
+                // Re-mark the runner's agent summary footer: its inline
+                // styles are stripped by sanitisation, so the CSS class works.
+                str = str.replace(/<(p|div)( [^>]*)?>Agent: /g, '<$1 class="agent-footer">Agent: ');
                 return str;
             }
         } catch (err) {
             console.error('[chat-ui] markdown render failed', err);
         }
         var esc = document.createElement('div');
-        esc.textContent = clean;
+        esc.textContent = raw;
         return esc.innerHTML;
     }
 
@@ -241,7 +343,7 @@
             return div;
         }
         var inner = document.createElement('div');
-        inner.className = 'max-w-[85%] ' + (isUser ? 'ml-auto' : 'mr-auto');
+        inner.className = 'chat-bubble-inner ' + (isUser ? 'ml-auto' : 'mr-auto');
         var bubble = document.createElement('div');
         bubble.className = isUser
             ? 'rounded-lg bg-blue-600 text-white px-3 py-2 text-sm'
@@ -326,8 +428,11 @@
                 a.href = f.url;
                 a.download = f.name || 'file';
                 a.target = '_blank';
-                a.className = 'flex items-center gap-1.5 mt-1.5 text-xs underline';
-                a.textContent = '📎 ' + (f.name || 'file');
+                a.className = 'inline-flex items-center gap-1 mt-1.5 text-xs underline';
+                a.innerHTML = ICON_SVG.paperclip;
+                var fileLabel = document.createElement('span');
+                fileLabel.textContent = f.name || 'file';
+                a.appendChild(fileLabel);
                 bubble.appendChild(a);
             }
         });
@@ -352,7 +457,7 @@
             if (step.type === 'user_message') {
                 setText(getRow(step.id, USER_EMAIL, false), step.output);
                 renderAttachments(rows[step.id].bubble, step.files);
-            } else if (step.type === 'assistant_message' && step.output) {
+            } else if (step.type === 'assistant_message' && (step.output || (step.files && step.files.length))) {
                 setText(getRow(step.id, step.name || 'EagleAgent', false), step.output);
                 renderAttachments(rows[step.id].bubble, step.files);
                 renderActions(
@@ -393,6 +498,7 @@
         clearBtn.hidden = !(lock || (active && active.id === currentThreadId));
         // Stop targets the thread being viewed, and only while it is running.
         stopBtn.hidden = !(active && runs[active.id]);
+        renameBtn.hidden = !active;
     }
 
     function setCurrentThread(tid) {
@@ -672,6 +778,7 @@
             entry._live = true;
             if (d.content) { setText(entry, d.content); }
             if (d.actions && d.actions.length) { renderActions(entry, d.actions); }
+            if (d.files && d.files.length) { renderAttachments(entry.bubble, d.files); }
         });
         eventSource.addEventListener('token', function (e) {
             var d = JSON.parse(e.data);
@@ -820,7 +927,7 @@
             img.className = 'size-6 object-cover';
             thumb.appendChild(img);
         } else {
-            thumb.textContent = entry.type === 'image' ? '🖼' : '📎';
+            thumb.innerHTML = entry.type === 'image' ? ICON_SVG.photo : ICON_SVG.doc;
         }
         var label = document.createElement('span');
         label.className = 'truncate';
@@ -831,14 +938,14 @@
             status.className += ' size-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin';
         } else if (entry.status === 'done') {
             status.className += ' text-green-600';
-            status.textContent = '✓';
+            status.innerHTML = ICON_SVG.check;
         } else {
             status.className += ' text-red-500';
-            status.textContent = '⚠';
+            status.innerHTML = ICON_SVG.warn;
         }
         var remove = document.createElement('button');
         remove.type = 'button';
-        remove.textContent = '×';
+        remove.innerHTML = ICON_SVG.x;
         remove.title = 'Remove';
         remove.className = 'shrink-0 text-gray-400 hover:text-red-500 px-0.5';
         remove.addEventListener('click', function () { removePending(entry); });
@@ -1002,6 +1109,26 @@
     stopBtn.addEventListener('click', function () {
         if (!active) { return; }
         fetch('/chat-ui/threads/' + active.id + '/stop', {method: 'POST', credentials: 'same-origin'}).catch(function () {});
+    });
+    renameBtn.addEventListener('click', function () {
+        if (!active) { return; }
+        var name = window.prompt('Thread name', active.name || 'New chat');
+        if (!name || !name.trim()) { return; }
+        var trimmed = name.trim();
+        fetch('/chat-ui/threads/' + active.id, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({name: trimmed}),
+        }).then(function (r) {
+            if (!r.ok) { showError('Could not rename the conversation.'); return; }
+            active.name = trimmed;
+            nameEl.textContent = trimmed;
+            var row = threads.find(function (t) { return t.id === active.id; });
+            if (row) { row.name = trimmed; renderList(); }
+        }).catch(function () {
+            showError('Could not rename the conversation.');
+        });
     });
     document.getElementById('embed-back-btn').addEventListener('click', showList);
     document.getElementById('embed-new-btn').addEventListener('click', createThread);

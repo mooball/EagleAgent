@@ -92,8 +92,20 @@
   margin: 0.9em 0 0;
 }
 
-.chat-md table { border-collapse: collapse; margin: 0.5em 0; font-size: 0.85em; }
-.chat-md th, .chat-md td { border: 1px solid #d1d5db; padding: 0.3em 0.6em; }
+.chat-md table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.85em;
+}
+.chat-md th, .chat-md td {
+  border: 1px solid #d1d5db;
+  padding: 0.3em 0.6em;
+  white-space: nowrap;
+}
 .chat-md th { background: #f3f4f6; font-weight: 600; }
 
 .dark .chat-md a { color: #60a5fa; }
@@ -102,6 +114,15 @@
 .dark .chat-md .agent-footer { color: #9ca3af; }
 .dark .chat-md th, .dark .chat-md td { border-color: #4b5563; }
 .dark .chat-md th { background: #374151; }
+
+/* ---- Chat bubble width (beta chat UI) ----------------------------------- */
+/* Narrow panels waste space on the 85% bubble cap — drop it entirely under
+   800px; colour + alignment distinguish the sides. Wider panels keep it. */
+#embed-messages { container-type: inline-size; }
+.chat-bubble-inner { max-width: 100%; }
+@container (min-width: 800px) {
+  .chat-bubble-inner { max-width: 85%; }
+}
 
 /* ---- Reusable button components ---- */
 /* Small button: inline actions, table rows, summary bars */

@@ -459,6 +459,8 @@
                                         this.currentContext.thread_id = newThreadId;
                                         this._activeThreadRfqId = ctx.id;
                                         this.pushContext();
+                                        // Name the thread after its RFQ (Chainlit parity).
+                                        this._autoNameThread(newThreadId);
                                     }
                                 }).catch(() => {});
                             }
@@ -846,6 +848,8 @@
                                 this.currentContext.thread_id = threadId;
                                 this._activeThreadRfqId = rfqId;
                                 this.pushContext();
+                                // Name the thread after its RFQ (Chainlit parity).
+                                this._autoNameThread(threadId);
                             } else if (resp.status === 409) {
                                 // Thread is already bound to another RFQ — start a fresh thread
                                 console.log('[bind] Thread already bound to another RFQ, starting fresh');
@@ -855,6 +859,20 @@
                             }
                         }).catch(() => {});
                     }
+                },
+
+                _autoNameThread(threadId) {
+                    // Beta embed only — name a freshly bound thread after its
+                    // RFQ: "RFQ-2026-1234 — Acme Pty Ltd". Best-effort.
+                    const ctx = this.currentContext;
+                    if (!ctx || ctx.view !== 'rfq_detail' || !ctx.id) return;
+                    const label = ctx.id + (ctx.customer ? ' — ' + ctx.customer : '');
+                    fetch('/chat-ui/threads/' + threadId, {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify({name: label}),
+                    }).catch(() => {});
                 }
             };
         }
