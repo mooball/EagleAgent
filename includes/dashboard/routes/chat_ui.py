@@ -426,6 +426,20 @@ async def set_current_thread(
     return JSONResponse({"ok": True, "thread_id": thread_id})
 
 
+@router.get("/active-runs")
+async def active_runs(user: dict = Depends(require_user)):
+    """Threads with a live turn/action — busy badges and post-reload recovery."""
+    await _guard(user)
+    live: list[str] = []
+    for tid, run in _active_runs.items():
+        if run["task"].done():
+            continue
+        thread = await transcript.get_thread(tid, user["email"])
+        if thread is not None:
+            live.append(tid)
+    return JSONResponse({"threads": live})
+
+
 @router.post("/threads")
 async def create_thread(
     request: Request, user: dict = Depends(require_user)

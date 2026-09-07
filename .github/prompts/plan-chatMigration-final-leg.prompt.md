@@ -3,7 +3,7 @@
 > Parent: [plan-chatMigration.prompt.md](plan-chatMigration.prompt.md)
 > Predecessor: [plan-chatMigration-beta.prompt.md](plan-chatMigration-beta.prompt.md) (VALIDATED)
 > Acceptance record: [parity-checklist-chat.md](parity-checklist-chat.md)
-> Status: **IN PROGRESS** (2026-09-07). P1 ✅, P2 ✅, Fix 1 ✅, Fix 2 planned.
+> Status: **IN PROGRESS** (2026-09-07). P1 ✅, P2 ✅, Fix 1 ✅, Fix 2 ✅.
 > Scope: everything between "beta validated" and "Chainlit deleted".
 
 ---
@@ -196,33 +196,40 @@ navigation froze (clicking back on A did nothing) until a server restart.
 
 ---
 
-## Fix 2 — Multi-run concurrency (3–4 simultaneous RFQ tasks) — PLANNED
+## Fix 2 — Multi-run concurrency (3–4 simultaneous RFQ tasks) ✅
 
 **Goal:** staff run several RFQ/thread actions at once and navigate freely.
-The server already supports this (per-thread `_active_runs`, per-thread 409
-busy checks, replay-on-connect queues); only the client models one global
+The server already supported this (per-thread `_active_runs`, per-thread 409
+busy checks, replay-on-connect queues); only the client modelled one global
 `running` flag and one visible stream.
 
-**Work items:**
-1. **Per-thread run state** — replace the global `running` boolean with
-   `runs = {thread_id: true}`. Composer / stop / action buttons enable or
-   disable per active thread; `sendAction`/`send` currently bail globally.
-2. **Single visible stream, switched on view** — leaving a thread closes its
-   EventSource (its queue buffers server-side; the run continues); returning
-   reconnects and replays. Browser limits (~6 HTTP/1.1 connections) make one
-   stream safer than N open ones. Remove the Fix 1 guard in
-   `chat-ui:action-started` that ignores a second run.
-3. **`loadMessages` per-thread** — guard becomes `runs[tid] && streamThreadId === tid`.
-4. **`GET /chat-ui/active-runs`** — list the user's running thread ids (scan
-   `_active_runs`, filter by ownership) so the thread list can show busy
-   spinners, and a fresh page load still shows what's running.
+**Done (2026-09-07):**
+1. **Per-thread run state** — `runs = {thread_id: true}` replaces the global
+   flag. Composer / stop / action buttons enable or disable per active thread;
+   `send`/`sendAction` bail only when the *active* thread is running.
+2. **Single visible stream, switched on view** — `showThread` closes the
+   EventSource when leaving a thread (the run continues server-side; its
+   queue buffers and replays on reconnect); the Fix 1 hijack guard in
+   `chat-ui:action-started` is gone — a second dashboard action attaches its
+   own stream immediately.
+3. **`loadMessages` per-thread** — guard is
+   `runs[tid] && streamThreadId === tid && hasLiveRows()`.
+4. **`GET /chat-ui/active-runs`** — lists the user's live threads (skips done
+   tasks, checks ownership). The embed reconciles `runs` from it on list
+   load, on thread open, after `done`, and on page load — so a reload shows
+   what's still running, stale entries clear, and the viewed live thread
+   re-attaches its stream automatically. Thread rows show a pulsing dot
+   while running.
 5. **Cosmetics** — the shell's `agentWorking` badge stays global (any
    background work); `agent_done` from one run may clear it while another
    runs (acceptable, or track a count later).
 
-**Known server-side assumptions to re-verify:** `setup_globals()` idempotence
-under concurrent dispatch, graph checkpointer per-thread isolation (both
-appear safe: `pg_pool` max 10, LangGraph per-thread configs).
+Tests: `tests/test_chat_ui_routes.py::TestActiveRuns` (owned/live filtering,
+empty state).
+
+**Known server-side assumptions:** `setup_globals()` idempotence under
+concurrent dispatch and graph checkpointer per-thread isolation appear safe
+(`pg_pool` max 10, LangGraph per-thread configs) — no changes needed.
 
 ---
 

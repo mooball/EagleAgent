@@ -121,8 +121,7 @@
     var composerBox = document.getElementById('embed-composer-box');
     var rows = {};
     var eventSource = null;
-    var running = false;
-    var runThreadId = null;    // thread whose turn is currently running
+    var runs = {};             // thread_id -> true while its turn/action is live
     var streamThreadId = null; // thread the open EventSource belongs to
     var lock = null;           // {rfq_id, thread_id} while on an RFQ
     var creatingThread = false;
@@ -272,9 +271,9 @@
     }
 
     function sendAction(a) {
-        if (!active || running) { return; }
+        if (!active || runs[active.id]) { return; }
         clearError();
-        setRunning(true);
+        setRunning(active.id, true);
         fetch('/chat-ui/threads/' + active.id + '/action', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -284,15 +283,14 @@
             return r.json().then(function (data) { return {ok: r.ok, data: data}; });
         }).then(function (res) {
             if (!res.ok) {
-                setRunning(false);
+                setRunning(active.id, false);
                 showError(res.data.error || 'Action failed.');
                 return;
             }
             // The bridge registered the run — drain its events.
-            runThreadId = active.id;
             openStream(active.id);
         }).catch(function () {
-            setRunning(false);
+            setRunning(active.id, false);
             showError('Network error — please retry.');
         });
     }
@@ -374,15 +372,16 @@
     function showError(msg) { errorEl.textContent = msg; errorEl.hidden = false; }
     function clearError() { errorEl.hidden = true; }
 
-    function setRunning(v) {
-        running = v;
-        if (!v) { runThreadId = null; }
-        sendBtn.disabled = v;
+    function setRunning(tid, v) {
+        if (v) { runs[tid] = true; } else { delete runs[tid]; }
+        var busy = !!(active && runs[active.id]);
+        sendBtn.disabled = busy;
         var actionBtns = document.querySelectorAll('[data-chat-action]');
         for (var i = 0; i < actionBtns.length; i++) {
-            actionBtns[i].disabled = v;
+            actionBtns[i].disabled = busy;
         }
         updateControls();
+        refreshRunBadges();
     }
 
     function updateControls() {
@@ -392,8 +391,8 @@
         lockBadge.hidden = !lock;
         // Clear shows on RFQ-locked threads and on the current thread.
         clearBtn.hidden = !(lock || (active && active.id === currentThreadId));
-        // Stop targets the running thread — never a thread being viewed.
-        stopBtn.hidden = !(running && active && active.id === runThreadId);
+        // Stop targets the thread being viewed, and only while it is running.
+        stopBtn.hidden = !(active && runs[active.id]);
     }
 
     function setCurrentThread(tid) {
@@ -473,6 +472,12 @@
             sub.textContent = t.rfq_title;
             line2.appendChild(sub);
         }
+        if (runs[t.id]) {
+            var spin = document.createElement('span');
+            spin.className = 'shrink-0 inline-block size-2 rounded-full bg-blue-500 animate-pulse';
+            spin.title = 'Running…';
+            line2.appendChild(spin);
+        }
         var agent = document.createElement('span');
         agent.className = 'ml-auto shrink-0 text-xs text-gray-400 dark:text-gray-500';
         agent.textContent = agentLabel(t.agent);
@@ -530,6 +535,11 @@
         });
     }
 
+    function refreshRunBadges() {
+        // Thread rows carry running dots — re-render while the list is shown.
+        if (!listEl.hidden) { renderList(); }
+    }
+
     function showList() {
         active = null;
         chatEl.hidden = true;
@@ -542,10 +552,10 @@
     }
 
     function loadMessages(tid) {
-        // Reloading the running thread's history mid-stream would blank its
+        // Reloading a running thread's history mid-stream would blank its
         // live rows; any other thread loads normally, so navigating away and
-        // back while a turn runs still shows the right conversation.
-        if (running && tid === runThreadId && streamThreadId === tid && hasLiveRows()) { return; }
+        // back while turns run still shows the right conversation.
+        if (runs[tid] && streamThreadId === tid && hasLiveRows()) { return; }
         fetch('/chat-ui/threads/' + tid + '/messages', {credentials: 'same-origin'})
             .then(function (r) { return r.json(); })
             .then(function (data) {
@@ -563,13 +573,24 @@
             // included) so a running thread's stream can't bleed into this one.
             messages.innerHTML = '';
             rows = {};
+            // One visible stream at a time. Leaving a running thread closes
+            // its EventSource — the run continues server-side and its events
+            // buffer, then replay when the stream reconnects.
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+                streamThreadId = null;
+            }
         }
         active = t;
         chatEl.hidden = false;
         listEl.hidden = true;
         nameEl.textContent = t.name || 'New chat';
         loadMessages(t.id);
+        // If this thread has a live run but no stream, attach to replay.
+        if (runs[t.id] && !eventSource) { openStream(t.id); }
         updateControls();
+        refreshActiveRuns();
         composer.focus();
     }
 
@@ -639,9 +660,9 @@
         if (eventSource) { eventSource.close(); }
         streamThreadId = tid;
         eventSource = new EventSource('/chat-ui/threads/' + tid + '/stream');
-        // Only the thread being viewed renders events. The stream stays open
-        // while you look at other threads so the run's completion (done) is
-        // never missed; on return, history covers what scrolled past.
+        // Only the thread being viewed renders events; showThread closes the
+        // stream when you look elsewhere. Runs continue server-side and their
+        // queues replay on reconnect, so completion is never missed.
         var visible = function () { return active && active.id === streamThreadId; };
 
         eventSource.addEventListener('message_start', function (e) {
@@ -691,22 +712,22 @@
         eventSource.addEventListener('done', function () {
             if (eventSource) { eventSource.close(); eventSource = null; }
             streamThreadId = null;
-            runThreadId = null;
-            setRunning(false);
-            if (active) { loadMessages(active.id); }
+            setRunning(tid, false);
+            if (active && active.id === tid) { loadMessages(tid); }
+            refreshActiveRuns();
         });
     }
 
     function send() {
         if (!active) { return; }
-        if (running) { return; }  // one turn at a time in this panel
+        if (runs[active.id]) { return; }  // one turn at a time per thread
         var text = composer.value.trim();
         var readyFiles = pendingFiles.filter(function (f) { return f.status === 'done' && f.id; });
         if (!text && !readyFiles.length) { return; }
         clearError();
         composer.value = '';
         autoresizeComposer();
-        setRunning(true);
+        setRunning(active.id, true);
         var payload = {text: text};
         if (pendingIntent) { payload.intent = pendingIntent.name; }
         if (readyFiles.length) {
@@ -721,7 +742,7 @@
             return r.json().then(function (data) { return {ok: r.ok, data: data}; });
         }).then(function (res) {
             if (!res.ok) {
-                setRunning(false);
+                setRunning(active.id, false);
                 showError(res.data.error || 'Failed to send message.');
                 composer.value = text;
                 return;
@@ -737,10 +758,9 @@
             pendingIntent = null;
             renderIntentChip();
             messages.scrollTop = messages.scrollHeight;
-            runThreadId = active.id;
             openStream(active.id);
         }).catch(function () {
-            setRunning(false);
+            setRunning(active.id, false);
             showError('Network error — please retry.');
             composer.value = text;
         });
@@ -749,7 +769,33 @@
     function refreshThreads() {
         fetch('/chat-ui/embed-threads', {credentials: 'same-origin'})
             .then(function (r) { return r.json(); })
-            .then(function (data) { threads = data.threads || []; renderList(); })
+            .then(function (data) {
+                threads = data.threads || [];
+                renderList();
+                refreshActiveRuns();
+            })
+            .catch(function () {});
+    }
+
+    function refreshActiveRuns() {
+        // Server truth for live runs — reconciles state after reloads and
+        // after closing a stream to watch a different thread.
+        fetch('/chat-ui/active-runs', {credentials: 'same-origin'})
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                var live = {};
+                (data.threads || []).forEach(function (tid) { live[tid] = true; });
+                var changed = Object.keys(runs).some(function (tid) { return !live[tid]; })
+                    || (data.threads || []).some(function (tid) { return !runs[tid]; });
+                runs = live;
+                if (changed) {
+                    updateControls();
+                    refreshRunBadges();
+                }
+                // The viewed thread is live but has no stream (fresh page
+                // load, or closed to watch another thread) — reattach.
+                if (active && runs[active.id] && !eventSource) { openStream(active.id); }
+            })
             .catch(function () {});
     }
 
@@ -881,13 +927,7 @@
         if (!active || active.id !== tid) {
             openThreadById(tid);
         }
-        if (running && runThreadId && runThreadId !== tid) {
-            // Another turn is already streaming — don't hijack its stream.
-            // This run still executes server-side and its steps persist.
-            return;
-        }
-        runThreadId = tid;
-        setRunning(true);
+        setRunning(tid, true);
         openStream(tid);
     });
     document.addEventListener('chat-ui:action-failed', function (e) {

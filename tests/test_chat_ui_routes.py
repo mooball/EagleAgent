@@ -507,3 +507,41 @@ class TestUploads:
         kwargs = chat_ui._run_task.call_args.kwargs
         assert kwargs["files"][0]["processed_type"] == "text"
         assert kwargs["file_metadata"][0]["name"] == "a.txt"
+
+
+class TestActiveRuns:
+    """GET /chat-ui/active-runs: busy badges + post-reload run recovery."""
+
+    def test_lists_only_owned_live_runs(self, client, monkeypatch):
+        import asyncio
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        mocks = _patch_transcript(monkeypatch)
+        done_task = MagicMock()
+        done_task.done.return_value = True
+        live_task = MagicMock()
+        live_task.done.return_value = False
+        monkeypatch.setattr(chat_ui, "_active_runs", {
+            "owned-live": {"queue": asyncio.Queue(), "task": live_task},
+            "other-live": {"queue": asyncio.Queue(), "task": live_task},
+            "owned-done": {"queue": asyncio.Queue(), "task": done_task},
+        })
+
+        async def fake_get_thread(tid, email):
+            return {"id": tid} if tid == "owned-live" else None
+
+        mocks["get_thread"].side_effect = fake_get_thread
+        _login(client)
+        resp = client.get("/chat-ui/active-runs")
+        assert resp.status_code == 200
+        assert resp.json()["threads"] == ["owned-live"]
+
+    def test_empty_when_nothing_running(self, client, monkeypatch):
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        _patch_transcript(monkeypatch)
+        monkeypatch.setattr(chat_ui, "_active_runs", {})
+        _login(client)
+        resp = client.get("/chat-ui/active-runs")
+        assert resp.status_code == 200
+        assert resp.json()["threads"] == []
