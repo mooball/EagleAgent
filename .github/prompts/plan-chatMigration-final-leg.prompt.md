@@ -3,7 +3,9 @@
 > Parent: [plan-chatMigration.prompt.md](plan-chatMigration.prompt.md)
 > Predecessor: [plan-chatMigration-beta.prompt.md](plan-chatMigration-beta.prompt.md) (VALIDATED)
 > Acceptance record: [parity-checklist-chat.md](parity-checklist-chat.md)
-> Status: **IN PROGRESS** (2026-09-07). P1 ✅, P2 ✅, P3 ✅, P4 ✅, P5 ✅, Fix 1 ✅, Fix 2 ✅.
+> Status: **IN PROGRESS** (updated 2026-09-08). P1 ✅, P2 ✅, P3 ✅, P4 ✅, P5 ✅, Fix 1 ✅, Fix 2 ✅, Polish ✅, Review ✅.
+> Remaining: **P6** (flip the flag) and **P7** (delete Chainlit). Post-plan
+> hardening shipped as separate commits — see "Post-plan work" below.
 > Scope: everything between "beta validated" and "Chainlit deleted".
 
 ---
@@ -335,6 +337,56 @@ which kill in-flight runs — `_active_runs` is in-process.
 
 ---
 
+## Post-plan work (shipped 2026-09-07 → 2026-09-08)
+
+Everything below landed after the 2026-09-07 plan update. P1–P5, Fix 1 and
+Fix 2 above are unchanged; this records the stability/hardening and polish
+that followed.
+
+### Production stability fixes (separate commits, unrelated to the migration)
+
+- **Hallucinated supplier ids** (`sup_1597`-style 500s) — `_is_valid_uuid`
+  guards on every RFQ write path (`routes/rfqs.py`, `tools/rfq_crud.py`):
+  invalid ids are dropped and the supplier is re-matched by name;
+  `manage_rfq` docstrings say "NEVER invent supplier_id". Prod repaired with
+  `scripts/repair_rfq_supplier_ids.py` (149 rows, 2 RFQs; verified 0
+  remaining) — applied with approval.
+- **Deadlocked bulk writes** — `_commit_bulk_with_retry` +
+  `_BulkShortCircuit` in `routes/rfqs.py` retry `deadlock_detected` errors.
+- **Inactive-customer auto-linking** (`d192e4e`) — root-caused RFQ-2026-1854's
+  link to the deactivated "Boddington Gold-Copper Mine & Processing Plant":
+  Gmail sender matching (exact branch + domain index) returned active
+  *contacts* of inactive *customers*, and the addon `create_rfq` used the
+  linked `customer_id` without an `isinactive` guard. Fixes:
+  `matching.py` skips contacts whose parent customer/supplier is inactive
+  and re-verifies domain-index entries; `create_rfq` rejects with 400 on an
+  inactive customer; `get_email_context` now carries an `inactive` flag.
+  (Client relinked 2026-1854 manually — no data repair shipped.)
+
+### UI parity polish (`7623e99`)
+
+- Emoji icons → flat Heroicons (outline) in action buttons and menus.
+- Markdown parity: `breaks: true` list rendering, scrollable `nowrap` tables,
+  code blocks.
+- Responsive chat-bubble width via container queries (`chat-bubble-inner`).
+- RFQ detail "Chat" button now navigates the panel (`_navigateChat`).
+
+### Beta dispatch audit — review fixes (`42b8c8a`)
+
+Close-out of the code review of the chat-ui branch:
+- dispatch seeds `ctx.active_graph`; registry handlers receive
+  `(ctx, payload=…)`;
+- active-runs and thread-action endpoints check thread ownership;
+- stream-guard regression restored; checkpoint backfill moved off the hot
+  `/messages` path.
+
+### Chainlit-transport guard (`fb2e4d4`)
+
+- `_autoNameThread` exits when the agent-iframe is present — auto-naming
+  applies only to the chat-ui transport.
+
+---
+
 ## P6 — Flip the flag (no code change)
 
 1. Set `CHAT_UI_BETA_USERS` to all active users on Railway.
@@ -395,7 +447,8 @@ tidy-ups (`createdAt` → `timestamptz`, drop Chainlit-only columns).
 1. Long-running C-A actions: keep the dashboard button as the sole busy
    indicator (today's behaviour), or mirror agent-working in the panel header?
    *Proposed: keep today's behaviour.*
-2. C-B buttons on historical messages: render active, or disable on old
-   messages? *Proposed: render active.*
+2. ~~C-B buttons on historical messages: render active, or disable on old
+   messages?~~ *Resolved (2026-09-07): stay live — rendered active from
+   persisted step metadata.*
 3. Does `/api/stop-agent` survive P7, or is `/chat-ui/threads/{id}/stop` the only
    stop path? *Proposed: the latter.*
