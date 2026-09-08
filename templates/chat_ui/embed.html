@@ -276,15 +276,18 @@
             el.remove();
         });
         function clean(node) {
-            Array.prototype.slice.call(node.children || []).forEach(function (child) {
+            var child = node.firstElementChild;
+            while (child) {
+                var next = child.nextElementSibling;
                 var tag = (child.tagName || '').toUpperCase();
                 if (!HTML_ALLOWED[tag]) {
                     // Unwrap disallowed tags — keep their text content.
                     var frag = document.createDocumentFragment();
                     while (child.firstChild) { frag.appendChild(child.firstChild); }
+                    var firstUnwrapped = frag.firstElementChild;
                     child.replaceWith(frag);
-                    clean(node);
-                    return;
+                    child = firstUnwrapped || next;
+                    continue;
                 }
                 Array.prototype.slice.call(child.attributes || []).forEach(function (attr) {
                     var name = attr.name.toLowerCase();
@@ -299,7 +302,8 @@
                     child.removeAttribute(name);
                 });
                 clean(child);
-            });
+                child = next;
+            }
         }
         clean(root);
         return root.innerHTML;
@@ -405,13 +409,32 @@
         return el;
     }
 
-    function setText(entry, text) {
-        entry._text = String(text || '');
+    function paint(entry) {
         if (entry.bubble) {
             entry.bubble.innerHTML = renderMarkdown(entry._text);
+            if (entry._files && entry._files.length) {
+                renderAttachments(entry.bubble, entry._files);
+            }
         } else {
             entry.div.textContent = entry._text;
         }
+    }
+
+    function setText(entry, text) {
+        entry._text = String(text || '');
+        if (entry._raf) { cancelAnimationFrame(entry._raf); entry._raf = null; }
+        paint(entry);
+    }
+
+    // Streaming repaints coalesce to one per frame: each token would otherwise
+    // re-parse and re-sanitise the whole message.
+    function streamText(entry, text) {
+        entry._text = String(text || '');
+        if (entry._raf) { return; }
+        entry._raf = requestAnimationFrame(function () {
+            entry._raf = null;
+            paint(entry);
+        });
     }
 
     function renderAttachments(bubble, files) {
@@ -438,6 +461,13 @@
         });
     }
 
+    // Attachments live on the entry so a later repaint doesn't drop them.
+    function attachFiles(entry, files) {
+        if (!files || !files.length || !entry.bubble) { return; }
+        entry._files = (entry._files || []).concat(files);
+        renderAttachments(entry.bubble, files);
+    }
+
     function renderHistory() {
         // Rows still streaming are reused in place: a history reload mid-run
         // must not drop them, nor reorder them away from their position.
@@ -456,10 +486,10 @@
             }
             if (step.type === 'user_message') {
                 setText(getRow(step.id, USER_EMAIL, false), step.output);
-                renderAttachments(rows[step.id].bubble, step.files);
+                attachFiles(rows[step.id], step.files);
             } else if (step.type === 'assistant_message' && (step.output || (step.files && step.files.length))) {
                 setText(getRow(step.id, step.name || 'EagleAgent', false), step.output);
-                renderAttachments(rows[step.id].bubble, step.files);
+                attachFiles(rows[step.id], step.files);
                 renderActions(
                     rows[step.id],
                     (step.metadata && step.metadata.actions) || []
@@ -778,13 +808,13 @@
             entry._live = true;
             if (d.content) { setText(entry, d.content); }
             if (d.actions && d.actions.length) { renderActions(entry, d.actions); }
-            if (d.files && d.files.length) { renderAttachments(entry.bubble, d.files); }
+            if (d.files && d.files.length) { attachFiles(entry, d.files); }
         });
         eventSource.addEventListener('token', function (e) {
             var d = JSON.parse(e.data);
             if (!visible()) { return; }
             var row = rows[d.id];
-            if (row) { setText(row, (row._text || '') + d.text); }
+            if (row) { streamText(row, (row._text || '') + d.text); }
             messages.scrollTop = messages.scrollHeight;
         });
         eventSource.addEventListener('message_update', function (e) {
@@ -857,7 +887,7 @@
             var uid = 'user-' + Date.now();
             var entry = getRow(uid, USER_EMAIL, false);
             setText(entry, text);
-            renderAttachments(entry.bubble, readyFiles.map(function (f) {
+            attachFiles(entry, readyFiles.map(function (f) {
                 return {id: f.id, type: f.type, name: f.name, url: f.url, mime: f.mime, size: f.size};
             }));
             pendingFiles = [];

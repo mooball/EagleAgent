@@ -81,9 +81,14 @@ def get_action(name: str) -> Optional[Action]:
 async def dispatch_action(
     action_name: str,
     ctx: ChatContext | None = None,
+    *,
+    payload: dict | None = None,
     **kwargs: Any,
 ) -> None:
     """Dispatch an action by name after checking role permissions.
+
+    Handlers receive the payload both whole (``payload=``) and spread as
+    keyword arguments, so either signature style works.
 
     Raises ValueError if the action is unknown.
     Sends a permission-denied message if the user lacks access.
@@ -104,7 +109,13 @@ async def dispatch_action(
             )
             return
 
-    await action.handler(ctx, **kwargs)
+    call_kwargs = dict(kwargs)
+    if payload:
+        call_kwargs.setdefault("payload", payload)
+        for key, value in payload.items():
+            call_kwargs.setdefault(key, value)
+
+    await action.handler(ctx, **call_kwargs)
 
 
 # ---------------------------------------------------------------------------

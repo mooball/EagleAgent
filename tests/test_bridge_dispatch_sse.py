@@ -126,9 +126,9 @@ class TestDispatchActionToThread:
         assert run["queue"].get_nowait()["event"] == "done"
         assert "t1" not in chat_ui._active_runs
 
-    async def test_registry_handler_receives_ctx_first(self, monkeypatch):
-        """Registry actions (new_conversation, cancel_job…) have the
-        (ctx, payload=…) shape — dispatch must not call them RFQ-style."""
+    async def test_registry_action_goes_through_permission_check(self, monkeypatch):
+        """Registry actions (new_conversation, cancel_job…) must not skip the
+        admin_only gate the Chainlit path enforces."""
         monkeypatch.setattr(
             "includes.chat.transcript.get_thread",
             AsyncMock(return_value={"id": "t1"}),
@@ -136,16 +136,8 @@ class TestDispatchActionToThread:
         _patch_scratch(monkeypatch)
         _patch_graph(monkeypatch)
 
-        calls = []
-
-        async def registry_handler(ctx, payload=None):
-            calls.append((ctx.thread_id, payload))
-
-        monkeypatch.setattr(
-            chat_ui,
-            "_action_handler",
-            lambda name: (registry_handler, "registry"),
-        )
+        dispatched = AsyncMock()
+        monkeypatch.setattr("includes.chat.actions.dispatch_action", dispatched)
 
         result = await chat_ui.dispatch_action_to_thread(
             USER, "t1", "cancel_job", {"job_id": "j1"}
@@ -153,8 +145,71 @@ class TestDispatchActionToThread:
         assert result["started"] is True
         run = chat_ui._active_runs["t1"]
         await run["task"]
-        assert calls == [("t1", {"job_id": "j1"})]
+
+        dispatched.assert_awaited_once()
+        assert dispatched.await_args.args[0] == "cancel_job"
+        assert dispatched.await_args.kwargs["payload"] == {"job_id": "j1"}
         assert run["queue"].get_nowait()["event"] == "done"
+
+    async def test_admin_only_action_denied_for_non_admin(self, monkeypatch):
+        monkeypatch.setattr(
+            "includes.chat.transcript.get_thread",
+            AsyncMock(return_value={"id": "t1"}),
+        )
+        _patch_scratch(monkeypatch)
+        _patch_graph(monkeypatch)
+        monkeypatch.setattr(
+            "includes.chat.actions.config.get_admin_emails",
+            lambda: ["admin@eagle-exports.com"],
+        )
+
+        result = await chat_ui.dispatch_action_to_thread(
+            USER, "t1", "research_product_info", {}
+        )
+        assert result["started"] is True
+        run = chat_ui._active_runs["t1"]
+        await run["task"]
+
+        events = []
+        while not run["queue"].empty():
+            events.append(run["queue"].get_nowait())
+        said = [e for e in events if e["event"] == "message_start"]
+        assert said and "permission" in said[0]["data"]["content"].lower()
+
+    async def test_dispatch_uses_the_thread_agent(self, monkeypatch):
+        """An action on a research thread must not re-enter the eagle graph."""
+        monkeypatch.setattr(
+            "includes.chat.transcript.get_thread",
+            AsyncMock(return_value={"id": "t1", "metadata": {"agent": "research"}}),
+        )
+        _patch_scratch(monkeypatch)
+        monkeypatch.setattr("includes.graph.setup_globals", AsyncMock())
+        seen = []
+
+        def fake_resolve(key):
+            seen.append(key)
+            spec = MagicMock()
+            spec.key = key or "eagle"
+            spec.graph.return_value = MagicMock()
+            return spec
+
+        monkeypatch.setattr(
+            "includes.dashboard.routes.chat_ui.resolve", fake_resolve
+        )
+
+        captured = {}
+
+        async def fake_handler(payload, ctx):
+            captured["agent"] = ctx.agent
+
+        monkeypatch.setattr(
+            chat_ui, "_action_handler", lambda name: (fake_handler, "rfq")
+        )
+
+        await chat_ui.dispatch_action_to_thread(USER, "t1", "x", {})
+        await chat_ui._active_runs["t1"]["task"]
+        assert "research" in seen
+        assert captured["agent"] == "research"
 
 
 class TestHandleBridgeRequestRouting:

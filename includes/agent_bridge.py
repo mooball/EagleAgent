@@ -251,7 +251,7 @@ async def dispatch_action(
             try:
                 from includes.chat.context_chainlit import ChainlitChatContext
                 await dispatch_custom_action(
-                    action_name, ChainlitChatContext.from_session(), **payload
+                    action_name, ChainlitChatContext.from_session(), payload=payload
                 )
                 return {"success": True}
             except Exception as e:
@@ -301,7 +301,7 @@ async def handle_bridge_request(request: Request) -> Response:
     # RFQ's bound thread. The dashboard adds chat_ui + _thread_id hints; only
     # allowlisted users can take this path — everyone else falls through to
     # the Chainlit session dispatch below, byte-for-byte unchanged.
-    if body.get("chat_ui") and payload.get("_thread_id"):
+    if body.get("chat_ui") and isinstance(payload, dict) and payload.get("_thread_id"):
         from config import config
 
         if user["email"].lower() in config.get_beta_chat_users():

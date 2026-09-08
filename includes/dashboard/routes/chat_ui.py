@@ -186,17 +186,36 @@ async def _steps_with_files(thread_id: str) -> list[dict]:
     return steps
 
 
-async def _backfill_checkpoint_steps(thread_id: str, agent_key: str) -> None:
+def _transcript_looks_incomplete(steps: list[dict]) -> bool:
+    """True when the transcript ends mid-turn, the signature of a lost run.
+
+    A killed run leaves either an unanswered user turn or the empty assistant
+    step ``say()`` persists before streaming into it.
+    """
+    if not steps:
+        return False
+    last = steps[-1]
+    if last.get("type") == "user_message":
+        return True
+    return (
+        last.get("type") == "assistant_message"
+        and not (last.get("output") or "").strip()
+    )
+
+
+async def _backfill_checkpoint_steps(
+    thread_id: str, agent_key: str, existing_steps: list[dict]
+) -> bool:
     """P4 — recover transcript gaps left by deploys/restarts.
 
     The LangGraph checkpoint is the source of truth; steps fall behind when
     the process dies mid-stream (the in-process queue never drains). Any AI
     responses present in the checkpoint but missing from the transcript are
     persisted as ``recovered_from_checkpoint`` steps. Best-effort — never
-    blocks the messages endpoint.
+    blocks the messages endpoint. Returns True when something was written.
     """
     if thread_id in _active_runs:
-        return  # a live run owns the transcript right now
+        return False  # a live run owns the transcript right now
 
     from includes.chat.streaming_logic import extract_ai_text, plan_resume_backfill
 
@@ -210,13 +229,13 @@ async def _backfill_checkpoint_steps(thread_id: str, agent_key: str) -> None:
         )
         messages = (ckpt.values or {}).get("messages") if ckpt else None
         if not messages:
-            return
+            return False
 
-        existing = await transcript.get_steps(thread_id)
-        missing = plan_resume_backfill(messages, existing)
+        missing = plan_resume_backfill(messages, existing_steps)
         if not missing:
-            return
+            return False
 
+        written = 0
         for ai_msg in missing:
             text = extract_ai_text(ai_msg)
             if not text:
@@ -228,12 +247,15 @@ async def _backfill_checkpoint_steps(thread_id: str, agent_key: str) -> None:
                 output=text,
                 metadata={"recovered_from_checkpoint": True},
             )
+            written += 1
         logger.info(
             "[chat-ui] back-filled %d checkpoint message(s) for thread %s",
-            len(missing), thread_id[:8],
+            written, thread_id[:8],
         )
+        return written > 0
     except Exception as exc:
         logger.warning("[chat-ui] checkpoint backfill failed: %s", exc)
+        return False
 
 
 # ── Run orchestration ──────────────────────────────────────────────────────
@@ -254,6 +276,7 @@ async def _run_task(
     from includes.graph import setup_globals
     from includes.dashboard.context import format_context_for_prompt
 
+    ctx: SseChatContext | None = None
     try:
         await setup_globals()
         graph = resolve(agent_key).graph()
@@ -308,7 +331,7 @@ async def _run_task(
         )
     finally:
         # P3: persist scratch before announcing completion.
-        if "ctx" in locals():
+        if ctx is not None:
             await ctx.flush_scratch()
         await queue.put({"event": "done", "data": {}})
         _active_runs.pop(thread_id, None)
@@ -359,7 +382,10 @@ async def _execute_action(
         handler, kind = resolved
         with chat_context(ctx):
             if kind == "registry":
-                await handler(ctx, payload=payload)
+                # Goes through dispatch_action so the admin_only gate applies.
+                from includes.chat.actions import dispatch_action
+
+                await dispatch_action(action_name, ctx, payload=payload)
             else:
                 await handler(payload, ctx)
     except Exception:
@@ -407,12 +433,14 @@ async def dispatch_action_to_thread(
         }
 
     await setup_globals()
-    graph = resolve("eagle").graph()
+    metadata = thread.get("metadata") or {}
+    agent_spec = resolve(metadata.get("agent", "") if isinstance(metadata, dict) else "")
+    graph = agent_spec.graph()
     queue: asyncio.Queue = asyncio.Queue()
     ctx = SseChatContext(
         thread_id=thread_id,
         user_email=user["email"],
-        agent="eagle",
+        agent=agent_spec.key,
         queue=queue,
         cancel_key=_cancel_key(thread_id),
     )
@@ -498,14 +526,9 @@ async def set_current_thread(
 async def active_runs(user: dict = Depends(require_user)):
     """Threads with a live turn/action — busy badges and post-reload recovery."""
     await _guard(user)
-    live: list[str] = []
-    for tid, run in _active_runs.items():
-        if run["task"].done():
-            continue
-        thread = await transcript.get_thread(tid, user["email"])
-        if thread is not None:
-            live.append(tid)
-    return JSONResponse({"threads": live})
+    live = [tid for tid, run in _active_runs.items() if not run["task"].done()]
+    owned = await transcript.filter_owned_threads(live, user["email"]) if live else []
+    return JSONResponse({"threads": owned})
 
 
 @router.post("/threads")
@@ -573,9 +596,13 @@ async def thread_messages(
 ):
     await _guard(user)
     thread = await _owned_thread(thread_id, user)
-    agent_key = (thread.get("metadata") or {}).get("agent", "eagle")
-    await _backfill_checkpoint_steps(thread_id, agent_key)
+    metadata = thread.get("metadata") or {}
+    agent_key = metadata.get("agent", "eagle") if isinstance(metadata, dict) else "eagle"
     steps = await _steps_with_files(thread_id)
+    # Loading a checkpoint is expensive, so only when the transcript looks cut short.
+    if _transcript_looks_incomplete(steps):
+        if await _backfill_checkpoint_steps(thread_id, agent_key, steps):
+            steps = await _steps_with_files(thread_id)
     return JSONResponse({"steps": steps})
 
 

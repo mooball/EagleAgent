@@ -518,7 +518,7 @@ class TestActiveRuns:
         import asyncio
         import includes.dashboard.routes.chat_ui as chat_ui
 
-        mocks = _patch_transcript(monkeypatch)
+        _patch_transcript(monkeypatch)
         done_task = MagicMock()
         done_task.done.return_value = True
         live_task = MagicMock()
@@ -529,14 +529,19 @@ class TestActiveRuns:
             "owned-done": {"queue": asyncio.Queue(), "task": done_task},
         })
 
-        async def fake_get_thread(tid, email):
-            return {"id": tid} if tid == "owned-live" else None
+        async def fake_filter(ids, email):
+            return [tid for tid in ids if tid == "owned-live"]
 
-        mocks["get_thread"].side_effect = fake_get_thread
+        filter_owned = AsyncMock(side_effect=fake_filter)
+        monkeypatch.setattr(
+            "includes.chat.transcript.filter_owned_threads", filter_owned
+        )
         _login(client)
         resp = client.get("/chat-ui/active-runs")
         assert resp.status_code == 200
         assert resp.json()["threads"] == ["owned-live"]
+        # Finished runs never reach the ownership query.
+        assert sorted(filter_owned.await_args.args[0]) == ["other-live", "owned-live"]
 
     def test_empty_when_nothing_running(self, client, monkeypatch):
         import includes.dashboard.routes.chat_ui as chat_ui
@@ -605,7 +610,13 @@ class TestCheckpointBackfill:
         import includes.dashboard.routes.chat_ui as chat_ui
         from langchain_core.messages import AIMessage
 
-        _patch_transcript(monkeypatch)
+        _patch_transcript(
+            monkeypatch,
+            get_steps=AsyncMock(return_value=[
+                {"id": "s1", "type": "user_message", "name": "u",
+                 "output": "hi", "metadata": {}},
+            ]),
+        )
         task = MagicMock()
         task.done.return_value = False
         monkeypatch.setattr(
@@ -617,6 +628,43 @@ class TestCheckpointBackfill:
         resp = client.get("/chat-ui/threads/t1/messages")
         assert resp.status_code == 200
         graph.aget_state.assert_not_awaited()
+
+    def test_completed_transcript_skips_checkpoint_load(self, client, monkeypatch):
+        """The common case must not pay for a checkpoint read."""
+        from langchain_core.messages import AIMessage
+
+        _patch_transcript(
+            monkeypatch,
+            get_steps=AsyncMock(return_value=[
+                {"id": "s1", "type": "user_message", "name": "u",
+                 "output": "hi", "metadata": {}},
+                {"id": "s2", "type": "assistant_message", "name": "EagleAgent",
+                 "output": "done", "metadata": {}},
+            ]),
+        )
+        graph = self._patch_graph_state(monkeypatch, messages=[AIMessage(content="done")])
+        _login(client)
+        resp = client.get("/chat-ui/threads/t1/messages")
+        assert resp.status_code == 200
+        graph.aget_state.assert_not_awaited()
+
+    def test_empty_assistant_step_triggers_backfill(self, client, monkeypatch):
+        """A run killed mid-stream leaves the empty step say() persisted."""
+        from langchain_core.messages import AIMessage
+
+        mocks = _patch_transcript(
+            monkeypatch,
+            get_steps=AsyncMock(return_value=[
+                {"id": "s1", "type": "assistant_message", "name": "EagleAgent",
+                 "output": "", "metadata": {}},
+            ]),
+        )
+        graph = self._patch_graph_state(monkeypatch, messages=[AIMessage(content="recovered")])
+        _login(client)
+        resp = client.get("/chat-ui/threads/t1/messages")
+        assert resp.status_code == 200
+        graph.aget_state.assert_awaited_once()
+        assert mocks["create_step"].call_count == 1
 
 
 class TestEmbedWelcome:

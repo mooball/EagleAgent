@@ -101,11 +101,27 @@ def build_domain_index(session: Session) -> dict[str, list[dict]]:
         Contact.email, Contact.supplier_id, Contact.customer_id
     ).filter(Contact.email.isnot(None), Contact.isinactive == False).all()
 
+    # Parent entities must be active too — an active contact can still belong
+    # to a deactivated customer/supplier, and that entity must never feed the
+    # domain index (otherwise every email from its domain auto-links to it).
+    customer_ids = {c.customer_id for c in contacts if c.customer_id}
+    supplier_ids = {c.supplier_id for c in contacts if c.supplier_id}
+    active_customer_ids = {
+        cid for (cid,) in session.query(Customer.id).filter(
+            Customer.id.in_(customer_ids), Customer.isinactive == False
+        ).all()
+    } if customer_ids else set()
+    active_supplier_ids = {
+        sid for (sid,) in session.query(Supplier.id).filter(
+            Supplier.id.in_(supplier_ids), Supplier.isinactive == False
+        ).all()
+    } if supplier_ids else set()
+
     for c in contacts:
         domain = extract_domain(c.email)
-        if c.supplier_id:
+        if c.supplier_id and c.supplier_id in active_supplier_ids:
             _add(domain, "supplier", c.supplier_id, None)
-        elif c.customer_id:
+        elif c.customer_id and c.customer_id in active_customer_ids:
             _add(domain, "customer", c.customer_id, None)
 
     # 2. Customer emails
@@ -243,11 +259,11 @@ def find_all_matches(
             from includes.dashboard.supplier_dedup import resolve_supplier_id
             supplier_id = resolve_supplier_id(session, c.supplier_id)
             supplier = session.get(Supplier, supplier_id)
-            if supplier:
+            if supplier and not supplier.isinactive:
                 _add("supplier", supplier.id, supplier.name, "exact")
         elif c.customer_id:
             customer = session.get(Customer, c.customer_id)
-            if customer:
+            if customer and not customer.isinactive:
                 _add("customer", c.customer_id, customer.companyname, "exact")
 
     # Customers with this email
@@ -281,16 +297,21 @@ def find_all_matches(
     if not entries:
         return empty
 
-    # Collect all unique entities from domain entries
+    # Collect all unique entities from domain entries.
+    # Re-verify each entity is still active — callers may pass a domain index
+    # built earlier in a batch (or from a stale cache).
     for entry in entries:
         ename = entry.get("name")
-        if not ename:
-            if entry["type"] == "supplier":
-                supplier = session.get(Supplier, entry["id"])
-                ename = supplier.name if supplier else "Supplier"
-            else:
-                customer = session.get(Customer, entry["id"])
-                ename = customer.companyname if customer else "Customer"
+        if entry["type"] == "supplier":
+            supplier = session.get(Supplier, entry["id"])
+            if not supplier or supplier.isinactive:
+                continue
+            ename = ename or supplier.name
+        else:
+            customer = session.get(Customer, entry["id"])
+            if not customer or customer.isinactive:
+                continue
+            ename = ename or customer.companyname
         _add(entry["type"], entry["id"], ename, "domain")
 
     if not candidates:
