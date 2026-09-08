@@ -242,6 +242,7 @@ def get_email_context(body: ContextRequest, user: AddonUser):
                     result.customer = {
                         "id": str(customer.id),
                         "name": customer.companyname,
+                        "inactive": bool(customer.isinactive),
                     }
             except Exception:
                 pass
@@ -787,6 +788,15 @@ def create_rfq(body: CreateRfqRequest, user: AddonUser):
         session2 = get_session()
         try:
             customer = session2.query(Customer).get(tracking.customer_id)
+            # Never create an RFQ against an inactive customer — the email may
+            # have been auto-linked before the customer was deactivated.
+            if customer and customer.isinactive:
+                return JSONResponse(
+                    {"status": "error",
+                     "message": f"Linked customer '{customer.companyname}' is inactive. "
+                                "Link this email to an active customer first."},
+                    status_code=400,
+                )
             customer_name = customer.companyname if customer else "Unknown"
 
             rfq = _create_rfq_sync(

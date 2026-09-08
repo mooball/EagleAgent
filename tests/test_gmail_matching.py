@@ -7,6 +7,8 @@ from includes.gmail.matching import (
     extract_domain,
     extract_domain_from_url,
     match_by_subject,
+    build_domain_index,
+    find_all_matches,
     _GENERIC_DOMAINS,
 )
 
@@ -120,3 +122,144 @@ class TestGenericDomains:
 
     def test_icloud_excluded(self):
         assert "icloud.com" in _GENERIC_DOMAINS
+
+
+class TestInactiveParentFiltering:
+    """Active contacts of INACTIVE customers/suppliers must never match.
+
+    Regression: RFQ-2026-1854 was auto-linked to a deactivated customer
+    because an active contact still pointed at it.
+    """
+
+    @staticmethod
+    def _session_for_matching(contacts=None, customers=None):
+        """Session mock: empty query results except for given contact/customer lists."""
+        from includes.dashboard.models import Contact, Customer
+
+        s = MagicMock()
+
+        def query_side_effect(*cols):
+            m = MagicMock()
+            if cols and cols[0] is Contact:
+                m.filter.return_value.all.return_value = contacts or []
+            elif cols and cols[0] is Customer:
+                m.filter.return_value.all.return_value = customers or []
+            else:
+                m.filter.return_value.all.return_value = []
+            return m
+
+        s.query.side_effect = query_side_effect
+        s.get.side_effect = lambda model, eid: None
+        return s
+
+    @staticmethod
+    def _contact(email, customer_id=None, supplier_id=None):
+        c = MagicMock()
+        c.email = email
+        c.customer_id = customer_id
+        c.supplier_id = supplier_id
+        return c
+
+    def test_exact_contact_match_skips_inactive_customer(self):
+        from includes.dashboard.models import Customer
+
+        contact = self._contact("nicole.suang@newmont.com", customer_id="inactive-cid")
+        inactive = MagicMock()
+        inactive.isinactive = True
+        inactive.companyname = "Boddington Gold-Copper Mine & Processing Plant"
+
+        session = self._session_for_matching(contacts=[contact])
+        session.get.side_effect = lambda model, eid: inactive if model is Customer else None
+
+        result = find_all_matches(session, "nicole.suang@newmont.com", {})
+        assert result["match_type"] is None
+        assert result["candidates"] == []
+
+    def test_exact_contact_match_keeps_active_customer(self):
+        from includes.dashboard.models import Customer
+
+        contact = self._contact("nicole.suang@newmont.com", customer_id="active-cid")
+        active = MagicMock()
+        active.isinactive = False
+        active.companyname = "Newmont Australia"
+
+        session = self._session_for_matching(contacts=[contact])
+        session.get.side_effect = lambda model, eid: active if model is Customer else None
+
+        result = find_all_matches(session, "nicole.suang@newmont.com", {})
+        assert result["match_type"] == "exact"
+        assert result["is_unique"] is True
+        assert result["unique_entity"]["id"] == "active-cid"
+
+    def test_exact_contact_match_skips_inactive_supplier(self):
+        from includes.dashboard.models import Supplier
+
+        contact = self._contact("x@newmont.com", supplier_id="sup1")
+        inactive = MagicMock()
+        inactive.isinactive = True
+
+        session = self._session_for_matching(contacts=[contact])
+        session.get.side_effect = lambda model, eid: inactive if model is Supplier else None
+
+        with patch("includes.dashboard.supplier_dedup.resolve_supplier_id", return_value="sup1"):
+            result = find_all_matches(session, "x@newmont.com", {})
+        assert result["match_type"] is None
+        assert result["candidates"] == []
+
+    def test_domain_fallback_skips_inactive_customer_from_stale_index(self):
+        from includes.dashboard.models import Customer
+
+        stale_index = {"newmont.com": [
+            {"type": "customer", "id": "inactive-cid", "name": "Old Name"},
+            {"type": "customer", "id": "active-cid", "name": "Newmont Australia"},
+        ]}
+        inactive = MagicMock()
+        inactive.isinactive = True
+        active = MagicMock()
+        active.isinactive = False
+        active.companyname = "Newmont Australia"
+
+        session = self._session_for_matching()
+        session.get.side_effect = (
+            lambda model, eid: active if model is Customer and eid == "active-cid"
+            else (inactive if model is Customer else None)
+        )
+
+        result = find_all_matches(session, "x@newmont.com", stale_index)
+        assert result["match_type"] == "domain"
+        assert result["is_unique"] is True
+        assert result["unique_entity"]["id"] == "active-cid"
+
+    def test_build_domain_index_skips_contacts_of_inactive_parents(self):
+        from includes.dashboard.models import Contact, Customer, Supplier
+
+        contacts = [
+            self._contact("a@newmont.com", customer_id="inactive-cid"),
+            self._contact("b@newmont.com", customer_id="active-cid"),
+            self._contact("c@newmont.com", supplier_id="inactive-sid"),
+            self._contact("d@newmont.com", supplier_id="active-sid"),
+        ]
+        session = MagicMock()
+
+        def query_side_effect(*cols):
+            m = MagicMock()
+            if cols and cols[0] is Contact.email:
+                m.filter.return_value.all.return_value = contacts
+            elif cols and cols[0] is Customer.id and len(cols) == 1:
+                m.filter.return_value.all.return_value = [("active-cid",)]
+            elif cols and cols[0] is Supplier.id and len(cols) == 1:
+                m.filter.return_value.all.return_value = [("active-sid",)]
+            else:
+                m.filter.return_value.all.return_value = []
+            return m
+
+        session.query.side_effect = query_side_effect
+
+        index = build_domain_index(session)
+        entries = index["newmont.com"]
+        by_id = {(e["type"], e["id"]) for e in entries}
+
+        assert ("customer", "active-cid") in by_id
+        assert ("supplier", "active-sid") in by_id
+        assert ("customer", "inactive-cid") not in by_id
+        assert ("supplier", "inactive-sid") not in by_id
