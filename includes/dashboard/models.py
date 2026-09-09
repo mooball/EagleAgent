@@ -341,6 +341,8 @@ class RFQ(Base):
     notes = Column(Text, nullable=True)         # Customer requirements, delivery dates, general context
     history = Column(JSONB, nullable=True)                    # [{date, user, action}, ...]
     item_groups = Column(JSONB, nullable=True)                # {groups: [...], ungrouped: [...]}
+    # Sync state for the NetSuite opportunity: {last_synced_at, lines: [...], items: {line: ns_item_id}}
+    opportunity_sync_state = Column(JSONB, nullable=True)
     
     # Gmail email tracking fields (summary only, email_tracking table is source of truth)
     email_status = Column(String, nullable=True)              # 'no_email_sent' | 'draft_pending' | 'sent' | 'awaiting_reply'

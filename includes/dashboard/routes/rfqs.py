@@ -573,7 +573,11 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                 brand_lookup = {}
 
         ready_count = 0
+        sync_state = rfq.get("opportunity_sync_state") or {}
+        snapshot = sync_state.get("snapshot") or {}
+        synced_lines = {int(l) for l in snapshot.keys()}
         for item in items:
+            item["ns_synced"] = item["line"] in synced_lines
             product = None
             if item.get("product_id"):
                 product = products.get(str(item["product_id"]))
@@ -701,16 +705,384 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             item["missing_sale"] = any(i["key"] == "sale" for i in issues)
             item["missing_supplier"] = any(i["key"] == "supplier" for i in issues)
 
+            # Dirty check vs the last opportunity sync snapshot
+            item["sync_dirty_fields"] = _diff_sync_snapshot(
+                item,
+                snapshot.get(str(item["line"])),
+                (selected or {}).get("quote_currency") or "",
+            )
+            item["sync_dirty"] = bool(item["sync_dirty_fields"])
+
         total = len(items)
         has_opp = bool(rfq.get("opportunity_id"))
+        current_lines = {i.get("line") for i in items}
+        orphan_lines = sorted(
+            int(l) for l in (sync_state.get("lines") or [])
+            if int(l) not in current_lines
+        )
+        dirty_count = sum(1 for i in items if i.get("sync_dirty"))
         return {
             "sync_total": total,
             "sync_ready": ready_count,
             "sync_has_opportunity": has_opp,
             "sync_can_sync": has_opp and total > 0 and ready_count == total,
+            "sync_dirty_count": dirty_count,
+            "sync_orphan_lines": orphan_lines,
         }
     finally:
         session.close()
+
+
+def _diff_sync_snapshot(item: dict, snap: dict | None, quote_currency: str) -> list[str]:
+    """Return which sync-relevant fields changed since the line was last
+    pushed to the NetSuite opportunity.
+
+    Pure — no DB, no NetSuite. ``snap`` is the per-line snapshot stored in
+    ``rfq.opportunity_sync_state.snapshot``; ``quote_currency`` is the
+    selected supplier's quote currency (AUD when unset).
+
+    Returns a list of dirty-field keys: 'new item', 'sale', 'cost', 'qty',
+    'department', 'supplier', 'item'.
+    """
+    if not snap:
+        return ["new item"]
+
+    dirty: list[str] = []
+
+    def _num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    if _num(item.get("sale_price")) != _num(snap.get("sale_price")):
+        dirty.append("sale")
+
+    cost_changed = _num(item.get("cost_price")) != _num(snap.get("cost_price"))
+    cur_iso = (quote_currency or "").strip().upper() or "AUD"
+    if cost_changed or cur_iso != ((snap.get("cost_currency") or "").strip().upper() or "AUD"):
+        dirty.append("cost")
+
+    if int(item.get("quantity") or 0) != int(snap.get("quantity") or 0):
+        dirty.append("qty")
+    if (item.get("department_id") or "") != (snap.get("department_id") or ""):
+        dirty.append("department")
+    if (item.get("part_number") or "").strip() != (snap.get("part_number") or "").strip():
+        dirty.append("item")
+    if ((item.get("selected_supplier") or {}).get("netsuite_id") or "") != (snap.get("supplier_ns_id") or ""):
+        dirty.append("supplier")
+    if (item.get("brand_ns_id") or "") != (snap.get("brand_ns_id") or ""):
+        dirty.append("brand")
+
+    return dirty
+
+
+def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bool = False) -> dict:
+    """Push ready RFQ items onto the linked NetSuite Opportunity.
+
+    Guard rails:
+      - Items with blocking sync issues are skipped and reported.
+      - Selected suppliers are NEVER auto-created in NetSuite — a selected
+        supplier without a NetSuite ID blocks its line (use the NS+ form).
+      - Possible-duplicate suppliers are a strong warning, not a blocker:
+        the first call returns a warnings response and the client re-posts
+        with confirm_warnings=True once the user has reviewed.
+      - Missing products are fine — `ensure_item_with_vendor` finds or
+        creates the NetSuite inventory item (brand get-or-create, vendor
+        price in vendor currency, tax codes, department).
+
+    Returns a dict with status 'ok' | 'warnings' | 'error' plus per-line
+    detail for the UI.
+    """
+    from includes.dashboard.models import RFQ, Opportunity
+    from includes.tools.quote_tools import _get_rfq_dict_sync
+    from includes.netsuite.records.opportunity import (
+        get_opportunity_currency,
+        upsert_opportunity_lines,
+    )
+    from includes.netsuite.records.item import (
+        ensure_item_with_vendor,
+        get_or_create_brand,
+        get_vendor_context,
+    )
+    from includes.currency import convert
+
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if not rfq:
+            return {"status": "error", "message": f"RFQ '{rfq_id}' not found."}
+        if not rfq.opportunity_id:
+            return {"status": "error", "message": "No NetSuite opportunity linked — create one first."}
+        opp = session.query(Opportunity).get(rfq.opportunity_id)
+        if not opp or not opp.netsuite_id:
+            return {"status": "error", "message": "The linked opportunity has no NetSuite record."}
+        opp_ns_id = str(opp.netsuite_id)
+        opp_number = opp.opportunity_number or opp_ns_id
+    finally:
+        session.close()
+
+    rfq_dict = _get_rfq_dict_sync(rfq_id)
+    if not rfq_dict:
+        return {"status": "error", "message": f"RFQ '{rfq_id}' not found."}
+
+    _rfq_sync_readiness(rfq_dict)
+    items = rfq_dict.get("items", [])
+    if not items:
+        return {"status": "error", "message": "RFQ has no items to sync."}
+
+    opp_currency = get_opportunity_currency(opp_ns_id)
+
+    blocked: list[dict] = []
+    warn_lines: list[dict] = []
+    ready: list[dict] = []
+
+    for item in items:
+        line = item.get("line")
+        label = (item.get("part_number") or item.get("input_description") or f"line {line}").strip()
+        issues = item.get("sync_issues") or []
+        selected = item.get("selected_supplier")
+
+        if issues:
+            blocked.append({
+                "line": line, "label": label,
+                "reasons": [i["label"] for i in issues],
+            })
+            continue
+
+        if item.get("brand_is_excluded"):
+            blocked.append({
+                "line": line, "label": label,
+                "reasons": [
+                    f"Brand '{item.get('brand')}' cannot be created in NetSuite — "
+                    "set a specific brand on the Items tab"
+                ],
+            })
+            continue
+
+        if not selected or not selected.get("ns_linked"):
+            supplier_name = (selected or {}).get("name") or "None"
+            blocked.append({
+                "line": line, "label": label,
+                "reasons": [
+                    f"Supplier '{supplier_name}' is not in NetSuite — "
+                    "use the NS+ form to create it first"
+                ],
+            })
+            continue
+
+        near = selected.get("near_matches") or []
+        if near:
+            warn_lines.append({
+                "line": line, "label": label,
+                "supplier": selected.get("name"),
+                "near_matches": [nm["name"] for nm in near],
+            })
+
+        ready.append(item)
+
+    if warn_lines and not confirm_warnings:
+        return {
+            "status": "warnings",
+            "lines": warn_lines,
+            "ready": len(ready),
+            "blocked": blocked,
+            "message": (
+                f"{len(warn_lines)} line(s) use suppliers with possible duplicates. "
+                "Review them and confirm to continue."
+            ),
+        }
+
+    synced: list[dict] = []
+    errors: list[dict] = []
+    new_lines: list[dict] = []
+
+    for item in ready:
+        line = item.get("line")
+        label = (item.get("part_number") or item.get("input_description") or f"line {line}").strip()
+        selected = item["selected_supplier"]
+        vendor_ns_id = str(selected.get("netsuite_id") or "")
+
+        # The item's cost price lives in the selected supplier's quote
+        # currency (e.g. a USD quote is stored as USD, not AUD). Convert
+        # FROM that currency, not AUD.
+        src_iso = (selected.get("quote_currency") or "").strip().upper() or "AUD"
+
+        try:
+            # Resolve (or create) the brand record first — brands are pushed
+            # to NetSuite alongside items, and the line's New Item Brand
+            # custom field links back to this record.
+            brand_name = (item.get("brand") or "").strip()
+            brand_ns_id = None
+            if brand_name:
+                brand_result = get_or_create_brand(brand_name)
+                if not brand_result.success:
+                    errors.append({
+                        "line": line, "label": label,
+                        "error": brand_result.error or "Failed to sync brand to NetSuite",
+                    })
+                    continue
+                brand_ns_id = brand_result.netsuite_id
+
+            ns_item_id = item.get("product_ns_id")
+            if not ns_item_id:
+                result = ensure_item_with_vendor(
+                    part_number=(item.get("part_number") or "").strip(),
+                    description=item.get("input_description") or "",
+                    brand_name=brand_name,
+                    vendor_netsuite_id=vendor_ns_id,
+                    purchase_price=float(item["cost_price"]),
+                    price_currency=src_iso,
+                    department_id=item.get("department_id"),
+                )
+                if not result.success:
+                    errors.append({
+                        "line": line, "label": label,
+                        "error": result.error or "Failed to sync item to NetSuite",
+                    })
+                    continue
+                ns_item_id = result.netsuite_id
+        except Exception as exc:
+            errors.append({"line": line, "label": label, "error": f"Item sync failed: {exc}"})
+            continue
+
+        try:
+            vendor_currency = get_vendor_context(vendor_ns_id)["currency"]
+            po_rate = convert(float(item["cost_price"]), src_iso, vendor_currency)
+            # Estimate fields are always in AUD — convert the quote cost
+            # into AUD for Est. Unit Cost / Est. Extended Cost.
+            est_rate = convert(float(item["cost_price"]), src_iso, "AUD")
+            est_amount = round(float(est_rate) * int(item.get("quantity") or 0), 2)
+            sale_rate = convert(float(item["sale_price"]), "AUD", opp_currency)
+        except Exception as exc:
+            errors.append({
+                "line": line, "label": label,
+                "error": f"Currency conversion failed: {exc}",
+            })
+            continue
+
+        payload: dict = {
+            "item": {"id": str(ns_item_id)},
+            "quantity": int(item.get("quantity") or 0),
+            "rate": float(sale_rate),
+            # amount is intentionally omitted — NetSuite ignores it on REST
+            # writes; upsert_opportunity_lines re-adds lines fresh so the
+            # computed amount = quantity × rate is recalculated.
+            "custcol_po_rate": float(po_rate),
+            "custcol_po_vendor": {"id": vendor_ns_id},
+            "costEstimateRate": float(est_rate),
+            "costEstimate": float(est_amount),
+            # New Item Code / New Item Brand custom fields
+            "custcol_new_item_code": (item.get("part_number") or "").strip(),
+        }
+        if brand_ns_id:
+            payload["custcol_new_item_brand"] = {"id": str(brand_ns_id)}
+        if item.get("department_id"):
+            payload["department"] = {"id": str(item["department_id"])}
+        new_lines.append(payload)
+        synced.append({
+            "line": line,
+            "label": label,
+            "ns_item_id": str(ns_item_id),
+            "part_number": (item.get("part_number") or "").strip(),
+            "sale_price": float(item["sale_price"]),
+            "cost_price": float(item["cost_price"]),
+            "cost_currency": src_iso,
+            "quantity": int(item.get("quantity") or 0),
+            "department_id": str(item.get("department_id") or ""),
+            "supplier_ns_id": vendor_ns_id,
+            "brand_ns_id": str(brand_ns_id or ""),
+        })
+
+    if new_lines:
+        result = upsert_opportunity_lines(opp_ns_id, new_lines)
+        if not result.success:
+            return {"status": "error", "message": f"NetSuite update failed: {result.error}"}
+
+    # Record the sync in the RFQ history + persist the opportunity sync state
+    session = _helpers.get_session()
+    try:
+        rfq_row = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if rfq_row:
+            history = list(rfq_row.history or [])
+            history.append({
+                "date": datetime.now(timezone.utc).isoformat(),
+                "user": user_id,
+                "action": f"Synced {len(synced)} item(s) to NetSuite opportunity {opp_number}",
+            })
+            rfq_row.history = history
+            rfq_row.opportunity_sync_state = {
+                "last_synced_at": datetime.now(timezone.utc).isoformat(),
+                "lines": sorted(s["line"] for s in synced),
+                "items": {str(s["line"]): s["ns_item_id"] for s in synced},
+                # Per-line snapshot of the fields written to NetSuite —
+                # _rfq_sync_readiness diffs against this to flag unsynced
+                # changes.
+                "snapshot": {
+                    str(s["line"]): {
+                        "part_number": s["part_number"],
+                        "ns_item_id": s["ns_item_id"],
+                        "sale_price": s["sale_price"],
+                        "cost_price": s["cost_price"],
+                        "cost_currency": s["cost_currency"],
+                        "quantity": s["quantity"],
+                        "department_id": s["department_id"],
+                        "supplier_ns_id": s["supplier_ns_id"],
+                        "brand_ns_id": s["brand_ns_id"],
+                    }
+                    for s in synced
+                },
+            }
+
+            # Link RFQ items to local product rows so the "NS"
+            # (needs-to-be-created) badges clear after the item exists in
+            # NetSuite. The writeback in item.py has already ensured a local
+            # Product row carries the NetSuite ID; here we wire the item to it.
+            from includes.dashboard.models import Product, RFQItem
+            from includes.tools.product_tools import _find_product_by_code
+            item_rows = {
+                r.line: r
+                for r in session.query(RFQItem)
+                .filter(RFQItem.rfq_id == rfq_row.id)
+                .all()
+            }
+            for s in synced:
+                item_row = item_rows.get(s["line"])
+                if not item_row or item_row.product_id:
+                    continue
+                product = (
+                    session.query(Product)
+                    .filter(Product.netsuite_id == s["ns_item_id"])
+                    .first()
+                )
+                if product is None:
+                    try:
+                        hit = _find_product_by_code(s["part_number"])
+                        if hit:
+                            product = session.query(Product).get(hit["id"])
+                    except Exception:
+                        product = None
+                if product:
+                    item_row.product_id = product.id
+
+            session.commit()
+    finally:
+        session.close()
+
+    message = f"Synced {len(synced)} of {len(items)} item(s) to {opp_number}."
+    if blocked:
+        message += f" {len(blocked)} blocked."
+    if errors:
+        message += f" {len(errors)} failed."
+
+    return {
+        "status": "ok",
+        "synced": synced,
+        "blocked": blocked,
+        "errors": errors,
+        "warnings": warn_lines,
+        "message": message,
+    }
 
 
 def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
@@ -1305,6 +1677,26 @@ async def rfq_detail(request: Request, rfq_id: str,
     ctx = _rfq_detail_context(rfq, user, "items")
     ctx["active_nav"] = "rfqs"
     return _render(request, "rfq_detail.html", "partials/rfq_detail.html", ctx, user)
+
+
+@router.post("/partial/rfqs/{rfq_id}/sync-opportunity")
+async def partial_rfq_sync_opportunity(request: Request, rfq_id: str,
+                                      user: dict = Depends(require_user)):
+    """Push ready RFQ items onto the linked NetSuite Opportunity.
+
+    Body: {"confirm_warnings": bool} — first call without confirmation returns
+    a warnings response when any selected supplier has possible duplicates.
+    """
+    try:
+        body = await request.json() or {}
+    except Exception:
+        body = {}
+    confirm = bool(body.get("confirm_warnings", False))
+    user_ident = user.get("identifier", "dashboard")
+    result = await asyncio.to_thread(
+        _sync_opportunity_items_sync, rfq_id, user_ident, confirm
+    )
+    return JSONResponse(result)
 
 
 @router.get("/rfqs/{rfq_id}/export-items")

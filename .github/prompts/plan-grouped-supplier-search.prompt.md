@@ -195,16 +195,66 @@ Required additions:
    Deletion renumbers lines, so stale groups would silently point at the
    wrong items.
 2. **Tighten update invalidation to grouping-relevant fields.** Today *any*
-   change — including `uom`, `quantity`, `notes`, `sale_price` — clears
-   grouping, forcing needless regroups. Define
+   change — including `uom`, `quantity`, `sale_price` — clears grouping,
+   forcing needless regroups. Define
    `GROUPING_FIELDS = {"input_description", "input_code", "part_number",
-   "brand", "product_id", "match"}` and clear only when the change set
-   intersects it. UOM-only and other non-identifying edits then leave groups
-   intact.
+   "brand", "product_id", "match", "notes"}` and clear only when the change
+   set intersects it. UOM/quantity/sale-price edits then leave groups intact.
+   (`notes` stays in the set — §3.7 makes item notes a grouping input.)
 
 Note: `_apply_validation_results` mutates `match`/`notes` without clearing,
 but it only runs inside the classify pipeline before grouping is written, so
 no stale-state risk today.
+
+### 3.7 Equipment context — notes that define the items
+
+RFQ line items are frequently meaningless without their context:
+production example `RFQ-2026-1794` has items like "Transmission solenoids"
+with no part numbers — everything that matters is in `rfqs.notes`:
+
+> Equipment: Volvo G940 Grader (PIN: \*VCE0G940L00502901\*), Engine: Volvo D7E
+> GBE3 (Code: C3GI165). Customer is requesting parts manuals/diagrams to release
+> the parking brake and identify transmission solenoids…
+
+Today that context never reaches grouping or search:
+
+| Stage | Today |
+|---|---|
+| RFQ creation (`rfq_creation_extract.md`) | one free-text `customer_notes` mixing equipment context with commercial terms |
+| Grouping (`_group_rfq_items_sync`) | receives only `{line, description, part_number, brand}` — **RFQ notes and item notes are not passed** |
+| Group storage (`item_groups`) | `{id, label, reason, lines}` — **no context field** |
+| Grouped search (this plan) | `build_group_search_prompt` uses label/reason/brands/part numbers — **no context** |
+
+Design:
+
+1. **Structured context extraction at creation.** Extend
+   `rfq_creation_extract.md` + the pipeline to emit `equipment_context`
+   alongside `customer_notes`:
+   - `equipment_context` — structured list, one entry per machine/system:
+     `{equipment: "Volvo G940 Grader", serial_or_pin, engine, application}`
+     (e.g. application = "manuals/diagrams to release parking brake").
+   - `customer_notes` — commercial/delivery requirements only.
+   - Storage: new JSONB column `rfqs.equipment_context` (migration).
+     `rfqs.notes` is unchanged. Optional re-extract action to backfill old
+     RFQs (e.g. `classify_rfq_items` re-run could refresh it).
+2. **Grouping inherits context.** Pass `equipment_context`, `notes`, and
+   per-item `notes` into `_group_rfq_items_sync()`; extend
+   `rfq_item_grouping.md` with a context-inheritance rule:
+   - each group gains a `context` field — the LLM copies the relevant slice
+     of the RFQ context (single-group RFQ → the whole context; multi-group →
+     per-group slice, e.g. engine parts vs transmission parts);
+   - item notes act as weak grouping signals (per-line hints).
+   - `label` stays the short search-friendly name; `reason` may cite context.
+3. **Search consumes context.** `build_group_search_prompt` includes group
+   `context` + equipment details (machine model, serial/PIN, engine,
+   application). This changes search steering materially — e.g. a
+   "manuals/diagrams" application should search documentation sources, not
+   parts distributors.
+4. **Dirty-flag plumbing.**
+   - RFQ `notes` or `equipment_context` edits must clear `item_groups`
+     (currently `_update_rfq_sync` does not invalidate grouping for notes).
+   - §3.6's `GROUPING_FIELDS` tightening must KEEP `notes` — item notes are
+     now grouping input (only `uom`/`quantity`/`sale_price` drop out).
 
 ---
 
@@ -249,6 +299,8 @@ New `tests/tools/test_sourcing_groups.py` (pure planning — no LLM):
 - gate blocks unscoped when `item_groups` NULL; allows with zero groups
 - units: one per group + one per ungrouped; no per-line duplicates
 - group prompt contains label, reason, brands, sample part numbers
+- group prompt includes equipment context (model/serial/engine/application)
+  from `rfq.equipment_context` + group `context`
 - scoped single line → one item unit ("group of 1")
 - scope = full group → one group unit
 - partial scope → item units only
@@ -261,8 +313,9 @@ Extend `tests/tools/test_supplier_search_tools.py` (mock `_web_search_suppliers_
 - unscoped gating message returned verbatim
 - invalidation: edits clear `item_groups` (existing
   `tests/tools/test_rfq_bulk.py::test_item_groups_cleared` covers the
-  invalidation side); add coverage for single/bulk **delete** invalidation
-  and for UOM-only edits **not** clearing groups
+  invalidation side); add coverage for single/bulk **delete** invalidation,
+  for UOM-only edits **not** clearing groups, and for RFQ `notes` /
+  `equipment_context` edits clearing groups
 
 ---
 
@@ -272,9 +325,13 @@ Extend `tests/tools/test_supplier_search_tools.py` (mock `_web_search_suppliers_
 |---|---|
 | `includes/tools/sourcing_groups.py` | **new** — planning + prompt building (pure) |
 | `includes/tools/supplier_search_tools.py` | group-aware core; classify always persists grouping state |
-| `includes/tools/rfq_crud.py` | `part_numbers` param; delete-path invalidation; tighten invalidation fields |
+| `includes/tools/rfq_crud.py` | `part_numbers` param; delete-path invalidation; tighten invalidation fields; grouping prompt gains context inputs |
+| `includes/tools/rfq_creation_pipeline.py` | extract + store `equipment_context` |
+| `includes/dashboard/models.py` + alembic | `rfqs.equipment_context` JSONB |
 | `includes/chat/rfq_actions.py` | button + per-line handlers → shared core |
 | `templates/partials/rfq_detail.html` | optional "Group items" toolbar button |
+| `config/prompts/rfq_item_grouping.md` | context-inheritance rules + `context` per group |
+| `config/prompts/rfq_creation_extract.md` | split `equipment_context` out of `customer_notes` |
 | `config/prompts/rfq_find_all_suppliers.md` | retire |
 
 ---
@@ -295,11 +352,16 @@ Extend `tests/tools/test_supplier_search_tools.py` (mock `_web_search_suppliers_
 
 1. `sourcing_groups.py` + unit tests (pure logic first).
 2. `rfq_crud.py`: `part_numbers` param + invalidation fixes (delete paths,
-   tighten fields) + tests.
-3. `run_web_search_grouped_sync` core + gating; update
+   tighten fields, RFQ notes/equipment-context invalidation) + tests.
+3. Equipment context: migration + `rfq_creation_extract.md` split +
+   pipeline extraction; grouping prompt gains context inheritance
+   (`rfq_item_grouping.md` + `_group_rfq_items_sync` inputs + per-group
+   `context`).
+4. `run_web_search_grouped_sync` core + gating; update
    `run_classify_sync`/`group_items` to always persist grouping state.
-4. Re-wire the three entry points.
-5. Tests for the core; full suite green.
-6. Optional toolbar button + prompt retirement.
-7. Manual smoke: grouped RFQ → one search per group; ungrouped RFQ → gating
-   message; per-line → single search, no gate.
+5. Re-wire the entry points; group prompts consume equipment context.
+6. Tests for the core; full suite green.
+7. Optional toolbar button + prompt retirement.
+8. Manual smoke: grouped RFQ → one search per group; ungrouped RFQ → gating
+   message; per-line → single search, no gate; machine-context RFQ → group
+   context present in searches.

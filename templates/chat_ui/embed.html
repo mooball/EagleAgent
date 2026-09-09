@@ -781,8 +781,11 @@
                          last_activity: new Date().toISOString()};
                 threads.unshift(t);
                 showThread(t);
-                // New threads become the current (non-RFQ) anchor.
-                setCurrentThread(data.thread_id);
+                // New threads become the current (non-RFQ) anchor — but a
+                // thread created to bind an RFQ (lock) must NOT become the
+                // shared home thread: other tabs load the anchor and would
+                // stomp this RFQ thread's dashboard context.
+                if (!lock) { setCurrentThread(data.thread_id); }
                 // Tell the dashboard shell so it can bind/re-bind on an RFQ.
                 document.dispatchEvent(new CustomEvent('chat-ui:thread', {detail: {threadId: data.thread_id}}));
             })

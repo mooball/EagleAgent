@@ -107,10 +107,12 @@
                 <td class="px-3 py-2.5 col-brand"><div class="truncate" title="{{ item.brand or '' }}">{{ item.brand or '—' }}</div></td>
                 <td class="px-3 py-2.5 text-center whitespace-nowrap col-qty">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
 
-                {# Cost (editable) #}
+                {# Cost (editable) — currency suffix when the selected quote is non-AUD #}
+                {% set cost_sel = item.selected_supplier %}
+                {% set cost_cur = (cost_sel.get('quote_currency') if cost_sel else None) %}
                 <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col" @click.stop>
                     <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-2 py-1 -my-1 -mx-2 inline-block min-w-[60px] text-right"
-                          @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ item.cost_price | currency }}</span>
+                          @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ item.cost_price | currency }}{% if cost_cur and cost_cur != 'AUD' %} <span class="text-[10px] opacity-60">{{ cost_cur }}</span>{% endif %}</span>
                     <input type="text" inputmode="decimal"
                            class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                            value="{{ item.cost_price if item.cost_price is not none else '' }}"

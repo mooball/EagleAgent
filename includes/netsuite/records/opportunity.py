@@ -194,3 +194,106 @@ def update_opportunity_title(netsuite_id: str, title: str) -> None:
         logger.info("Updated opportunity %s title to %r", netsuite_id, title)
     except Exception:
         logger.exception("Failed to update opportunity %s title", netsuite_id)
+
+
+def get_opportunity_currency(netsuite_id: str) -> str:
+    """Return the ISO currency of a NetSuite Opportunity (default AUD).
+
+    Reads the opportunity's currency refName via the REST API. Used to
+    convert line rates into the opportunity's currency before writing.
+    """
+    try:
+        client = NetSuiteClient()
+        data = client.get_record("opportunity", str(netsuite_id))
+        currency = data.get("currency") or {}
+        symbol = (currency.get("refName") or "").strip()
+        if symbol and len(symbol) == 3 and symbol.isalpha():
+            return symbol.upper()
+    except Exception:
+        logger.exception("Failed to read currency for opportunity %s", netsuite_id)
+    return "AUD"
+
+
+def upsert_opportunity_lines(netsuite_id: str, new_lines: list[dict]) -> CreateResult:
+    """Merge item lines onto a NetSuite Opportunity.
+
+    Reads the existing `item` sublist, then upserts `new_lines` keyed by the
+    line's item internal ID:
+      - a line whose item already exists on the opportunity is updated
+        (quantity/rate/custom PO fields);
+      - otherwise the new line is appended.
+
+    The merged list is written with ``PATCH ?replace=item`` — the same
+    clear-and-re-add pattern used for ``itemVendor`` on inventory items.
+    Existing lines (e.g. added by other flows) are preserved verbatim, so
+    the replace is safe.
+
+    Args:
+        netsuite_id: NetSuite internal ID of the opportunity.
+        new_lines: list of line dicts, each with ``item: {"id": ...}``.
+
+    Returns:
+        CreateResult (success True even if no lines were written).
+    """
+    client = NetSuiteClient()
+    try:
+        data = client.get(
+            f"record/v1/opportunity/{netsuite_id}?expandSubResources=true"
+        ).json()
+    except Exception as exc:
+        logger.error("Failed to read opportunity %s lines: %s", netsuite_id, exc)
+        return CreateResult(
+            success=False,
+            error=f"Failed to read opportunity: {exc}",
+            record_type="opportunity",
+        )
+
+    by_item: dict[str, dict] = {}
+    for line in ((data.get("item") or {}).get("items") or []) or []:
+        if not isinstance(line, dict):
+            continue
+        item_id = str((line.get("item") or {}).get("id") or "")
+        if not item_id:
+            continue
+        # NetSuite REST silently IGNORES `amount` on existing lines and does
+        # not recompute it from quantity × rate on update. Dropping the line
+        # identity (`line`/`links`) and `amount` makes NetSuite treat the
+        # sublist entries as fresh lines, so computed fields (amount,
+        # est. gross profit) are recalculated while all other fields are
+        # preserved. Verified live on a test opportunity.
+        fresh = dict(line)
+        fresh.pop("line", None)
+        fresh.pop("links", None)
+        fresh.pop("amount", None)
+        by_item[item_id] = fresh
+
+    for new in new_lines:
+        item_id = str((new.get("item") or {}).get("id") or "")
+        if not item_id:
+            continue
+        if item_id in by_item:
+            by_item[item_id].update(new)
+        else:
+            by_item[item_id] = dict(new)
+
+    merged = list(by_item.values())
+    try:
+        client.update_record(
+            "opportunity",
+            str(netsuite_id),
+            {"item": {"items": merged}},
+            params={"replace": "item"},
+        )
+    except Exception as exc:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        logger.error("Failed to update opportunity %s lines: %s", netsuite_id, exc)
+        return CreateResult(
+            success=False, error=str(exc), error_code=status_code,
+            record_type="opportunity",
+        )
+
+    logger.info(
+        "Updated opportunity %s — %d new/updated lines, %d total",
+        netsuite_id, len(new_lines), len(merged),
+    )
+    return CreateResult(success=True, netsuite_id=str(netsuite_id), record_type="opportunity")
