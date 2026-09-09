@@ -23,12 +23,14 @@ Account facts (probed against the live REST API):
 import logging
 from typing import Optional
 
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 
 from includes.currency import convert
 from includes.dashboard.database import get_session
 from includes.dashboard.models import Brand, Product
 from includes.netsuite.client import NetSuiteClient
+from includes.tools.product_tools import normalize_part_number
 from .base import CreateResult
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,33 @@ def find_brand_by_name(name: str) -> Optional[str]:
         limit=5,
     )
     return rows[0].get("id") if rows else None
+
+
+def _find_local_canonical_brand_ns_id(name: str) -> Optional[str]:
+    """Resolve a brand name to a NetSuite ID from the local brands table.
+
+    Mirrors ``match_brands``: canonical rows only (``duplicate_of IS NULL``,
+    active), normalised-name comparison, ties resolved alphabetically.
+    Returns None when the local table has no canonical row for the name.
+    """
+    norm = normalize_part_number(name)
+    if not norm:
+        return None
+    session = get_session()
+    try:
+        rows = (
+            session.query(Brand)
+            .filter(
+                Brand.duplicate_of.is_(None),
+                Brand.isinactive == False,
+                func.regexp_replace(Brand.name, '[^a-zA-Z0-9]', '', 'g').ilike(norm),
+            )
+            .order_by(Brand.name)
+            .all()
+        )
+        return rows[0].netsuite_id if rows else None
+    finally:
+        session.close()
 
 
 def get_vendor_context(vendor_netsuite_id: str) -> dict:
@@ -127,7 +156,20 @@ def create_brand(name: str, writeback_local: bool = True) -> CreateResult:
 
 
 def get_or_create_brand(name: str, writeback_local: bool = True) -> CreateResult:
-    """Resolve a brand by exact name, creating it if missing."""
+    """Resolve a brand by exact name, creating it if missing.
+
+    Local-first: when the local brands table has a canonical row for the
+    name (same resolution as ``match_brands`` / the dashboard read path),
+    its NetSuite ID wins. This keeps the opportunity sync snapshot consistent
+    with what the dashboard computes on read — otherwise a duplicate
+    NetSuite brand record with the same name (lowest id wins in SuiteQL)
+    gets synced while the dashboard resolves the canonical one, and the
+    line shows "changed: brand" forever.
+    """
+    local_ns_id = _find_local_canonical_brand_ns_id(name)
+    if local_ns_id:
+        return CreateResult(success=True, netsuite_id=local_ns_id, record_type="brand")
+
     existing = find_brand_by_name(name)
     if existing:
         if writeback_local:

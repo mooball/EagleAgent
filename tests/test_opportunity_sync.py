@@ -580,3 +580,74 @@ class TestDiffSyncSnapshot:
         item["quantity"] = 2
         dirty = rfqs_module._diff_sync_snapshot(item, SNAP, "AUD")
         assert set(dirty) == {"sale", "qty"}
+
+
+# ---------------------------------------------------------------------------
+# get_or_create_brand — local-first resolution (sync/read path parity)
+# ---------------------------------------------------------------------------
+
+class TestGetOrCreateBrandLocalFirst:
+    """The sync path must resolve brands the same way the dashboard read
+    path does (canonical local rows only), or the snapshot and the dirty
+    check disagree and a line shows 'changed: brand' forever.
+    """
+
+    def _patch_local_brands(self, monkeypatch, rows):
+        from includes.netsuite.records import item as item_module
+
+        session = MagicMock()
+        q = MagicMock()
+        q.filter.return_value.order_by.return_value.all.return_value = rows
+        session.query.return_value = q
+        monkeypatch.setattr(item_module, "get_session", lambda: session)
+        return session
+
+    def test_local_canonical_row_wins_over_ns_search(self, monkeypatch):
+        from includes.netsuite.records import item as item_module
+
+        self._patch_local_brands(monkeypatch, [
+            SimpleNamespace(name="Ridgid", netsuite_id="1029"),
+        ])
+        ns_search = MagicMock(return_value="300")
+        create = MagicMock()
+        monkeypatch.setattr(item_module, "find_brand_by_name", ns_search)
+        monkeypatch.setattr(item_module, "create_brand", create)
+
+        result = item_module.get_or_create_brand("Ridgid")
+        assert result.success
+        assert result.netsuite_id == "1029"
+        ns_search.assert_not_called()
+        create.assert_not_called()
+
+    def test_falls_back_to_ns_search_when_no_local_canonical(self, monkeypatch):
+        from includes.netsuite.records import item as item_module
+
+        self._patch_local_brands(monkeypatch, [])
+        monkeypatch.setattr(
+            item_module, "find_brand_by_name", MagicMock(return_value="55")
+        )
+        monkeypatch.setattr(item_module, "_writeback_brand_sync", MagicMock())
+        create = MagicMock()
+        monkeypatch.setattr(item_module, "create_brand", create)
+
+        result = item_module.get_or_create_brand("Acme")
+        assert result.success
+        assert result.netsuite_id == "55"
+        create.assert_not_called()
+
+    def test_creates_when_neither_local_nor_ns(self, monkeypatch):
+        from includes.netsuite.records import item as item_module
+
+        self._patch_local_brands(monkeypatch, [])
+        monkeypatch.setattr(
+            item_module, "find_brand_by_name", MagicMock(return_value=None)
+        )
+        create = MagicMock(
+            return_value=CreateResult(success=True, netsuite_id="77", record_type="brand")
+        )
+        monkeypatch.setattr(item_module, "create_brand", create)
+
+        result = item_module.get_or_create_brand("NewBrand")
+        assert result.success
+        assert result.netsuite_id == "77"
+        create.assert_called_once()
