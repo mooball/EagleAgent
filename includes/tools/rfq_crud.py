@@ -291,6 +291,7 @@ def _rfq_to_dict(rfq) -> dict:
         "notes": rfq.notes or "",         # customer requirements, delivery dates, context
         "history": rfq.history or [],
         "item_groups": rfq.item_groups,
+        "opportunity_sync_state": rfq.opportunity_sync_state or {},
         "pipeline_stage": getattr(rfq, "pipeline_stage", "unprocessed") or "unprocessed",
         "supplier_meta": rfq.supplier_meta or {},
         "items": items,

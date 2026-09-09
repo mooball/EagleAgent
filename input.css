@@ -256,3 +256,46 @@
   left: 0;
   transform: none;
 }
+
+/* Global dashboard toasts — appended to <body>, survive HTMX swaps */
+.ea-toast {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 9999;
+  max-width: 26rem;
+  border-radius: 0.5rem;
+  border-width: 1px;
+  padding: 0.75rem 1rem;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+  opacity: 0;
+  transform: translate(-50%, -50%) translateY(8px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: none;
+}
+.ea-toast-show {
+  opacity: 1;
+  transform: translate(-50%, -50%);
+}
+.ea-toast-ok {
+  background: #f0fdf4;
+  border-color: #86efac;
+  color: #166534;
+}
+.ea-toast-err {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #991b1b;
+}
+.dark .ea-toast-ok {
+  background: rgba(20, 83, 45, 0.92);
+  border-color: #14532d;
+  color: #bbf7d0;
+}
+.dark .ea-toast-err {
+  background: rgba(59, 26, 26, 0.95);
+  border-color: #7f1d1d;
+  color: #fecaca;
+}

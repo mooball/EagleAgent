@@ -1574,13 +1574,48 @@
                         {target: '#main-content'});
                 },
 
-                syncOpportunity() {
-                    // Phase 2 will POST /partial/rfqs/{id}/sync-opportunity — inert for now
-                    this.syncMsg = 'Opportunity sync is coming soon.';
+                syncOpportunity(confirm) {
                     var self = this;
-                    clearTimeout(this._syncMsgTimer);
-                    this._syncMsgTimer = setTimeout(function() { self.syncMsg = ''; }, 4000);
+                    this.syncBusy = true;
+                    fetch('/partial/rfqs/' + this.rfqId + '/sync-opportunity', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ confirm_warnings: !!confirm })
+                    }).then(async function (r) {
+                        self.syncBusy = false;
+                        var data = await r.json().catch(function () { return {}; });
+                        if (data.status === 'warnings') {
+                            self.syncWarn = { open: true, lines: data.lines || [], ready: data.ready || 0 };
+                            return;
+                        }
+                        var msg = data.message || (data.status === 'error' ? 'Sync failed.' : 'Update Opportunity complete.');
+                        self.syncMsg = msg;
+                        clearTimeout(self._syncMsgTimer);
+                        self._syncMsgTimer = setTimeout(function () { self.syncMsg = ''; }, 8000);
+                        if (data.status === 'ok') {
+                            window.eaToast('✓ ' + msg, true);
+                            self.refreshQuotationTab();
+                        } else {
+                            window.eaToast('✕ ' + msg, false);
+                        }
+                    }).catch(function () {
+                        self.syncBusy = false;
+                        var msg = 'Network error — please retry.';
+                        self.syncMsg = msg;
+                        window.eaToast('✕ ' + msg, false);
+                        clearTimeout(self._syncMsgTimer);
+                        self._syncMsgTimer = setTimeout(function () { self.syncMsg = ''; }, 6000);
+                    });
                 },
+
+                confirmSyncWarnings() {
+                    this.syncWarn.open = false;
+                    this.syncOpportunity(true);
+                },
+
+                syncBusy: false,
+                syncWarn: { open: false, lines: [], ready: 0 },
 
                 syncChecks: [
                     {key: 'item', label: 'Part number set'},
@@ -2584,6 +2619,20 @@
                 },
             };
         }
+    </script>
+    <script>
+    // Global toast helper — appends to <body> so it survives HTMX swaps.
+    window.eaToast = function (msg, ok) {
+        var el = document.createElement('div');
+        el.className = 'ea-toast ' + (ok ? 'ea-toast-ok' : 'ea-toast-err');
+        el.textContent = msg;
+        document.body.appendChild(el);
+        requestAnimationFrame(function () { el.classList.add('ea-toast-show'); });
+        setTimeout(function () {
+            el.classList.remove('ea-toast-show');
+            setTimeout(function () { el.remove(); }, 350);
+        }, 6000);
+    };
     </script>
     <script>
     // RFQ communications: shared expand/collapse state so poll refreshes

@@ -18,20 +18,39 @@
             <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-500"></span> Missing requirements</span>
             <span class="inline-flex items-center gap-1"><span class="px-1 py-0.5 rounded text-[9px] leading-none font-semibold bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">NS</span> Needs to be created in NetSuite</span>
             {% if rfq.opportunity_id %}
+            {% set opp_sync = rfq.get('opportunity_sync_state') or {} %}
+            {% set has_synced = opp_sync.get('last_synced_at') %}
+            {% set dirty_count = sync_dirty_count | default(0) %}
+            {% if dirty_count %}
+                {% set sync_label = 'Re-sync ' ~ dirty_count ~ ' change' ~ ('s' if dirty_count != 1 else '') %}
+            {% elif has_synced %}
+                {% set sync_label = 'Update Opportunity' %}
+            {% else %}
+                {% set sync_label = 'Add items to OP' %}
+            {% endif %}
             <span class="inline-flex items-center gap-2">
                 {% if sync_can_sync %}
-                {# Temporarily disabled: opportunity sync is blocked until supplier deduplication is complete #}
-                <button type="button" disabled
-                        class="px-2.5 py-1 rounded-md text-xs font-medium bg-green-600 text-white opacity-60 cursor-not-allowed"
-                        title="Opportunity sync is temporarily disabled">
-                    Update Opportunity
+                <button type="button" @click="syncOpportunity()" :disabled="syncBusy"
+                        class="px-2.5 py-1 rounded-md text-xs font-medium {% if dirty_count %}bg-amber-500 hover:bg-amber-600{% else %}bg-green-600 hover:bg-green-700{% endif %} text-white disabled:opacity-50 disabled:cursor-not-allowed">
+                    {{ sync_label }}
                 </button>
                 {% else %}
-                <button type="button" disabled
-                        title="All items must be linked to a NetSuite item before syncing"
-                        class="px-2.5 py-1 rounded-md text-xs font-medium bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400 cursor-not-allowed">
-                    Update Opportunity ({{ sync_ready }}/{{ sync_total }} ready)
+                <button type="button" @click="syncOpportunity()" :disabled="syncBusy"
+                        title="Items with missing requirements will be skipped — fix them on the Items/Selection tabs"
+                        class="px-2.5 py-1 rounded-md text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                    {{ sync_label }} ({{ sync_ready }}/{{ sync_total }} ready)
                 </button>
+                {% endif %}
+                {% if has_synced and dirty_count == 0 %}
+                <span class="text-[11px] text-green-600 dark:text-green-400"
+                      title="Last synced: {{ opp_sync.get('last_synced_at') }}">✓ In NetSuite</span>
+                {% elif dirty_count %}
+                <span class="text-[11px] text-amber-600 dark:text-amber-400"
+                      title="Some items changed since the last sync — press {{ sync_label }}">⚠ {{ dirty_count }} unsynced change(s)</span>
+                {% endif %}
+                {% if sync_orphan_lines %}
+                <span class="text-[11px] text-red-500 dark:text-red-400"
+                      title="These lines were removed from the RFQ but still exist on the NetSuite opportunity">🗑 {{ sync_orphan_lines | length }} removed line(s) still on OP</span>
                 {% endif %}
                 <span x-show="syncMsg" x-cloak class="text-[11px] text-blue-600 dark:text-blue-400" x-text="syncMsg"></span>
             </span>
@@ -104,10 +123,12 @@
 
                     <td class="px-3 py-2.5 text-center whitespace-nowrap">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
 
-                    {# Cost (read-only) #}
+                    {# Cost (read-only) — currency suffix when the selected quote is non-AUD #}
+                    {% set cost_sel = item.selected_supplier %}
+                    {% set cost_cur = (cost_sel.get('quote_currency') if cost_sel else None) %}
                     <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap">
                         {% if item.cost_price is not none %}
-                        {{ item.cost_price | currency }}
+                        {{ item.cost_price | currency }}{% if cost_cur and cost_cur != 'AUD' %} <span class="text-[10px] opacity-60">{{ cost_cur }}</span>{% endif %}
                         {% else %}
                         <span class="text-red-500 dark:text-red-400">—</span>
                         {% endif %}
@@ -151,9 +172,17 @@
                         {% endif %}
                     </td>
 
-                    {# Sync status — clickable dot with requirements modal #}
+                    {# Sync status — in-OP badge when already added, else readiness dot #}
                     <td class="px-3 py-2.5 text-center">
-                        {% if item.sync_status == 'ready' %}
+                        {% if item.ns_synced and item.sync_dirty %}
+                        <button type="button" @click.stop="openSyncStatus({{ item.line }})"
+                                class="inline-flex items-center gap-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 px-1.5 py-0.5 rounded cursor-pointer"
+                                title="Changed since last sync: {{ item.sync_dirty_fields | join(', ') }}">changed ✏</button>
+                        {% elif item.ns_synced %}
+                        <button type="button" @click.stop="openSyncStatus({{ item.line }})"
+                                class="inline-flex items-center gap-0.5 text-[10px] font-semibold text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 px-1.5 py-0.5 rounded cursor-pointer"
+                                title="Added to the NetSuite opportunity — click for details">in OP ✓</button>
+                        {% elif item.sync_status == 'ready' %}
                         <button type="button" @click.stop="openSyncStatus({{ item.line }})"
                                 class="inline-block w-3 h-3 rounded-full bg-green-500 hover:ring-2 hover:ring-green-300 transition-shadow cursor-pointer"
                                 title="Ready to sync — click for details"></button>
@@ -191,6 +220,33 @@
                 </tr>
             </tfoot>
         </table>
+    </div>
+
+    <!-- Supplier duplicate warning — confirm before syncing to the opportunity -->
+    <div x-show="syncWarn.open" x-cloak
+         class="fixed inset-0 z-[65] flex items-center justify-center bg-black/50"
+         @click.self="syncWarn.open = false"
+         @keydown.escape.window="syncWarn.open = false">
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-lg mx-4 p-5">
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">Possible duplicate suppliers</h3>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                These lines use suppliers that may be duplicates. Review them — if the right supplier is selected, confirm to continue.
+            </p>
+            <div class="space-y-2 max-h-64 overflow-y-auto mb-4">
+                <template x-for="w in syncWarn.lines" :key="w.line">
+                    <div class="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800 dark:border-amber-700/60 dark:bg-amber-900/30 dark:text-amber-200">
+                        <p class="font-semibold">Line <span x-text="w.line"></span> — <span x-text="w.supplier"></span></p>
+                        <p>Possible matches: <span x-text="(w.near_matches || []).join(', ')"></span></p>
+                    </div>
+                </template>
+            </div>
+            <div class="flex justify-end gap-2">
+                <button type="button" @click="syncWarn.open = false"
+                        class="px-3 py-1.5 rounded-md text-xs border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">Cancel</button>
+                <button type="button" @click="confirmSyncWarnings()"
+                        class="px-3 py-1.5 rounded-md text-xs font-medium bg-blue-600 text-white hover:bg-blue-700">I've checked — sync anyway</button>
+            </div>
+        </div>
     </div>
 
     <!-- Sync requirements modal -->
