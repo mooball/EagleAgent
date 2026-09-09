@@ -113,6 +113,8 @@ def clear_stop(session_id: str) -> None:
 # the badge is reference-counted: the first worker turns it on, the last turns
 # it off. Without this, whichever finishes first clears it for everyone.
 _working_depth: Dict[str, int] = {}
+# Previous depth recorded by _badge_should_emit so a failed send can undo it.
+_badge_prev_depth: Dict[str, int] = {}
 
 
 def _badge_should_emit(command: str) -> bool:
@@ -125,17 +127,42 @@ def _badge_should_emit(command: str) -> bool:
     except Exception:
         return True
 
-    if command == "agent_working":
-        depth = _working_depth.get(key, 0)
-        _working_depth[key] = depth + 1
-        return depth == 0
+    prev = _working_depth.get(key, 0)
+    _badge_prev_depth[key] = prev
 
-    depth = _working_depth.get(key, 0) - 1
-    if depth <= 0:
+    if command == "agent_working":
+        _working_depth[key] = prev + 1
+        return prev == 0
+
+    # Original semantics: depth = prev - 1; emit (and pop) when depth <= 0.
+    if prev <= 1:
         _working_depth.pop(key, None)
         return True
-    _working_depth[key] = depth
+    _working_depth[key] = prev - 1
     return False
+
+
+def _badge_undo_emit(command: str) -> None:
+    """Reverse the depth mutation made by _badge_should_emit.
+
+    Called when the actual send fails, so a lost agent_done/agent_working
+    cannot desynchronise the reference count and wedge the badge.
+    """
+    if command not in ("agent_working", "agent_done"):
+        return
+    try:
+        import chainlit as cl
+        key = cl.context.session.id
+    except Exception:
+        return
+
+    prev = _badge_prev_depth.pop(key, None)
+    if prev is None:
+        return
+    if prev <= 0:
+        _working_depth.pop(key, None)
+    else:
+        _working_depth[key] = prev
 
 
 async def notify_dashboard(command: str, payload: dict | None = None) -> None:
@@ -165,8 +192,11 @@ async def notify_dashboard(command: str, payload: dict | None = None) -> None:
         data["payload"] = payload
     try:
         await cl.send_window_message(data)
-    except Exception:
-        logger.debug("notify_dashboard: not in Chainlit context, skipping")
+    except Exception as e:
+        # A failed send must not corrupt the badge depth counter — undo the
+        # count so a later agent_done/agent_working still reaches the frontend.
+        _badge_undo_emit(command)
+        logger.warning("notify_dashboard: send_window_message failed for %s: %s", command, e)
 
 
 async def dispatch_action(
@@ -232,6 +262,9 @@ async def dispatch_action(
                 return {"success": True}
             except Exception as e:
                 logger.exception(f"[agent_bridge] Action {action_name} failed")
+                # Best-effort: guarantee the dashboard badge clears even when
+                # the handler failed before its own finally could run.
+                await notify_dashboard("agent_done")
                 return {"error": str(e)}
 
         callback = config.code.action_callbacks.get(action_name)
@@ -243,6 +276,7 @@ async def dispatch_action(
                 return {"success": True}
             except Exception as e:
                 logger.exception(f"[agent_bridge] Action {action_name} failed")
+                await notify_dashboard("agent_done")
                 return {"error": str(e)}
 
         # Fall back to custom action registry (includes/chat/actions.py)
@@ -256,6 +290,7 @@ async def dispatch_action(
                 return {"success": True}
             except Exception as e:
                 logger.exception(f"[agent_bridge] Action {action_name} failed")
+                await notify_dashboard("agent_done")
                 return {"error": str(e)}
 
         logger.warning(f"[agent_bridge] No callback for action: {action_name}")
