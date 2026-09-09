@@ -485,6 +485,7 @@ app.include_router(addon_router)
 # ---------------------------------------------------------------------------
 from includes.dashboard.context import set_context as _set_dashboard_context
 from includes.dashboard.context import set_thread_context as _set_thread_dashboard_context
+from includes.dashboard.routes.chat_ui import _thread_is_rfq_bound
 
 
 @app.post("/api/dashboard-context")
@@ -500,7 +501,17 @@ async def update_dashboard_context(request: Request):
     # RFQs have different threads and must never overwrite each other.
     thread_id = body.get("_activeThreadId")
     if thread_id:
-        _set_thread_dashboard_context(thread_id, body)
+        view = body.get("view")
+        if view and view != "rfq_detail" and _thread_is_rfq_bound(user["email"], thread_id):
+            # A non-RFQ tab must not stomp an RFQ thread's dashboard context
+            # (e.g. the RFQ thread still being the shared current-thread
+            # anchor). Keep only the per-user fallback entry.
+            logger.info(
+                "Skipping thread context for RFQ-bound thread %s (%s view)",
+                thread_id[:8], view,
+            )
+        else:
+            _set_thread_dashboard_context(thread_id, body)
     return Response(status_code=204)
 
 

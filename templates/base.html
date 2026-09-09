@@ -418,13 +418,22 @@
                     // Prevents multi-tab cookie collision (last tab to connect owns
                     // the cookie; switching back would send the wrong session_id).
                     document.addEventListener('visibilitychange', () => {
-                        if (document.visibilityState === 'visible' && this._chainlitSessionId) {
+                        if (document.visibilityState !== 'visible') return;
+                        if (this._chainlitSessionId) {
                             fetch('/chat/set-session-cookie', {
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
                                 credentials: 'same-origin',
                                 body: JSON.stringify({session_id: this._chainlitSessionId}),
                             }).catch(() => {});
+                        }
+                        if (!document.getElementById('agent-iframe')) {
+                            // Beta embed: re-push this tab's dashboard context
+                            // on focus so the thread-keyed entry stays current
+                            // (multi-tab isolation; also refreshes the TTL).
+                            this.updateContext();
+                            this.pushContext();
+                        } else if (this._chainlitSessionId) {
                             // Also re-push dashboard context so the agent knows
                             // which RFQ this tab is viewing (context is per-user,
                             // not per-tab, so switching tabs can leave stale context).

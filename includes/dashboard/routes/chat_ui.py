@@ -78,13 +78,43 @@ def _set_current_thread_id(user_email: str, thread_id: str) -> None:
         session.close()
 
 
+def _thread_is_rfq_bound(user_email: str, thread_id: str) -> bool:
+    """True if the thread is bound to an RFQ for this user.
+
+    The current-thread anchor must be a PLAIN (non-RFQ) thread: two tabs
+    can sit on the same RFQ thread (via the anchor), and a non-RFQ tab
+    would then overwrite the RFQ tab's thread-keyed dashboard context.
+    """
+    from includes.dashboard.models import RFQThread
+    from . import _helpers
+
+    session = _helpers.get_session()
+    try:
+        return (
+            session.query(RFQThread)
+            .filter(
+                RFQThread.user_email == user_email,
+                RFQThread.thread_id == thread_id,
+            )
+            .first()
+            is not None
+        )
+    finally:
+        session.close()
+
+
 async def _current_thread_id_or_create(user: dict) -> str:
-    """The user's current thread, created on first use (stale ids repaired)."""
+    """The user's current thread, created on first use.
+
+    Stale ids are repaired, and RFQ-bound threads are never used as the
+    anchor — an RFQ thread as the shared home thread would let other tabs
+    clobber its dashboard context (multi-tab isolation).
+    """
     email = user["email"]
     thread_id = _get_current_thread_id(email)
     if thread_id:
         existing = await transcript.get_thread(thread_id, email)
-        if existing is not None:
+        if existing is not None and not _thread_is_rfq_bound(email, thread_id):
             return thread_id
     thread_id = await transcript.create_thread(
         email,

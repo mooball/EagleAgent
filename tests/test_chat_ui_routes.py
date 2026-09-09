@@ -8,6 +8,10 @@ from fastapi.responses import Response
 from fastapi.testclient import TestClient
 from starlette.middleware.sessions import SessionMiddleware
 
+# Captured BEFORE the autouse fixture patches it — lets unit tests exercise
+# the real implementation directly.
+from includes.dashboard.routes.chat_ui import _thread_is_rfq_bound as _thread_is_rfq_bound_impl
+
 
 def _make_test_app():
     app = FastAPI()
@@ -65,6 +69,8 @@ def current_thread_store(monkeypatch):
         chat_ui, "_set_current_thread_id", lambda email, tid: store.__setitem__(email, tid)
     )
     monkeypatch.setattr(chat_ui, "_rfq_meta_by_number", lambda numbers: {})
+    # Default: threads are NOT RFQ-bound (individual tests override).
+    monkeypatch.setattr(chat_ui, "_thread_is_rfq_bound", lambda email, tid: False)
     return store
 
 
@@ -331,6 +337,45 @@ class TestCurrentThread:
         resp = client.get("/chat-ui/current-thread")
         assert resp.status_code == 200
         assert resp.json()["thread_id"] == "t1"  # recreated
+
+    def test_get_replaces_rfq_bound_anchor(self, client, monkeypatch):
+        """An RFQ-bound thread must never be the shared current-thread anchor
+        — other tabs would load it and stomp the RFQ tab's context."""
+        _patch_transcript(monkeypatch)
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        monkeypatch.setattr(chat_ui, "_get_current_thread_id", lambda email: "rfq-thread")
+        monkeypatch.setattr(
+            chat_ui, "_thread_is_rfq_bound", lambda email, tid: tid == "rfq-thread"
+        )
+        _login(client)
+        resp = client.get("/chat-ui/current-thread")
+        assert resp.status_code == 200
+        assert resp.json()["thread_id"] == "t1"  # recreated, not the RFQ thread
+
+    def test_thread_is_rfq_bound(self, monkeypatch):
+        from includes.dashboard.models import RFQThread
+        import includes.dashboard.routes.chat_ui as chat_ui
+        from includes.dashboard.routes import _helpers
+
+        def make_session(bound: bool):
+            s = MagicMock()
+
+            def query_side_effect(model):
+                if model is RFQThread:
+                    q = MagicMock()
+                    q.filter.return_value.first.return_value = object() if bound else None
+                    return q
+                return MagicMock()
+
+            s.query.side_effect = query_side_effect
+            return s
+
+        monkeypatch.setattr(_helpers, "get_session", lambda: make_session(True))
+        assert _thread_is_rfq_bound_impl("u@x.com", "t1") is True
+
+        monkeypatch.setattr(_helpers, "get_session", lambda: make_session(False))
+        assert _thread_is_rfq_bound_impl("u@x.com", "t1") is False
 
     def test_set_requires_owned_thread(self, client, monkeypatch):
         _patch_transcript(monkeypatch, get_thread=AsyncMock(return_value=None))
