@@ -122,6 +122,11 @@ class TestDispatchActionToThread:
         run = chat_ui._active_runs["t1"]
         await run["task"]
 
+        # Belt-and-braces: the dashboard badge clears (agent_done) before the
+        # error toast, so a failed action can never leave the badge spinning.
+        first = run["queue"].get_nowait()
+        assert first["event"] == "dashboard"
+        assert first["data"]["command"] == "agent_done"
         assert run["queue"].get_nowait()["event"] == "error"
         assert run["queue"].get_nowait()["event"] == "done"
         assert "t1" not in chat_ui._active_runs

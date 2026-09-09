@@ -151,3 +151,42 @@ class TestAgentWorkingBadgeIsRefCounted:
         types = [m["type"] for m in clean]
         assert types == ["agent_working", "agent_done"]
         assert bridge._working_depth == {}
+
+    @pytest.mark.asyncio
+    async def test_failed_send_undoes_depth(self, clean, monkeypatch):
+        """A failed send_window_message must not desync the depth counter.
+
+        Without the undo, a lost agent_working/agent_done would suppress the
+        next transition and wedge the dashboard badge until process restart.
+        """
+        state = {"fail": True}
+        sent = clean  # capture list yielded by the fixture
+
+        class _Flaky:
+            context = type("_C", (), {"session": type("_S", (), {"id": "sess-1"})()})()
+
+            @staticmethod
+            async def send_window_message(data):
+                if state["fail"]:
+                    raise RuntimeError("socket gone")
+                sent.append(data)
+
+        monkeypatch.setitem(__import__("sys").modules, "chainlit", _Flaky)
+
+        # working fails at send → depth restored to 0
+        await bridge.notify_dashboard("agent_working", {"label": "a"})
+        assert bridge._working_depth == {}
+
+        # next working emits again (not suppressed by the failed attempt)
+        state["fail"] = False
+        await bridge.notify_dashboard("agent_working", {"label": "b"})
+        assert [m["type"] for m in sent] == ["agent_working"]
+
+        # done fails at send → depth restored to 1, so the next done still emits
+        state["fail"] = True
+        await bridge.notify_dashboard("agent_done")
+        assert bridge._working_depth == {"sess-1": 1}
+        state["fail"] = False
+        await bridge.notify_dashboard("agent_done")
+        assert [m["type"] for m in sent] == ["agent_working", "agent_done"]
+        assert bridge._working_depth == {}

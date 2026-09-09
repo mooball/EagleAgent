@@ -102,16 +102,29 @@ class TestSyncReadinessBrandNsId:
 
     def test_linked_unlinked_and_near_miss(self, db_session):
         import uuid as _uuid
+        from includes.dashboard.models import Brand
+
         suffix = _uuid.uuid4().hex[:6]
         self._brand(db_session, f"Toyzz {suffix}", netsuite_id="NS-EXACT")
         self._brand(db_session, f"Toyzz {suffix} Parts", netsuite_id="NS-PARTS")
+
+        # "Other" is a formal NetSuite brand and resolves through the normal
+        # lookup. Neutralise any pre-existing 'Other' rows inside this
+        # transaction (inactive rows are ignored by the lookup) so the
+        # assertion is deterministic across environments.
+        for b in db_session.query(Brand).filter(Brand.name == "Other").all():
+            b.isinactive = True
+        db_session.flush()
+        other_ns_id = f"NS-OTHER-{suffix}"
+        self._brand(db_session, "Other", netsuite_id=other_ns_id)
 
         rfq = self._rfq(
             {"line": 1, "brand": f"Toyzz {suffix}"},   # exact → linked
             {"line": 2, "brand": f"Zzz {suffix}"},     # unknown → not linked
             {"line": 3, "brand": "toyzz"},             # near only → not linked
             {"line": 4, "brand": ""},                  # blank → None
-            {"line": 5, "brand": "Other"},             # excluded → no badge
+            {"line": 5, "brand": "Other"},             # formal NS record → linked
+            {"line": 6, "brand": "n/a"},               # non-brand exclusion → not linked
         )
         from includes.dashboard.routes.rfqs import _rfq_sync_readiness
         with patch("includes.dashboard.routes._helpers.get_session", return_value=db_session), \
@@ -123,5 +136,7 @@ class TestSyncReadinessBrandNsId:
         assert by_line[2]["brand_ns_id"] is None
         assert by_line[3]["brand_ns_id"] is None
         assert by_line[4]["brand_ns_id"] is None
-        assert by_line[5]["brand_ns_id"] is None
+        assert by_line[5]["brand_ns_id"] == other_ns_id
         assert by_line[5]["brand_is_excluded"] is True
+        assert by_line[6]["brand_ns_id"] is None
+        assert by_line[6]["brand_is_excluded"] is True

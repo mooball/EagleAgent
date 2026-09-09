@@ -137,15 +137,15 @@ async def on_rfq_identify_items(payload: dict, ctx: ChatContext) -> None:
     # Clear any stale stop flag from a previous run
     ctx.reset_cancel()
 
-    await ctx.say(
-        f"Classifying & validating {len(items)} item(s) in {rfq_id}...",
-        author="EagleAgent",
-    )
-    await ctx.notify_dashboard("agent_working", {"label": "AI classifying items..."})
-
     user_id = _user_id(payload, ctx)
 
     try:
+        await ctx.say(
+            f"Classifying & validating {len(items)} item(s) in {rfq_id}...",
+            author="EagleAgent",
+        )
+        await ctx.notify_dashboard("agent_working", {"label": "AI classifying items..."})
+
         # ---- Step A: Classify ALL items ----
         classified = []     # (line, match) for all classified items
         to_validate = []    # items that are 'specific' and need validation
@@ -343,9 +343,9 @@ async def on_rfq_find_suppliers(payload: dict, ctx: ChatContext) -> None:
     uom = payload.get("uom", "ea")
     existing = payload.get("existing_suppliers", [])
 
-    await ctx.notify_dashboard("agent_working", {"label": f"Finding suppliers for line {line}..."})
-
     try:
+        await ctx.notify_dashboard("agent_working", {"label": f"Finding suppliers for line {line}..."})
+
         # ---- Phase 1: Internal DB search ----
         existing_names_lower = {n.lower() for n in existing}
         internal_suppliers = []
@@ -440,9 +440,9 @@ async def on_rfq_find_web_suppliers_for_line(payload: dict, ctx: ChatContext) ->
     uom = payload.get("uom", "ea")
     existing = payload.get("existing_suppliers", [])
 
-    await ctx.notify_dashboard("agent_working", {"label": f"Web searching for line {line}..."})
-
     try:
+        await ctx.notify_dashboard("agent_working", {"label": f"Web searching for line {line}..."})
+
         suppliers = await asyncio.to_thread(
             _web_search_suppliers_sync,
             description=description,
@@ -566,9 +566,9 @@ async def _resume_pipeline_from(
     from langchain_google_genai import ChatGoogleGenerativeAI
     from config.settings import Config
 
-    await ctx.notify_dashboard("agent_working", {"label": "Continuing pipeline..."})
-
     try:
+        await ctx.notify_dashboard("agent_working", {"label": "Continuing pipeline..."})
+
         # An active streaming message so pipeline output appears before gate buttons
         active_msg = await ctx.say("", author="EagleAgent")
         ctx.active_message = active_msg
@@ -630,9 +630,9 @@ async def on_rfq_pipeline_web_search(payload: dict, ctx: ChatContext) -> None:
         await ctx.say("Error: no RFQ ID provided.", author="EagleAgent")
         return
 
-    await ctx.notify_dashboard("agent_working", {"label": "Preparing web search..."})
-
     try:
+        await ctx.notify_dashboard("agent_working", {"label": "Preparing web search..."})
+
         rfq_dict = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
         if not rfq_dict:
             await ctx.say(f"Error: {rfq_id} not found.", author="EagleAgent")
@@ -798,8 +798,8 @@ async def on_rfq_pipeline_previous_suppliers(payload: dict, ctx: ChatContext) ->
         await ctx.say("Error: no RFQ ID.", author="EagleAgent")
         return
 
-    await ctx.notify_dashboard("agent_working", {"label": "Searching purchase history..."})
     try:
+        await ctx.notify_dashboard("agent_working", {"label": "Searching purchase history..."})
         result = await asyncio.to_thread(run_previous_suppliers_sync, rfq_id, user_id, line_filter)
         await ctx.notify_dashboard("dashboard_refresh")
         await show_search_menu(rfq_id, user_id, summary=f"✅ {result}", line_filter=line_filter, ctx=ctx)
@@ -823,8 +823,8 @@ async def on_rfq_pipeline_brand_suppliers(payload: dict, ctx: ChatContext) -> No
         await ctx.say("Error: no RFQ ID.", author="EagleAgent")
         return
 
-    await ctx.notify_dashboard("agent_working", {"label": "Finding brand-linked suppliers..."})
     try:
+        await ctx.notify_dashboard("agent_working", {"label": "Finding brand-linked suppliers..."})
         result = await asyncio.to_thread(run_brand_suppliers_sync, rfq_id, user_id, line_filter)
         await ctx.notify_dashboard("dashboard_refresh")
         await show_search_menu(rfq_id, user_id, summary=f"✅ {result}", line_filter=line_filter, ctx=ctx)
@@ -848,8 +848,8 @@ async def on_rfq_pipeline_new_domestic(payload: dict, ctx: ChatContext) -> None:
         await ctx.say("Error: no RFQ ID.", author="EagleAgent")
         return
 
-    await ctx.notify_dashboard("agent_working", {"label": "Searching Australian suppliers..."})
     try:
+        await ctx.notify_dashboard("agent_working", {"label": "Searching Australian suppliers..."})
         result = await asyncio.to_thread(
             run_web_search_suppliers_sync, rfq_id, user_id, True, line_filter
         )
@@ -875,8 +875,8 @@ async def on_rfq_pipeline_new_international(payload: dict, ctx: ChatContext) -> 
         await ctx.say("Error: no RFQ ID.", author="EagleAgent")
         return
 
-    await ctx.notify_dashboard("agent_working", {"label": "Searching international suppliers..."})
     try:
+        await ctx.notify_dashboard("agent_working", {"label": "Searching international suppliers..."})
         result = await asyncio.to_thread(
             run_web_search_suppliers_sync, rfq_id, user_id, False, line_filter
         )
@@ -919,9 +919,9 @@ async def on_rfq_group_items(payload: dict, ctx: ChatContext) -> None:
         await ctx.say("Need at least 2 confirmed items to group.", author="EagleAgent")
         return
 
-    await ctx.notify_dashboard("agent_working", {"label": "Grouping items..."})
-
     try:
+        await ctx.notify_dashboard("agent_working", {"label": "Grouping items..."})
+
         result = await asyncio.to_thread(
             _group_rfq_items_sync, rfq_id, items, _user_id(payload, ctx),
         )
@@ -979,8 +979,8 @@ async def on_rfq_find_previous_suppliers(payload: dict, ctx: ChatContext) -> Non
     if not rfq_id:
         return
 
-    await ctx.notify_dashboard("agent_working", {"label": "Searching purchase history..."})
     try:
+        await ctx.notify_dashboard("agent_working", {"label": "Searching purchase history..."})
         result = await asyncio.to_thread(
             run_previous_suppliers_sync, rfq_id, _user_id(payload, ctx), None
         )
@@ -1024,8 +1024,8 @@ async def on_rfq_find_new_suppliers(payload: dict, ctx: ChatContext) -> None:
     if not rfq_id:
         return
 
-    await ctx.notify_dashboard("agent_working", {"label": "Searching web for suppliers..."})
     try:
+        await ctx.notify_dashboard("agent_working", {"label": "Searching web for suppliers..."})
         result = await asyncio.to_thread(
             run_web_search_suppliers_sync, rfq_id, _user_id(payload, ctx), True, None
         )
@@ -1046,8 +1046,8 @@ async def on_rfq_find_brand_suppliers(payload: dict, ctx: ChatContext) -> None:
     if not rfq_id:
         return
 
-    await ctx.notify_dashboard("agent_working", {"label": "Finding brand suppliers..."})
     try:
+        await ctx.notify_dashboard("agent_working", {"label": "Finding brand suppliers..."})
         result = await asyncio.to_thread(
             run_brand_suppliers_sync, rfq_id, _user_id(payload, ctx), None
         )

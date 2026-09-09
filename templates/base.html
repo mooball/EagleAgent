@@ -1230,6 +1230,7 @@
                 },
                 _sendAction(action, refreshAfter) {
                     var rfqId = this.rfqId;
+                    var self = this;
                     console.log('[bridge] sending action', action.name);
                     // Ensure thread is bound to the RFQ before dispatching
                     window.dispatchEvent(new CustomEvent('ensure-rfq-bound'));
@@ -1267,12 +1268,21 @@
                     }).then(function(resp) {
                         if (!resp.ok) {
                             resp.json().then(function(d) {
-                                console.error('[bridge]', d.error);
+                                var msg = d.error || 'Action failed';
+                                console.error('[bridge]', msg);
+                                // The badge was set optimistically before the POST —
+                                // clear it and surface the error so the user knows
+                                // the action never ran (e.g. stale Chainlit session).
+                                self._handleDashboardCommand('agent_done', {});
+                                window.eaToast('Agent action failed: ' + msg, false);
                                 if (!isIframe) {
                                     document.dispatchEvent(new CustomEvent('chat-ui:action-failed', {
-                                        detail: { error: d.error || 'Action failed' }
+                                        detail: { error: msg }
                                     }));
                                 }
+                            }).catch(function() {
+                                self._handleDashboardCommand('agent_done', {});
+                                window.eaToast('Agent action failed — please reload the chat panel.', false);
                             });
                         } else if (refreshAfter && isIframe) {
                             // Beta: dashboard_refresh events from the run drive
@@ -1281,6 +1291,8 @@
                         }
                     }).catch(function(err) {
                         console.error('[bridge]', err);
+                        self._handleDashboardCommand('agent_done', {});
+                        window.eaToast('Agent action failed — please reload the chat panel.', false);
                     });
                 },
                 updateSupplier(rfqId, line, supplierName, status) {

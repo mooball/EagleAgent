@@ -420,6 +420,9 @@ async def _execute_action(
                 await handler(payload, ctx)
     except Exception:
         logger.exception("[chat-ui] action %s failed", action_name)
+        # Best-effort: guarantee the dashboard badge clears even when the
+        # handler failed before its own finally could run.
+        await ctx.notify_dashboard("agent_done")
         await queue.put(
             {
                 "event": "error",
