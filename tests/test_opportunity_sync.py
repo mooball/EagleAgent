@@ -342,10 +342,25 @@ class TestSyncOpportunityItems:
         assert result["status"] == "ok"
         assert item_row.product_id == "prod-1"
 
-    def test_excluded_brand_blocks_line(self, monkeypatch, base_stubs):
+    def test_other_brand_syncs_as_formal_ns_record(self, monkeypatch, base_stubs):
+        """'Other' is a formal NetSuite brand record — it must sync, not block."""
         rfq, opp = base_stubs
         upsert = MagicMock(return_value=CreateResult(success=True))
         item = _make_item(brand="Other", brand_is_excluded=True, selected=_make_selected())
+        _patch_sync_env(monkeypatch, rfq, opp, [item], upsert=upsert)
+
+        result = rfqs_module._sync_opportunity_items_sync("RFQ-2026-0001", "tester")
+        assert result["status"] == "ok"
+        assert len(result["synced"]) == 1
+        assert len(result["blocked"]) == 0
+        # The line's New Item Brand field must carry the resolved brand id.
+        assert result["synced"][0]["brand_ns_id"] == "brand-1"
+        upsert.assert_called_once()
+
+    def test_non_other_excluded_brand_still_blocks(self, monkeypatch, base_stubs):
+        rfq, opp = base_stubs
+        upsert = MagicMock(return_value=CreateResult(success=True))
+        item = _make_item(brand="n/a", brand_is_excluded=True, selected=_make_selected())
         _patch_sync_env(monkeypatch, rfq, opp, [item], upsert=upsert)
 
         result = rfqs_module._sync_opportunity_items_sync("RFQ-2026-0001", "tester")

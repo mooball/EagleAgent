@@ -558,12 +558,16 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             suppliers = {str(s.id): s for s in rows}
 
         # Brand NetSuite linkage — exact local-DB matches only; near-misses
-        # and unknown brands are treated as not-in-NetSuite.
+        # and unknown brands are treated as not-in-NetSuite. "Other" is a
+        # formal NetSuite brand record (how the business tracks no-brand),
+        # so it resolves through the normal lookup; the remaining exclusion
+        # names are not real brands and stay unresolvable.
         from includes.tools.product_tools import match_brands, BRAND_NAME_EXCLUSIONS
         brand_names = sorted({
             (i.get("brand") or "").strip()
             for i in items
             if (i.get("brand") or "").strip().lower() not in BRAND_NAME_EXCLUSIONS
+            or (i.get("brand") or "").strip().lower() == "other"
         })
         brand_lookup = {}
         if brand_names:
@@ -850,7 +854,9 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
             })
             continue
 
-        if item.get("brand_is_excluded"):
+        # "Other" is a formal NetSuite brand record and must sync; the rest
+        # of the exclusion names (n/a, none, unknown…) are not real brands.
+        if item.get("brand_is_excluded") and (item.get("brand") or "").strip().lower() != "other":
             blocked.append({
                 "line": line, "label": label,
                 "reasons": [
