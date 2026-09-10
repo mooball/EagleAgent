@@ -830,11 +830,15 @@ def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
 
     reset_pipeline = False
     _identifying = {"input_description", "input_code", "part_number", "brand"}
-    if _identifying & set(data.keys()) and "match" not in data:
-        line_item.match = "unmatched"
-        line_item.product_id = None
-        changes.extend(["match", "product_id"])
-        reset_pipeline = True
+    if _identifying & set(data.keys()):
+        if "part_number" in data:
+            # If part_number changed, clear product_id unless explicitly set to a matching product
+            line_item.product_id = None
+            changes.append("product_id")
+        if "match" not in data:
+            line_item.match = "unmatched"
+            changes.append("match")
+            reset_pipeline = True
 
     return changes, line_item.line, reset_pipeline
 

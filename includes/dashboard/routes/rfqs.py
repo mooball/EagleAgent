@@ -580,11 +580,16 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
         sync_state = rfq.get("opportunity_sync_state") or {}
         snapshot = sync_state.get("snapshot") or {}
         synced_lines = {int(l) for l in snapshot.keys()}
+        from includes.tools.product_tools import normalize_part_number
         for item in items:
             item["ns_synced"] = item["line"] in synced_lines
             product = None
             if item.get("product_id"):
-                product = products.get(str(item["product_id"]))
+                p_cand = products.get(str(item["product_id"]))
+                # Guard against stale/mismatched product_id: product part number
+                # MUST match item part number
+                if p_cand and normalize_part_number(p_cand.part_number) == normalize_part_number(item.get("part_number") or ""):
+                    product = p_cand
             item["product_ns_id"] = product.netsuite_id if product else None
             item["product_part_number"] = product.part_number if product else None
 
@@ -725,6 +730,11 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             if int(l) not in current_lines
         )
         dirty_count = sum(1 for i in items if i.get("sync_dirty"))
+        # Every item is on the opportunity, none dirty, no orphan lines —
+        # the "Update Opportunity" button can be greyed out.
+        all_synced_clean = bool(total) and all(
+            i.get("ns_synced") and not i.get("sync_dirty") for i in items
+        ) and not orphan_lines
         return {
             "sync_total": total,
             "sync_ready": ready_count,
@@ -732,6 +742,7 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             "sync_can_sync": has_opp and total > 0 and ready_count == total,
             "sync_dirty_count": dirty_count,
             "sync_orphan_lines": orphan_lines,
+            "sync_all_clean": all_synced_clean,
         }
     finally:
         session.close()
@@ -1054,7 +1065,7 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
             }
             for s in synced:
                 item_row = item_rows.get(s["line"])
-                if not item_row or item_row.product_id:
+                if not item_row:
                     continue
                 product = (
                     session.query(Product)
