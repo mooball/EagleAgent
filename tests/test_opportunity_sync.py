@@ -536,6 +536,7 @@ def _clean_item():
     return {
         "line": 1,
         "part_number": "BOLT-123",
+        "product_ns_id": "555",
         "sale_price": 22.0,
         "cost_price": 10.5,
         "quantity": 4,
@@ -587,6 +588,14 @@ class TestDiffSyncSnapshot:
     def test_part_number_changed(self):
         item = _clean_item()
         item["part_number"] = "NUT-42"
+        assert "item" in rfqs_module._diff_sync_snapshot(item, SNAP, "AUD")
+
+    def test_ns_item_id_mismatch(self):
+        """The line now resolves to a different NetSuite item than it was
+        pushed under (stale/cross-wired product_id) — must count as dirty."""
+        item = _clean_item()
+        item["part_number"] = "BOLT-123"
+        item["product_ns_id"] = "999"
         assert "item" in rfqs_module._diff_sync_snapshot(item, SNAP, "AUD")
 
     def test_multiple_fields(self):
