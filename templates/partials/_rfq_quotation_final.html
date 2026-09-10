@@ -21,6 +21,7 @@
             {% set opp_sync = rfq.get('opportunity_sync_state') or {} %}
             {% set has_synced = opp_sync.get('last_synced_at') %}
             {% set dirty_count = sync_dirty_count | default(0) %}
+            {% set all_clean = sync_all_clean | default(false) %}
             {% if dirty_count %}
                 {% set sync_label = 'Re-sync ' ~ dirty_count ~ ' change' ~ ('s' if dirty_count != 1 else '') %}
             {% elif has_synced %}
@@ -29,7 +30,13 @@
                 {% set sync_label = 'Add items to OP' %}
             {% endif %}
             <span class="inline-flex items-center gap-2">
-                {% if sync_can_sync %}
+                {% if all_clean %}
+                <button type="button" disabled
+                        title="Every item is already on the NetSuite opportunity — edits will re-enable updates"
+                        class="px-2.5 py-1 rounded-md text-xs font-medium bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400 cursor-not-allowed">
+                    All items synced ✓
+                </button>
+                {% elif sync_can_sync %}
                 <button type="button" @click="syncOpportunity()" :disabled="syncBusy"
                         class="px-2.5 py-1 rounded-md text-xs font-medium {% if dirty_count %}bg-amber-500 hover:bg-amber-600{% else %}bg-green-600 hover:bg-green-700{% endif %} text-white disabled:opacity-50 disabled:cursor-not-allowed">
                     {{ sync_label }}
@@ -41,7 +48,7 @@
                     {{ sync_label }} ({{ sync_ready }}/{{ sync_total }} ready)
                 </button>
                 {% endif %}
-                {% if has_synced and dirty_count == 0 %}
+                {% if has_synced and dirty_count == 0 and not all_clean %}
                 <span class="text-[11px] text-green-600 dark:text-green-400"
                       title="Last synced: {{ opp_sync.get('last_synced_at') }}">✓ In NetSuite</span>
                 {% elif dirty_count %}
