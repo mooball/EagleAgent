@@ -784,6 +784,11 @@ def _diff_sync_snapshot(item: dict, snap: dict | None, quote_currency: str) -> l
         dirty.append("department")
     if (item.get("part_number") or "").strip() != (snap.get("part_number") or "").strip():
         dirty.append("item")
+    # The line was pushed under a specific NetSuite item — if the line now
+    # resolves to a different item (e.g. stale/cross-wired product_id),
+    # that is a real unsynced change.
+    if (item.get("product_ns_id") or "") != (snap.get("ns_item_id") or ""):
+        dirty.append("item")
     if ((item.get("selected_supplier") or {}).get("netsuite_id") or "") != (snap.get("supplier_ns_id") or ""):
         dirty.append("supplier")
     if (item.get("brand_ns_id") or "") != (snap.get("brand_ns_id") or ""):
