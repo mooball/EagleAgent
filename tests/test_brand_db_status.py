@@ -207,3 +207,36 @@ class TestSyncReadinessBrandNsId:
             result = _rfq_sync_readiness(orphan)
             assert result["sync_all_clean"] is False
             assert result["sync_orphan_lines"] == [1]
+
+    def test_missing_quantity_blocks_sync(self, db_session):
+        """Quantity is required before syncing — a 0-qty line would produce
+        a broken NetSuite line (and a broken Quotation conversion)."""
+        from includes.dashboard.routes.rfqs import _rfq_sync_readiness
+
+        rfq = {
+            "items": [{
+                "line": 1,
+                "part_number": "BOLT-123",
+                "brand": "Acme",
+                "cost_price": 10.5,
+                "sale_price": 22.0,
+                "quantity": None,
+                "department_id": "8",
+                "suppliers": [{
+                    "quote_status": "selected",
+                    "netsuite_id": "77",
+                    "quote_currency": "AUD",
+                }],
+            }],
+            "opportunity_id": "opp-uuid-1",
+            "opportunity_sync_state": None,
+        }
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=db_session), \
+             patch("includes.tools.product_tools.get_session", return_value=db_session):
+            result = _rfq_sync_readiness(rfq)
+
+        item = rfq["items"][0]
+        assert item["sync_status"] == "missing"
+        assert any(i["key"] == "qty" for i in item["sync_issues"])
+        assert item["missing_qty"] is True
+        assert result["sync_can_sync"] is False

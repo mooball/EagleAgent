@@ -680,6 +680,11 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                     "key": "cost",
                     "label": "Cost price not set — enter it on the Selection tab",
                 })
+            if not item.get("quantity"):
+                issues.append({
+                    "key": "qty",
+                    "label": "Quantity not set — enter it on the Items tab",
+                })
             if selected is None:
                 issues.append({
                     "key": "supplier",
@@ -711,6 +716,7 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             item["missing_department"] = any(i["key"] == "department" for i in issues)
             item["missing_brand"] = any(i["key"] == "brand" for i in issues)
             item["missing_cost"] = any(i["key"] == "cost" for i in issues)
+            item["missing_qty"] = any(i["key"] == "qty" for i in issues)
             item["missing_sale"] = any(i["key"] == "sale" for i in issues)
             item["missing_supplier"] = any(i["key"] == "supplier" for i in issues)
 
@@ -992,6 +998,11 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
             # computed amount = quantity × rate is recalculated.
             "custcol_po_rate": float(po_rate),
             "custcol_po_vendor": {"id": vendor_ns_id},
+            # PURCHORDERRATE makes NetSuite keep the explicit estimate costs
+            # below. New lines default to AVGCOST, which derives est. cost
+            # from the item's average cost — null for newly created items,
+            # leaving the converted Quotation without an extended cost.
+            "costEstimateType": {"id": "PURCHORDERRATE"},
             "costEstimateRate": float(est_rate),
             "costEstimate": float(est_amount),
             # New Item Code / New Item Brand custom fields
