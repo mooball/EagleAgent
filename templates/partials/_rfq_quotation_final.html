@@ -128,7 +128,9 @@
                         {% endif %}
                     </td>
 
-                    <td class="px-3 py-2.5 text-center whitespace-nowrap">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
+                    <td class="px-3 py-2.5 text-center whitespace-nowrap">
+                        {% if item.quantity %}{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' }}{% else %}<span class="text-red-500 dark:text-red-400" title="Quantity not set — enter it on the Items tab">—</span>{% endif %}
+                    </td>
 
                     {# Cost (read-only) — currency suffix when the selected quote is non-AUD #}
                     {% set cost_sel = item.selected_supplier %}

@@ -515,6 +515,23 @@ class TestSyncOpportunityItems:
         assert sent["costEstimateRate"] == 100.0
         assert sent["costEstimate"] == 400.0
 
+    def test_payload_sets_purchorderrate_estimate_type(self, monkeypatch, base_stubs):
+        """Regression (OP73275): lines must carry costEstimateType
+        PURCHORDERRATE or NetSuite defaults to AVGCOST and drops the
+        explicit estimate costs — the converted Quotation then has no
+        extended cost."""
+        rfq, opp = base_stubs
+        upsert = MagicMock(return_value=CreateResult(success=True))
+        item = _make_item(selected=_make_selected(), product_ns_id="555")
+        _patch_sync_env(monkeypatch, rfq, opp, [item], upsert=upsert)
+
+        result = rfqs_module._sync_opportunity_items_sync("RFQ-2026-0001", "tester")
+        assert result["status"] == "ok"
+        sent = upsert.call_args.args[1][0]
+        assert sent["costEstimateType"] == {"id": "PURCHORDERRATE"}
+        assert sent["costEstimateRate"] == 10.5
+        assert sent["costEstimate"] == 42.0  # 10.5 × qty 4, rounded
+
 
 # ---------------------------------------------------------------------------
 # _diff_sync_snapshot (pure dirty-flag helper)
