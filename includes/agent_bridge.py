@@ -99,8 +99,14 @@ async def request_stop(session_id: str) -> int:
 
 
 def clear_stop(session_id: str) -> None:
-    """Clear the cancel flag so the session can accept new work."""
-    ev = _cancel_events.get(session_id)
+    """Clear the cancel flag so the session can accept new work.
+
+    The event is dropped rather than just unset: a cleared entry left in the
+    dict would accumulate one entry per thread/session that was ever stopped,
+    for the lifetime of the process. ``_get_cancel_event`` recreates it on
+    demand, so removal is safe.
+    """
+    ev = _cancel_events.pop(session_id, None)
     if ev:
         ev.clear()
 

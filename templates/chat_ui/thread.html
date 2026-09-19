@@ -263,6 +263,12 @@
     function setRunning(running) {
         sendBtn.disabled = running;
         stopBtn.hidden = !running;
+        if (!running) { resetStopBtn(); }
+    }
+
+    function resetStopBtn() {
+        stopBtn.disabled = false;
+        stopBtn.textContent = '⏹ Stop';
     }
 
     function openStream() {
@@ -374,9 +380,24 @@
     });
 
     stopBtn.addEventListener('click', function () {
+        if (stopBtn.disabled) { return; }
+        // The run stays live until the server acknowledges, so show progress
+        // rather than letting the button be pressed twice.
+        stopBtn.disabled = true;
+        stopBtn.textContent = '⏹ Stopping…';
         fetch('/chat-ui/threads/' + THREAD_ID + '/stop', {
             method: 'POST', credentials: 'same-origin'
-        }).catch(function () {});
+        }).catch(function () {
+            resetStopBtn();
+        });
+        // Safety net: `done` unlocks the composer, but if that event is ever
+        // missed the stream must be re-opened — a finished run replays `done`
+        // immediately, which resets the UI.
+        setTimeout(function () {
+            if (stopBtn.hidden) { return; }
+            resetStopBtn();
+            openStream();
+        }, 8000);
     });
 
     renderCommands();

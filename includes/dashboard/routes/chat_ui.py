@@ -40,6 +40,51 @@ def _cancel_key(thread_id: str) -> str:
     return f"chat-ui:{thread_id}"
 
 
+def _accept_new_turn(thread_id: str) -> None:
+    """Clear any stale stop flag before a new turn starts on this thread.
+
+    ``/stop`` sets a per-key ``asyncio.Event`` that the runner polls between
+    stream events. Nothing cleared it once its target run had finished, so a
+    stop pressed at (or after) the end of a turn left the thread permanently
+    cancelled — every later turn aborted on its first stream event with
+    "Stopped by user", which reads to the user as "the thread is dead".
+    ``app.py`` clears the flag before each Chainlit run for the same reason.
+    """
+    from includes.agent_bridge import clear_stop
+
+    try:
+        clear_stop(_cancel_key(thread_id))
+    except Exception:
+        logger.warning("[chat-ui] could not clear stop flag for %s", thread_id[:8])
+
+
+def _register_run(task: asyncio.Task, thread_id: str) -> None:
+    """Track a run so ``/stop`` cancels it promptly.
+
+    Without this the stop is purely cooperative: the flag is only inspected
+    between stream events, so a long tool call cannot be interrupted and the
+    client stays locked.
+    """
+    from includes.agent_bridge import register_task
+
+    try:
+        register_task(task, _cancel_key(thread_id))
+    except Exception:
+        logger.warning("[chat-ui] could not register run for %s", thread_id[:8])
+
+
+def _unregister_current_task(cancel_key: str) -> None:
+    """Drop this task from the bridge's cancel registry (best-effort)."""
+    from includes.agent_bridge import unregister_task
+
+    try:
+        current = asyncio.current_task()
+        if current is not None:
+            unregister_task(current, cancel_key)
+    except Exception:
+        pass
+
+
 # ── Current-thread anchor (one per user, non-RFQ home base) ────────────────
 
 
@@ -365,6 +410,7 @@ async def _run_task(
             await ctx.flush_scratch()
         await queue.put({"event": "done", "data": {}})
         _active_runs.pop(thread_id, None)
+        _unregister_current_task(_cancel_key(thread_id))
 
 
 # ── Action dispatch (transport-neutral) ────────────────────────────────────
@@ -433,6 +479,7 @@ async def _execute_action(
         await ctx.flush_scratch()
         await queue.put({"event": "done", "data": {}})
         _active_runs.pop(ctx.thread_id, None)
+        _unregister_current_task(_cancel_key(ctx.thread_id))
 
 
 async def dispatch_action_to_thread(
@@ -481,7 +528,12 @@ async def dispatch_action_to_thread(
     # find-all-suppliers handler re-enters the graph with it.
     ctx.set("active_graph", graph)
 
+    # This turn supersedes any previous stop: clear the flag before the run
+    # starts, so a stop that arrived after the last turn ended cannot cancel it.
+    _accept_new_turn(thread_id)
+
     task = asyncio.create_task(_execute_action(ctx, action_name, payload, queue))
+    _register_run(task, thread_id)
     _active_runs[thread_id] = {"queue": queue, "task": task}
     return {"started": True, "thread_id": thread_id}
 
@@ -1003,6 +1055,10 @@ async def post_message(
             status_code=409,
         )
 
+    # This turn supersedes any previous stop: clear the flag before the run
+    # starts, so a stop that arrived after the last turn ended cannot cancel it.
+    _accept_new_turn(thread_id)
+
     # Persist the user turn into the shared steps table (Chainlit parity).
     step_id = await transcript.create_step(
         thread_id, type_="user_message", name=user["email"], output=text
@@ -1028,6 +1084,7 @@ async def post_message(
             intent_context=intent_context,
         )
     )
+    _register_run(task, thread_id)
     _active_runs[thread_id] = {"queue": queue, "task": task}
     return JSONResponse({"ok": True})
 
@@ -1068,6 +1125,13 @@ async def stream(thread_id: str, user: dict = Depends(require_user)):
             yield _sse("done", {})
             return
         queue: asyncio.Queue = run["queue"]
+        # A client that reconnects after the run ended (or a second tab that
+        # opened the stream late) would otherwise block on an empty queue that
+        # nothing will ever fill — the run's events were drained by the first
+        # stream. Close it out instead of leaving the UI locked.
+        if run["task"].done() and queue.empty():
+            yield _sse("done", {})
+            return
         while True:
             item = await queue.get()
             yield _sse(item["event"], item["data"])

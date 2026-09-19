@@ -310,6 +310,113 @@ class TestRunFlow:
         req.assert_awaited_once_with("chat-ui:t1")
 
 
+class TestStopFlagLifecycle:
+    """Regression: pressing Stop must not poison the thread for later turns.
+
+    /stop sets a per-thread cancel Event that the runner polls; nothing used
+    to clear it, so every subsequent turn aborted on its first stream event
+    with "Stopped by user" (users reported being unable to add messages).
+    """
+
+    def test_stop_then_message_clears_stale_flag(self, client, monkeypatch):
+        _patch_transcript(monkeypatch)
+        _login(client)
+        import includes.dashboard.routes.chat_ui as chat_ui
+        from includes import agent_bridge
+
+        monkeypatch.setattr(chat_ui, "_active_runs", {})
+        monkeypatch.setattr(chat_ui, "_run_task", AsyncMock())
+
+        # Worst case: the stop lands after its run already finished, so no
+        # running turn ever consumes the flag.
+        assert client.post("/chat-ui/threads/t1/stop").status_code == 200
+        assert agent_bridge.is_stop_requested("chat-ui:t1") is True
+
+        # The next turn must clear it, or the run is cancelled immediately.
+        assert (
+            client.post("/chat-ui/threads/t1/messages", json={"text": "hello"}).status_code
+            == 200
+        )
+        assert agent_bridge.is_stop_requested("chat-ui:t1") is False
+
+    def test_rejected_message_leaves_flag_alone(self, client, monkeypatch):
+        """A 409 busy rejection starts no run, so it must not clear the flag."""
+        _patch_transcript(monkeypatch)
+        _login(client)
+        import includes.dashboard.routes.chat_ui as chat_ui
+        from includes import agent_bridge
+
+        fake_task = MagicMock()
+        fake_task.done.return_value = False
+        monkeypatch.setattr(
+            chat_ui, "_active_runs", {"t1": {"queue": MagicMock(), "task": fake_task}}
+        )
+        agent_bridge._get_cancel_event("chat-ui:t1").set()
+        try:
+            resp = client.post("/chat-ui/threads/t1/messages", json={"text": "hi"})
+            assert resp.status_code == 409
+            assert agent_bridge.is_stop_requested("chat-ui:t1") is True
+        finally:
+            agent_bridge.clear_stop("chat-ui:t1")
+
+    def test_accept_new_turn_clears_flag(self):
+        from includes import agent_bridge
+        from includes.dashboard.routes.chat_ui import _accept_new_turn
+
+        agent_bridge._get_cancel_event("chat-ui:t9").set()
+        assert agent_bridge.is_stop_requested("chat-ui:t9") is True
+        _accept_new_turn("t9")
+        assert agent_bridge.is_stop_requested("chat-ui:t9") is False
+
+    def test_clear_stop_drops_registry_entry(self):
+        """A cleared flag must not stay in the dict forever."""
+        from includes import agent_bridge
+
+        agent_bridge._get_cancel_event("sess-leak")
+        assert "sess-leak" in agent_bridge._cancel_events
+        agent_bridge.clear_stop("sess-leak")
+        assert "sess-leak" not in agent_bridge._cancel_events
+
+    def test_message_registers_run_for_cancellation(self, client, monkeypatch):
+        """Stop must be able to cancel the run, not just flag it."""
+        _patch_transcript(monkeypatch)
+        _login(client)
+        import includes.dashboard.routes.chat_ui as chat_ui
+        from includes import agent_bridge
+
+        monkeypatch.setattr(chat_ui, "_active_runs", {})
+        monkeypatch.setattr(chat_ui, "_run_task", AsyncMock())
+        registered = []
+        monkeypatch.setattr(
+            agent_bridge, "register_task", lambda task, sid: registered.append(sid)
+        )
+
+        assert (
+            client.post("/chat-ui/threads/t1/messages", json={"text": "hi"}).status_code
+            == 200
+        )
+        assert registered == ["chat-ui:t1"]
+
+    def test_stream_closes_out_when_run_already_drained(self, client, monkeypatch):
+        """A late/reconnecting client must not block on an empty queue."""
+        _patch_transcript(monkeypatch)
+        _login(client)
+        import asyncio
+
+        import includes.dashboard.routes.chat_ui as chat_ui
+
+        fake_task = MagicMock()
+        fake_task.done.return_value = True
+        monkeypatch.setattr(
+            chat_ui,
+            "_active_runs",
+            {"t1": {"queue": asyncio.Queue(), "task": fake_task}},
+        )
+        resp = client.get("/chat-ui/threads/t1/stream")
+        assert resp.status_code == 200
+        assert "event: done" in resp.text
+
+
 class TestCurrentThread:
     def test_get_creates_when_missing(self, client, monkeypatch):
         _patch_transcript(monkeypatch)
