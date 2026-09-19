@@ -35,7 +35,7 @@
                 <button type="button" id="embed-stop-btn" hidden
                         class="inline-flex items-center gap-x-1 py-1 px-2 text-xs font-semibold rounded-md bg-red-600 text-white hover:bg-red-700">
                     <svg class="shrink-0 size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5.25" y="5.25" width="13.5" height="13.5" rx="2.25" /></svg>
-                    Stop
+                    <span id="embed-stop-label">Stop</span>
                 </button>
                 <button type="button" id="embed-rename-btn" hidden
                         class="py-1 px-2 inline-flex items-center text-xs font-semibold rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200"
@@ -126,6 +126,7 @@
     var composer = document.getElementById('embed-composer');
     var sendBtn = document.getElementById('embed-send-btn');
     var stopBtn = document.getElementById('embed-stop-btn');
+    var stopLabel = document.getElementById('embed-stop-label');
     var renameBtn = document.getElementById('embed-rename-btn');
     var errorEl = document.getElementById('embed-error');
     var toolsBtn = document.getElementById('embed-tools-btn');
@@ -140,6 +141,7 @@
     var composerBox = document.getElementById('embed-composer-box');
     var rows = {};
     var eventSource = null;
+    var stopping = {};         // thread_id -> true while a stop request is in flight
     var runs = {};             // thread_id -> true while its turn/action is live
     var streamThreadId = null; // thread the open EventSource belongs to
     var lock = null;           // {rfq_id, thread_id} while on an RFQ
@@ -519,6 +521,11 @@
         refreshRunBadges();
     }
 
+    function setStopping(tid, v) {
+        if (v) { stopping[tid] = true; } else { delete stopping[tid]; }
+        updateControls();
+    }
+
     function updateControls() {
         // The back arrow is always available — the list's 🔗 badges make it
         // a natural RFQ switcher even while locked.
@@ -527,7 +534,12 @@
         // Clear shows on RFQ-locked threads and on the current thread.
         clearBtn.hidden = !(lock || (active && active.id === currentThreadId));
         // Stop targets the thread being viewed, and only while it is running.
+        // While the request is in flight the button says so and can't be
+        // double-fired; the composer stays locked until the run really ends.
+        var isStopping = !!(active && stopping[active.id]);
         stopBtn.hidden = !(active && runs[active.id]);
+        stopBtn.disabled = isStopping;
+        stopLabel.textContent = isStopping ? 'Stopping…' : 'Stop';
         renameBtn.hidden = !active;
     }
 
@@ -852,6 +864,7 @@
         eventSource.addEventListener('done', function () {
             if (eventSource) { eventSource.close(); eventSource = null; }
             streamThreadId = null;
+            setStopping(tid, false);
             setRunning(tid, false);
             if (active && active.id === tid) { loadMessages(tid); }
             refreshActiveRuns();
@@ -1140,8 +1153,25 @@
         }
     });
     stopBtn.addEventListener('click', function () {
-        if (!active) { return; }
-        fetch('/chat-ui/threads/' + active.id + '/stop', {method: 'POST', credentials: 'same-origin'}).catch(function () {});
+        if (!active || stopping[active.id]) { return; }
+        var tid = active.id;
+        setStopping(tid, true);
+        fetch('/chat-ui/threads/' + tid + '/stop', {method: 'POST', credentials: 'same-origin'})
+            .then(function () {
+                // Safety net: the run's `done` event closes this out, but if it
+                // is ever missed the composer must not stay locked forever.
+                // refreshActiveRuns() reads the server's live-run list and
+                // reattaches the stream when needed.
+                setTimeout(function () {
+                    if (!stopping[tid]) { return; }
+                    setStopping(tid, false);
+                    refreshActiveRuns();
+                }, 8000);
+            })
+            .catch(function () {
+                setStopping(tid, false);
+                showError('Could not stop the run — please try again.');
+            });
     });
     renameBtn.addEventListener('click', function () {
         if (!active) { return; }
