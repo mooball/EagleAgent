@@ -605,8 +605,12 @@ def _match_suppliers_to_db(suppliers: list[dict], product_hint: str = "") -> Non
 def _enrich_supplier_pricing(suppliers: list[dict], product_id: str | None) -> None:
     """Look up cost/sale pricing for each supplier+product and enrich in-place.
 
-    Finds the most recent SalesOrder or Quote transaction for the pair and
+    Finds the most recent SalesOrder or Quote transaction for each pair and
     reads both ``cost`` (buy price) and ``price`` (sell price) from it.
+
+    Batched — three queries per call regardless of how many suppliers are
+    passed (currencies, most-recent transactions, counts) rather than three
+    per supplier.
 
     Adds to each supplier dict:
       - cost_price, sale_price, price_date, price_doc, price_doc_type
@@ -623,73 +627,101 @@ def _enrich_supplier_pricing(suppliers: list[dict], product_id: str | None) -> N
     except (ValueError, TypeError):
         return
 
-    sids = {}  # supplier_id str -> supplier dict
+    # supplier uuid -> supplier dicts to enrich (a supplier can appear more
+    # than once, e.g. two names sharing one record).
+    targets: dict[uuid.UUID, list[dict]] = {}
     for sup in suppliers:
         sid = sup.get("supplier_id")
-        if sid:
-            sids[str(sid)] = sup
+        if not sid:
+            continue
+        try:
+            key = uuid.UUID(str(sid))
+        except (ValueError, TypeError):
+            continue
+        targets.setdefault(key, []).append(sup)
 
-    if not sids:
+    if not targets:
         return
 
     from includes.dashboard.models import Transaction, Supplier
     from includes.tools import rfq_crud as _crud
     session = _crud._get_session()
     try:
-        for sid_str, sup in sids.items():
-            try:
-                sid = uuid.UUID(sid_str)
-            except (ValueError, TypeError):
-                continue
+        supplier_ids = list(targets)
 
-            # Look up supplier currency
-            sup_currency = (
-                session.query(Supplier.currency)
-                .filter(Supplier.id == sid)
-                .scalar()
-            )
+        pair_filter = and_(
+            Transaction.product_id == pid,
+            Transaction.doc_type.in_(["SalesOrder", "Quote"]),
+        )
 
-            base_filter = and_(
-                Transaction.supplier_id == sid,
-                Transaction.product_id == pid,
-                Transaction.doc_type.in_(["SalesOrder", "Quote"]),
-            )
+        # Supplier currencies — one query
+        cur_by_id = dict(
+            session.query(Supplier.id, Supplier.currency)
+            .filter(Supplier.id.in_(supplier_ids))
+            .all()
+        )
 
-            # Most recent SO or Quote — single source for cost + sale
-            latest = (
-                session.query(
-                    Transaction.cost, Transaction.price,
-                    Transaction.date, Transaction.doc_number, Transaction.doc_type,
-                )
-                .filter(base_filter)
-                .order_by(desc(Transaction.date))
-                .first()
+        # Most recent SO or Quote per supplier — DISTINCT ON returns one row
+        # per supplier. date DESC puts NULL dates first (as Postgres sorts
+        # them, matching the previous per-supplier lookup); doc_number and id
+        # then break same-date ties deterministically. Ties are common in
+        # practice — a single quote with N lines of the same part is N rows
+        # sharing one date — and previously the "latest" row was arbitrary,
+        # so prices could differ between two identical requests.
+        latest_rows = (
+            session.query(
+                Transaction.supplier_id,
+                Transaction.cost,
+                Transaction.price,
+                Transaction.date,
+                Transaction.doc_number,
+                Transaction.doc_type,
             )
-            if latest:
-                if latest.cost is not None:
-                    sup["cost_price"] = float(latest.cost)
-                if latest.price is not None:
-                    sup["sale_price"] = float(latest.price)
-                sup["price_date"] = latest.date.isoformat() if latest.date else None
-                sup["price_doc"] = latest.doc_number
-                sup["price_doc_type"] = latest.doc_type
+            .filter(pair_filter, Transaction.supplier_id.in_(supplier_ids))
+            .order_by(
+                Transaction.supplier_id,
+                desc(Transaction.date),
+                desc(Transaction.doc_number),
+                Transaction.id,
+            )
+            .distinct(Transaction.supplier_id)
+            .all()
+        )
+
+        # Count of SO + Quote transactions per supplier — one query
+        counts = dict(
+            session.query(Transaction.supplier_id, func.count(Transaction.id))
+            .filter(pair_filter, Transaction.supplier_id.in_(supplier_ids))
+            .group_by(Transaction.supplier_id)
+            .all()
+        )
+
+        for row in latest_rows:
+            sup_currency = cur_by_id.get(row.supplier_id)
+            for sup in targets.get(row.supplier_id, []):
+                if row.cost is not None:
+                    sup["cost_price"] = float(row.cost)
+                if row.price is not None:
+                    sup["sale_price"] = float(row.price)
+                sup["price_date"] = row.date.isoformat() if row.date else None
+                sup["price_doc"] = row.doc_number
+                sup["price_doc_type"] = row.doc_type
+
                 if sup_currency and sup_currency != "AUD":
                     sup["cost_currency"] = sup_currency
                     # Convert cost to AUD for margin calculation
-                    if latest.cost is not None:
+                    if row.cost is not None:
                         try:
                             from includes.currency import convert_to_aud
-                            sup["cost_price_aud"] = round(convert_to_aud(float(latest.cost), sup_currency), 2)
+                            sup["cost_price_aud"] = round(convert_to_aud(float(row.cost), sup_currency), 2)
                         except Exception as exc:
                             logger.warning(f"Currency conversion {sup_currency}→AUD failed: {exc}")
 
-            # Count of SO + Quote transactions
-            txn_count = (
-                session.query(func.count(Transaction.id))
-                .filter(base_filter)
-                .scalar()
-            )
-            if txn_count:
+        # transaction_count is only set when there is history (as before)
+        for supplier_id, txn_count in counts.items():
+            if not txn_count:
+                continue
+            for sup in targets.get(supplier_id, []):
                 sup["transaction_count"] = txn_count
 
     except Exception as e:

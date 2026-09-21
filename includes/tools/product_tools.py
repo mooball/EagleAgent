@@ -9,7 +9,7 @@ import logging
 import re
 from typing import Optional
 from langchain_core.tools import tool
-from sqlalchemy import create_engine, or_, text, func
+from sqlalchemy import create_engine, or_, text, func, bindparam
 from sqlalchemy.orm import sessionmaker, aliased
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import asyncio
@@ -1349,72 +1349,323 @@ def _find_suppliers_by_brand(brand: str, limit: int = 200) -> list[dict]:
         session.close()
 
 
-def _find_brand_suppliers_with_tier(brand: str, limit: int = 200) -> list[dict]:
-    """Find suppliers linked to a brand, enriched with tier and brand-specific transaction count.
+# ---------------------------------------------------------------------------
+# Brand-linked supplier lookup
+# ---------------------------------------------------------------------------
+#
+# Ranking: brand-specific transaction count (desc) is the primary measure,
+# supply chain tier (A→D) is the tie-break, then name. Two kinds of duplicate
+# record are folded in *before* ranking:
+#
+#   * duplicate brands — Brand.duplicate_of children belong to the canonical
+#     brand's "family", so supplier links and product transactions hanging off
+#     a duplicate brand still count towards the canonical brand.
+#   * duplicate suppliers — Supplier.use_instead chains resolve to the canonical
+#     record; transaction counts are summed across the chain and only the
+#     canonical record is returned.
 
-    Returns list sorted by tier (A first) then transaction count (desc).
-    Transaction count is filtered to only transactions for products of this brand.
-    Each dict: supplier_id, name, contacts, tier, transaction_count, country.
+_TIER_ORDER = {"A": 0, "B": 1, "C": 2, "D": 3}
+
+# Canonical brand + every brand pointing at it via duplicate_of, recursively.
+# Seeded by a normalised name match (case/punctuation insensitive), so an item
+# brand that only matches a duplicate record still resolves to its canonical.
+# UNION (not UNION ALL) in both recursive steps keeps this cycle-safe.
+_BRAND_FAMILY_SQL = text("""
+    WITH RECURSIVE seed AS (
+        SELECT id, duplicate_of,
+               regexp_replace(lower(name), '[^a-z0-9]', '', 'g') AS norm
+        FROM brands
+        WHERE regexp_replace(lower(name), '[^a-z0-9]', '', 'g') = ANY(:norms)
+    ), up AS (
+        SELECT id AS cur, duplicate_of AS parent, norm FROM seed
+        UNION
+        SELECT b.id, b.duplicate_of, u.norm
+        FROM up u JOIN brands b ON b.id = u.parent
+    ), roots AS (
+        SELECT DISTINCT norm, cur AS root_id FROM up WHERE parent IS NULL
+    ), fam AS (
+        SELECT root_id, norm, root_id AS id FROM roots
+        UNION
+        SELECT f.root_id, f.norm, b.id
+        FROM fam f JOIN brands b ON b.duplicate_of = f.id
+    )
+    SELECT DISTINCT norm, root_id, id FROM fam
+""")
+
+
+def _brand_norm(name: str | None) -> str:
+    """Normalised brand key — mirrors the SQL regexp_replace in _BRAND_FAMILY_SQL."""
+    return normalize_part_number(name or "").lower()
+
+
+def _resolve_brand_families(session, brands: list[str]) -> dict[str, tuple]:
+    """{input brand name: (canonical brand id, [all brand ids in its family])}.
+
+    One query for any number of names. Brands with no database match map to
+    (None, []).
     """
-    from sqlalchemy import func, desc
+    by_name = {b: (None, []) for b in brands}
+    norms = {}
+    for b in brands:
+        n = _brand_norm(b)
+        if n:
+            norms.setdefault(n, None)
+
+    if not norms:
+        return by_name
+
+    stmt = _BRAND_FAMILY_SQL.bindparams(bindparam("norms"))
+    seeds: dict[str, dict] = {}   # norm -> {root_id: [brand ids]}
+    for norm, root_id, brand_id in session.execute(stmt, {"norms": list(norms)}):
+        seeds.setdefault(norm, {}).setdefault(root_id, []).append(brand_id)
+
+    # If a name matches several canonical brands, prefer the largest family
+    # (deterministic: then lowest id).
+    resolved = {}
+    for norm, roots in seeds.items():
+        root_id, ids = sorted(
+            roots.items(), key=lambda kv: (-len(kv[1]), str(kv[0]))
+        )[0]
+        resolved[norm] = (root_id, sorted(ids, key=str))
+
+    for name in brands:
+        resolved_family = resolved.get(_brand_norm(name))
+        if resolved_family:
+            by_name[name] = resolved_family
+    return by_name
+
+
+def _canonical_supplier_map(session, supplier_ids, known: dict | None = None) -> dict:
+    """{supplier_id: canonical_id} — follows Supplier.use_instead chains.
+
+    Cycle-safe and hop-limited. `known` may pre-seed {id: use_instead} for ids a
+    caller has already fetched; those ids are not queried again.
+    """
+    ids = {i for i in supplier_ids if i}
+    if not ids:
+        return {}
+
+    flags: dict = dict(known or {})
+    frontier = {i for i in ids if i not in flags}
+    while frontier:
+        rows = (
+            session.query(Supplier.id, Supplier.use_instead)
+            .filter(Supplier.id.in_(list(frontier)))
+            .all()
+        )
+        frontier = set()
+        for sid, target in rows:
+            flags[sid] = target
+            if target and target not in flags:
+                frontier.add(target)
+
+    out = {}
+    for sid in ids:
+        cur, seen = sid, {sid}
+        while flags.get(cur) and flags[cur] not in seen:
+            cur = flags[cur]
+            seen.add(cur)
+        out[sid] = cur
+    return out
+
+
+def _union_contacts(*contact_lists) -> list[dict]:
+    """Concatenate contact lists, dropping duplicates (url|email key)."""
+    out, seen = [], set()
+    for contacts in contact_lists:
+        if not isinstance(contacts, list):
+            continue
+        for c in contacts:
+            if not isinstance(c, dict):
+                continue
+            key = f"{c.get('url', '')}|{c.get('email', '')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(c)
+    return out
+
+
+def _find_brand_suppliers_for_brands(brands: list[str], limit: int = 200) -> dict[str, list[dict]]:
+    """Brand-linked suppliers for several brands in one pass.
+
+    Three queries regardless of how many brands are passed:
+      1. brand family resolution (canonical brand + its duplicate brands)
+      2. brand-specific transaction counts per (brand, supplier)
+      3. suppliers linked to any brand in those families
+
+    Ranked by brand transaction count (desc), then tier, then name. Counts
+    include every transaction doc type for the brand (orders, quotes, legacy
+    POs), and duplicates of both brands and suppliers are folded in before
+    ranking — only canonical supplier records are returned.
+
+    Each supplier dict: supplier_id, name, contacts, tier, country,
+    transaction_count (rolled up), brand_transaction_count (same value, kept
+    separately because `transaction_count` is re-used per-part by
+    _enrich_supplier_pricing), duplicate_count, merged_names.
+    """
+    names = [b for b in dict.fromkeys(brands) if b]
+    out = {b: [] for b in names}
+    if not names:
+        return out
 
     session = get_session()
     try:
-        # Sub-query: count transactions per supplier for THIS specific brand
-        tx_count_sub = (
+        families = _resolve_brand_families(session, names)
+
+        root_brand_ids: dict = {}          # root brand id -> set(brand ids)
+        root_by_name: dict = {}            # input name -> root brand id
+        for name in names:
+            root_id, ids = families.get(name, (None, []))
+            if root_id is None or not ids:
+                continue
+            root_by_name[name] = root_id
+            root_brand_ids.setdefault(root_id, set()).update(ids)
+
+        if not root_brand_ids:
+            return out
+
+        brand_ids = [bid for ids in root_brand_ids.values() for bid in ids]
+        brand_to_root = {bid: root for root, ids in root_brand_ids.items() for bid in ids}
+
+        # 1. Brand-specific transaction counts (quotes included).
+        count_rows = (
             session.query(
+                Product.brand_id,
                 Transaction.supplier_id,
-                func.count(Transaction.id).label("tx_count"),
+                func.count(Transaction.id),
             )
             .join(Product, Transaction.product_id == Product.id)
-            .join(Brand, Product.brand_id == Brand.id)
-            .filter(Brand.name.ilike(brand), Brand.duplicate_of.is_(None))
-            .group_by(Transaction.supplier_id)
-            .subquery()
+            .filter(Product.brand_id.in_(brand_ids))
+            .group_by(Product.brand_id, Transaction.supplier_id)
+            .all()
         )
 
-        results = (
+        # 2. Suppliers linked to any brand in the families. Flagged duplicates
+        #    are included here so their links/counts can be rolled up.
+        link_rows = (
             session.query(
+                SupplierBrand.brand_id,
                 Supplier.id,
                 Supplier.name,
                 Supplier.contacts,
                 Supplier.country,
                 Supplier.supply_chain_position,
-                func.coalesce(tx_count_sub.c.tx_count, 0).label("tx_count"),
+                Supplier.use_instead,
             )
-            .join(SupplierBrand, SupplierBrand.supplier_id == Supplier.id)
-            .join(Brand, SupplierBrand.brand_id == Brand.id)
-            .outerjoin(tx_count_sub, tx_count_sub.c.supplier_id == Supplier.id)
-            .filter(
-                Brand.name.ilike(brand),
-                Brand.duplicate_of.is_(None),
-                Supplier.use_instead.is_(None),
-            )
+            .join(Supplier, Supplier.id == SupplierBrand.supplier_id)
+            .filter(SupplierBrand.brand_id.in_(brand_ids))
             .all()
         )
+        if not link_rows:
+            return out
 
-        _tier_order = {"A": 0, "B": 1, "C": 2, "D": 3}
-        out = []
-        for row in results:
-            scp = row.supply_chain_position or {}
-            tier = scp.get("tier")
-            contacts = row.contacts if isinstance(row.contacts, list) else []
-            out.append({
-                "supplier_id": str(row.id),
-                "name": row.name,
+        canon = _canonical_supplier_map(
+            session,
+            {r[1] for r in link_rows} | {r[1] for r in count_rows},
+            known={r[1]: r[6] for r in link_rows},
+        )
+
+        # Roll up counts and links onto the canonical supplier, per brand family.
+        root_counts: dict = {}
+        for brand_id, supplier_id, n in count_rows:
+            root = brand_to_root.get(brand_id)
+            if root is None:
+                continue
+            key = (root, canon.get(supplier_id, supplier_id))
+            root_counts[key] = root_counts.get(key, 0) + n
+
+        buckets: dict = {}
+        for brand_id, sid, name, contacts, country, scp, _use_instead in link_rows:
+            root = brand_to_root.get(brand_id)
+            if root is None:
+                continue
+            cid = canon.get(sid, sid)
+            bucket = buckets.setdefault(
+                (root, cid), {"primary": None, "dups": [], "seen": set()}
+            )
+            if sid in bucket["seen"]:
+                continue
+            bucket["seen"].add(sid)
+            row = {"name": name, "contacts": contacts, "country": country, "scp": scp}
+            if sid == cid:
+                bucket["primary"] = row
+            else:
+                bucket["dups"].append(row)
+
+        # A merged duplicate's primary may itself not be linked to this brand
+        # (link not reassigned yet) — fetch those rows so the canonical record
+        # is what gets displayed. One extra query, only when that happens.
+        linked_ids = {r[1] for r in link_rows}
+        orphan_primaries = {cid for cid in canon.values() if cid not in linked_ids}
+        primary_rows: dict = {}
+        if orphan_primaries:
+            primary_rows = {
+                r[0]: {"name": r[1], "contacts": r[2], "country": r[3], "scp": r[4]}
+                for r in session.query(
+                    Supplier.id, Supplier.name, Supplier.contacts,
+                    Supplier.country, Supplier.supply_chain_position,
+                ).filter(Supplier.id.in_(list(orphan_primaries))).all()
+            }
+
+        by_root: dict = {}
+        for (root, cid), bucket in buckets.items():
+            primary = (
+                bucket["primary"]
+                or primary_rows.get(cid)
+                or (bucket["dups"][0] if bucket["dups"] else None)
+            )
+            if primary is None:
+                continue
+            contacts = primary["contacts"] if isinstance(primary["contacts"], list) else []
+            country = primary["country"]
+            tier = None
+            if isinstance(primary["scp"], dict):
+                tier = primary["scp"].get("tier")
+            for dup in bucket["dups"]:
+                contacts = _union_contacts(contacts, dup["contacts"])
+                if not country:
+                    country = dup["country"]
+                if not tier and isinstance(dup["scp"], dict):
+                    tier = dup["scp"].get("tier")
+
+            count = root_counts.get((root, cid), 0)
+            by_root.setdefault(root, []).append({
+                "supplier_id": str(cid),
+                "name": primary["name"],
                 "contacts": contacts,
                 "tier": tier,
-                "transaction_count": row.tx_count,
-                "country": row.country,
+                "country": country,
+                "transaction_count": count,
+                "brand_transaction_count": count,
+                "duplicate_count": len(bucket["dups"]),
+                "merged_names": [d["name"] for d in bucket["dups"]],
             })
 
-        # Sort: suppliers with brand transactions first (tier, then txn count desc),
-        # then zero-transaction suppliers (tier only).
-        out.sort(key=lambda s: (
-            0 if s["transaction_count"] > 0 else 1,
-            _tier_order.get(s["tier"], 9),
-            -s["transaction_count"]
-        ))
-        return out[:limit]
+        for name in names:
+            root = root_by_name.get(name)
+            if root is None:
+                continue
+            rows = by_root.get(root, [])
+            # Transaction count first (the primary measure), tier as tie-break.
+            rows.sort(key=lambda s: (
+                -s["transaction_count"],
+                _TIER_ORDER.get(s["tier"], 9),
+                (s["name"] or "").lower(),
+            ))
+            out[name] = rows[:limit]
+        return out
     finally:
         session.close()
+
+
+def _find_brand_suppliers_with_tier(brand: str, limit: int = 200) -> list[dict]:
+    """Find suppliers linked to a brand, ranked by brand transaction count.
+
+    Single-brand wrapper around _find_brand_suppliers_for_brands() — see that
+    function for ranking and duplicate-handling rules.
+
+    Each dict: supplier_id, name, contacts, tier, country, transaction_count,
+    brand_transaction_count, duplicate_count, merged_names.
+    """
+    return _find_brand_suppliers_for_brands([brand], limit=limit).get(brand, [])

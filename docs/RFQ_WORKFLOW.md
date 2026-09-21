@@ -65,9 +65,9 @@ When the user asks to find suppliers (via button or chat), the pipeline runs the
 | 2 | **Validate** | Web-checks specific items not found in the product DB for part-number discrepancies (typos, wrong brands). | "Validated 2 items via web search. Line 3: ✅ confirmed. Line 7: 🟠 discrepancy." |
 | 3 | **Group** | Groups specific items by brand/supply chain using LLM. Skipped if fewer than 2 specific items. | "Grouped into 3 sourcing groups: Fasteners, Hydraulics, Bearings." |
 | 4 | **Find Previous** | Searches purchase history for suppliers who previously supplied each part number. Adds to RFQ. | "Found 5 suppliers from our records. Line 1: Acme Corp, BoltCo..." |
-| 4b | **Brand-Linked** | Looks up each item's brand in the supplier-brand link table. Auto-adds top 5 Tier A suppliers per line. | "Added 3 Tier A brand-linked suppliers." |
+| 4b | **Brand-Linked** | Looks up each item's brand in the supplier-brand link table. Duplicate brands count towards their canonical brand and duplicate supplier records are rolled up. Auto-adds the top 5 suppliers per line, ranked by brand transaction count then tier. | "Added 3 brand-linked suppliers." |
 | 4c | **Cross-Apply** | Within each sourcing group, shares suppliers across peer lines. If Line 1 has Supplier A and Line 2 has Supplier B, both lines get both suppliers. | "Shared 4 suppliers across grouped items." |
-| — | **Sort** | Sorts all suppliers on every line by tier, history, location, name. Dashboard refreshes. | (silent) |
+| — | **Sort** | Sorts all suppliers on every line by transaction history, tier, location, name. Dashboard refreshes. | (silent) |
 | — | **ASK** | Stops and asks the user before any web search. | "Would you like me to search the web for additional suppliers?" |
 
 ### Permission Gate
@@ -129,7 +129,7 @@ async with _pin_thread() as pinned_tid:
 | `includes/agents/procurement_agent.py` | `_try_find_suppliers_pipeline` — the 7-step programmatic pipeline. Triggered by "find suppliers" keyword in chat or synthetic button message. |
 | `includes/tools/rfq_crud.py` | Sync database functions: `_classify_rfq_items_sync`, `_validate_items_sync`, `_group_rfq_items_sync`, `_find_purchase_suppliers_sync`, `_find_brand_suppliers_sync`, `_cross_apply_suppliers_sync`, `_web_search_suppliers_sync`, `_sort_rfq_suppliers_sync`, plus all CRUD helpers. |
 | `includes/tools/quote_tools.py` | LangGraph `@tool` wrappers (`manage_rfq`, `get_rfq`), communication helpers (`_notify_rfq_updated`, `_notify_agent_working`, `_stream_to_user`), re-exports from rfq_crud. |
-| `includes/tools/product_tools.py` | `_find_purchase_history_for_part`, `_find_brand_suppliers_with_tier`, `_find_product_by_code` — internal DB search functions. |
+| `includes/tools/product_tools.py` | `_find_purchase_history_for_part`, `_find_brand_suppliers_for_brands` / `_find_brand_suppliers_with_tier`, `_find_product_by_code` — internal DB search functions. |
 | `includes/agent_bridge.py` | Bridge between dashboard and Chainlit sessions. `dispatch_action()`, `notify_dashboard()`, per-session locking. |
 | `app.py` | `@cl.on_message` main handler. Validates, extracts intent, invokes graph, streams events. |
 | `includes/graph.py` | LangGraph state machine — Supervisor routes to ProcurementAgent / ResearchAgent / GeneralAgent. |

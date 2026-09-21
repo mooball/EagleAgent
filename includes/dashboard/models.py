@@ -404,7 +404,7 @@ class RFQItem(Base):
     cost_price = Column(Numeric, nullable=True)              # best supplier cost in AUD
     sale_price = Column(Numeric, nullable=True)              # price quoted to customer
     suppliers = Column(JSONB, nullable=True)                  # [{name, supplier_id, price, ...}, ...]
-    brand_suppliers = Column(JSONB, nullable=True)            # [{name, supplier_id, tier, transaction_count, ...}] — non-Tier-A overflow
+    brand_suppliers = Column(JSONB, nullable=True)            # [{name, supplier_id, tier, brand_transaction_count, ...}] — full brand-linked list for the modal
 
     rfq = relationship('RFQ', back_populates='items')
 
