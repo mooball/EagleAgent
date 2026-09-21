@@ -416,8 +416,10 @@ When asked to create a prompt, plan, or task list, always:
 Project tasks live in todo.vu, accessed via the `todo-vu-mcp` MCP server. When asked to find, create, or update a task for this project, use these defaults without asking:
 
 - **Workspace ID:** `mooball`
-- **Client ID:** `116` (Eagle Exports Operations Trust)
+- **Client ID:** `116` — "Eagle Exports Operations Trust", referred to as **Eagle Exports**
 - **Logged-in user ID:** `7`
+
+**Every task for this project belongs to client `116` (Eagle Exports).** Never create a task against a different client. Within that client, default to project `1038` unless the work clearly belongs to a specific feature project.
 
 ### Projects under client 116
 
@@ -441,27 +443,48 @@ Older/non-EagleAgent projects for the same client: 254 (Google Workspace support
 ### Usage notes
 - Key tools: `list_tasks`, `create_task`, `change_tasks`, `task_add_comment`, `list_comments_attachments_time_entries`, `list_projects`, `list_clients`, `list_labels`, `list_users`.
 - `list_tasks` defaults to `user_mode="assigned"`. Pass `only="active"`/`"completed"`/`"overdue"` to scope by dashboard section, and `search` for free-text lookup.
-- `change_tasks` accepts `description` only when exactly one task id is given.
 - `list_projects` with `client_id` is not filtered strictly server-side — verify `client_id` on each returned project.
 - Task names come back HTML-escaped (`&amp;`, `&#x27;`).
-- There is no delete-comment tool — don't post throwaway test comments.
 - **Creating or modifying tasks counts as a write action** — follow the same rule as code changes: propose first, wait for explicit approval.
 
-### Formatting task descriptions and comments
+### Creating a task
 
-Send **real HTML** — not markdown, and **never HTML-escaped**. Writing `&lt;p&gt;` renders as literal visible tags.
+1. Use client `116` (Eagle Exports) and project `1038` (EagleAgent: Architecture) unless the work clearly belongs to a specific feature project.
+2. Pass the body at creation time via `details_markdown` — there is no need to create the task and patch it afterwards:
 
-Verified by round-trip test (2026-08-17):
+   ```python
+   create_task(
+       workspace_id="mooball",
+       name="Task title",
+       client_id=116,
+       project_id=1038,
+       details_markdown="**Why**\n\n...",
+   )
+   ```
 
-| | Tags |
-|---|---|
-| **Survives** | `<div>` `<h3>` `<strong>` `<em>` `<u>` `<a href>` `<ul>` `<ol>` `<li>` `<blockquote>` |
-| **Silently stripped** (tag removed, text kept) | `<code>` `<s>` `<pre>` |
+3. Follow the write-action rule in **Usage notes** — propose the task first and wait for approval.
 
-- `<p>` is accepted but rewritten to `<div>`.
-- Stripping **also eats adjacent whitespace** — `</strong> <code>x</code>` becomes `</strong>x`. Never rely on a space next to a stripped tag.
-- `<pre>` additionally **collapses newlines**, so multi-line code becomes one line. For code blocks use one `<div>` per line; for inline code just use plain text.
-- Escape real `&`, `<`, `>` as entities in body text — they round-trip correctly.
+### Task bodies and comments are always Markdown
+
+**Write in Markdown, and read from the `*_markdown` fields.**
+
+| Purpose | Tool | Parameter |
+|---|---|---|
+| Task description, at creation | `create_task` | `details_markdown` |
+| Task description, existing task | `change_tasks` | `details_markdown` (one task id at a time) |
+| Comment | `task_add_comment` | `content_markdown` |
+
+**⚠️ The tool schema shown to the client lags the live server.** todo.vu has moved from HTML body parameters to Markdown ones. The schema still advertises the old HTML names (`details`, `description`, `comment`), and all three are now **rejected** by the live server with a pydantic `Unexpected keyword argument` error. Use the `*_markdown` names above. Verified 2026-09-20.
+
+Earlier guidance in this file said to send real HTML (verified 2026-08-17) — that was correct at the time. The `*_markdown` parameters are newer.
+
+**Reading:** `list_tasks` returns `details` (server-rendered HTML — do **not** write to it) alongside `details_markdown`. Comments come back in `content_markdown`. Always read the `*_markdown` field.
+
+GitHub-flavoured Markdown (headings, `**bold**`, bullet and numbered lists, backticks) round-trips cleanly — the server converts it to HTML for display. Two quirks: it splits Markdown into separate blocks at blank lines, so a bold line followed by a list may be stored as two blocks; and `~` may come back escaped as `\~`.
+
+There is **no delete or edit tool for comments** — a posted comment can only be removed by hand in the todo.vu UI. Never post throwaway test comments.
+
+If a `*_markdown` parameter is ever rejected, the schema shown to the client is stale. Validation errors are **non-destructive** (nothing is written), so probe candidate names freely: omit the parameter and the server names the required field, or try a candidate name and see whether the error changes.
 
 ## Git & Repository
 - Do not commit `.env`, `.venv`, secrets, or `__pycache__/`.
