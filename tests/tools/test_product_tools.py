@@ -530,3 +530,190 @@ async def test_async_search_purchase_history_tool(mock_session):
 
     result = await search_purchase_history.ainvoke({})
     assert "Purchase history database summary" in result
+
+
+class TestFindProductByCode:
+    """Direct product lookup used by Classify & Validate.
+
+    Regression guard for the perf rewrite: the lookup previously compared with
+    ``ILIKE`` on the raw normalised expression (no btree index can serve that,
+    so it seq-scanned products) and ranked matches with an *uncorrelated*
+    aggregate over the whole transactions table. It now resolves candidates
+    through a case-insensitive functional index and ranks only those.
+    """
+
+    @pytest.fixture
+    def db_session(self):
+        from sqlalchemy import create_engine, event
+        from sqlalchemy.orm import sessionmaker
+        from includes.dashboard.database import _sync_url
+
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _product(self, session, part_number, brand=None, supplier_code=None,
+                 isinactive=False, last_modified=None):
+        p = Product(
+            part_number=part_number,
+            brand=brand,
+            supplier_code=supplier_code,
+            description=f"desc {part_number}",
+            isinactive=isinactive,
+            netsuite_last_modified=last_modified,
+        )
+        session.add(p)
+        session.flush()
+        return p
+
+    def _supplier(self, session):
+        import uuid as _uuid
+        s = Supplier(name=f"Sup {_uuid.uuid4().hex[:8]}")
+        session.add(s)
+        session.flush()
+        return s
+
+    def _transactions(self, session, product, count):
+        from datetime import datetime, timezone
+        supplier = self._supplier(session)
+        for _ in range(count):
+            import uuid as _uuid
+            session.add(Transaction(
+                doc_number=f"DOC-{_uuid.uuid4().hex[:8]}",
+                doc_type="Quote",
+                date=datetime.now(timezone.utc).date(),
+                product_id=product.id,
+                supplier_id=supplier.id,
+            ))
+        session.flush()
+
+    def test_matches_despite_separators_and_case(self, db_session):
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:6].upper()
+        self._product(db_session, f"C50LR-BR24-{suffix}")
+
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            from includes.tools.product_tools import _find_product_by_code
+            hit = _find_product_by_code(f"c50lrbr24{suffix}".lower())
+
+        assert hit is not None
+        assert hit["part_number"] == f"C50LR-BR24-{suffix}"
+
+    def test_matches_supplier_code_when_part_number_differs(self, db_session):
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:6].upper()
+        self._product(db_session, f"PN-{suffix}", supplier_code=f"SC-{suffix}")
+
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            from includes.tools.product_tools import _find_product_by_code
+            hit = _find_product_by_code(f"sc{suffix}")
+
+        assert hit is not None
+        assert hit["supplier_code"] == f"SC-{suffix}"
+
+    def test_most_purchased_wins_over_most_recent(self, db_session):
+        from datetime import datetime, timedelta, timezone
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:6].upper()
+        now = datetime.now(timezone.utc)
+
+        # Same code, two product records. The newer but unbought one must lose.
+        self._product(db_session, f"ZZ-{suffix}", last_modified=now)
+        bought = self._product(db_session, f"ZZ{suffix}",
+                               last_modified=now - timedelta(days=30))
+        self._transactions(db_session, bought, count=3)
+
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            from includes.tools.product_tools import _find_product_by_code
+            hit = _find_product_by_code(f"zz{suffix}")
+
+        assert hit["id"] == str(bought.id)
+
+    def test_equal_purchase_counts_prefer_most_recent(self, db_session):
+        from datetime import datetime, timedelta, timezone
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:6].upper()
+        now = datetime.now(timezone.utc)
+
+        older = self._product(db_session, f"YY-{suffix}",
+                              last_modified=now - timedelta(days=30))
+        newer = self._product(db_session, f"YY{suffix}", last_modified=now)
+        self._transactions(db_session, older, count=2)
+        self._transactions(db_session, newer, count=2)
+
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            from includes.tools.product_tools import _find_product_by_code
+            hit = _find_product_by_code(f"yy{suffix}")
+
+        assert hit["id"] == str(newer.id)
+
+    def test_product_without_transactions_still_matches(self, db_session):
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:6].upper()
+        p = self._product(db_session, f"NO-{suffix}")
+
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            from includes.tools.product_tools import _find_product_by_code
+            hit = _find_product_by_code(f"no{suffix}")
+
+        assert hit is not None
+        assert hit["id"] == str(p.id)
+
+    def test_inactive_product_excluded(self, db_session):
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:6].upper()
+        self._product(db_session, f"IN-{suffix}", isinactive=True)
+
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            from includes.tools.product_tools import _find_product_by_code
+            assert _find_product_by_code(f"in{suffix}") is None
+
+    def test_brand_filter_is_case_insensitive(self, db_session):
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:6].upper()
+        self._product(db_session, f"BR-{suffix}", brand="Acme Corp")
+        self._product(db_session, f"BR{suffix}", brand="Other Co")
+
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            from includes.tools.product_tools import _find_product_by_code
+            hit = _find_product_by_code(f"br{suffix}", "ACME CORP")
+
+        assert hit is not None
+        assert hit["brand"] == "Acme Corp"
+
+    def test_unknown_code_returns_none(self, db_session):
+        import uuid as _uuid
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            from includes.tools.product_tools import _find_product_by_code
+            assert _find_product_by_code(f"NOPE-{_uuid.uuid4().hex}") is None
+
+    def test_blank_code_returns_none_without_querying(self):
+        from includes.tools.product_tools import _find_product_by_code
+        assert _find_product_by_code("") is None
+        assert _find_product_by_code("   ") is None
+        assert _find_product_by_code(None) is None
+
+
+def test_norm_key_matches_sql_expression_semantics():
+    """The Python key must lower-case and strip separators, mirroring the SQL."""
+    from includes.tools.product_tools import _norm_key
+
+    assert _norm_key("C50LR-BR24-16") == "c50lrbr2416"
+    assert _norm_key("c50lr br24 16") == "c50lrbr2416"
+    assert _norm_key("ABC/123.456") == "abc123456"
+    assert _norm_key(None) == ""
+    assert _norm_key("  ") == ""
+

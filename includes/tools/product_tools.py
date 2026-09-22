@@ -39,6 +39,29 @@ def _norm_expr(column):
     """
     return func.regexp_replace(column, '[^a-zA-Z0-9]', '', 'g')
 
+
+def _norm_key(value: str | None) -> str:
+    """Python-side normalised code key — lower-cases and strips separators.
+
+    The exact counterpart of :func:`_norm_expr_ci`: compare the two with ``=``
+    and the functional index is usable.
+    """
+    return normalize_part_number(value or "").lower()
+
+
+def _norm_expr_ci(column):
+    """Case-insensitive normalised expression for part number / supplier code.
+
+    Returns ``regexp_replace(lower(col), '[^a-z0-9]', '', 'g')`` — matches the
+    functional indexes ``idx_products_part_number_norm_ci`` and
+    ``idx_products_supplier_code_norm_ci``.
+
+    Use this with ``=`` against a value passed through :func:`_norm_key`. The
+    older :func:`_norm_expr` combined with ``ILIKE`` is *not* index-usable and
+    costs a full sequential scan of products.
+    """
+    return func.regexp_replace(func.lower(column), '[^a-z0-9]', '', 'g')
+
 def get_engine():
     db_url = Config.DATABASE_URL
     if db_url.startswith("postgresql+asyncpg://"):
@@ -975,54 +998,86 @@ async def search_purchase_history(
 # Structured DB helpers — return dicts with IDs for RFQ linking
 # ---------------------------------------------------------------------------
 
+# Cap on how many candidate products are considered before ranking by
+# purchase count. Normalised part numbers are near-unique in practice
+# (largest group in the catalogue is 8), so this only bounds pathological input.
+_PRODUCT_CANDIDATE_LIMIT = 50
+
+
 def _find_product_by_code(part_number: str, brand: str = None) -> Optional[dict]:
     """Find a product by part_number OR supplier_code. Returns dict or None.
 
+    Matching is separator- and case-insensitive, so ``C50LR-BR24-16``,
+    ``C50LRBR2416`` and ``c50lr br24 16`` all resolve to the same product.
+
     When multiple products match, the one with the most purchase-history
     transactions is returned (ties broken by most recently modified).
+
+    Uses two bounded queries instead of one statement. The previous
+    single-query version left the purchase-count aggregate *uncorrelated* and
+    compared with ``ILIKE``, so Postgres seq-scanned all products and
+    aggregated the whole transactions table just to rank one row:
+    260-540ms per call. Confining the ranking to the candidates found by the
+    functional index brings this to ~1-2ms.
     """
+    norm_key = _norm_key(part_number)
+    if not norm_key:
+        return None
+
     session = get_session()
     try:
-        norm_pn = normalize_part_number(part_number)
-
-        # Rank matches by purchase count — the most-purchased product wins.
-        purchase_counts = (
-            session.query(
-                Transaction.product_id,
-                func.count(Transaction.id).label("purchase_count"),
-            )
-            .group_by(Transaction.product_id)
-            .subquery()
-        )
-        query = (
+        # ── Step 1: candidates — index lookup on the normalised code ──────
+        candidate_query = (
             session.query(Product)
-            .outerjoin(
-                purchase_counts,
-                purchase_counts.c.product_id == Product.id,
-            )
             .filter(
                 Product.isinactive == False,
                 or_(
-                    _norm_expr(Product.part_number).ilike(norm_pn),
-                    _norm_expr(Product.supplier_code).ilike(norm_pn),
+                    _norm_expr_ci(Product.part_number) == norm_key,
+                    _norm_expr_ci(Product.supplier_code) == norm_key,
                 ),
             )
         )
         if brand:
-            query = query.filter(Product.brand.ilike(brand))
-        product = query.order_by(
-            purchase_counts.c.purchase_count.desc().nulls_last(),
-            Product.netsuite_last_modified.desc().nulls_last(),
-        ).first()
-        if product:
-            return {
-                "id": str(product.id),
-                "part_number": product.part_number,
-                "brand": product.brand,
-                "description": product.description,
-                "supplier_code": product.supplier_code,
-            }
-        return None
+            # Plain case-insensitive equality. Note this is stricter than the
+            # previous ILIKE, which treated '_' and '%' in a brand name as
+            # wildcards.
+            candidate_query = candidate_query.filter(
+                func.lower(Product.brand) == brand.strip().lower()
+            )
+        candidates = (
+            candidate_query
+            .order_by(
+                Product.netsuite_last_modified.desc().nulls_last(),
+                Product.id,
+            )
+            .limit(_PRODUCT_CANDIDATE_LIMIT)
+            .all()
+        )
+        if not candidates:
+            return None
+
+        # ── Step 2: rank the candidates by purchase history ───────────────
+        counts = dict(
+            session.query(
+                Transaction.product_id,
+                func.count(Transaction.id),
+            )
+            .filter(Transaction.product_id.in_([c.id for c in candidates]))
+            .group_by(Transaction.product_id)
+            .all()
+        )
+
+        # `candidates` is already ordered most-recently-modified first, and
+        # max() returns the first maximal element — which reproduces the old
+        # "purchase_count DESC NULLS LAST, netsuite_last_modified DESC NULLS LAST".
+        best = max(candidates, key=lambda p: counts.get(p.id, 0))
+        return {
+            "id": str(best.id),
+            "part_number": best.part_number,
+            "brand": best.brand,
+            "description": best.description,
+            "supplier_code": best.supplier_code,
+        }
     finally:
         session.close()
 

@@ -1353,4 +1353,377 @@ class TestAddSuppliersIdGuard:
         assert not _is_valid_uuid_id(None)
 
 
+# ---------------------------------------------------------------------------
+# Classify & validate — the single orchestrator
+# ---------------------------------------------------------------------------
+# One implementation backs the dashboard button, the agent's classify tool and
+# the supplier-search pipeline; these pin which items it chooses and which
+# steps it runs.
+
+class TestClassifyRfqItemsOrchestrator:
+    @pytest.fixture
+    def db_session(self):
+        from includes.dashboard.database import _sync_url
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        from sqlalchemy import event
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _rfq(self, session, items: list[dict]) -> RFQ:
+        """items: [{"match": ..., "part_number": ..., "brand": ...}, ...]"""
+        rfq = RFQ(
+            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            customer="Test Customer",
+            created_by="tester",
+            created_date=datetime.now(timezone.utc),
+        )
+        session.add(rfq)
+        session.flush()
+        for line, spec in enumerate(items, start=1):
+            session.add(RFQItem(
+                rfq_id=rfq.id,
+                line=line,
+                input_description=spec.get("description", f"desc {line}"),
+                part_number=spec.get("part_number"),
+                brand=spec.get("brand"),
+                match=spec.get("match", "unmatched"),
+            ))
+        session.flush()
+        return rfq
+
+    @pytest.fixture
+    def deps(self, monkeypatch, db_session):
+        """Patch the session + the expensive leaves, and record what ran."""
+        calls = {"validate": [], "quote_brand": 0, "departments": 0}
+
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._get_session", lambda: db_session,
+        )
+        monkeypatch.setattr(
+            "includes.tools.product_tools._find_product_by_code",
+            lambda pn, brand=None: None,
+        )
+
+        def _validate(rfq_number, web_items, user_id):
+            calls["validate"].append(web_items)
+            return {"validated": []}
+
+        def _quote_brand(rfq_number, user_id):
+            calls["quote_brand"] += 1
+            return "Auto-set quote brand."
+
+        def _departments(rfq_number, user_id):
+            calls["departments"] += 1
+            return "Departments auto-set."
+
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._validate_items_sync", _validate,
+        )
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._set_quote_brand_from_items_sync", _quote_brand,
+        )
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._set_item_departments_sync", _departments,
+        )
+        return calls
+
+    def test_processes_unmatched_and_discrepancy_but_not_terminal(
+        self, db_session, deps,
+    ):
+        from includes.tools.rfq_crud import _classify_rfq_items_sync
+
+        rfq = self._rfq(db_session, [
+            {"match": "unmatched"},
+            {"match": "discrepancy", "part_number": "D-1"},
+            {"match": "specific", "part_number": "S-1"},
+            {"match": "generic"},
+        ])
+
+        result = _classify_rfq_items_sync(rfq.rfq_number, "tester")
+
+        # Lines 3 ('specific') and 4 ('generic') are terminal — untouched.
+        assert sorted(result["targets"]) == [1, 2]
+        # Line 1 has only a description; line 2 has a part number.
+        assert result["classified"]["generic"] == [1]
+        assert result["classified"]["specific"] == [2]
+
+    def test_lines_scopes_to_a_single_item(self, db_session, deps):
+        from includes.tools.rfq_crud import _classify_rfq_items_sync
+
+        rfq = self._rfq(db_session, [
+            {"match": "unmatched"},
+            {"match": "unmatched"},
+        ])
+
+        result = _classify_rfq_items_sync(rfq.rfq_number, "tester", lines=[2])
+
+        assert result["targets"] == [2]
+
+    def test_no_targets_skips_every_step(self, db_session, deps):
+        """A no-op re-run must not fire the department LLM call."""
+        from includes.tools.rfq_crud import _classify_rfq_items_sync
+
+        rfq = self._rfq(db_session, [
+            {"match": "specific", "part_number": "S-1"},
+            {"match": "branded"},
+        ])
+
+        result = _classify_rfq_items_sync(rfq.rfq_number, "tester")
+
+        assert result["targets"] == []
+        assert result["validation"] is None
+        assert deps["quote_brand"] == 0
+        assert deps["departments"] == 0
+        assert deps["validate"] == []
+
+    def test_validate_web_receives_only_specific_items_missing_from_db(
+        self, db_session, deps,
+    ):
+        from includes.tools.rfq_crud import _classify_rfq_items_sync
+
+        rfq = self._rfq(db_session, [
+            {"match": "unmatched", "part_number": "PN-1", "brand": "Acme"},
+            {"match": "unmatched"},  # no part number -> branded/generic
+        ])
+
+        result = _classify_rfq_items_sync(
+            rfq.rfq_number, "tester", validate_web=True,
+        )
+
+        assert len(deps["validate"]) == 1
+        assert [i["line"] for i in deps["validate"][0]] == [1]
+        assert deps["validate"][0][0]["part_number"] == "PN-1"
+        assert result["validation"] == {"validated": []}
+
+    def test_validate_web_not_run_unless_requested(self, db_session, deps):
+        from includes.tools.rfq_crud import _classify_rfq_items_sync
+
+        rfq = self._rfq(db_session, [
+            {"match": "unmatched", "part_number": "PN-1"},
+        ])
+
+        result = _classify_rfq_items_sync(rfq.rfq_number, "tester")
+
+        assert deps["validate"] == []
+        assert result["validation"] is None
+
+    def test_stop_request_skips_web_validation(self, db_session, deps):
+        """Stopping before the grounded search must not spend search quota."""
+        from includes.tools.rfq_crud import _classify_rfq_items_sync
+
+        rfq = self._rfq(db_session, [
+            {"match": "unmatched", "part_number": "PN-1"},
+        ])
+
+        result = _classify_rfq_items_sync(
+            rfq.rfq_number, "tester",
+            validate_web=True, should_cancel=lambda: True,
+        )
+
+        assert deps["validate"] == []
+        assert result["validation"] is None
+
+    def test_progress_messages_are_ordered(self, db_session, deps):
+        from includes.tools.rfq_crud import _classify_rfq_items_sync
+
+        rfq = self._rfq(db_session, [
+            {"match": "unmatched", "part_number": "PN-1"},
+        ])
+
+        seen: list[str] = []
+        _classify_rfq_items_sync(
+            rfq.rfq_number, "tester",
+            validate_web=True, progress=seen.append,
+        )
+
+        assert "Classifying & validating 1 item(s)" in seen[0]
+        assert any("Validating 1 item(s) against web sources" in m for m in seen)
+        assert any("departments" in m.lower() for m in seen)
+
+    def test_unknown_rfq_reports_error(self, db_session, deps):
+        from includes.tools.rfq_crud import _classify_rfq_items_sync
+
+        result = _classify_rfq_items_sync("RFQ-DOES-NOT-EXIST", "tester")
+
+        assert "not found" in result["error"]
+
+    def test_quote_brand_and_departments_can_be_disabled(
+        self, db_session, deps,
+    ):
+        from includes.tools.rfq_crud import _classify_rfq_items_sync
+
+        rfq = self._rfq(db_session, [{"match": "unmatched"}])
+
+        result = _classify_rfq_items_sync(
+            rfq.rfq_number, "tester",
+            auto_quote_brand=False, auto_departments=False,
+        )
+
+        assert result["quote_brand_result"] is None
+        assert result["department_result"] is None
+        assert deps["quote_brand"] == 0
+        assert deps["departments"] == 0
+
+    # -- what the user sees, and in what order ----------------------------
+
+    def _progress(self, db_session, deps, **kwargs):
+        from includes.tools.rfq_crud import _classify_rfq_items_sync
+
+        rfq = self._rfq(db_session, kwargs.pop("items"))
+        seen: list[str] = []
+        _classify_rfq_items_sync(
+            rfq.rfq_number, "tester", progress=seen.append, **kwargs,
+        )
+        return seen
+
+    def test_reports_classification_then_db_matches_in_order(
+        self, db_session, deps,
+    ):
+        seen = self._progress(
+            db_session, deps,
+            items=[{"match": "unmatched", "part_number": "PN-1"},
+                   {"match": "unmatched", "part_number": "PN-2"}],
+            validate_web=True,
+            auto_quote_brand=False, auto_departments=False,
+        )
+
+        assert "Classifying & validating 2 item(s)" in seen[0]
+        assert "Classified 2 item(s)" in seen[1]
+        assert "Line 1 → 🟢 specific" in seen[1]
+
+    def test_department_no_op_explains_itself(self, db_session, monkeypatch):
+        """Regression: the step used to return None when the model assigned
+        nothing, leaving its status line as a dead end."""
+        monkeypatch.setattr(
+            "includes.tools.rfq_crud._get_session", lambda: db_session,
+        )
+        monkeypatch.setattr(
+            "includes.prompts.load_prompt", lambda *a, **k: "prompt",
+        )
+        monkeypatch.setattr(
+            "includes.netsuite.departments.department_prompt_table", lambda: "tbl",
+        )
+
+        class _EmptyClient:
+            def __init__(self, *a, **k):
+                pass
+
+            class models:
+                @staticmethod
+                def generate_content(**kw):
+                    return type("R", (), {"text": '{"departments": {}}'})()
+
+        monkeypatch.setattr("google.genai.Client", _EmptyClient)
+
+        from includes.tools.rfq_crud import _set_item_departments_sync
+
+        rfq = self._rfq(db_session, [{"match": "unmatched"}])
+        result = _set_item_departments_sync(rfq.rfq_number, "tester")
+
+        assert result is not None
+        assert "nothing set" in result
+
+
+class TestProductIdPreservation:
+    """`_update_item_core` must not wipe the product link when a caller
+    re-sends an unchanged part number.
+
+    Regression: the classify pipeline resolves a product, then writes
+    part_number + product_id together — and the unconditional
+    ``product_id = None`` on the part_number branch undid its own write. The
+    result was no "In database" icon, no department copied from the product,
+    and no price history.
+    """
+
+    @pytest.fixture
+    def db_session(self):
+        from includes.dashboard.database import _sync_url
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        from sqlalchemy import event
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _item(self, session, part_number="PN-1", product_id=None):
+        rfq = RFQ(
+            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            customer="Test Customer",
+            created_by="tester",
+            created_date=datetime.now(timezone.utc),
+        )
+        session.add(rfq)
+        session.flush()
+        item = RFQItem(
+            rfq_id=rfq.id, line=1, input_description="desc",
+            part_number=part_number, product_id=product_id, match="unmatched",
+        )
+        session.add(item)
+        session.flush()
+        return rfq, item
+
+    def _product(self, session, part_number):
+        """A real row — rfq_items.product_id has a foreign key."""
+        product = Product(part_number=part_number, isinactive=False)
+        session.add(product)
+        session.flush()
+        return product
+
+    def test_same_part_number_keeps_the_product_link(self, db_session):
+        product = self._product(db_session, "PN-1")
+        rfq, _ = self._item(db_session, "PN-1")
+
+        from includes.tools.rfq_crud import _update_item_sync
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            _update_item_sync(rfq.rfq_number, {
+                "line": 1, "part_number": "PN-1", "brand": "Acme",
+                "product_id": str(product.id), "match": "specific",
+            }, "tester")
+
+        db_session.expire_all()
+        stored = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).first()
+        assert stored.product_id == product.id
+        assert stored.match == "specific"
+
+    def test_changed_part_number_clears_the_product_link(self, db_session):
+        product = self._product(db_session, "OLD-1")
+        rfq, _ = self._item(db_session, "OLD-1", product_id=product.id)
+
+        from includes.tools.rfq_crud import _update_item_sync
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            _update_item_sync(rfq.rfq_number, {
+                "line": 1, "part_number": "NEW-1",
+            }, "tester")
+
+        db_session.expire_all()
+        stored = db_session.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).first()
+        assert stored.product_id is None
+        assert stored.match == "unmatched"  # re-classification required
+
+
+
 

@@ -21,9 +21,9 @@ from langchain_core.tools import tool
 
 from includes.tools.rfq_crud import (
     _get_rfq_dict_sync,
+    _RECLASSIFIABLE_MATCHES,
     _classify_rfq_items_sync,
     _group_rfq_items_sync,
-    _validate_items_sync,
     _find_purchase_suppliers_sync,
     _find_brand_suppliers_sync,
     _cross_apply_suppliers_sync,
@@ -127,9 +127,9 @@ def run_classify_sync(rfq_id: str, user_id: str) -> str:
         return f"Error: RFQ '{rfq_id}' not found."
 
     items = rfq_dict.get("items", [])
-    unmatched = [i for i in items if i.get("match") == "unmatched"]
+    pending = [i for i in items if i.get("match") in _RECLASSIFIABLE_MATCHES]
 
-    if not unmatched:
+    if not pending:
         # Already classified — report current state
         specific = [i for i in items if i.get("match") == "specific"]
         branded = [i for i in items if i.get("match") == "branded"]
@@ -146,14 +146,17 @@ def run_classify_sync(rfq_id: str, user_id: str) -> str:
         else:
             return "Items already processed. Ready to search for suppliers."
 
-    # Step 1: Classify
-    result = _classify_rfq_items_sync(rfq_id, user_id, search_db=True)
+    # Step 1+2: classify, match against the product DB, then web-validate the
+    # specific items the DB didn't know. One call — the same orchestrator the
+    # dashboard button uses.
+    result = _classify_rfq_items_sync(
+        rfq_id, user_id, search_db=True, validate_web=True,
+    )
     if isinstance(result, dict) and "error" in result:
         return f"Error: {result['error']}"
 
     classified = result["classified"]
     db_matches = result["db_matches"]
-    to_validate = result["to_validate"]
     unclassifiable = result.get("unclassifiable", [])
 
     total = sum(len(v) for v in classified.values())
@@ -188,24 +191,18 @@ def run_classify_sync(rfq_id: str, user_id: str) -> str:
         else:
             lines.append(f"- Line {b['line']}: brand '{b['input']}' not found in database")
 
-    # Step 2: Validate items not in DB
-    needs_validation = [
-        i for i in to_validate
-        if not any(i["line"] == m[0] for m in db_matches)
-    ]
-    if needs_validation:
-        val_result = _validate_items_sync(rfq_id, needs_validation, user_id)
-        validated = val_result.get("validated", [])
-        if validated:
-            lines.append(f"\n**Validation:** Checked {len(validated)} item(s) via web search.")
-            for v in validated:
-                icon = "✅" if v.get("status") == "confirmed" else "🟠"
-                lines.append(f"- {icon} Line {v['line']}: {v.get('findings', '')}")
-        elif val_result.get("error"):
-            lines.append(f"\n**Validation:** ⚠️ Failed — {val_result['error'][:80]}")
-    else:
-        if total > 0:
-            lines.append("\n**Validation:** All items found in product database.")
+    # Step 2 results (already validated inside the orchestrator)
+    val_result = result.get("validation") or {}
+    validated = val_result.get("validated", [])
+    if validated:
+        lines.append(f"\n**Validation:** Checked {len(validated)} item(s) via web search.")
+        for v in validated:
+            icon = "✅" if v.get("status") == "confirmed" else "🟠"
+            lines.append(f"- {icon} Line {v['line']}: {v.get('findings', '')}")
+    elif val_result.get("error"):
+        lines.append(f"\n**Validation:** ⚠️ Failed — {val_result['error'][:80]}")
+    elif total > 0 and not result.get("to_validate"):
+        lines.append("\n**Validation:** All items found in product database.")
 
     # Step 3: Group (if 2+ specific/branded items)
     groupable = [

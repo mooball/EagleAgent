@@ -51,14 +51,6 @@ def client(app):
 
 
 @pytest.fixture(autouse=True)
-def allowlist(monkeypatch):
-    monkeypatch.setattr(
-        "config.settings.Config.CHAT_UI_BETA_USERS",
-        "tom@eagle-exports.com",
-    )
-
-
-@pytest.fixture(autouse=True)
 def current_thread_store(monkeypatch):
     """Keep /chat-ui routes off the real DB (table lives in a migration)."""
     import includes.dashboard.routes.chat_ui as chat_ui
@@ -106,24 +98,12 @@ class TestAllowlist:
         assert resp.status_code == 303
         assert resp.headers["location"] == "/login"
 
-    def test_non_beta_user_gets_404(self, client):
-        _login(client, email="outsider@eagle-exports.com")
-        with patch("includes.chat.transcript.list_threads", new=AsyncMock()):
-            resp = client.get("/chat-ui")
-        assert resp.status_code == 404
-
-    def test_beta_user_sees_index(self, client, monkeypatch):
+    def test_authenticated_user_sees_index(self, client, monkeypatch):
         mocks = _patch_transcript(monkeypatch)
         _login(client)
         resp = client.get("/chat-ui")
         assert resp.status_code == 200
         mocks["list_threads"].assert_awaited_once()
-
-    def test_beta_user_stream_gated_too(self, client, monkeypatch):
-        _patch_transcript(monkeypatch)
-        _login(client, email="outsider@eagle-exports.com")
-        resp = client.get("/chat-ui/threads/t1/stream")
-        assert resp.status_code == 404
 
 
 class TestThreadCRUD:
@@ -167,11 +147,6 @@ class TestThreadCRUD:
 
 
 class TestEmbed:
-    def test_embed_requires_beta(self, client, monkeypatch):
-        _patch_transcript(monkeypatch)
-        _login(client, email="outsider@eagle-exports.com")
-        assert client.get("/chat-ui/embed").status_code == 404
-
     def test_embed_renders(self, client, monkeypatch):
         _patch_transcript(monkeypatch)
         _login(client)

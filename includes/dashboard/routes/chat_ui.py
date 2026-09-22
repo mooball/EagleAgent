@@ -186,11 +186,15 @@ def _intent_route(intent_name: str) -> tuple[str, str]:
 
 
 async def _guard(user: dict) -> None:
-    """404 for anyone not on the beta allowlist — the UI is invisible to them."""
-    from config import config
+    """Auth guard for every /chat-ui route.
 
-    if user.get("email", "").lower() not in config.get_beta_chat_users():
-        raise HTTPException(status_code=404)
+    This used to be an allowlist gate while the new UI was a beta running
+    alongside Chainlit. Chainlit is gone and the embed is the only chat UI, so
+    there is nothing left to gate on — authentication (the ``require_user``
+    dependency) is the whole requirement. Kept as a single seam so routes read
+    the same and a future gate has one place to live.
+    """
+    return None
 
 
 async def _owned_thread(thread_id: str, user: dict) -> dict:
@@ -607,13 +611,24 @@ async def set_current_thread(
     return JSONResponse({"ok": True, "thread_id": thread_id})
 
 
+async def live_threads_for_user(user: dict) -> list[str]:
+    """Threads with a live run that belong to ``user`` (ownership checked)."""
+    live = [tid for tid, run in _active_runs.items() if not run["task"].done()]
+    if not live:
+        return []
+    return await transcript.filter_owned_threads(live, user["email"])
+
+
+def cancel_key_for_thread(thread_id: str) -> str:
+    """The cooperative-cancellation key for a thread's run."""
+    return _cancel_key(thread_id)
+
+
 @router.get("/active-runs")
 async def active_runs(user: dict = Depends(require_user)):
     """Threads with a live turn/action — busy badges and post-reload recovery."""
     await _guard(user)
-    live = [tid for tid, run in _active_runs.items() if not run["task"].done()]
-    owned = await transcript.filter_owned_threads(live, user["email"]) if live else []
-    return JSONResponse({"threads": owned})
+    return JSONResponse({"threads": await live_threads_for_user(user)})
 
 
 @router.post("/threads")

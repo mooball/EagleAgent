@@ -28,12 +28,6 @@ def _all_handled_names() -> set[str]:
     from includes.chat.rfq_actions import RFQ_ACTIONS
 
     names = set(RFQ_ACTIONS) | set(_registry)
-
-    # Lifecycle actions still registered directly in app.py.
-    import app  # noqa: F401 — importing runs the registration
-    from chainlit.config import config as cl_config
-
-    names |= set(cl_config.code.action_callbacks)
     return names
 
 

@@ -10,7 +10,7 @@ import threading
 import uuid
 
 from functools import wraps
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -821,6 +821,12 @@ def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
       - reset_pipeline: True if identifying fields changed and
         pipeline_stage should be reset to 'unprocessed'
     """
+    # Captured before the loop below overwrites them: deciding "did the part
+    # number change?" has to compare against the pre-update value, and an
+    # explicitly supplied product_id must survive.
+    previous_part_number = line_item.part_number
+    product_id_provided = "product_id" in data
+
     changes = []
     # Department is validated against the canonical enum before storing.
     # Accepts department_id (NetSuite string ID) or department (exact
@@ -849,9 +855,16 @@ def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
     _identifying = {"input_description", "input_code", "part_number", "brand"}
     if _identifying & set(data.keys()):
         if "part_number" in data:
-            # If part_number changed, clear product_id unless explicitly set to a matching product
-            line_item.product_id = None
-            changes.append("product_id")
+            # Drop the product link only when the code actually changed. Callers
+            # routinely re-send an unchanged part_number alongside the product_id
+            # the classify pipeline just resolved — clearing unconditionally
+            # wiped that link every time (no "In database" icon, no department
+            # inherited from the product, no price history).
+            if not product_id_provided and (
+                (data["part_number"] or None) != (previous_part_number or None)
+            ):
+                line_item.product_id = None
+                changes.append("product_id")
         if "match" not in data:
             line_item.match = "unmatched"
             changes.append("match")
@@ -2582,37 +2595,106 @@ def _set_item_departments_sync(rfq_number: str, user_id: str) -> str | None:
         parts.append(f"{len(llm_updates)} by LLM")
     if skipped:
         parts.append(f"{len(skipped)} skipped")
-    if not parts:
-        return None
-    return f"Departments auto-set: {', '.join(parts)}."
+    if parts:
+        return f"Departments auto-set: {', '.join(parts)}."
+    # The call ran but assigned nothing. Return a status rather than None —
+    # otherwise the caller's "Classifying item departments..." line is a dead
+    # end and the user cannot tell "found nothing" from "failed".
+    return (
+        f"Departments: nothing set — no confident assignment for "
+        f"{len(remaining)} item(s); left blank for a human."
+    )
+
+
+# Item states that (re-)classification applies to. ``unmatched`` has never been
+# classified; ``discrepancy`` is blocked pending human review and is re-checked
+# when someone re-runs classify & validate. ``specific`` / ``branded`` /
+# ``generic`` are terminal classifications and are left untouched, so re-running
+# the pipeline is idempotent and never re-burns web-search quota on items that
+# already passed.
+_RECLASSIFIABLE_MATCHES = ("unmatched", "discrepancy")
 
 
 def _classify_rfq_items_sync(
     rfq_number: str, user_id: str, search_db: bool = True,
+    lines: list[int] | None = None,
+    validate_web: bool = False,
+    auto_quote_brand: bool = True,
+    auto_departments: bool = True,
+    progress: "Callable[[str], None] | None" = None,
+    should_cancel: "Callable[[], bool] | None" = None,
 ) -> dict:
-    """Classify all unmatched items and optionally search product DB.
+    """Classify, validate and enrich the RFQ items that still need it.
+
+    THE single implementation of the classify & validate process. Called by the
+    dashboard "Classify & Validate" button (via ``on_rfq_identify_items``), the
+    agent's ``classify_items`` tool, and the supplier-search pipeline. Chat
+    rendering lives in the callers; this function only does the work and
+    reports progress through ``progress``.
+
+    Args:
+        rfq_number: The RFQ to process.
+        user_id: Acting user, recorded in the RFQ history.
+        search_db: Also match items against the internal product database.
+        lines: Optional subset of line numbers to process (single-line button).
+               None means every item in a re-classifiable state.
+        validate_web: Run the web validation step for ``specific`` items that
+               missed the product database. This blocks for the duration of the
+               (grounded) LLM call, so callers that want it must opt in.
+        auto_quote_brand: Auto-set the quote brand from the item-brand majority.
+        auto_departments: Auto-set item departments (product match, then one
+               batched LLM call for the remainder).
+        progress: Optional ``fn(message: str)`` for ordered user-facing updates.
+        should_cancel: Optional ``fn() -> bool`` checked before the expensive
+               web-validation call so a stop request doesn't spend search quota.
 
     Returns a summary dict:
+        targets: [line, ...] — the items this run actually processed
         classified: {specific: [line,...], branded: [...], generic: [...]}
         db_matches: [(line, part_number, brand, product_id), ...]
-        to_validate: [item_dict, ...]
+        brand_results: [...]
+        to_validate: [item_dict, ...]  — specific items, pre-validation
         unclassifiable: [item_dict, ...]
+        validation: {"validated": [...]} or {"error": str} or None
+        quote_brand_result / department_result: str or None
     """
     from includes.tools.product_tools import _find_product_by_code
+
+    notify = progress or (lambda _message: None)
 
     rfq_dict = _get_rfq_dict_sync(rfq_number)
     if not rfq_dict:
         return {"error": f"RFQ '{rfq_number}' not found."}
 
     items = rfq_dict.get("items", [])
-    unmatched_items = [i for i in items if i.get("match") == "unmatched"]
+    targets = [i for i in items if i.get("match") in _RECLASSIFIABLE_MATCHES]
+    if lines is not None:
+        wanted = {int(line) for line in lines}
+        targets = [i for i in targets if i["line"] in wanted]
+
+    # Nothing needs classifying: return without touching the RFQ. In
+    # particular don't fire the department LLM call for a no-op re-run.
+    if not targets:
+        return {
+            "targets": [],
+            "classified": {"specific": [], "branded": [], "generic": []},
+            "db_matches": [],
+            "brand_results": [],
+            "to_validate": [],
+            "unclassifiable": [],
+            "validation": None,
+            "quote_brand_result": None,
+            "department_result": None,
+        }
+
+    notify(f"Classifying & validating {len(targets)} item(s) in {rfq_number}...")
 
     classified = {"specific": [], "branded": [], "generic": []}
     to_validate = []
     db_matches = []
     unclassifiable = []
 
-    for item in unmatched_items:
+    for item in targets:
         line = item["line"]
         part_number = (item.get("part_number") or "").strip()
         brand = (item.get("brand") or "").strip()
@@ -2646,6 +2728,17 @@ def _classify_rfq_items_sync(
     ]
     if class_updates:
         _update_items_bulk_sync(rfq_number, {"items": class_updates}, user_id)
+        detail = "\n".join(
+            f"  Line {line} → 🟢 {match}"
+            for match, line_list in classified.items()
+            for line in line_list
+        )
+        notify(f"Classified {len(class_updates)} item(s):\n{detail}")
+    if unclassifiable:
+        notify(
+            f"{len(unclassifiable)} item(s) have too little detail to classify "
+            f"automatically — add a description or part number."
+        )
 
     # Step 1b: Deterministic brand existence check — canonicalise exact
     # matches, report near-miss alternatives and unknown brands.
@@ -2718,21 +2811,86 @@ def _classify_rfq_items_sync(
                 ))
         if db_updates:
             _update_items_bulk_sync(rfq_number, {"items": db_updates}, user_id)
+            match_desc = "\n".join(
+                f"line {line} → {part_number} ({brand})"
+                for line, part_number, brand, _product_id in db_matches
+            )
+            notify(
+                f"Found {len(db_matches)} item(s) in our product database:\n"
+                f"{match_desc}."
+            )
 
-    # Step 2: auto-set the quote brand from item brands (deterministic
+    # Step 2: web validation for specific items the product DB didn't know.
+    # Runs before quote-brand/departments so those see the final item state.
+    validation = None
+    if validate_web and not (should_cancel and should_cancel()):
+        validated_lines = {m[0] for m in db_matches}
+        needs_validation = [i for i in to_validate if i["line"] not in validated_lines]
+        if needs_validation:
+            payload = [
+                {
+                    "line": item["line"],
+                    "input_description": item.get("input_description", ""),
+                    "part_number": item.get("part_number", ""),
+                    "brand": canonical_by_line.get(item["line"]) or item.get("brand", ""),
+                }
+                for item in needs_validation
+            ]
+            notify(
+                f"Validating {len(payload)} item(s) against web sources "
+                f"to check for discrepancies..."
+            )
+            validation = _validate_items_sync(rfq_number, payload, user_id)
+            validated_web = (validation or {}).get("validated", [])
+            if validated_web:
+                lines_out = []
+                for v in validated_web:
+                    status = v.get("status")
+                    if status == "multi_brand":
+                        status_icon = "🔵"
+                        suffix = " (multi-brand — no single manufacturer)"
+                    elif status == "confirmed":
+                        status_icon = "✅"
+                        suffix = ""
+                    else:
+                        status_icon = "🟠"
+                        suffix = ""
+                    lines_out.append(
+                        f"  {status_icon} Line {v['line']}: {v.get('findings', '')}{suffix}"
+                    )
+                    if v.get("correct_part_number") and status == "discrepancy":
+                        lines_out.append(
+                            f"    Correct part number: {v['correct_part_number']}"
+                        )
+                notify("\n".join(lines_out))
+            elif (validation or {}).get("error"):
+                notify(f"⚠️ Web validation failed: {validation['error'][:80]}")
+
+    # Step 3: auto-set the quote brand from item brands (deterministic
     # majority; ties and non-DB brands are left for a human).
-    quote_brand_result = _set_quote_brand_from_items_sync(rfq_number, user_id)
+    quote_brand_result = None
+    if auto_quote_brand:
+        quote_brand_result = _set_quote_brand_from_items_sync(rfq_number, user_id)
+        if quote_brand_result:
+            notify(f"🏷️ {quote_brand_result}")
 
-    # Step 3: auto-set item departments — product match first, then one
+    # Step 4: auto-set item departments — product match first, then one
     # batched LLM call for the remainder (strict enum validation).
-    department_result = _set_item_departments_sync(rfq_number, user_id)
+    department_result = None
+    if auto_departments:
+        notify("Classifying item departments...")
+        department_result = _set_item_departments_sync(rfq_number, user_id)
+        if department_result:
+            notify(f"🗂️ {department_result}")
 
     return {
+        "targets": [i["line"] for i in targets],
         "classified": classified,
         "db_matches": db_matches,
         "brand_results": brand_results,
         "to_validate": to_validate,
         "unclassifiable": unclassifiable,
+        "validation": validation,
         "quote_brand_result": quote_brand_result,
         "department_result": department_result,
     }

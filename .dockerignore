@@ -13,11 +13,8 @@ service-account-key.json
 config/mcp_servers.yaml
 
 # Local runtime data
-# NOTE: .chainlit/ is required to configure unsafe_allow_html
 .files/
 temp_files/
-chainlit_datalayer.db
-chainlit.db
 *.db
 
 # Git and CI/CD
@@ -30,9 +27,8 @@ tests/
 run_tests.sh
 # Note: scripts/ is needed for database initialization in Cloud Run
 
-# Documentation (except chainlit.md which Chainlit needs at runtime)
+# Documentation
 *.md
-!chainlit.md
 docs/
 
 # macOS

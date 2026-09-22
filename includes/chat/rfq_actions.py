@@ -12,7 +12,6 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
-from includes.agent_bridge import notify_dashboard
 from includes.chat.context import ActionSpec, ChatContext
 from includes.tools.quote_tools import (
     _update_supplier_sync, _update_item_sync, _add_supplier_sync,
@@ -114,210 +113,96 @@ async def on_rfq_update_supplier(payload: dict, ctx: ChatContext) -> None:
     )
 
 
-async def on_rfq_identify_items(payload: dict, ctx: ChatContext) -> None:
-    """Classify & validate RFQ items.
+def _classify_scope(payload: dict) -> list | None:
+    """Which line numbers a classify & validate run should touch.
 
-    Step A: CLASSIFY — assign a match level to every unmatched item based on
-            available data (deterministic, no I/O).
-            specific: part_number + brand + description
-            branded:  brand + description (no part_number)
-            generic:  description only
-
-    Step B: VALIDATE (specific items only) — search internal product DB,
-            then web search for discrepancy detection.
+    ``None`` means "every re-classifiable item". An explicit scope is always
+    honoured — never widened — so a payload this server does not understand
+    cannot quietly turn a one-line request into a whole-RFQ run.
     """
-    from includes.tools.product_tools import _find_product_by_code
+    if payload.get("line") is not None:
+        return [payload["line"]]
 
-    rfq_id = payload.get("rfq_id", "???")
-    items = payload.get("items", [])
+    items = payload.get("items")
+    if items:
+        return [
+            i["line"]
+            for i in items
+            if isinstance(i, dict) and i.get("line") is not None
+        ]
 
-    if not items:
+    return None
+
+
+async def on_rfq_identify_items(payload: dict, ctx: ChatContext) -> None:
+    """Classify & validate RFQ items — the "Classify & Validate" button.
+
+    A thin renderer over ``rfq_crud._classify_rfq_items_sync``, which is the
+    single implementation of the process (the agent's classify tool and the
+    supplier-search pipeline call the same function). One implementation means
+    the chat message and the dashboard button cannot drift apart.
+
+    Scope:
+      * ``payload["line"]``  — the per-item button, one line only.
+      * ``payload["items"]`` — legacy payloads from a page rendered before the
+        server started choosing items itself. Honoured rather than ignored, so
+        a stale client narrows the run instead of silently widening it to the
+        whole RFQ.
+      * neither → every item in a re-classifiable state (``unmatched`` or
+        ``discrepancy``), which keeps re-runs idempotent and stops them
+        re-burning web-search quota on items that already passed.
+
+    Every user-facing line is streamed from inside the pipeline via
+    ``progress``, so the order in the chat matches the order things actually
+    happened; this handler only deals with errors and "nothing to do".
+    """
+    from includes.tools.rfq_crud import _classify_rfq_items_sync
+
+    rfq_id = payload.get("rfq_id")
+    if not rfq_id:
         return
 
     # Clear any stale stop flag from a previous run
     ctx.reset_cancel()
 
     user_id = _user_id(payload, ctx)
+    lines = _classify_scope(payload)
 
     try:
-        await ctx.say(
-            f"Classifying & validating {len(items)} item(s) in {rfq_id}...",
-            author="EagleAgent",
-        )
         await ctx.notify_dashboard("agent_working", {"label": "AI classifying items..."})
 
-        # ---- Step A: Classify ALL items ----
-        classified = []     # (line, match) for all classified items
-        to_validate = []    # items that are 'specific' and need validation
-        classification_summary = []
+        # The orchestrator runs in a worker thread; its progress messages are
+        # marshalled back onto the event loop so they land in order.
+        loop = asyncio.get_running_loop()
 
-        for ui_item in items:
-            if ctx.cancelled:
-                await _handle_stop(ctx)
-                return
-            line = ui_item.get("line")
-            description = ui_item.get("description", "")
-            part_number = ui_item.get("part_number", "")
-            brand = ui_item.get("brand", "")
+        def _progress(message: str) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    ctx.say(message, author="EagleAgent"), loop,
+                ).result()
+            except Exception as e:  # a display failure must not abort the work
+                logger.warning("classify progress message failed: %s", e)
 
-            has_part = bool(part_number)
-            has_brand = bool(brand and brand.strip().lower() not in ("other", "n/a", "na", "none", "unknown"))
-            has_desc = bool(description)
+        result = await asyncio.to_thread(
+            _classify_rfq_items_sync, rfq_id, user_id,
+            search_db=True,
+            lines=lines,
+            validate_web=True,
+            progress=_progress,
+            should_cancel=lambda: ctx.cancelled,
+        )
 
-            match = None
-            # specific:  has a part_number + description (brand is discoverable)
-            # branded:   has brand + description, no part_number
-            # generic:   description only
-            if has_part and has_desc:
-                match = "specific"
-            elif has_brand and has_desc:
-                match = "branded"
-            elif has_desc:
-                match = "generic"
+        if result.get("error"):
+            await ctx.say(f"⚠️ {result['error']}", author="EagleAgent")
+            return
 
-            if match:
-                await asyncio.to_thread(
-                    _update_item_sync, rfq_id,
-                    {"line": line, "match": match},
-                    user_id,
-                )
-                classified.append(line)
-                if match == "specific":
-                    to_validate.append(ui_item)
-                classification_summary.append(f"  Line {line} → 🟢 {match}")
-
-        if classification_summary:
+        if not result["targets"]:
             await ctx.say(
-                f"Classified {len(classified)} item(s):\n" + "\n".join(classification_summary),
+                "Nothing to classify — every item on this RFQ already has a "
+                "classification.",
                 author="EagleAgent",
             )
         await ctx.notify_dashboard("dashboard_refresh")
-
-        # ---- Step B: Validate specific items ----
-        if to_validate:
-            validated = []    # items matched in internal DB
-            need_web = []     # items needing web search for discrepancy check
-
-            for ui_item in to_validate:
-                if ctx.cancelled:
-                    await _handle_stop(ctx)
-                    return
-                line = ui_item.get("line")
-                part_number = ui_item.get("part_number", "")
-                brand = ui_item.get("brand", "")
-
-                product = None
-                try:
-                    product = await asyncio.to_thread(
-                        _find_product_by_code, part_number, brand or None,
-                    )
-                except Exception as e:
-                    logger.warning(f"Phase 1 product search failed for line {line}: {e}")
-
-                if product:
-                    validated.append({
-                        "line": line,
-                        "part_number": product["part_number"],
-                        "brand": product["brand"],
-                        "product_id": product["id"],
-                    })
-                else:
-                    need_web.append(ui_item)
-
-            # Update items matched in internal DB
-            if validated:
-                for v in validated:
-                    await asyncio.to_thread(
-                        _update_item_sync, rfq_id,
-                        {"line": v["line"], "part_number": v["part_number"],
-                         "brand": v["brand"], "product_id": v["product_id"],
-                         "match": "specific"},
-                        user_id,
-                    )
-                match_desc = "\n".join(
-                    f"line {v['line']} → {v['part_number']} ({v['brand']})" for v in validated
-                )
-                msg = f"Found {len(validated)} item(s) in our product database:\n{match_desc}."
-                if need_web:
-                    msg += f"\nChecking {len(need_web)} remaining item(s) online for discrepancies..."
-                await ctx.say(msg, author="EagleAgent")
-                await ctx.notify_dashboard("dashboard_refresh")
-
-            # Validate remaining specific items via web search (two-step grounded approach)
-            if need_web:
-                from includes.tools.rfq_crud import _validate_items_sync
-
-                await ctx.say(
-                    f"Validating {len(need_web)} item(s) against web sources to check for discrepancies...",
-                    author="EagleAgent",
-                )
-                web_items = [
-                    {
-                        "line": item.get("line"),
-                        "input_description": item.get("description", ""),
-                        "part_number": item.get("part_number", ""),
-                        "brand": item.get("brand", ""),
-                    }
-                    for item in need_web
-                ]
-                validation_result = await asyncio.to_thread(
-                    _validate_items_sync, rfq_id, web_items, user_id
-                )
-                validated_web = validation_result.get("validated", [])
-                if validated_web:
-                    lines_out = []
-                    for v in validated_web:
-                        status = v.get("status")
-                        if status == "multi_brand":
-                            status_icon = "🔵"
-                            suffix = " (multi-brand — no single manufacturer)"
-                        elif status == "confirmed":
-                            status_icon = "✅"
-                            suffix = ""
-                        else:
-                            status_icon = "🟠"
-                            suffix = ""
-                        lines_out.append(
-                            f"  {status_icon} Line {v['line']}: {v.get('findings', '')}{suffix}"
-                        )
-                        if v.get("correct_part_number") and status == "discrepancy":
-                            lines_out.append(f"    Correct part number: {v['correct_part_number']}")
-                    await ctx.say("\n".join(lines_out), author="EagleAgent")
-                elif validation_result.get("error"):
-                    await ctx.say(
-                        f"⚠️ Web validation failed: {validation_result['error'][:80]}",
-                        author="EagleAgent",
-                    )
-                await ctx.notify_dashboard("dashboard_refresh")
-        else:
-            await ctx.say(
-                "All items classified. Items without part numbers are ready for supplier search.",
-                author="EagleAgent",
-            )
-
-        # ---- Step C: Auto-set the quote brand (deterministic majority) ----
-        # Counts item brands; a strict majority that matches the brands
-        # database exactly wins. Ties and non-DB brands are left for a human.
-        if not ctx.cancelled:
-            from includes.tools.rfq_crud import _set_quote_brand_from_items_sync
-            quote_brand_result = await asyncio.to_thread(
-                _set_quote_brand_from_items_sync, rfq_id, user_id
-            )
-            if quote_brand_result:
-                await ctx.say(f"🏷️ {quote_brand_result}", author="EagleAgent")
-            await ctx.notify_dashboard("dashboard_refresh")
-
-        # ---- Step D: Auto-set item departments ----
-        # Product matches copy their department; remaining items without one
-        # go through a single batched LLM call with strict enum validation.
-        if not ctx.cancelled:
-            from includes.tools.rfq_crud import _set_item_departments_sync
-            department_result = await asyncio.to_thread(
-                _set_item_departments_sync, rfq_id, user_id
-            )
-            if department_result:
-                await ctx.say(f"🗂️ {department_result}", author="EagleAgent")
-            await ctx.notify_dashboard("dashboard_refresh")
 
     finally:
         await ctx.notify_dashboard("agent_done")

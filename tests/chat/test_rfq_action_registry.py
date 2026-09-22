@@ -59,14 +59,6 @@ def test_handlers_are_distinct():
     assert len(set(RFQ_ACTIONS.values())) == len(RFQ_ACTIONS)
 
 
-def test_the_chainlit_adapter_registers_every_name():
-    """app.py's loop must cover the whole registry."""
-    import app  # noqa: F401 — importing runs the registration loop
-    from chainlit.config import config as cl_config
-
-    assert set(RFQ_ACTIONS) <= set(cl_config.code.action_callbacks)
-
-
 def test_buttons_emitted_by_the_search_menu_all_have_handlers():
     """Every ActionSpec the supplier-search menu builds must be dispatchable."""
     from includes.chat.supplier_search_gate import build_menu_actions

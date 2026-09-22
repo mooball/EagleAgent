@@ -253,14 +253,9 @@
             <!-- Overlay to prevent iframe from stealing mouse events during resize -->
             <div x-show="isResizing" class="absolute inset-0 z-40"></div>
 
-            {% if user and is_beta_chat_user(user.email) %}
-            <!-- Beta chat UI — same-document embed (plan-chatMigration-beta) -->
+            <!-- Chat UI — same-document embed, the only chat transport -->
             <div id="chat-ui-embed" class="flex-1 w-full min-h-0 overflow-hidden"
                  hx-get="/chat-ui/embed" hx-trigger="load" hx-swap="innerHTML"></div>
-            {% else %}
-            <!-- Chat iframe — never destroyed, only hidden -->
-            <iframe id="agent-iframe" src="/chat" class="flex-1 w-full border-0"></iframe>
-            {% endif %}
         </aside>
     </div>
 
@@ -273,6 +268,10 @@
                 currentContext: {},
                 agentWorking: false,
                 agentWorkingLabel: '',
+                // Threads with a live run, keyed by thread id. Runs are isolated
+                // per thread, so Stop needs to name its target rather than
+                // cancelling everything the user has going.
+                _workingThreads: {},
                 _chatProfile: 'Eagle Agent',  // assume Eagle Agent until told otherwise
 
                 init() {
@@ -621,12 +620,42 @@
                 },
 
                 stopAgent() {
-                    fetch('/api/stop-agent', { method: 'POST', credentials: 'same-origin' })
-                        .then(() => {
+                    // Runs are isolated per thread, so Stop names exactly one
+                    // target: the conversation the panel is showing if it is
+                    // running, otherwise the single other live run. Never a
+                    // blanket cancel — that would kill unrelated work.
+                    const working = Object.keys(this._workingThreads || {});
+                    let target = null;
+                    if (this._activeThreadId && this._workingThreads[this._activeThreadId]) {
+                        target = this._activeThreadId;
+                    } else if (working.length === 1) {
+                        target = working[0];
+                    }
+                    if (!target) {
+                        window.eaToast(
+                            working.length
+                                ? 'Several chats are running — stop each one from its own chat panel.'
+                                : 'Nothing is running right now.',
+                            false
+                        );
+                        return;
+                    }
+                    fetch('/api/stop-agent', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify({thread_id: target}),
+                    }).then((resp) => {
+                        if (!resp.ok) {
+                            window.eaToast('Could not stop that run.', false);
+                            return;
+                        }
+                        delete this._workingThreads[target];
+                        if (!Object.keys(this._workingThreads).length) {
                             this.agentWorking = false;
                             clearTimeout(this._agentWorkingTimeout);
-                        })
-                        .catch(err => console.warn('[stopAgent] failed:', err));
+                        }
+                    }).catch(err => console.warn('[stopAgent] failed:', err));
                 },
 
                 // Single choke point for chat navigation. Reloading the iframe tears
@@ -827,12 +856,24 @@
                     } else if (type === 'agent_working') {
                         this.agentWorking = true;
                         this.agentWorkingLabel = payload.label || 'Agent working...';
+                        if (payload._source_thread) {
+                            this._workingThreads[payload._source_thread] = true;
+                        }
                         // Reset safety timeout on each working signal
                         clearTimeout(this._agentWorkingTimeout);
-                        this._agentWorkingTimeout = setTimeout(() => { this.agentWorking = false; }, 600000);
+                        this._agentWorkingTimeout = setTimeout(() => {
+                            this.agentWorking = false;
+                            this._workingThreads = {};
+                        }, 600000);
                     } else if (type === 'agent_done') {
-                        this.agentWorking = false;
-                        clearTimeout(this._agentWorkingTimeout);
+                        if (payload._source_thread) {
+                            delete this._workingThreads[payload._source_thread];
+                        }
+                        // Only clear the pill once nothing else is still running.
+                        if (!Object.keys(this._workingThreads).length) {
+                            this.agentWorking = false;
+                            clearTimeout(this._agentWorkingTimeout);
+                        }
                     }
                 },
 
@@ -1288,6 +1329,22 @@
                             // Beta: dashboard_refresh events from the run drive
                             // updates; only the iframe path refreshes here.
                             htmx.ajax('GET', '/partial/rfqs/' + rfqId, { target: '#main-content' });
+                        } else {
+                            // The server may have opened a thread for this RFQ
+                            // (self-heal when none was bound) — follow it so the
+                            // panel shows that conversation, not whichever one
+                            // happened to be open.
+                            resp.json().then(function(data) {
+                                var tid = data && data.thread_id;
+                                if (!tid || (dashCtx && tid === dashCtx.thread_id)) return;
+                                self._activeThreadId = tid;
+                                self._activeThreadRfqId = rfqId;
+                                self.currentContext.thread_id = tid;
+                                self.pushContext();
+                                document.dispatchEvent(new CustomEvent('chat-ui:action-started', {
+                                    detail: { threadId: tid }
+                                }));
+                            }).catch(function() {});
                         }
                     }).catch(function(err) {
                         console.error('[bridge]', err);
@@ -1310,39 +1367,26 @@
                     }).catch(function(err) { console.error('[supplier-status]', err); });
                 },
                 identifyItems() {
-                    // Rebuild unmatched list from current items (not stale initial load)
-                    var unmatched = [];
-                    for (var line in this._items) {
-                        var item = this._items[line];
-                        if (item && item.match === 'unmatched') {
-                            unmatched.push({
-                                line: item.line,
-                                description: item.input_description,
-                                part_number: item.part_number || item.input_code,
-                                brand: item.brand
-                            });
-                        }
-                    }
-                    if (!unmatched.length) return;
-                    var payload = {
-                        rfq_id: this.rfqId,
-                        items: unmatched
-                    };
-                    this._sendAction({ name: 'rfq_identify_items', label: 'Classifying & validating items...', payload: payload });
+                    // The server decides which items need work — every line in
+                    // an 'unmatched' or 'discrepancy' state. Sending the item
+                    // list from here used to be able to silently no-op (the
+                    // button renders for discrepancy-only RFQs, but the old
+                    // filter only collected 'unmatched' lines) and could go
+                    // stale relative to the server's view of the RFQ.
+                    this._sendAction({
+                        name: 'rfq_identify_items',
+                        label: 'Classifying & validating items...',
+                        payload: { rfq_id: this.rfqId }
+                    });
                 },
                 identifyItem(line) {
                     var item = this._items[line];
                     if (!item) { console.error('[rfqDetail] item not found for line', line); return; }
-                    var payload = {
-                        rfq_id: this.rfqId,
-                        items: [{
-                            line: item.line,
-                            description: item.input_description,
-                            part_number: item.part_number || item.input_code,
-                            brand: item.brand
-                        }]
-                    };
-                    this._sendAction({ name: 'rfq_identify_items', label: 'Classifying line ' + item.line + '...', payload: payload });
+                    this._sendAction({
+                        name: 'rfq_identify_items',
+                        label: 'Classifying line ' + item.line + '...',
+                        payload: { rfq_id: this.rfqId, line: item.line }
+                    });
                 },
                 findSuppliers(line) {
                     var item = this._items[line];

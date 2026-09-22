@@ -1,8 +1,13 @@
-"""Track A transcript adapter — read/write Chainlit's `threads` / `steps`.
+"""Transcript storage for the chat UI — reads/writes the ``threads`` / ``steps``
+/ ``elements`` / ``users`` tables directly.
 
-Parent plan §11: keep the Chainlit schema, swap the writer. The new UI and
-Chainlit share these tables so threads appear in both UIs, with zero migration.
-Only talks to the configured Chainlit data layer — never to Chainlit sessions.
+These tables were created by Chainlit and are still named after it, but they are
+now plain application tables: Chainlit has been removed, so the schema is ours
+and ``alembic/env.py`` keeps excluding them from autogenerate. A later migration
+can rename them for clarity; the columns and semantics would not change.
+
+Writes go through :func:`execute_sql`, a thin wrapper over an app-owned async
+engine — there is no Chainlit data layer any more.
 """
 
 from __future__ import annotations
@@ -22,35 +27,180 @@ STEP_COLUMNS = (
     '"parentId","isError","streaming"'
 )
 
+_async_engine = None
+
+
+def _get_async_engine():
+    """The app's async engine, created once."""
+    global _async_engine
+    if _async_engine is None:
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from config.settings import Config
+
+        url = Config.DATABASE_URL
+        if url.startswith("postgresql+psycopg://"):
+            url = url.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
+        elif url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        elif url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        _async_engine = create_async_engine(
+            url, pool_pre_ping=True, pool_size=10, max_overflow=20,
+        )
+    return _async_engine
+
+
+async def execute_sql(query: str, parameters: dict | None = None) -> list[dict]:
+    """Run a statement and return the rows as dicts.
+
+    ``parameters`` uses ``:name`` bind syntax. Callers pass JSON columns as
+    ``json.dumps(...)`` text, which asyncpg sends verbatim for json/jsonb.
+    """
+    from sqlalchemy import text
+
+    engine = _get_async_engine()
+    async with engine.connect() as conn:
+        result = await conn.execute(text(query), parameters or {})
+        rows = [dict(row) for row in result.mappings().all()] if result.returns_rows else []
+        await conn.commit()
+    return rows
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _data_layer() -> Any:
-    """The configured Chainlit data layer (same instance Chainlit uses)."""
-    from chainlit.data import get_data_layer
+class _SqlExecutor:
+    """The thread/step writes that used to go through Chainlit's data layer.
 
-    dl = get_data_layer()
-    if dl is None:
-        raise RuntimeError("Chainlit data layer not configured")
-    return dl
+    Ported from ``FixedSQLAlchemyDataLayer`` so stored rows keep the exact
+    shape the existing data has (timestamp format, metadata merge, userId
+    preservation) — only the Chainlit dependency is gone.
+    """
+
+    async def execute_sql(self, query: str, parameters: dict | None = None) -> list[dict]:
+        return await execute_sql(query, parameters)
+
+    async def _user_identifier(self, user_id: str) -> Optional[str]:
+        rows = await execute_sql(
+            'SELECT "identifier" FROM users WHERE "id" = :id', {"id": user_id},
+        )
+        return rows[0]["identifier"] if rows else None
+
+    async def update_thread(
+        self,
+        thread_id: str,
+        *,
+        name: Optional[str] = None,
+        user_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        tags: Optional[list] = None,
+    ) -> None:
+        """Upsert a thread row.
+
+        ``metadata`` is merged shallowly onto the stored value (a ``None``
+        value deletes that key), so callers can set one key — ``scratch``,
+        ``agent`` — without clobbering the others. A missing ``user_id`` never
+        clears an existing ``userId``, and ``createdAt`` is written only on
+        insert so creation time survives later updates.
+        """
+        existing = await execute_sql(
+            'SELECT "id","userId","metadata" FROM threads WHERE "id" = :id',
+            {"id": thread_id},
+        )
+        is_new_thread = not existing
+
+        has_updates = (
+            metadata is not None or name is not None or user_id is not None or tags is not None
+        )
+        if not is_new_thread and not has_updates:
+            return
+
+        if metadata is not None:
+            base: dict = {}
+            if not is_new_thread:
+                raw = existing[0].get("metadata") or {}
+                if isinstance(raw, str):
+                    try:
+                        base = json.loads(raw)
+                    except json.JSONDecodeError:
+                        base = {}
+                elif isinstance(raw, dict):
+                    base = raw
+            to_delete = {k for k, v in metadata.items() if v is None}
+            incoming = {k: v for k, v in metadata.items() if v is not None}
+            base = {k: v for k, v in base.items() if k not in to_delete}
+            metadata = {**base, **incoming}
+
+        name_value = name
+        if name_value is None and metadata:
+            name_value = metadata.get("name")
+
+        if not user_id and not is_new_thread:
+            user_id = existing[0].get("userId") or None
+
+        user_identifier = await self._user_identifier(user_id) if user_id else None
+
+        data = {
+            "id": thread_id,
+            "createdAt": _now() if is_new_thread else None,
+            "name": name_value,
+            "userId": user_id,
+            "userIdentifier": user_identifier,
+            "tags": ",".join(tags) if isinstance(tags, list) else tags,
+            "metadata": json.dumps(metadata) if metadata else None,
+        }
+        parameters = {k: v for k, v in data.items() if v is not None}
+        columns = ", ".join(f'"{k}"' for k in parameters)
+        values = ", ".join(f":{k}" for k in parameters)
+        updates = ", ".join(
+            f'"{k}" = EXCLUDED."{k}"' for k in parameters if k not in ("id", "createdAt")
+        )
+        conflict = f"DO UPDATE SET {updates}" if updates else "DO NOTHING"
+        await execute_sql(
+            f'INSERT INTO threads ({columns}) VALUES ({values}) '
+            f'ON CONFLICT ("id") {conflict};',
+            parameters,
+        )
+
+
+async def _data_layer() -> Any:
+    """The transcript SQL executor (historical name — no Chainlit involved)."""
+    return _SqlExecutor()
 
 
 async def ensure_user(user_email: str, user_name: str | None = None) -> str:
-    """Return the Chainlit user id for ``user_email``, creating the user row
-    if needed so ``threads.userId``/``userIdentifier`` resolve the same way
-    Chainlit resolves them."""
-    dl = await _data_layer()
-    persisted = await dl.get_user(user_email)
-    if persisted is not None:
-        return str(getattr(persisted, "id", "") or "")
-    from chainlit.user import User as CLUser
+    """Return the user row id for ``user_email``, creating it if needed.
 
-    created = await dl.create_user(
-        CLUser(identifier=user_email, metadata={"name": user_name or user_email})
+    ``threads.userId``/``userIdentifier`` resolve through this, so the id must
+    stay stable per email.
+    """
+    rows = await execute_sql(
+        'SELECT "id" FROM users WHERE "identifier" = :email',
+        {"email": user_email},
     )
-    return str(getattr(created, "id", "") or "")
+    if rows:
+        return str(rows[0]["id"])
+
+    user_id = str(uuid.uuid4())
+    await execute_sql(
+        'INSERT INTO users ("id","identifier","metadata","createdAt") '
+        'VALUES (:id, :email, CAST(:metadata AS jsonb), :created_at) '
+        'ON CONFLICT ("identifier") DO NOTHING',
+        {
+            "id": user_id,
+            "email": user_email,
+            "metadata": json.dumps({"name": user_name or user_email}),
+            "created_at": _now(),
+        },
+    )
+    # A concurrent insert may have won; re-read to return the stored id.
+    rows = await execute_sql(
+        'SELECT "id" FROM users WHERE "identifier" = :email',
+        {"email": user_email},
+    )
+    return str(rows[0]["id"]) if rows else user_id
 
 
 # ── Threads ────────────────────────────────────────────────────────────────
