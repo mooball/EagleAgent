@@ -132,11 +132,12 @@ User profiles are stored as JSON with flexible schema:
   - `forget_user_info()` — Delete user information
 
 ### Integration Points
-- **`app.py`**:
+- **`includes/graph.py`**:
   - Added `user_id` to `SupervisorState`
   - Integrated `AsyncPostgresStore` with graph compilation
   - Profile loaded and injected via `_ensure_user_profile()`
-  - Set `user_id` in `on_chat_start` and `on_chat_resume`
+  - `user_id` is carried in the graph state per turn (the Chat UI sets it from the
+    authenticated session when the turn handler builds the graph inputs)
 
 ## Technical Details
 

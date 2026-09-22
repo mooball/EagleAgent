@@ -10,7 +10,7 @@ import threading
 import uuid
 
 from functools import wraps
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -341,20 +341,37 @@ def _get_rfq_sync(rfq_number: str):
 _TIER_ORDER = {"A": 0, "B": 1, "C": 2, "D": 3}
 
 
+def _supplier_history_count(sup: dict) -> int:
+    """Transaction-history signal for ranking: brand count, else part count.
+
+    `brand_transaction_count` is the rolled-up count of transactions for the
+    supplier's brand (set by the brand-supplier search). `transaction_count`
+    is the per-part count written by _enrich_supplier_pricing, and falls back
+    to a nominal 1 when only a purchase reference is known.
+    """
+    for key in ("brand_transaction_count", "transaction_count"):
+        try:
+            value = int(sup.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value:
+            return value
+    return 1 if sup.get("purchase_ref") else 0
+
+
 def _supplier_sort_key(sup: dict) -> tuple:
     """Sort key for ordering suppliers on an RFQ line item.
 
     Priority (ascending):
-      1. Transaction history — suppliers with history first
+      1. Transaction count — most brand/part history first
       2. Supply chain tier — A > B > C > D > unknown
       3. Location — AU first, non-AU second
       4. Alphabetical by name
     """
-    has_history = 0 if (sup.get("transaction_count") or sup.get("purchase_ref")) else 1
     tier = _TIER_ORDER.get(sup.get("tier"), 9)
     is_au = 0 if (sup.get("country") or "").upper() == "AU" else 1
     name = (sup.get("name") or "").lower()
-    return (has_history, tier, is_au, name)
+    return (-_supplier_history_count(sup), tier, is_au, name)
 
 
 def sort_item_suppliers(suppliers: list[dict]) -> list[dict]:
@@ -804,6 +821,12 @@ def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
       - reset_pipeline: True if identifying fields changed and
         pipeline_stage should be reset to 'unprocessed'
     """
+    # Captured before the loop below overwrites them: deciding "did the part
+    # number change?" has to compare against the pre-update value, and an
+    # explicitly supplied product_id must survive.
+    previous_part_number = line_item.part_number
+    product_id_provided = "product_id" in data
+
     changes = []
     # Department is validated against the canonical enum before storing.
     # Accepts department_id (NetSuite string ID) or department (exact
@@ -832,9 +855,16 @@ def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
     _identifying = {"input_description", "input_code", "part_number", "brand"}
     if _identifying & set(data.keys()):
         if "part_number" in data:
-            # If part_number changed, clear product_id unless explicitly set to a matching product
-            line_item.product_id = None
-            changes.append("product_id")
+            # Drop the product link only when the code actually changed. Callers
+            # routinely re-send an unchanged part_number alongside the product_id
+            # the classify pipeline just resolved — clearing unconditionally
+            # wiped that link every time (no "In database" icon, no department
+            # inherited from the product, no price history).
+            if not product_id_provided and (
+                (data["part_number"] or None) != (previous_part_number or None)
+            ):
+                line_item.product_id = None
+                changes.append("product_id")
         if "match" not in data:
             line_item.match = "unmatched"
             changes.append("match")
@@ -1239,7 +1269,7 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
                         "cost_price", "cost_price_aud", "sale_price",
                         "cost_currency",
                         "price_date", "price_doc", "price_doc_type",
-                        "transaction_count",
+                        "transaction_count", "brand_transaction_count",
                         "db_match", "near_miss_names",
                         "quote_status", "quote_cost", "quote_currency", "quote_leadtime",
                         "quote_part_number"]:
@@ -1269,6 +1299,7 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
                 "price_doc": sup.get("price_doc"),
                 "price_doc_type": sup.get("price_doc_type"),
                 "transaction_count": sup.get("transaction_count"),
+                "brand_transaction_count": sup.get("brand_transaction_count"),
                 "db_match": sup.get("db_match"),
                 "near_miss_names": sup.get("near_miss_names"),
                 "quote_status": sup.get("quote_status"),
@@ -1571,6 +1602,7 @@ def _merge_supplier_dicts(base: dict, extra: dict) -> dict:
         "sale_price", "cost_currency", "quote_cost", "quote_currency",
         "quote_leadtime", "quote_part_number", "purchase_ref", "price_date",
         "price_doc", "price_doc_type", "transaction_count",
+        "brand_transaction_count",
         "country", "currency", "tier", "category", "source",
     ):
         if not merged.get(field) and extra.get(field):
@@ -2563,37 +2595,106 @@ def _set_item_departments_sync(rfq_number: str, user_id: str) -> str | None:
         parts.append(f"{len(llm_updates)} by LLM")
     if skipped:
         parts.append(f"{len(skipped)} skipped")
-    if not parts:
-        return None
-    return f"Departments auto-set: {', '.join(parts)}."
+    if parts:
+        return f"Departments auto-set: {', '.join(parts)}."
+    # The call ran but assigned nothing. Return a status rather than None —
+    # otherwise the caller's "Classifying item departments..." line is a dead
+    # end and the user cannot tell "found nothing" from "failed".
+    return (
+        f"Departments: nothing set — no confident assignment for "
+        f"{len(remaining)} item(s); left blank for a human."
+    )
+
+
+# Item states that (re-)classification applies to. ``unmatched`` has never been
+# classified; ``discrepancy`` is blocked pending human review and is re-checked
+# when someone re-runs classify & validate. ``specific`` / ``branded`` /
+# ``generic`` are terminal classifications and are left untouched, so re-running
+# the pipeline is idempotent and never re-burns web-search quota on items that
+# already passed.
+_RECLASSIFIABLE_MATCHES = ("unmatched", "discrepancy")
 
 
 def _classify_rfq_items_sync(
     rfq_number: str, user_id: str, search_db: bool = True,
+    lines: list[int] | None = None,
+    validate_web: bool = False,
+    auto_quote_brand: bool = True,
+    auto_departments: bool = True,
+    progress: "Callable[[str], None] | None" = None,
+    should_cancel: "Callable[[], bool] | None" = None,
 ) -> dict:
-    """Classify all unmatched items and optionally search product DB.
+    """Classify, validate and enrich the RFQ items that still need it.
+
+    THE single implementation of the classify & validate process. Called by the
+    dashboard "Classify & Validate" button (via ``on_rfq_identify_items``), the
+    agent's ``classify_items`` tool, and the supplier-search pipeline. Chat
+    rendering lives in the callers; this function only does the work and
+    reports progress through ``progress``.
+
+    Args:
+        rfq_number: The RFQ to process.
+        user_id: Acting user, recorded in the RFQ history.
+        search_db: Also match items against the internal product database.
+        lines: Optional subset of line numbers to process (single-line button).
+               None means every item in a re-classifiable state.
+        validate_web: Run the web validation step for ``specific`` items that
+               missed the product database. This blocks for the duration of the
+               (grounded) LLM call, so callers that want it must opt in.
+        auto_quote_brand: Auto-set the quote brand from the item-brand majority.
+        auto_departments: Auto-set item departments (product match, then one
+               batched LLM call for the remainder).
+        progress: Optional ``fn(message: str)`` for ordered user-facing updates.
+        should_cancel: Optional ``fn() -> bool`` checked before the expensive
+               web-validation call so a stop request doesn't spend search quota.
 
     Returns a summary dict:
+        targets: [line, ...] — the items this run actually processed
         classified: {specific: [line,...], branded: [...], generic: [...]}
         db_matches: [(line, part_number, brand, product_id), ...]
-        to_validate: [item_dict, ...]
+        brand_results: [...]
+        to_validate: [item_dict, ...]  — specific items, pre-validation
         unclassifiable: [item_dict, ...]
+        validation: {"validated": [...]} or {"error": str} or None
+        quote_brand_result / department_result: str or None
     """
     from includes.tools.product_tools import _find_product_by_code
+
+    notify = progress or (lambda _message: None)
 
     rfq_dict = _get_rfq_dict_sync(rfq_number)
     if not rfq_dict:
         return {"error": f"RFQ '{rfq_number}' not found."}
 
     items = rfq_dict.get("items", [])
-    unmatched_items = [i for i in items if i.get("match") == "unmatched"]
+    targets = [i for i in items if i.get("match") in _RECLASSIFIABLE_MATCHES]
+    if lines is not None:
+        wanted = {int(line) for line in lines}
+        targets = [i for i in targets if i["line"] in wanted]
+
+    # Nothing needs classifying: return without touching the RFQ. In
+    # particular don't fire the department LLM call for a no-op re-run.
+    if not targets:
+        return {
+            "targets": [],
+            "classified": {"specific": [], "branded": [], "generic": []},
+            "db_matches": [],
+            "brand_results": [],
+            "to_validate": [],
+            "unclassifiable": [],
+            "validation": None,
+            "quote_brand_result": None,
+            "department_result": None,
+        }
+
+    notify(f"Classifying & validating {len(targets)} item(s) in {rfq_number}...")
 
     classified = {"specific": [], "branded": [], "generic": []}
     to_validate = []
     db_matches = []
     unclassifiable = []
 
-    for item in unmatched_items:
+    for item in targets:
         line = item["line"]
         part_number = (item.get("part_number") or "").strip()
         brand = (item.get("brand") or "").strip()
@@ -2627,6 +2728,17 @@ def _classify_rfq_items_sync(
     ]
     if class_updates:
         _update_items_bulk_sync(rfq_number, {"items": class_updates}, user_id)
+        detail = "\n".join(
+            f"  Line {line} → 🟢 {match}"
+            for match, line_list in classified.items()
+            for line in line_list
+        )
+        notify(f"Classified {len(class_updates)} item(s):\n{detail}")
+    if unclassifiable:
+        notify(
+            f"{len(unclassifiable)} item(s) have too little detail to classify "
+            f"automatically — add a description or part number."
+        )
 
     # Step 1b: Deterministic brand existence check — canonicalise exact
     # matches, report near-miss alternatives and unknown brands.
@@ -2699,21 +2811,86 @@ def _classify_rfq_items_sync(
                 ))
         if db_updates:
             _update_items_bulk_sync(rfq_number, {"items": db_updates}, user_id)
+            match_desc = "\n".join(
+                f"line {line} → {part_number} ({brand})"
+                for line, part_number, brand, _product_id in db_matches
+            )
+            notify(
+                f"Found {len(db_matches)} item(s) in our product database:\n"
+                f"{match_desc}."
+            )
 
-    # Step 2: auto-set the quote brand from item brands (deterministic
+    # Step 2: web validation for specific items the product DB didn't know.
+    # Runs before quote-brand/departments so those see the final item state.
+    validation = None
+    if validate_web and not (should_cancel and should_cancel()):
+        validated_lines = {m[0] for m in db_matches}
+        needs_validation = [i for i in to_validate if i["line"] not in validated_lines]
+        if needs_validation:
+            payload = [
+                {
+                    "line": item["line"],
+                    "input_description": item.get("input_description", ""),
+                    "part_number": item.get("part_number", ""),
+                    "brand": canonical_by_line.get(item["line"]) or item.get("brand", ""),
+                }
+                for item in needs_validation
+            ]
+            notify(
+                f"Validating {len(payload)} item(s) against web sources "
+                f"to check for discrepancies..."
+            )
+            validation = _validate_items_sync(rfq_number, payload, user_id)
+            validated_web = (validation or {}).get("validated", [])
+            if validated_web:
+                lines_out = []
+                for v in validated_web:
+                    status = v.get("status")
+                    if status == "multi_brand":
+                        status_icon = "🔵"
+                        suffix = " (multi-brand — no single manufacturer)"
+                    elif status == "confirmed":
+                        status_icon = "✅"
+                        suffix = ""
+                    else:
+                        status_icon = "🟠"
+                        suffix = ""
+                    lines_out.append(
+                        f"  {status_icon} Line {v['line']}: {v.get('findings', '')}{suffix}"
+                    )
+                    if v.get("correct_part_number") and status == "discrepancy":
+                        lines_out.append(
+                            f"    Correct part number: {v['correct_part_number']}"
+                        )
+                notify("\n".join(lines_out))
+            elif (validation or {}).get("error"):
+                notify(f"⚠️ Web validation failed: {validation['error'][:80]}")
+
+    # Step 3: auto-set the quote brand from item brands (deterministic
     # majority; ties and non-DB brands are left for a human).
-    quote_brand_result = _set_quote_brand_from_items_sync(rfq_number, user_id)
+    quote_brand_result = None
+    if auto_quote_brand:
+        quote_brand_result = _set_quote_brand_from_items_sync(rfq_number, user_id)
+        if quote_brand_result:
+            notify(f"🏷️ {quote_brand_result}")
 
-    # Step 3: auto-set item departments — product match first, then one
+    # Step 4: auto-set item departments — product match first, then one
     # batched LLM call for the remainder (strict enum validation).
-    department_result = _set_item_departments_sync(rfq_number, user_id)
+    department_result = None
+    if auto_departments:
+        notify("Classifying item departments...")
+        department_result = _set_item_departments_sync(rfq_number, user_id)
+        if department_result:
+            notify(f"🗂️ {department_result}")
 
     return {
+        "targets": [i["line"] for i in targets],
         "classified": classified,
         "db_matches": db_matches,
         "brand_results": brand_results,
         "to_validate": to_validate,
         "unclassifiable": unclassifiable,
+        "validation": validation,
         "quote_brand_result": quote_brand_result,
         "department_result": department_result,
     }
@@ -3309,12 +3486,16 @@ def _find_purchase_suppliers_sync(
 
 @_serialized_rfq_write
 def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
-    """Find brand-linked suppliers for all items with a brand, add top Tier A to RFQ.
+    """Find brand-linked suppliers for all items with a brand, add the top 5 to RFQ.
 
-    Looks up each item's brand in the supplier-brand link table via
-    _find_brand_suppliers_with_tier(). Auto-adds up to 5 Tier A suppliers
-    per line item. Stores the full brand-supplier list on the item's
-    brand_suppliers JSON column for reference in the UI modal.
+    Brand lookups are batched: every distinct brand on the RFQ is resolved in a
+    single pass (_find_brand_suppliers_for_brands), so query count does not
+    grow with the number of line items. Suppliers are ranked by brand
+    transaction count, then tier; duplicate brands count towards the canonical
+    brand and duplicate supplier records are rolled up into their canonical
+    record. Auto-adds the top 5 suppliers not already on each line. Stores the
+    full brand-supplier list on the item's brand_suppliers JSON column for
+    reference in the UI modal.
 
     Args:
         rfq_number: The RFQ identifier (e.g. "RFQ-2026-0042").
@@ -3322,11 +3503,11 @@ def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
 
     Returns:
         {
-            "added": int,                              # total Tier A suppliers added
+            "added": int,                              # total suppliers added
             "by_line": {line_num: [supplier_names]},   # what was added where
         }
     """
-    from includes.tools.product_tools import _find_brand_suppliers_with_tier
+    from includes.tools.product_tools import _find_brand_suppliers_for_brands
     from includes.dashboard.models import RFQ, RFQItem
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -3335,52 +3516,82 @@ def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
         return {"error": f"RFQ '{rfq_number}' not found."}
 
     items = rfq_dict.get("items", [])
+
+    # Skip items without a real brand
+    def _brand_of(item: dict) -> str:
+        brand = (item.get("brand") or "").strip()
+        if not brand or brand.lower() in ("other", "n/a", "na", "none", "unknown"):
+            return ""
+        return brand
+
+    wanted_brands = [b for b in dict.fromkeys(_brand_of(i) for i in items) if b]
+
+    brand_suppliers: dict[str, list[dict]] = {}
+    if wanted_brands:
+        try:
+            brand_suppliers = _find_brand_suppliers_for_brands(wanted_brands)
+        except (SQLAlchemyError, KeyError, ValueError):
+            logger.warning(
+                f"Brand supplier lookup failed for {rfq_number} "
+                f"brands={wanted_brands}",
+                exc_info=True,
+            )
+
     total_added = 0
     by_line = {}
 
     session = _get_session()
     try:
-        for item in items:
-            line = item["line"]
-            brand = (item.get("brand") or "").strip()
+        # Persist the modal reference list for every line in one query + one
+        # commit (was a query and a commit per line).
+        rfq_obj = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq_obj:
+            return {"added": 0, "by_line": {}}
 
-            # Skip items without a real brand
-            if not brand or brand.lower() in ("other", "n/a", "na", "none", "unknown"):
-                continue
-
-            # Look up brand-linked suppliers
-            try:
-                brand_sups = _find_brand_suppliers_with_tier(brand)
-            except (SQLAlchemyError, KeyError, ValueError):
-                logger.warning(
-                    f"Brand supplier lookup failed for line {line} brand={brand}",
-                    exc_info=True,
+        pending = {
+            item["line"]: brand_suppliers[_brand_of(item)]
+            for item in items
+            if _brand_of(item) and brand_suppliers.get(_brand_of(item))
+        }
+        if pending:
+            item_objs = (
+                session.query(RFQItem)
+                .filter(
+                    RFQItem.rfq_id == rfq_obj.id,
+                    RFQItem.line.in_(list(pending)),
                 )
-                continue
-
-            if not brand_sups:
-                continue
-
-            # Save full brand-supplier list to the item for modal reference
-            rfq_obj = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
-            if not rfq_obj:
-                continue
-            item_obj = session.query(RFQItem).filter(
-                RFQItem.rfq_id == rfq_obj.id, RFQItem.line == line,
-            ).first()
-            if item_obj:
-                item_obj.brand_suppliers = brand_sups
+                .all()
+            )
+            for item_obj in item_objs:
+                item_obj.brand_suppliers = pending[item_obj.line]
                 flag_modified(item_obj, "brand_suppliers")
             session.commit()
 
-            # Determine which suppliers are already on this line
+        for item in items:
+            line = item["line"]
+            brand = _brand_of(item)
+            if not brand:
+                continue
+
+            brand_sups = brand_suppliers.get(brand) or []
+            if not brand_sups:
+                continue
+
+            # Determine which suppliers are already on this line. Match on
+            # supplier_id as well as name so a duplicate record that has since
+            # been merged into its canonical row is not added twice.
             existing_suppliers = item.get("suppliers", [])
             existing_names_lower = {s["name"].lower() for s in existing_suppliers if isinstance(s, dict)}
+            existing_ids = {
+                str(s["supplier_id"]) for s in existing_suppliers
+                if isinstance(s, dict) and s.get("supplier_id")
+            }
 
             # Filter to only new suppliers (not already on the line)
             new_brand_sups = [
                 s for s in brand_sups
                 if s["name"].lower() not in existing_names_lower
+                and s["supplier_id"] not in existing_ids
             ]
 
             # Auto-add top 5 suppliers to the line item (same sort order as modal)
@@ -3393,9 +3604,10 @@ def _find_brand_suppliers_sync(rfq_number: str, user_id: str) -> dict:
                         "contacts": s.get("contacts", []),
                         "status": "candidate",
                         "price_type": "brand_link",
+                        "brand_transaction_count": s.get("brand_transaction_count") or 0,
                         "notes": (
                             f"Brand-linked supplier (Tier {s.get('tier', '?')}, "
-                            f"{s['transaction_count']} transactions)"
+                            f"{s.get('brand_transaction_count', 0)} brand transactions)"
                         ),
                     }
                     for s in top_suppliers

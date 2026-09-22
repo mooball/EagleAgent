@@ -1,6 +1,6 @@
 # Internal Agent (DB-Only Search)
 
-The Internal Agent is a standalone chat profile that provides database-only search — no web research, no MCP tools, no external APIs. It runs `ProcurementAgent` in `internal_only` mode.
+The Internal Agent is a standalone agent that provides database-only search — no web research, no MCP tools, no external APIs. It runs `ProcurementAgent` in `internal_only` mode.
 
 ## Purpose
 
@@ -35,7 +35,9 @@ The Internal Agent is a **single-node LangGraph graph** (no Supervisor routing):
 User → ProcurementAgent (internal_only=True) → Response
 ```
 
-It's compiled in `includes/graph.py` as `internal_graph` and exposed as the "Internal Agent" chat profile in `app.py`.
+It's compiled in `includes/graph.py` as `internal_graph` and registered in
+[`includes/agents/registry.py`](includes/agents/registry.py) as the "Internal Agent",
+which is what the Chat UI's agent picker reads.
 
 ## How It Differs from Eagle Agent
 

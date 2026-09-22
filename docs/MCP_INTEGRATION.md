@@ -199,7 +199,7 @@ For MCP servers requiring OAuth (typically HTTP/SSE servers):
          Authorization: "Bearer ${MCP_ACCESS_TOKEN}"
    ```
 
-3. **Token Refresh**: Currently manual (add token to .env). Future: implement OAuth flow via Chainlit messages.
+3. **Token Refresh**: Currently manual (add token to .env). Future: implement an OAuth flow surfaced through the chat.
 
 **Note**: STDIO servers don't support OAuth (local process, no network auth needed).
 
@@ -311,7 +311,7 @@ Building a custom MCP client was considered but rejected because:
 
 ## Files Changed
 
-- **app.py**: MCP client initialization in `setup_globals()`
+- **includes/graph.py**: MCP client initialization in `setup_globals()`
 - **includes/agents/general_agent.py**: MCP tool integration in `get_tools_async()`
 - **includes/mcp_config.py**: New config loader utility (226 lines)
 - **config/mcp_servers.yaml**: Runtime config (excluded from git)
@@ -330,7 +330,7 @@ Building a custom MCP client was considered but rejected because:
 
 ## Future Enhancements
 
-- **Interactive OAuth**: Display auth URLs via Chainlit messages, handle callback
+- **Interactive OAuth**: Display auth URLs in the chat, handle the callback
 - **Server Health Checks**: Periodic connection validation, auto-reconnect
 - **Tool Namespacing**: Prefix tools by server name (e.g., `github_create_issue`)
 - **Dynamic Configuration**: Enable/disable servers without restart

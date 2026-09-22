@@ -8,12 +8,12 @@ Quick reference for the recommended development workflow for EagleAgent.
 # Start local Postgres (if using docker-compose)
 ./start_postgres.sh
 
-# Start development server (FastAPI + Chainlit)
+# Start development server (FastAPI — dashboard + chat UI)
 ./run.sh
 
 # Edit files -> Save -> Auto-refresh in browser at http://localhost:8000
 # Dashboard: http://localhost:8000/
-# Chat UI:   http://localhost:8000/chat
+# Chat UI:   http://localhost:8000/chat-ui
 
 # Stop the server
 ./kill-8000.sh

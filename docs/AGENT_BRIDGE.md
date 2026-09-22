@@ -1,53 +1,63 @@
-# Agent Bridge: Dashboard ↔ Chainlit Communication
+# Agent Bridge: Dashboard → Chat
 
-The **Agent Bridge** is the framework for bidirectional communication between
-the FastAPI dashboard and the Chainlit agent running inside its iframe.
+The **Agent Bridge** connects a dashboard button click to the chat thread that
+owns the RFQ. It is deliberately one-directional in plumbing: dashboard → thread,
+over an ordinary authenticated POST.
 
-## Architecture Overview
+The other direction needs no bridge at all — an agent asks the dashboard for
+something by queueing an event on its own SSE stream, which the embed forwards to
+the shell as a DOM event. See [Chat UI](./CHAT_UI.md).
+
+> **History.** This used to be a bidirectional bridge over Chainlit's socket.io:
+> the dashboard read the `X-Chainlit-Session-id` cookie, looked up the
+> `WebsocketSession`, and called `init_ws_context()` before dispatching.
+> `notify_dashboard()` went out through `cl.send_window_message()` and an iframe
+> `postMessage` hop in `public/embedded.js`. All of that is gone.
+
+## Why a bridge is still needed
+
+A dashboard button is not a chat message. Clicking it has to run a handler
+*outside* a graph turn, inside the right conversation, with the panel showing the
+result. That is what `handle_bridge_request` does.
+
+## Dashboard → thread
 
 ```
-┌─────────────────────────────────────────────────┐
-│  FastAPI Dashboard (parent window)              │
-│                                                 │
-│  ┌───────────────┐    ┌──────────────────────┐  │
-│  │ #main-content │    │ #agent-iframe         │  │
-│  │  (HTMX views) │    │  src="/chat"          │  │
-│  │               │    │  ┌──────────────────┐ │  │
-│  │  rfq_detail   │    │  │ Chainlit React   │ │  │
-│  │  supplier_det │    │  │ + embedded.js     │ │  │
-│  │  product_det  │    │  │ + custom elements │ │  │
-│  │               │    │  └──────────────────┘ │  │
-│  └───────┬───────┘    └──────────┬───────────┘  │
-│          │                       │               │
-│          │    /api/agent-bridge  │  postMessage   │
-│          └───────────┬───────────┘               │
-│                      │                           │
-│              ┌───────▼───────┐                   │
-│              │  FastAPI      │                   │
-│              │  Server       │                   │
-│              └───────────────┘                   │
-└─────────────────────────────────────────────────┘
+dashboard button (_sendAction)
+  │  POST /api/agent-bridge   {action: {name, payload}}
+  │     payload carries rfq_id and, when known, _thread_id
+  ▼
+agent_bridge.handle_bridge_request
+  │  1. authenticate the dashboard session
+  │  2. resolve the target thread:
+  │       _thread_id from the payload, else
+  │       _lookup_rfq_thread_id(rfq_id, user)  ← finds, repairs, or CREATES + binds
+  │  3. dispatch_action_to_thread(user, thread_id, name, payload)
+  ▼
+chat_ui._execute_action → handler(payload, ctx) → results on the thread's SSE stream
 ```
 
-## Dashboard → Agent (invoking actions)
+The response includes the `thread_id` the run went to, and the client uses it to
+open that conversation if the server had to create one.
 
-The dashboard invokes Chainlit action callbacks via a direct HTTP call to the
-server.  This avoids the complexity of cross-frame postMessage and socket.io
-session discovery.
+### Why the server resolves the thread
 
-### Flow
+The client says which RFQ the click belongs to; the **server** decides which
+conversation that is. This matters because:
 
-1. Dashboard JS calls `fetch('/api/agent-bridge', { body: { action: { name, payload } } })`
-2. Server reads the `X-Chainlit-Session-id` cookie (set by Chainlit's frontend)
-3. `includes/agent_bridge.py` looks up the Chainlit `WebsocketSession`
-4. Initialises the Chainlit context (`init_ws_context`) so `cl.user_session`,
-   `cl.Message`, etc. work normally
-5. Dispatches the registered `@cl.action_callback` handler
+- a brand-new RFQ has no thread yet;
+- a click can land before the client's own binding round-trip finishes;
+- a bound thread may since have been deleted, leaving a stale binding.
 
-### Dashboard-side usage
+In all three cases the server finds, repairs or creates the thread instead of
+failing — and, critically, never falls back to "whatever conversation happens to
+be open", which is how an RFQ's action output previously ended up in an unrelated
+chat.
+
+### Dashboard-side call
 
 ```js
-// In any Alpine.js component or template script:
+// templates/base.html — the single choke point is rfqDetail()._sendAction()
 fetch('/api/agent-bridge', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -55,116 +65,74 @@ fetch('/api/agent-bridge', {
     body: JSON.stringify({
         action: {
             name: 'rfq_find_suppliers',
-            payload: { rfq_id: 'RFQ-2026-0001', line: 1, ... }
+            payload: { rfq_id: 'RFQ-2026-0001', line: 1, _thread_id: '...' }
         }
     }),
 });
 ```
 
-### Server-side handler
+`_sendAction()` also fires an optimistic `agent-working` event so the "working"
+pill appears immediately, and clears it if the POST is rejected.
 
-Register actions with `@cl.action_callback("action_name")` in `app.py` as
-usual.  The bridge dispatches them identically to how Chainlit's own UI does.
+### Adding an action
 
-### Adding new actions
+1. Write a `(payload, ctx)` handler and register it in `RFQ_ACTIONS`
+   (`includes/chat/rfq_actions.py`), or as `(ctx, payload=...)` in
+   `includes/chat/actions.py`.
+2. Call it by name from the dashboard via `/api/agent-bridge`.
 
-1. Add `@cl.action_callback("my_action")` in `app.py`
-2. Call it from the dashboard via `fetch('/api/agent-bridge', ...)`
-3. No changes needed in `agent_bridge.py` — it dispatches by name automatically
+There is nothing to register in the bridge — it resolves handlers by name at
+dispatch time.
 
-## Agent → Dashboard (navigation and data refresh)
+## Thread → dashboard
 
-Agent-side code can push commands to the dashboard from Python.  This uses
-Chainlit's built-in `cl.send_window_message()` which emits a socket.io event
-to the iframe; Chainlit's frontend automatically forwards it to the parent
-frame via `window.parent.postMessage()`.
-
-### Server-side helper
+An agent asks for something by queueing an event on its own stream:
 
 ```python
-from includes.agent_bridge import notify_dashboard
-
-# Refresh whatever view the dashboard is currently showing
-await notify_dashboard("dashboard_refresh")
-
-# Navigate the dashboard to a specific page
-await notify_dashboard("agent_navigate", {"url": "/rfqs/RFQ-2026-0001"})
+await ctx.notify_dashboard("dashboard_refresh")
+await ctx.notify_dashboard("agent_navigate", {"url": "/rfqs/RFQ-2026-0001"})
+await ctx.notify_dashboard("agent_working", {"label": "Searching suppliers..."})
 ```
 
-`notify_dashboard()` is safe to call outside a Chainlit context (e.g. in
-tests) — it silently skips if no session is active.
-
-**Auto-refresh on RFQ updates**: `_notify_rfq_updated()` in `quote_tools.py`
-calls `notify_dashboard("dashboard_refresh")` automatically, so any tool that
-modifies RFQ data also refreshes the dashboard.
-
-### JS-side helpers (inside the iframe)
-
-These functions are defined in `public/embedded.js` and can be called from
-custom elements or injected scripts:
-
-#### Navigate to a dashboard page
-
-```js
-window.navigateDashboard('/suppliers/42');
+```
+ctx.notify_dashboard(cmd)
+  → SSE 'dashboard' event on the thread's stream
+    → embed.html: document.dispatchEvent('dashboard:' + cmd, {_source_thread})
+      → base.html:  _handleDashboardCommand(cmd, payload)
 ```
 
-Sends `postMessage({type: 'agent_navigate', payload: {url: '/suppliers/42'}})`.
-The parent's `base.html` listener triggers an HTMX fetch to update the view.
+Commands in use: `dashboard_refresh`, `agent_navigate`, `agent_working`,
+`agent_done`. Every event carries `_source_thread`, so a run on RFQ A can only
+refresh the page that belongs to RFQ A.
 
-#### Refresh the current dashboard view
+**Auto-refresh on RFQ updates**: `_notify_rfq_updated()` in `quote_tools.py` calls
+`ctx.notify_dashboard("dashboard_refresh")`, so any tool that modifies RFQ data
+also refreshes the dashboard.
 
-```js
-window.refreshDashboard();
-```
+## Stopping work
 
-Sends `postMessage({type: 'dashboard_refresh'})`.  The parent re-fetches the
-current page's partial via HTMX.
+Cancellation is cooperative and **per thread** (see [Chat UI](./CHAT_UI.md)):
 
-### How it works under the hood
+- `POST /chat-ui/threads/{id}/stop` — the chat panel's own stop button.
+- `POST /api/stop-agent` with `{"thread_id": ...}` — the dashboard's "working"
+  pill. A thread id is **required**; there is deliberately no stop-all, so
+  stopping one run cannot cancel someone else's.
 
-```
-Python (agent_bridge.notify_dashboard)
-  → cl.send_window_message({type: "dashboard_refresh"})
-    → socket.io "window_message" event
-      → Chainlit frontend: window.parent.postMessage(data, "*")
-        → base.html message listener: htmx.ajax('GET', '/partial' + path, ...)
-```
-
-### Link interception
-
-Markdown links to `/suppliers/*`, `/products/*`, and `/rfqs/*` rendered inside
-the Chainlit chat are automatically intercepted by `embedded.js`.  Clicking
-them navigates the parent dashboard instead of navigating inside the iframe.
-
-## Key Files
+## Key files
 
 | File | Role |
 |------|------|
-| `includes/agent_bridge.py` | Server-side bridge: session lookup, action dispatch, `notify_dashboard()` |
-| `includes/tools/quote_tools.py` | `_notify_rfq_updated()` calls `notify_dashboard("dashboard_refresh")` |
-| `public/embedded.js` | Iframe-side: theme sync, context push, navigation helpers |
-| `public/stylesheet.css` | Hides redundant Chainlit header elements via CSS |
-| `templates/base.html` | Parent-side: message listener for navigate/refresh, Alpine `rfqDetail()` |
-| `app.py` | Action callbacks (`@cl.action_callback`) |
-
-## Cookie-Based Session Resolution
-
-The Chainlit React frontend calls `POST /set-session-cookie` on connect,
-storing the websocket session ID in an `httpOnly` cookie named
-`X-Chainlit-Session-id` with `path=/`.  Since the dashboard and Chainlit
-share the same origin, this cookie is automatically included in
-`fetch('/api/agent-bridge', ...)` calls from the dashboard.
-
-The bridge reads the cookie server-side and uses
-`WebsocketSession.get_by_id()` to find the active Chainlit session, then
-`init_ws_context()` to set up the execution context.
+| `includes/agent_bridge.py` | `handle_bridge_request` (dashboard → thread) + cooperative cancellation registry |
+| `includes/dashboard/routes/chat_ui.py` | `dispatch_action_to_thread`, `_execute_action`, `_active_runs` |
+| `includes/dashboard/routes/api.py` | `_lookup_rfq_thread_id` — find/repair/create the RFQ's thread |
+| `templates/base.html` | `_sendAction()` (dispatch), `_handleDashboardCommand()` (inbound), `stopAgent()` |
+| `templates/chat_ui/embed.html` | Drains the SSE stream; re-emits `dashboard` events as DOM events |
+| `includes/tools/quote_tools.py` | `_notify_rfq_updated()` → `dashboard_refresh` |
 
 ## Security
 
-- The `/api/agent-bridge` endpoint checks dashboard authentication
-  (`get_current_user`) before processing any action.
-- The Chainlit session cookie is `httpOnly` (not accessible to JS).
-- Action callbacks run in the authenticated user's Chainlit session context.
-- postMessage listeners in `base.html` check `event.origin` matches
-  `window.location.origin`.
+- `/api/agent-bridge` authenticates the dashboard session before dispatching.
+- `/chat-ui/*` requires an authenticated user, and thread ownership is checked on
+  every read and write, so you cannot act on someone else's conversation.
+- `/api/stop-agent` requires a `thread_id` and will only stop runs on threads you
+  own.

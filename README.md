@@ -1,16 +1,16 @@
 # EagleAgent
 
-EagleAgent is a sophisticated AI agent built using LangGraph, integrated with a React-based conversational UI via Chainlit and a FastAPI dashboard for supplier/product management. With persistent memory and user profiles, EagleAgent supports multiple complex procurement, research, and administrative operations.
+EagleAgent is a sophisticated AI agent built using LangGraph, with an integrated chat UI and a FastAPI dashboard for supplier and product management. With persistent memory and user profiles, EagleAgent supports a wide range of procurement, research, and administrative operations.
 
-The architecture uses a dual-app pattern: **FastAPI** (`main.py`) handles Google OAuth, session management, and serves the HTMX dashboard (Tailwind CSS v4 + **Preline UI** components), while **Chainlit** (`app.py`) provides the chat UI with LangGraph multi-agent orchestration. Both share a single PostgreSQL database for checkpointing, memory, and application data.
+A single **FastAPI** application (`main.py`) serves everything: Google OAuth and session handling, the HTMX dashboard (Tailwind CSS v4 + **Preline UI**), and the chat UI itself. Chat is a same-document embed in a dashboard panel that streams over Server-Sent Events (`/chat-ui/*`), with one thread per conversation — so several RFQs can be worked in parallel. LangGraph provides the multi-agent orchestration, and everything shares one PostgreSQL database for checkpointing, memory, and application data.
 
 ## Key Features
 
 - 🧠 **Persistent Memory**: Uses PostgreSQL for maintaining cross-session memory, user profiles, and LangGraph state.
-- 🎨 **Web-based UI**: Powered by Chainlit for beautiful, interactive, and responsive chat.
+- 🎨 **Chat UI**: Built in-house — SSE token streaming, one thread per conversation, file attachments, and inline action buttons.
 - 📊 **Dashboard**: FastAPI/HTMX dashboard for suppliers, products, RFQs, and user management.
 - 🧩 **Preline UI**: Vendored Tailwind-based component library (dropdowns, modals, toasts, chat bubbles…) — the default for new UI work, opt-in per component.
-- 🔐 **Authentication**: Google OAuth 2.0 via FastAPI, with session injection into Chainlit.
+- 🔐 **Authentication**: Google OAuth 2.0 with a signed session cookie.
 - 🌐 **Web Interaction**: Headless Chromium (Playwright via agent-browser) for automated web browsing, scraping, and form-filling.
 - 🛠️ **MCP Tools**: Built-in support for Model Context Protocol (MCP) integrations using custom configs.
 - 🚀 **Railway Ready**: Optimized dockerization, natively configured for deployment on Railway's App Platform.
@@ -19,19 +19,19 @@ The architecture uses a dual-app pattern: **FastAPI** (`main.py`) handles Google
 
 ![Architecture Diagram](https://img.shields.io/badge/Architecture-Component_Overview-blue.svg)
 
-1. **FastAPI App (`main.py`)**: The ASGI entry point. Handles Google OAuth authentication, session middleware, serves the HTMX dashboard (suppliers, products, RFQs, users), and mounts Chainlit at `/chat`.
+1. **FastAPI App (`main.py`)**: The ASGI entry point. Handles Google OAuth authentication, session middleware, and serves both the HTMX dashboard (suppliers, products, RFQs, users) and the chat UI under `/chat-ui`.
 
    **Frontend conventions**: Jinja2 + HTMX + Alpine.js 3 + Tailwind CSS v4 (CSS-first, built with the standalone CLI — no Node). **Preline UI is vendored at `public/vendor/preline/` and is the default for new UI work** (especially the future bespoke chat UI). Existing UI adopts it opportunistically — see `copilot-instructions.md` → "Frontend / UI". A kitchen-sink probe page is served at `/public/probe.html`.
-2. **Chainlit UI (`app.py`)**: The chat interface where users interact with agents. Features real-time token streaming, chat profiles, and action buttons.
+2. **Chat UI (`includes/dashboard/routes/chat_ui.py` + `includes/chat/`)**: Where users interact with the agents. Token streaming over SSE, one thread per conversation, file attachments, and actionable buttons. Transport-neutral code talks to a `ChatContext` (`includes/chat/context.py`); the SSE implementation is `context_sse.py` and transcript storage is `transcript.py`. See [Chat UI](./docs/CHAT_UI.md).
 3. **LangGraph Supervisor Pattern (Back-end Orchestration)**: A multi-agent architecture where a central `Supervisor` node evaluates user requests and routes them to specialized sub-agents:
    - **GeneralAgent**: Handles general conversation, context aggregation, memory retrieval, and MCP tool integration.
    - **ProcurementAgent**: Supplier/product database search, purchase history, brand lookup.
    - **ResearchAgent**: Google Search grounding for web research, optional RFQ tools.
    - **SysAdminAgent**: Administrative script execution and job management (admin-only).
    - **BrowserAgent**: Web automation via headless Playwright (available but disabled in main graph).
-4. **Dashboard ↔ Chat Bridge** (`includes/agent_bridge.py`): Bidirectional communication — the dashboard can dispatch messages to the agent, and agents can notify the dashboard to refresh.
+4. **Dashboard ↔ Chat Bridge** (`includes/agent_bridge.py`): Dashboard buttons dispatch into the chat thread bound to the RFQ (creating and binding one if needed, so an action can never land in an unrelated conversation). Agents notify the dashboard back over the same SSE channel.
 5. **Storage & Databases** (PostgreSQL & Local File Mount):
-   - **PostgreSQL Database**: Holds Chainlit user sessions, LangGraph checkpointing states, cross-thread user profiles, and application data (suppliers, products, brands, RFQs).
+   - **PostgreSQL Database**: Holds chat threads and messages, LangGraph checkpointing states, cross-thread user profiles, and application data (suppliers, products, brands, RFQs).
    - **Local File Storage**: Uses `/app/data/attachments` (or local equivalent) for fast read/writes without the overhead of external providers.
 
 ## Getting Started
@@ -77,7 +77,9 @@ GOOGLE_API_KEY=your_gemini_api_key
 # Database Connection (Same connection handles all logic)
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/eagleagent
 
-# Authentication (Chainlit)
+# Authentication — signs the login session cookie.
+# The name is historical: SESSION_SECRET is also read and takes precedence.
+# Changing the value logs everyone out.
 CHAINLIT_AUTH_SECRET=generate_something_random
 OAUTH_GOOGLE_CLIENT_ID=your_oauth_id
 OAUTH_GOOGLE_CLIENT_SECRET=your_oauth_secret
@@ -89,7 +91,7 @@ DATA_DIR=./data
 
 ### 3. Database Initialization (Alembic)
 
-The database schema, including JSONB conversions required for Chainlit thread states, is managed via **Alembic**. Initialize the database locally or remotely:
+The database schema, including the chat tables (`users`, `threads`, `steps`, `elements`) and all application tables, is managed via **Alembic**. Initialize the database locally or remotely:
 
 ```bash
 uv run alembic upgrade head
@@ -118,8 +120,9 @@ Deploying EagleAgent on Railway simply involves binding a PostgreSQL database to
 
 ## Documentation
 
-- [Agent Bridge](./docs/AGENT_BRIDGE.md): Dashboard ↔ Chainlit bidirectional communication architecture.
+- [Agent Bridge](./docs/AGENT_BRIDGE.md): How dashboard buttons dispatch into an RFQ's chat thread, plus stop/cancellation.
 - [Agent Graph Architecture](./docs/AGENT_GRAPH_ARCHITECTURE.md): Multi-agent graph design, routing, and state schema.
+- [Chat UI](./docs/CHAT_UI.md): The chat transport — SSE streaming, threads, storage, and the embed.
 - [Context Architecture](./docs/CONTEXT_ARCHITECTURE.md): How context and messages flow through the multi-agent system.
 - [Cross-Thread Memory](./docs/CROSS_THREAD_MEMORY.md): Persistent user profiles across conversation threads.
 - [Development Workflow](./docs/DEVELOPMENT_WORKFLOW.md): Daily dev cycle, database migrations, deployment.

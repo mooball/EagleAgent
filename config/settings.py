@@ -102,9 +102,6 @@ class Config:
     
     # Temporary files upload folder
     TEMP_FILES_FOLDER = os.getenv("TEMP_FILES_FOLDER", ".files")
-    
-    # Chainlit URL (set after deployment, or localhost for dev)
-    CHAINLIT_URL = os.getenv("CHAINLIT_URL", "http://localhost:8000")
 
     # Display timezone (IANA name, e.g. "Australia/Brisbane")
     TIMEZONE = os.getenv("TIMEZONE", "Australia/Brisbane")
@@ -260,19 +257,6 @@ class Config:
     def get_admin_emails(cls) -> list[str]:
         """Return admin emails as a list"""
         return [email.strip().lower() for email in cls.ADMIN_EMAILS.split(",") if email.strip()]
-
-    # Beta chat UI allowlist — who can use the /chat-ui SSE POC alongside
-    # Chainlit. Empty = feature off for everyone.
-    CHAT_UI_BETA_USERS = os.getenv("CHAT_UI_BETA_USERS", "")
-
-    @classmethod
-    def get_beta_chat_users(cls) -> list[str]:
-        """Return the beta chat allowlist as lowercase emails."""
-        return [
-            email.strip().lower()
-            for email in cls.CHAT_UI_BETA_USERS.split(",")
-            if email.strip()
-        ]
 
     @classmethod
     def to_dict(cls) -> dict:

@@ -2673,7 +2673,8 @@ async def partial_rfq_add_brand_supplier(
         "contacts": supplier.get("contacts", []),
         "status": "candidate",
         "price_type": "brand_link",
-        "notes": f"Brand-linked supplier (Tier {supplier.get('tier', '?')}, {supplier.get('transaction_count', 0)} transactions)",
+        "brand_transaction_count": supplier.get("brand_transaction_count") or 0,
+        "notes": f"Brand-linked supplier (Tier {supplier.get('tier', '?')}, {supplier.get('brand_transaction_count', 0)} brand transactions)",
     }
     await asyncio.to_thread(
         _add_supplier_sync, rfq_id,

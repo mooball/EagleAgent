@@ -1092,7 +1092,7 @@
                     <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">
                         Brand-linked suppliers for <span class="text-purple-600 dark:text-purple-400" x-text="brandSuppliersModal.brand"></span>
                     </h3>
-                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Sorted by tier and transaction history. Toggle to add or remove from this item.</p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Sorted by transaction history, then tier. Toggle to add or remove from this item.</p>
                 </div>
                 <button @click="closeBrandSuppliersModal()"
                         class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 shrink-0">
@@ -1135,7 +1135,10 @@
                                           x-text="sup.tier"></span>
                                     <span x-show="!sup.tier" class="text-gray-400">—</span>
                                 </td>
-                                <td class="py-1.5 text-center text-gray-600 dark:text-gray-400" x-text="sup.transaction_count || 0"></td>
+                                <td class="py-1.5 text-center text-gray-600 dark:text-gray-400">
+                                    <span x-text="(sup.brand_transaction_count ?? sup.transaction_count) || 0"
+                                          :title="sup.duplicate_count ? 'Includes ' + sup.duplicate_count + ' merged duplicate supplier record(s)' : 'Transactions for this brand (all document types)'"></span>
+                                </td>
                                 <td class="py-1.5 text-center text-gray-500" x-text="sup.country || '—'"></td>
                                 <td class="py-1.5 text-center">
                                     <button @click="toggleBrandSupplier(sup)"

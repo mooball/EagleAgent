@@ -15,8 +15,6 @@ import pytest
 # Add parent directory to path to import project modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from includes.chat.local_storage_client import LocalStorageClient
-
 # ============================================================================
 # Chat Context Fixtures
 # ============================================================================
@@ -193,11 +191,6 @@ def temp_storage_dir():
     """Provide a temporary directory for local file attachments during testing."""
     with tempfile.TemporaryDirectory() as temp_dir:
         yield temp_dir
-
-@pytest.fixture
-def local_storage_client(temp_storage_dir):
-    """Create a LocalStorageClient instance pointed at the temporary directory."""
-    return LocalStorageClient(base_dir=temp_storage_dir)
 
 # ============================================================================
 # Checkpointer & Store Fixtures

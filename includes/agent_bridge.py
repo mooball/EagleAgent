@@ -1,37 +1,28 @@
 """
-Agent Bridge: bidirectional communication between the FastAPI dashboard and
-the Chainlit agent running inside the iframe.
+Agent Bridge: dashboard → agent action dispatch, plus stop signalling.
 
 Dashboard → Agent:
     The dashboard calls POST /api/agent-bridge with an action name and payload.
-    The server reads the Chainlit session cookie, initialises the Chainlit
-    context for that session, and dispatches the registered @cl.action_callback.
+    The handler resolves the RFQ's bound thread and dispatches into the SSE
+    chat via ``chat_ui.dispatch_action_to_thread`` — the same path a chat
+    action button takes. There is one dispatch mechanism; Chainlit is gone.
 
 Agent → Dashboard:
-    Server-side code calls ``notify_dashboard()`` which uses Chainlit's
-    built-in ``cl.send_window_message()`` to push a socket event to the
-    iframe.  Chainlit's frontend automatically forwards it via
-    ``window.parent.postMessage()``, where base.html handles it.
-
-    Supported commands:
-        - ``dashboard_refresh``  – re-fetch the current partial view
-        - ``agent_navigate``     – navigate to a specific dashboard route
+    Handled entirely by the SSE transport: ``SseChatContext.notify_dashboard``
+    queues a ``dashboard`` event that the embed forwards to the dashboard shell
+    as a DOM CustomEvent. No server-side bridge is involved.
 
 See docs/AGENT_BRIDGE.md for the full architecture.
 """
 
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Dict
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
-
-# Per-session lock: serializes concurrent action dispatches on the same
-# Chainlit session so that thread_id pinning cannot race.
-_session_locks: Dict[str, asyncio.Lock] = {}
 
 # ---------------------------------------------------------------------------
 # Cooperative cancellation via per-session Events
@@ -39,7 +30,7 @@ _session_locks: Dict[str, asyncio.Lock] = {}
 # Each session gets an asyncio.Event that is SET when a stop is requested.
 # Long-running action callbacks check this flag at natural break points
 # and exit early if set. A dedicated /api/stop-agent endpoint sets the flag
-# (bypassing the session lock) and optionally cancels tracked asyncio Tasks.
+# and optionally cancels tracked asyncio Tasks.
 
 _cancel_events: Dict[str, asyncio.Event] = {}
 _running_tasks: Dict[str, set[asyncio.Task]] = {}
@@ -112,195 +103,13 @@ def clear_stop(session_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Agent → Dashboard helpers
+# Agent → Dashboard
 # ---------------------------------------------------------------------------
-
-# Concurrent workers on one session share a single "agent working" badge, so
-# the badge is reference-counted: the first worker turns it on, the last turns
-# it off. Without this, whichever finishes first clears it for everyone.
-_working_depth: Dict[str, int] = {}
-# Previous depth recorded by _badge_should_emit so a failed send can undo it.
-_badge_prev_depth: Dict[str, int] = {}
-
-
-def _badge_should_emit(command: str) -> bool:
-    """Track agent_working/agent_done depth; emit only on the 0↔1 transitions."""
-    if command not in ("agent_working", "agent_done"):
-        return True
-    try:
-        import chainlit as cl
-        key = cl.context.session.id
-    except Exception:
-        return True
-
-    prev = _working_depth.get(key, 0)
-    _badge_prev_depth[key] = prev
-
-    if command == "agent_working":
-        _working_depth[key] = prev + 1
-        return prev == 0
-
-    # Original semantics: depth = prev - 1; emit (and pop) when depth <= 0.
-    if prev <= 1:
-        _working_depth.pop(key, None)
-        return True
-    _working_depth[key] = prev - 1
-    return False
-
-
-def _badge_undo_emit(command: str) -> None:
-    """Reverse the depth mutation made by _badge_should_emit.
-
-    Called when the actual send fails, so a lost agent_done/agent_working
-    cannot desynchronise the reference count and wedge the badge.
-    """
-    if command not in ("agent_working", "agent_done"):
-        return
-    try:
-        import chainlit as cl
-        key = cl.context.session.id
-    except Exception:
-        return
-
-    prev = _badge_prev_depth.pop(key, None)
-    if prev is None:
-        return
-    if prev <= 0:
-        _working_depth.pop(key, None)
-    else:
-        _working_depth[key] = prev
-
-
-async def notify_dashboard(command: str, payload: dict | None = None) -> None:
-    """Send a command to the dashboard via the Chainlit iframe.
-
-    Uses Chainlit's built-in ``send_window_message`` which emits a
-    ``window_message`` socket event.  The Chainlit frontend forwards it
-    to ``window.parent.postMessage()``, where base.html picks it up.
-
-    Args:
-        command: The message type, e.g. ``"dashboard_refresh"`` or
-                 ``"agent_navigate"``.
-        payload: Optional dict merged into the message.
-
-    Example::
-
-        await notify_dashboard("dashboard_refresh")
-        await notify_dashboard("agent_navigate", {"url": "/rfqs/RFQ-123"})
-    """
-    import chainlit as cl
-
-    if not _badge_should_emit(command):
-        return
-
-    data: dict = {"type": command}
-    if payload:
-        data["payload"] = payload
-    try:
-        await cl.send_window_message(data)
-    except Exception as e:
-        # A failed send must not corrupt the badge depth counter — undo the
-        # count so a later agent_done/agent_working still reaches the frontend.
-        _badge_undo_emit(command)
-        logger.warning("notify_dashboard: send_window_message failed for %s: %s", command, e)
-
-
-async def dispatch_action(
-    session_id: str,
-    action_name: str,
-    payload: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Dispatch a Chainlit action callback within the given session context.
-
-    Args:
-        session_id: The Chainlit websocket session ID (from the cookie).
-        action_name: Name of the registered @cl.action_callback.
-        payload: Dict of parameters to pass to the action.
-
-    Returns:
-        {"success": True} on success, or {"error": "..."} on failure.
-    """
-    from chainlit.action import Action
-    from chainlit.config import config
-    from chainlit.context import init_ws_context
-    from chainlit.session import WebsocketSession
-
-    # Acquire a per-session lock so that concurrent bridge requests on the
-    # same session are serialized.  This prevents two actions from racing
-    # to set session.thread_id and corrupting each other's context.
-    if session_id not in _session_locks:
-        _session_locks[session_id] = asyncio.Lock()
-    lock = _session_locks[session_id]
-
-    async with lock:
-        session = WebsocketSession.get_by_id(session_id)
-        if not session:
-            logger.warning(f"[agent_bridge] Session not found: {session_id}")
-            return {"error": "Chainlit session not found. Please reload the page."}
-
-        # Set the Chainlit context so cl.user_session, cl.Message etc. work
-        init_ws_context(session)
-
-        # If the payload includes a _thread_id (injected by the dashboard),
-        # pin the session to that thread BEFORE the callback runs.  This
-        # prevents cross-thread contamination when the user has navigated the
-        # chat iframe to a different RFQ thread after clicking the button.
-        target_thread_id = payload.get("_thread_id")
-        if target_thread_id:
-            logger.info(f"[agent_bridge] Pinning session to thread {target_thread_id} (from payload)")
-            session.thread_id = target_thread_id
-            import chainlit as cl
-            cl.user_session.set("thread_id", target_thread_id)
-
-        # RFQ handlers are transport-neutral — call them directly rather than
-        # bouncing through Chainlit's decorator registry.
-        import includes.chat.rfq_actions as rfq_module
-
-        handler = rfq_module.RFQ_ACTIONS.get(action_name)
-        if handler:
-            try:
-                from includes.chat.context import chat_context
-                from includes.chat.context_chainlit import ChainlitChatContext
-
-                ctx = ChainlitChatContext.from_session()
-                with chat_context(ctx):
-                    await handler(payload, ctx)
-                return {"success": True}
-            except Exception as e:
-                logger.exception(f"[agent_bridge] Action {action_name} failed")
-                # Best-effort: guarantee the dashboard badge clears even when
-                # the handler failed before its own finally could run.
-                await notify_dashboard("agent_done")
-                return {"error": str(e)}
-
-        callback = config.code.action_callbacks.get(action_name)
-        if callback:
-            # Native @cl.action_callback — lifecycle actions still live in app.py
-            try:
-                action = Action(name=action_name, payload=payload)
-                await callback(action)
-                return {"success": True}
-            except Exception as e:
-                logger.exception(f"[agent_bridge] Action {action_name} failed")
-                await notify_dashboard("agent_done")
-                return {"error": str(e)}
-
-        # Fall back to custom action registry (includes/chat/actions.py)
-        from includes.chat.actions import dispatch_action as dispatch_custom_action, get_action
-        if get_action(action_name):
-            try:
-                from includes.chat.context_chainlit import ChainlitChatContext
-                await dispatch_custom_action(
-                    action_name, ChainlitChatContext.from_session(), payload=payload
-                )
-                return {"success": True}
-            except Exception as e:
-                logger.exception(f"[agent_bridge] Action {action_name} failed")
-                await notify_dashboard("agent_done")
-                return {"error": str(e)}
-
-        logger.warning(f"[agent_bridge] No callback for action: {action_name}")
-        return {"error": f"Unknown action: {action_name}"}
+# There is nothing to do here: ``SseChatContext.notify_dashboard`` queues the
+# event on the thread's SSE stream and the embed forwards it to the dashboard
+# shell. The previous Chainlit implementation (``send_window_message`` plus a
+# reference-counted "agent working" badge keyed on the Chainlit session) has
+# been removed along with Chainlit.
 
 
 async def handle_bridge_request(request: Request) -> Response:
@@ -309,65 +118,71 @@ async def handle_bridge_request(request: Request) -> Response:
     Expected JSON body::
 
         {
-            "action": {
-                "name": "rfq_find_suppliers",
-                "payload": { ... }
-            }
+            "action": {"name": "rfq_find_suppliers", "payload": { ... }}
         }
 
-    The Chainlit session ID is read from the ``X-Chainlit-Session-id``
-    cookie which the Chainlit frontend sets automatically.
+    The action is dispatched into the SSE chat on the thread the RFQ is bound
+    to — the same path a chat action button takes. The dashboard injects
+    ``payload["_thread_id"]``; without it there is nowhere to route the action,
+    so the caller is told to open the chat panel.
     """
-    # Check dashboard auth
     from main import get_current_user
 
     user = get_current_user(request)
     if not user:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
 
-    # Parse the action
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
-    action_data = body.get("action", {})
+    action_data = body.get("action", {}) or {}
     action_name = action_data.get("name")
     if not action_name:
         return JSONResponse({"error": "Missing action name"}, status_code=400)
 
-    payload = action_data.get("payload", {})
+    raw_payload = action_data.get("payload", {})
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
 
-    # Beta chat UI: dashboard/chat actions dispatch into the SSE chat for the
-    # RFQ's bound thread. The dashboard adds chat_ui + _thread_id hints; only
-    # allowlisted users can take this path — everyone else falls through to
-    # the Chainlit session dispatch below, byte-for-byte unchanged.
-    if body.get("chat_ui") and isinstance(payload, dict) and payload.get("_thread_id"):
-        from config import config
+    rfq_id = payload.get("rfq_id")
+    thread_id = payload.get("_thread_id")
 
-        if user["email"].lower() in config.get_beta_chat_users():
-            from includes.dashboard.routes.chat_ui import dispatch_action_to_thread
-
-            result = await dispatch_action_to_thread(
-                user, str(payload["_thread_id"]), action_name, payload
+    if not thread_id:
+        # Self-heal: the dashboard had no bound thread to offer. That happens on
+        # a brand-new RFQ, when a button is clicked before the client's bind has
+        # finished, or when the bound thread was deleted. Resolve the RFQ's OWN
+        # thread — creating and binding a fresh one if needed — so the action can
+        # never run against whatever unrelated conversation happened to be open.
+        if not rfq_id:
+            return JSONResponse(
+                {"error": "This action needs an RFQ and a chat thread."},
+                status_code=400,
             )
-            status_code = result.pop("status_code", 200)
-            if status_code != 200:
-                return JSONResponse(result, status_code=status_code)
-            return JSONResponse(result)
+        from includes.dashboard.routes.api import _lookup_rfq_thread_id
 
-    # Read Chainlit session ID from cookie
-    session_id = request.cookies.get("X-Chainlit-Session-id")
-    if not session_id:
-        return JSONResponse(
-            {"error": "No Chainlit session. Please open the chat panel first."},
-            status_code=400,
+        thread_id = await asyncio.to_thread(
+            _lookup_rfq_thread_id, str(rfq_id), user["email"],
+        )
+        if not thread_id:
+            return JSONResponse(
+                {"error": "Could not open a chat thread for this RFQ."},
+                status_code=500,
+            )
+        logger.info(
+            "[agent_bridge] no thread hint for %s — resolved/created %s",
+            rfq_id, str(thread_id)[:8],
         )
 
-    logger.info(f"[agent_bridge] {user['email']} → {action_name}")
+    logger.info(
+        "[agent_bridge] %s → %s (thread %s)",
+        user["email"], action_name, str(thread_id)[:8],
+    )
 
-    result = await dispatch_action(session_id, action_name, payload)
+    from includes.dashboard.routes.chat_ui import dispatch_action_to_thread
 
-    if "error" in result:
-        return JSONResponse(result, status_code=422)
-    return JSONResponse(result)
+    result = await dispatch_action_to_thread(
+        user, str(thread_id), action_name, payload,
+    )
+    status_code = result.pop("status_code", 200)
+    return JSONResponse(result, status_code=status_code)

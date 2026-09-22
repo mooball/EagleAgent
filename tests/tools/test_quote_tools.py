@@ -862,6 +862,114 @@ class TestPricingEnrichment:
             _enrich_supplier_pricing(suppliers, str(pricing_data["product"].id))
         assert "cost_price" not in suppliers[0]
 
+    @pytest.fixture
+    def multi_supplier_data(self, db_session):
+        """Three suppliers, each with their own transaction history for one product."""
+        import uuid
+        import datetime
+        from includes.dashboard.models import Product, Supplier, Transaction
+
+        product = Product(id=uuid.uuid4(), part_number="TEST-BATCH-001", description="Batch product")
+        suppliers = [
+            Supplier(id=uuid.uuid4(), name=f"Batch Supplier {i}", contacts=[], currency="AUD")
+            for i in range(3)
+        ]
+        db_session.add(product)
+        db_session.add_all(suppliers)
+        db_session.flush()
+
+        for idx, supplier in enumerate(suppliers):
+            db_session.add(Transaction(
+                id=uuid.uuid4(), doc_number=f"BATCH-{idx}", doc_type="SalesOrder",
+                product_id=product.id, supplier_id=supplier.id,
+                quantity=1, price=100.0 + idx, cost=50.0 + idx,
+                date=datetime.date(2025, 5, 1 + idx),
+            ))
+        db_session.flush()
+        return {"product": product, "suppliers": suppliers}
+
+    def test_enrich_batches_multiple_suppliers(self, db_session, multi_supplier_data):
+        """One call enriches every supplier with their own numbers."""
+        payload = [
+            {"supplier_id": str(s.id), "name": s.name}
+            for s in multi_supplier_data["suppliers"]
+        ]
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            _enrich_supplier_pricing(payload, str(multi_supplier_data["product"].id))
+
+        assert [p["cost_price"] for p in payload] == [50.0, 51.0, 52.0]
+        assert [p["sale_price"] for p in payload] == [100.0, 101.0, 102.0]
+        assert [p["transaction_count"] for p in payload] == [1, 1, 1]
+        assert [p["price_doc"] for p in payload] == ["BATCH-0", "BATCH-1", "BATCH-2"]
+
+    def test_enrich_does_not_leak_between_suppliers(self, db_session, multi_supplier_data):
+        """A supplier with no history must not inherit another's pricing."""
+        product = multi_supplier_data["product"]
+        from includes.dashboard.models import Supplier
+        import uuid
+        blank = Supplier(id=uuid.uuid4(), name="No History Supplier", contacts=[])
+        db_session.add(blank)
+        db_session.flush()
+
+        payload = [
+            {"supplier_id": str(multi_supplier_data["suppliers"][0].id), "name": "Has History"},
+            {"supplier_id": str(blank.id), "name": "No History"},
+        ]
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            _enrich_supplier_pricing(payload, str(product.id))
+
+        assert payload[0]["cost_price"] == 50.0
+        assert "cost_price" not in payload[1]
+        assert "transaction_count" not in payload[1]
+
+    def test_enrich_same_date_tie_is_deterministic(self, db_session):
+        """Multiple lines of one document share a date — the pick must be stable.
+
+        Previously the row was arbitrary, so the same pair could report
+        different prices on consecutive requests.
+        """
+        import uuid
+        import datetime
+        from includes.dashboard.models import Product, Supplier, Transaction
+
+        product = Product(id=uuid.uuid4(), part_number="TEST-TIE-001", description="Tie product")
+        supplier = Supplier(id=uuid.uuid4(), name="Tie Supplier", contacts=[])
+        db_session.add_all([product, supplier])
+        db_session.flush()
+
+        same_day = datetime.date(2025, 7, 1)
+        for doc, cost in (("TIE-001", 10.0), ("TIE-002", 20.0)):
+            db_session.add(Transaction(
+                id=uuid.uuid4(), doc_number=doc, doc_type="Quote",
+                product_id=product.id, supplier_id=supplier.id,
+                quantity=1, price=cost * 2, cost=cost, date=same_day,
+            ))
+        db_session.flush()
+
+        results = []
+        for _ in range(3):
+            payload = [{"supplier_id": str(supplier.id), "name": "Tie Supplier"}]
+            with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+                _enrich_supplier_pricing(payload, str(product.id))
+            results.append((payload[0]["price_doc"], payload[0]["cost_price"]))
+        assert results == [("TIE-002", 20.0)] * 3
+        # Count still covers both lines
+        assert payload[0]["transaction_count"] == 2
+
+    def test_enrich_handles_same_supplier_twice(self, db_session, pricing_data):
+        """Two entries sharing one supplier_id are both enriched."""
+        sid = str(pricing_data["supplier"].id)
+        payload = [
+            {"supplier_id": sid, "name": "Test Pricing Supplier"},
+            {"supplier_id": sid, "name": "Test Pricing Supplier (alias)"},
+        ]
+        with patch("includes.tools.rfq_crud._get_session", return_value=db_session):
+            _enrich_supplier_pricing(payload, str(pricing_data["product"].id))
+        for entry in payload:
+            assert entry["cost_price"] == 64.81
+            assert entry["transaction_count"] == 2
+
+
     def test_enrich_ignores_purchase_orders(self, db_session):
         """PurchaseOrders should be completely ignored by enrichment."""
         import uuid

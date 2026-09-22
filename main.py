@@ -274,12 +274,12 @@ app.mount(
 
 
 # ---------------------------------------------------------------------------
-# Graceful handler for Chainlit session expiry
+# Graceful handler for expired chat sessions
 # ---------------------------------------------------------------------------
 @app.exception_handler(ValueError)
-async def chainlit_session_handler(request: Request, exc: ValueError):
-    """Catch Chainlit 'Session not found' errors when a WebSocket session
-    expires between tasks.  Returns a friendly message instead of a 500."""
+async def expired_session_handler(request: Request, exc: ValueError):
+    """Returns a friendly message instead of a 500 when a session reference
+    has been dropped between tasks."""
     if "Session not found" in str(exc):
         return JSONResponse(
             status_code=440,
@@ -411,46 +411,18 @@ async def avatar_proxy(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Header injection middleware — syncs FastAPI session auth into Chainlit
+# Session middleware
 # ---------------------------------------------------------------------------
-@app.middleware("http")
-async def inject_chainlit_auth(request: Request, call_next):
-    """For requests to /chat, inject X-Chainlit-User-* headers from the session.
+# The cookie is the app's own login session. SESSION_SECRET supersedes the old
+# CHAINLIT_AUTH_SECRET name; the fallback keeps existing deployments working
+# without a flag day, and importantly keeps existing cookies valid.
+_session_secret = os.environ.get("SESSION_SECRET") or os.environ["CHAINLIT_AUTH_SECRET"]
 
-    Security: Any externally-supplied X-Chainlit-User-* headers are stripped
-    first — only this middleware may set them.
-    """
-    if request.url.path.startswith("/chat"):
-        # Build clean headers, stripping any spoofed auth headers
-        raw_headers = [
-            (k, v) for k, v in request.headers.raw
-            if not k.lower().startswith(b"x-chainlit-user-")
-        ]
-
-        user = request.session.get("user")
-        if user:
-            raw_headers.append((b"x-chainlit-user-email", user["email"].encode()))
-            raw_headers.append((b"x-chainlit-user-name", user.get("name", "").encode()))
-            raw_headers.append((b"x-chainlit-user-given-name", user.get("given_name", "").encode()))
-            raw_headers.append((b"x-chainlit-user-family-name", user.get("family_name", "").encode()))
-            raw_headers.append((b"x-chainlit-user-picture", user.get("picture", "").encode()))
-            raw_headers.append((b"x-chainlit-user-hd", user.get("hd", "").encode()))
-
-        # Replace the request's headers with our sanitised + injected set
-        scope = request.scope
-        scope["headers"] = raw_headers
-
-    return await call_next(request)
-
-
-# Session middleware — MUST be added AFTER @app.middleware("http") above so
-# that Starlette places it outermost and the session is populated before
-# inject_chainlit_auth runs.
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.environ["CHAINLIT_AUTH_SECRET"],
+    secret_key=_session_secret,
     session_cookie="eagleagent_session",
-    max_age=60 * 60 * 24 * 15,  # 15 days, matches Chainlit user_session_timeout
+    max_age=60 * 60 * 24 * 15,  # 15 days
     same_site="lax",
     https_only=not config.DEBUG,
 )
@@ -525,22 +497,38 @@ app.post("/api/agent-bridge")(handle_bridge_request)
 
 @app.post("/api/stop-agent")
 async def stop_agent(request: Request):
-    """Stop all running agent tasks for the current session.
+    """Stop the running agent work for ONE chat thread.
 
-    This endpoint bypasses the bridge's per-session lock intentionally —
-    the lock is held by the running action, so dispatching stop through
-    the bridge would deadlock.
+    Body: ``{"thread_id": "..."}``. A thread id is required: runs are isolated
+    (multi-tasking on several RFQs at once is normal), so a stop must name its
+    target rather than cancelling everything the user happens to have running.
+    Ownership is enforced — you can only stop your own threads.
     """
     user = get_current_user(request)
     if not user:
         return Response(status_code=401)
 
-    session_id = request.cookies.get("X-Chainlit-Session-id")
-    if not session_id:
-        return JSONResponse({"error": "No active session"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    thread_id = (body or {}).get("thread_id")
+    if not thread_id:
+        return JSONResponse(
+            {"error": "thread_id is required to stop a run."}, status_code=400,
+        )
 
     from includes.agent_bridge import request_stop
-    cancelled = await request_stop(session_id)
+    from includes.dashboard.routes.chat_ui import (
+        cancel_key_for_thread, live_threads_for_user,
+    )
+
+    live = await live_threads_for_user(user)
+    if thread_id not in live:
+        # Nothing running there — either it already finished or it isn't ours.
+        return JSONResponse({"stopped": False, "reason": "not_running"})
+
+    cancelled = await request_stop(cancel_key_for_thread(thread_id))
     return JSONResponse({"stopped": True, "cancelled_tasks": cancelled})
 
 
@@ -562,11 +550,3 @@ async def get_dashboard_context(request: Request, thread_id: str | None = None):
         ),
         media_type="application/json",
     )
-
-
-# ---------------------------------------------------------------------------
-# Mount Chainlit at /chat
-# ---------------------------------------------------------------------------
-from chainlit.utils import mount_chainlit
-
-mount_chainlit(app, target="app.py", path="/chat")

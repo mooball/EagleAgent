@@ -36,8 +36,7 @@ even if it adds a little effort — and let them decide. See "Frontend / UI" bel
 ## Project Structure
 
 ```
-main.py                    # FastAPI ASGI entry point — Google OAuth, session middleware, mounts Chainlit at /chat
-app.py                     # Chainlit entry point — graph construction, handlers, streaming
+main.py                    # FastAPI ASGI entry point — Google OAuth, session middleware, dashboard + chat UI
 config/
   settings.py              # Non-secret configuration (Config class, env overrides)
   scripts.py               # Script registry — allowlist of runnable server-side scripts
@@ -60,34 +59,37 @@ includes/
     job_tools.py            # Script execution tools (admin-only)
     product_tools.py        # Product/supplier database search tools
     quote_tools.py          # RFQ/quote workflow tools
-  chat/                    # Chat-transport modules
-    context.py              # ChatContext protocol + ContextVar — the Chainlit boundary
-    context_chainlit.py     # ChainlitChatContext — adapter, may import chainlit
+  chat/                    # Chat-transport modules (all transport-neutral)
+    context.py              # ChatContext protocol + ContextVar — the transport boundary
+    context_sse.py          # SseChatContext — queue-backed implementation over SSE
+    transcript.py           # Thread/step/element storage (app-owned async engine)
     runner.py               # run_turn() — owns the agent turn and the per-thread run lock
     actions.py              # Action registry and dispatcher
     rfq_actions.py          # RFQ_ACTIONS — (payload, ctx) handlers for dashboard buttons
     streaming_logic.py      # Pure stream-decision helpers (checkpoint repair, repetition guard)
     document_processing.py  # PDF/image/text/audio processing for file attachments
-    local_storage_client.py # LocalStorageClient — file attachments on local disk
+    middleware.py           # OAuth redirect + Gemini retry notifier middleware
+    supplier_search_gate.py # Post-classification supplier search prompt
     job_progress.py         # Progress messages for background jobs
   dashboard/               # FastAPI dashboard modules
-    routes.py               # Full-page & HTMX partial routes (Suppliers, Products, RFQs, Users, Home)
+    routes/                 # Route modules (dashboard views, RFQs, chat UI, API, addon)
+    routes/chat_ui.py       # /chat-ui — threads, messages, SSE stream, upload, stop
     context.py              # In-memory store for current dashboard view per user
     database.py             # SQLAlchemy sync session for dashboard read queries
     models.py               # SQLAlchemy ORM models (Supplier, Product, Brand, etc.)
-  agent_bridge.py           # Bidirectional dashboard↔Chainlit communication
+  agent_bridge.py           # Dashboard button → chat thread dispatch; cooperative cancellation
   prompts.py                # System prompt builder — dynamic, role-aware, profile-aware
   job_runner.py             # Async background job runner — subprocess management, reaper, signal handling
   mcp_config.py             # MCP server configuration loader
 templates/                  # Jinja2 dashboard templates (base.html, suppliers.html, products.html, etc.)
 public/
-  elements/                 # Custom Chainlit React components (RFQSummary.jsx)
-  embedded.js               # Chainlit iframe integration — theme sync, dashboard context push
-  stylesheet.css            # Chainlit UI CSS overrides
+  vendor/preline/           # Vendored Preline UI components
+  avatars/, *.png           # Branding assets
 scripts/                    # Admin scripts (import_products, import_suppliers, etc.)
-docs/                       # All documentation except README.md and chainlit.md
+docs/                       # All documentation except README.md
 tests/                      # All tests (pytest, pytest-asyncio)
   agents/                   # Agent-specific tests
+  chat/                     # Chat-transport tests
   tools/                    # Tool-specific tests
 ```
 
@@ -96,20 +98,23 @@ tests/                      # All tests (pytest, pytest-asyncio)
 - Import chat modules: `from includes.chat.actions import dispatch_action`
 - Import dashboard modules: `from includes.dashboard.models import Product, Supplier`
 - Intra-package imports use direct paths to avoid circular imports: `from includes.agents.base import BaseSubAgent`
-- `chainlit.md` must stay in the project root (Chainlit expects it there).
 
-## Dual-App Architecture
+## Architecture
 
-EagleAgent runs as two apps in one process:
+One FastAPI application serves everything:
 
-1. **FastAPI** (`main.py`) — The ASGI entry point. Handles Google OAuth (via `fastapi-sso`), session middleware, dashboard HTML routes, dashboard context API, and mounts Chainlit at `/chat`.
-2. **Chainlit** (`app.py`) — The chat UI. Builds LangGraph graphs, defines message/action handlers, streams responses.
+1. **`main.py`** — the ASGI entry point. Google OAuth (via `fastapi-sso`), session middleware, dashboard HTML routes, the dashboard context API, `/api/agent-bridge`, and the chat UI router (`/chat-ui`).
+2. **Chat UI** (`includes/dashboard/routes/chat_ui.py` + `includes/chat/`) — threads, messages, SSE streaming, attachments, actions. It renders into the dashboard's side panel as a same-document embed: no iframe, no separate chat server.
+3. **LangGraph** — the multi-agent orchestration behind every turn.
 
-The user authenticates via FastAPI, then the session is injected into Chainlit via HTTP headers. The dashboard and chat communicate bidirectionally through `includes/agent_bridge.py`.
+Business logic never sees a transport. It talks to a `ChatContext` (`includes/chat/context.py`), of which `includes/chat/context_sse.py` is the only implementation. See `docs/CHAT_UI.md`.
 
-### Chat Profiles
+The dashboard and chat meet at `includes/agent_bridge.py`: a button click is dispatched into the chat thread bound to that RFQ. If no thread is bound yet, the bridge resolves or creates one first, so an action can never run in an unrelated conversation.
 
-The app offers multiple chat profiles via `@cl.set_chat_profiles`:
+### Agents and intents
+
+Agents are defined once, in `includes/agents/registry.py` (`AGENTS`). A thread remembers which agent handled its last turn (thread metadata), and a composer command routes to whichever agent declares that intent — `_intent_route()` in `chat_ui.py` is the routing table; unknown intents fall back to the default agent.
+
 - **Eagle Agent** (default) — Multi-agent graph: Supervisor → GeneralAgent | ProcurementAgent | ResearchAgent
 - **Research Agent** — Standalone research graph (Google Search grounding, no RFQ tools)
 - **Internal Agent** — Standalone ProcurementAgent graph (DB-only, no web/research/RFQ tools)
@@ -138,7 +143,7 @@ All sub-agents must extend `BaseSubAgent` (`includes/agents/base.py`). The base 
 1. Create `includes/agents/my_agent.py`, extending `BaseSubAgent`.
 2. Implement sync hooks (`get_tools`, `get_system_prompt`) or async hooks (`get_tools_async`, `get_system_prompt_async`) — async takes priority if both exist.
 3. Add the agent to `includes/agents/__init__.py` exports.
-4. Register it as a node in `app.py`'s `setup_globals()` function.
+4. Register it as a node in `includes/graph.py`'s `setup_globals()` function.
 5. Add it to the `RouteDecision` literal type in `supervisor.py`.
 6. Add routing logic in the Supervisor (keyword rules and/or LLM prompt).
 
@@ -170,7 +175,7 @@ All sub-agents must extend `BaseSubAgent` (`includes/agents/base.py`). The base 
 ### PostgreSQL
 - **Checkpointer**: `AsyncPostgresSaver` (LangGraph checkpoint persistence across turns).
 - **Store**: `AsyncPostgresStore` (cross-thread memory — user profiles, preferences).
-- **Data layer**: `SQLAlchemyDataLayer` (Chainlit conversation history).
+- **Chat storage**: `includes/chat/transcript.py` owns the `threads`/`steps`/`elements`/`users` tables over an app-owned async engine (the table names are historical — they were Chainlit's).
 - **Migrations**: Alembic (`alembic/versions/`).
 - Connection URLs configured in `config/settings.py` (`DATABASE_URL`, `CHECKPOINT_DATABASE_URL`).
 
@@ -218,15 +223,21 @@ e.dispose()
 - Dashboard routes use `get_session()` from `includes/dashboard/database.py` for sync reads.
 
 ### File Attachments
-- Stored on local disk via `LocalStorageClient` at `DATA_DIR/attachments/`.
+- Uploaded via `POST /chat-ui/upload`, written to `DATA_DIR/attachments/`.
 - Served to browser via Starlette `StaticFiles` mount at `/files`.
+- Tracked as `elements` rows by `includes/chat/transcript.py`; a row is pending until the message that carries it is sent.
 - No cloud storage — files stay on the application host.
 
-## ⚠️ Chat Architecture — the Chainlit boundary
+## ⚠️ Chat Architecture — keep business logic transport-neutral
 
-**Chainlit is being removed.** Phase 1 of the chat migration decoupled all business logic from it. Two CI tests enforce the boundary (`tests/test_no_chainlit_imports.py`, `tests/test_action_coverage.py`), but they cannot catch every way of re-coupling. Follow these rules on any chat-related work.
+**Chainlit has been removed** and the chat UI is in-house. The original migration
+decoupled all business logic from the transport, and that separation is what makes
+a handler usable from a chat button, a dashboard button, and (soon) an automated
+trigger. `tests/test_action_coverage.py` still guards the action registry, but
+**nothing automatically enforces transport-neutrality any more** — that is a review
+responsibility. Follow these rules on any chat-related work.
 
-### 1. Never touch `cl.*` outside the adapter layer
+### 1. Business logic talks to `ChatContext`, never to a transport
 
 Business logic talks to the user through **`ChatContext`** (`includes/chat/context.py`):
 
@@ -241,14 +252,18 @@ ctx.active_message     # the message currently streaming, if any
 
 Deep tool calls that cannot take an argument use `get_chat_context()` (raises if unbound) or `try_get_chat_context()` (returns `None` — use when the current behaviour is a silent no-op outside a session).
 
-**The adapter layer is the only place allowed to import `chainlit`:**
-`app.py`, `main.py`, `includes/chat/context_chainlit.py`, `includes/chat/data_layer.py`, `includes/chat/local_storage_client.py`, `includes/agent_bridge.py`.
+`includes/chat/context_sse.py` is the only implementation. Nothing in
+`includes/` (other than that module) should know how a message is delivered.
 
-> **Adding a file to that allowlist is a deliberate architectural decision, not a quick fix.** If you are tempted, the answer is almost always a new method on `ChatContext` instead.
+> If you find yourself needing transport detail, the answer is almost always a
+> new method on `ChatContext` instead.
 
-### 2. `includes/` must never import `app`
+### 2. `includes/` must not import `main` at module scope
 
-`app.py` depends on `includes/`, never the reverse. A `from app import main` cycle used to exist and blocked the whole refactor. Enforced by CI.
+`main.py` depends on `includes/`, never the reverse — a cycle there once blocked
+the whole refactor. (`agent_bridge.handle_bridge_request` lazily imports
+`get_current_user` from `main`; that is a known wart, not a pattern to copy —
+prefer passing the user in.)
 
 ### 3. Every agent turn goes through `run_turn()`
 
@@ -264,32 +279,48 @@ async def on_my_action(payload: dict, ctx: ChatContext) -> None: ...
 RFQ_ACTIONS = {"my_action": on_my_action, ...}   # includes/chat/rfq_actions.py
 ```
 
-`app.py` adapts them onto `@cl.action_callback` in one loop. **Every button you emit must have a handler** — `tests/test_action_coverage.py` fails otherwise.
+Two registries feed one dispatcher: `RFQ_ACTIONS` (signature `(payload, ctx)`) and
+`includes/chat/actions.py` (signature `(ctx, payload=...)`). `_action_handler()` in
+`chat_ui.py` resolves either. **Every button you emit must have a handler** —
+`tests/test_action_coverage.py` fails otherwise.
+
+Dashboard buttons reach the same handlers through
+`agent_bridge.handle_bridge_request` → `chat_ui.dispatch_action_to_thread`, which
+routes into the RFQ's bound thread and creates/binds one if it is missing.
 
 ### 5. Agents are defined once, in `includes/agents/registry.py`
 
-Adding or renaming an agent means editing `AGENTS` only — not chat profiles, graph selection, or resume handling.
+Adding or renaming an agent means editing `AGENTS` only — not routing, graph
+selection, or thread handling. `_intent_route()` in `chat_ui.py` maps a composer
+command to whichever agent declares that intent.
 
-### 6. `ctx.get/set` is per-*session*, not per-*run*
+### 6. Scratch state is per-*thread*; per-run state belongs on the context
 
-Two runs can be active on one thread (a dashboard button plus a typed message). Anything belonging to a single run belongs on the **context object** — as `active_message` does — or a concurrent run will clobber it. This has already caused one lost-output bug.
+`ctx.get/set` is a per-thread scratch dict, loaded before a turn and flushed after
+it. Anything belonging to a single run belongs on the **context object** — as
+`active_message` does. The run lock allows only one run per thread, so two runs can
+no longer fight over shared state, but the distinction still matters for anything
+that must not survive a turn.
 
-## Chainlit (`app.py`)
+## Chat UI (`includes/dashboard/routes/chat_ui.py`)
 
-`app.py` is a **thin adapter**. It builds a `ChainlitChatContext`, calls into `includes/`, and owns the Chainlit lifecycle hooks. Business logic does not belong here.
+The chat UI is part of the FastAPI app: threads, messages, SSE streaming,
+attachments and actions, all under `/chat-ui`. It renders into the dashboard's side
+panel as a same-document embed.
 
-- `@cl.set_chat_profiles`: Built from `includes/agents/registry.py`.
-- `@cl.on_chat_start` / `@cl.on_chat_resume`: Thread ID, user profile via `_ensure_user_profile()`, graph selection via `resolve_agent(...)`.
-- `@cl.action_callback`: Lifecycle actions only (`new_conversation`, `cancel_job`, `stop_agent`, `cancel_run_script`). RFQ actions are registered by adapting `RFQ_ACTIONS`.
-- `@cl.on_message` (`main()`): Normalises the message, processes attachments, resolves intent, then delegates to `run_turn()`.
-- `setup_globals()`: Builds the LangGraph `StateGraph` (Supervisor + agent nodes), initializes PostgreSQL connections.
+- `_run_task()`: builds an `SseChatContext`, resolves the thread's agent, then calls `run_turn()`.
+- `GET /threads/{id}/stream`: drains the run's event queue as SSE (replays from the start on reconnect).
+- `dispatch_action_to_thread()`: how a dashboard button or a chat button starts work outside a turn.
+- `_active_runs`: per-thread registry of in-flight runs; powers busy checks, `GET /active-runs` and stopping.
+- `POST /api/stop-agent` takes a `thread_id` and stops **only** that run — there is deliberately no stop-all.
 
+See `docs/CHAT_UI.md` for the full picture.
 
 ## Dashboard (`main.py`, `includes/dashboard/`)
 
 The FastAPI dashboard serves HTML pages for managing suppliers, products, RFQs, and users.
 
-- **Routes** (`includes/dashboard/routes.py`): Full-page renders and HTMX partial responses. Uses Jinja2 templates from `templates/`.
+- **Routes** (`includes/dashboard/routes/`): Full-page renders and HTMX partial responses. Uses Jinja2 templates from `templates/`.
 - **Context** (`includes/dashboard/context.py`): In-memory store keyed by user email — tracks which dashboard page/entity the user is viewing. Injected into the agent's system prompt so it knows the user's current context.
 - **Database** (`includes/dashboard/database.py`): `get_session()` provides SQLAlchemy sync sessions for read queries.
 - **Models** (`includes/dashboard/models.py`): SQLAlchemy ORM models — `Supplier`, `Product`, `Brand`, `SupplierBrand`, `Transaction`, etc.
@@ -298,7 +329,7 @@ The FastAPI dashboard serves HTML pages for managing suppliers, products, RFQs, 
 ## Frontend / UI (Jinja2 + HTMX + Alpine + Tailwind v4 + Preline)
 
 - Stack: Jinja2 templates in `templates/`, HTMX partials, Alpine.js 3, Tailwind CSS **v4** (CSS-first config in `input.css`, built with the standalone CLI — **no Node**), and **Preline UI** (vendored in `public/vendor/preline/`, see its `VERSION` file).
-- **Preline is the default for all NEW UI work** — especially the new chat UI (Chainlit migration Phase 3+). Use its `data-hs-*` components (dropdowns, modals, overlays, toasts, tooltips, tabs, chat bubbles, etc.) instead of hand-rolling markup + JS.
+- **Preline is the default for all NEW UI work** — especially the chat UI. Use its `data-hs-*` components (dropdowns, modals, overlays, toasts, tooltips, tabs, chat bubbles, etc.) instead of hand-rolling markup + JS.
 - **When updating existing UI**, proactively flag Preline adoption opportunities to the user — e.g. "this change would be a good moment to switch this modal to a Preline overlay" — even if it adds a little effort. Let the user decide; do not silently do a big-bang restyle.
 - Preline is opt-in per component and additive: its JS only activates elements carrying `data-hs-*` attributes; its CSS variants only emit when a template uses them. HTMX-swapped fragments auto-initialise (MutationObserver), same as Alpine.
 - **Never mix Alpine and Preline JS on the same element tree** — a dropdown is either Alpine's or Preline's, not both.
@@ -320,11 +351,11 @@ Actions replace the old `/` slash commands with action buttons and LangGraph too
 
 **To add a new action:**
 1. In `includes/chat/actions.py`, add a `@register_action(...)` decorated async handler taking `(ctx, **kwargs)`.
-2. In `app.py`, add a `@cl.action_callback("your_action_name")` that calls `dispatch_action("your_action_name", ChainlitChatContext.from_session())`.
+2. That is all — `chat_ui._action_handler()` resolves the name from the registry, and the chat UI renders it as a button whenever you pass `ActionSpec(name="your_action_name", ...)`. There is no per-action decorator to add anywhere.
 3. Optionally add a LangGraph tool wrapper in `includes/tools/action_tools.py`.
 4. If admin-only, add the tool name to `ADMIN_ONLY_TOOLS` in `includes/graph.py`.
 
-> **RFQ buttons are different** — they go in `RFQ_ACTIONS` in `includes/chat/rfq_actions.py` as `(payload, ctx)` handlers. `app.py` registers them in one loop; do not add a decorator per button.
+> **RFQ buttons are different** — they go in `RFQ_ACTIONS` in `includes/chat/rfq_actions.py` as `(payload, ctx)` handlers. Same dispatcher, different signature; do not add a decorator per button.
 
 ## Prompts (`includes/prompts.py`)
 - `build_system_prompt()` is the primary prompt builder — dynamic, role-aware, profile-aware.
@@ -339,7 +370,7 @@ Admin users can run registered scripts from the chat. See `docs/SERVER_SCRIPTS.m
 
 - **Script registry** (`config/scripts.py`): Allowlist of runnable scripts with command, description, and allowed args.
 - **JobRunner** (`includes/job_runner.py`): Spawns scripts as async subprocesses, tracks status in memory, captures output (200-line ring buffer), reaper polls every 2s, SIGTERM/SIGINT handlers for graceful shutdown.
-- **Progress** (`includes/chat/job_progress.py`): Posts Chainlit messages on start (with Cancel button), every 30s, and on completion/failure.
+- **Progress** (`includes/chat/job_progress.py`): Posts chat messages on start (with Cancel button), every 30s, and on completion/failure.
 - **LangGraph tools** (`includes/tools/job_tools.py`): `run_script` (confirmation flow), `list_scripts`, `list_jobs`, `get_job_status` (by ID or script name), `cancel_job`. All admin-only.
 - **Confirmation flow**: `run_script` tool sends Run/Cancel buttons. ⚠️ **The Run button currently has no handler** — `confirm_run_script` is emitted but never dispatched, so the script never starts (todo.vu #32818). Allow-listed in `tests/test_action_coverage.py::KNOWN_ORPHANS`.
 
@@ -359,7 +390,7 @@ Admin users can run registered scripts from the chat. See `docs/SERVER_SCRIPTS.m
 ## Error Handling & Logging
 - Use Python `logging` (not `print`).
 - Fail fast on config issues at startup.
-- User-facing errors: catch in Chainlit handlers, send friendly message, log technical details.
+- User-facing errors: catch in the handler, send a friendly message through `ctx`, log the technical details.
 
 ## Style & Quality
 - PEP 8 style, PEP 484 type hints.
@@ -416,8 +447,10 @@ When asked to create a prompt, plan, or task list, always:
 Project tasks live in todo.vu, accessed via the `todo-vu-mcp` MCP server. When asked to find, create, or update a task for this project, use these defaults without asking:
 
 - **Workspace ID:** `mooball`
-- **Client ID:** `116` (Eagle Exports Operations Trust)
+- **Client ID:** `116` — "Eagle Exports Operations Trust", referred to as **Eagle Exports**
 - **Logged-in user ID:** `7`
+
+**Every task for this project belongs to client `116` (Eagle Exports).** Never create a task against a different client. Within that client, default to project `1038` unless the work clearly belongs to a specific feature project.
 
 ### Projects under client 116
 
@@ -441,27 +474,48 @@ Older/non-EagleAgent projects for the same client: 254 (Google Workspace support
 ### Usage notes
 - Key tools: `list_tasks`, `create_task`, `change_tasks`, `task_add_comment`, `list_comments_attachments_time_entries`, `list_projects`, `list_clients`, `list_labels`, `list_users`.
 - `list_tasks` defaults to `user_mode="assigned"`. Pass `only="active"`/`"completed"`/`"overdue"` to scope by dashboard section, and `search` for free-text lookup.
-- `change_tasks` accepts `description` only when exactly one task id is given.
 - `list_projects` with `client_id` is not filtered strictly server-side — verify `client_id` on each returned project.
 - Task names come back HTML-escaped (`&amp;`, `&#x27;`).
-- There is no delete-comment tool — don't post throwaway test comments.
 - **Creating or modifying tasks counts as a write action** — follow the same rule as code changes: propose first, wait for explicit approval.
 
-### Formatting task descriptions and comments
+### Creating a task
 
-Send **real HTML** — not markdown, and **never HTML-escaped**. Writing `&lt;p&gt;` renders as literal visible tags.
+1. Use client `116` (Eagle Exports) and project `1038` (EagleAgent: Architecture) unless the work clearly belongs to a specific feature project.
+2. Pass the body at creation time via `details_markdown` — there is no need to create the task and patch it afterwards:
 
-Verified by round-trip test (2026-08-17):
+   ```python
+   create_task(
+       workspace_id="mooball",
+       name="Task title",
+       client_id=116,
+       project_id=1038,
+       details_markdown="**Why**\n\n...",
+   )
+   ```
 
-| | Tags |
-|---|---|
-| **Survives** | `<div>` `<h3>` `<strong>` `<em>` `<u>` `<a href>` `<ul>` `<ol>` `<li>` `<blockquote>` |
-| **Silently stripped** (tag removed, text kept) | `<code>` `<s>` `<pre>` |
+3. Follow the write-action rule in **Usage notes** — propose the task first and wait for approval.
 
-- `<p>` is accepted but rewritten to `<div>`.
-- Stripping **also eats adjacent whitespace** — `</strong> <code>x</code>` becomes `</strong>x`. Never rely on a space next to a stripped tag.
-- `<pre>` additionally **collapses newlines**, so multi-line code becomes one line. For code blocks use one `<div>` per line; for inline code just use plain text.
-- Escape real `&`, `<`, `>` as entities in body text — they round-trip correctly.
+### Task bodies and comments are always Markdown
+
+**Write in Markdown, and read from the `*_markdown` fields.**
+
+| Purpose | Tool | Parameter |
+|---|---|---|
+| Task description, at creation | `create_task` | `details_markdown` |
+| Task description, existing task | `change_tasks` | `details_markdown` (one task id at a time) |
+| Comment | `task_add_comment` | `content_markdown` |
+
+**⚠️ The tool schema shown to the client lags the live server.** todo.vu has moved from HTML body parameters to Markdown ones. The schema still advertises the old HTML names (`details`, `description`, `comment`), and all three are now **rejected** by the live server with a pydantic `Unexpected keyword argument` error. Use the `*_markdown` names above. Verified 2026-09-20.
+
+Earlier guidance in this file said to send real HTML (verified 2026-08-17) — that was correct at the time. The `*_markdown` parameters are newer.
+
+**Reading:** `list_tasks` returns `details` (server-rendered HTML — do **not** write to it) alongside `details_markdown`. Comments come back in `content_markdown`. Always read the `*_markdown` field.
+
+GitHub-flavoured Markdown (headings, `**bold**`, bullet and numbered lists, backticks) round-trips cleanly — the server converts it to HTML for display. Two quirks: it splits Markdown into separate blocks at blank lines, so a bold line followed by a list may be stored as two blocks; and `~` may come back escaped as `\~`.
+
+There is **no delete or edit tool for comments** — a posted comment can only be removed by hand in the todo.vu UI. Never post throwaway test comments.
+
+If a `*_markdown` parameter is ever rejected, the schema shown to the client is stale. Validation errors are **non-destructive** (nothing is written), so probe candidate names freely: omit the parameter and the server names the required field, or try a candidate name and see whether the error changes.
 
 ## Git & Repository
 - Do not commit `.env`, `.venv`, secrets, or `__pycache__/`.

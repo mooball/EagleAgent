@@ -63,146 +63,153 @@ class TestRfqRefresh:
         assert rfq.notifications == []
 
 
-class TestRfqIdentifyItemsQuoteBrand:
-    """The dashboard 'Classify & Validate' button must also auto-set the
-    quote brand (deterministic majority) once classify/validate finish."""
+class TestRfqIdentifyItems:
+    """The dashboard 'Classify & Validate' button.
 
-    async def test_sets_quote_brand_after_validation(self, rfq, monkeypatch):
-        item_updates: list = []
-        quote_brand_calls: list = []
+    The handler is a thin renderer over ``rfq_crud._classify_rfq_items_sync``.
+    The orchestrator's own behaviour (target selection, validation, quote
+    brand, departments) is covered in tests/tools/test_rfq_crud.py; here we
+    pin what the user sees and what the handler asks the orchestrator to do.
+    """
 
-        def _update_item(rfq_id, data, user_id):
-            item_updates.append((rfq_id, data, user_id))
+    def _result(self, **overrides):
+        base = {
+            "targets": [1, 2],
+            "classified": {"specific": [1], "branded": [2], "generic": []},
+            "db_matches": [],
+            "brand_results": [],
+            "to_validate": [],
+            "unclassifiable": [],
+            "validation": None,
+            "quote_brand_result": None,
+            "department_result": None,
+        }
+        base.update(overrides)
+        return base
 
-        def _set_quote_brand(rfq_id, user_id):
-            quote_brand_calls.append((rfq_id, user_id))
-            return "Auto-set quote brand to 'Komatsu' (majority item brand, 2/2 items)."
+    def _stub(self, monkeypatch, result):
+        """Patch the orchestrator; returns the recorded call kwargs."""
+        calls: list[dict] = []
 
-        monkeypatch.setattr(rfq_actions, "_update_item_sync", _update_item)
+        def _fake(rfq_id, user_id, **kwargs):
+            calls.append({"rfq_id": rfq_id, "user_id": user_id, **kwargs})
+            progress = kwargs.get("progress")
+            if progress is not None and result.get("targets"):
+                progress(f"Classifying & validating {len(result['targets'])} item(s) in {rfq_id}...")
+            return result
+
         monkeypatch.setattr(
-            "includes.tools.rfq_crud._set_quote_brand_from_items_sync",
-            _set_quote_brand,
+            "includes.tools.rfq_crud._classify_rfq_items_sync", _fake,
         )
-        monkeypatch.setattr(
-            "includes.tools.rfq_crud._set_item_departments_sync",
-            lambda rfq_id, user_id: "Departments auto-set: 2 by LLM.",
-        )
-        monkeypatch.setattr(
-            "includes.tools.product_tools._find_product_by_code",
-            lambda pn, brand=None: None,  # nothing matched in the internal DB
-        )
-        monkeypatch.setattr(
-            "includes.tools.rfq_crud._validate_items_sync",
-            lambda rfq_id, web_items, user_id: {"validated": []},
-        )
+        return calls
+
+    async def test_requests_web_validation_for_the_whole_rfq(self, rfq, monkeypatch):
+        calls = self._stub(monkeypatch, self._result())
+
+        await rfq_actions.on_rfq_identify_items(action(rfq_id="RFQ-1"), rfq)
+
+        assert len(calls) == 1
+        call = calls[0]
+        assert call["rfq_id"] == "RFQ-1"
+        assert call["user_id"] == "tester@example.com"
+        assert call["search_db"] is True
+        assert call["validate_web"] is True
+        # No payload item list is sent — the server picks the items.
+        assert call["lines"] is None
+        assert callable(call["should_cancel"])
+
+    async def test_scopes_to_a_single_line(self, rfq, monkeypatch):
+        calls = self._stub(monkeypatch, self._result(targets=[3]))
+
+        await rfq_actions.on_rfq_identify_items(action(rfq_id="RFQ-1", line=3), rfq)
+
+        assert calls[0]["lines"] == [3]
+
+    async def test_honours_a_legacy_items_payload(self, rfq, monkeypatch):
+        """An old client sends items, not line — scope to those lines rather
+        than silently widening to the whole RFQ."""
+        calls = self._stub(monkeypatch, self._result(targets=[4]))
 
         await rfq_actions.on_rfq_identify_items(action(
             rfq_id="RFQ-1",
-            items=[
-                {"line": 1, "description": "desc", "part_number": "PN1", "brand": "Komatsu"},
-                {"line": 2, "description": "desc2", "part_number": "PN2", "brand": "Komatsu"},
-            ],
+            items=[{"line": 4, "description": "d", "part_number": "P", "brand": "B"}],
         ), rfq)
 
-        assert quote_brand_calls == [("RFQ-1", "tester@example.com")]
-        assert any("Auto-set quote brand" in m.content for m in rfq.messages)
-        assert ("dashboard_refresh", None) in rfq.notifications
+        assert calls[0]["lines"] == [4]
 
-    async def test_skips_quote_brand_when_no_items(self, rfq, monkeypatch):
-        quote_brand_calls: list = []
-
-        def _set_quote_brand(rfq_id, user_id):
-            quote_brand_calls.append((rfq_id, user_id))
-            return None
-
-        monkeypatch.setattr(rfq_actions, "_update_item_sync", lambda *a: None)
-        monkeypatch.setattr(
-            "includes.tools.rfq_crud._set_quote_brand_from_items_sync",
-            _set_quote_brand,
-        )
-        monkeypatch.setattr(
-            "includes.tools.rfq_crud._set_item_departments_sync",
-            lambda rfq_id, user_id: None,
-        )
-
-        await rfq_actions.on_rfq_identify_items(action(rfq_id="RFQ-1", items=[]), rfq)
-
-        assert quote_brand_calls == []
-        assert rfq.messages == []
-
-    async def test_sets_item_departments_after_quote_brand(self, rfq, monkeypatch):
-        """Step D runs after quote brand: departments are auto-set and the
-        result is reported to the user."""
-        dept_calls: list = []
-
-        def _set_departments(rfq_id, user_id):
-            dept_calls.append((rfq_id, user_id))
-            return "Departments auto-set: 1 from product match, 1 by LLM."
-
-        monkeypatch.setattr(rfq_actions, "_update_item_sync", lambda *a: None)
-        monkeypatch.setattr(
-            "includes.tools.rfq_crud._set_quote_brand_from_items_sync",
-            lambda rfq_id, user_id: None,
-        )
-        monkeypatch.setattr(
-            "includes.tools.rfq_crud._set_item_departments_sync",
-            _set_departments,
-        )
-        monkeypatch.setattr(
-            "includes.tools.product_tools._find_product_by_code",
-            lambda pn, brand=None: None,
-        )
-        monkeypatch.setattr(
-            "includes.tools.rfq_crud._validate_items_sync",
-            lambda rfq_id, web_items, user_id: {"validated": []},
-        )
+    async def test_unknown_payload_shape_narrows_to_nothing(self, rfq, monkeypatch):
+        """Never widen: a payload we cannot read must not become a full run."""
+        calls = self._stub(monkeypatch, self._result(targets=[]))
 
         await rfq_actions.on_rfq_identify_items(action(
-            rfq_id="RFQ-1",
-            items=[
-                {"line": 1, "description": "desc", "part_number": "PN1", "brand": "Komatsu"},
-            ],
+            rfq_id="RFQ-1", items=[{"nope": 1}],
         ), rfq)
 
-        assert dept_calls == [("RFQ-1", "tester@example.com")]
-        assert any("Departments auto-set" in m.content for m in rfq.messages)
-        assert ("dashboard_refresh", None) in rfq.notifications
+        assert calls[0]["lines"] == []
 
+    async def test_validation_error_is_surfaced(self, rfq, monkeypatch):
+        self._stub(monkeypatch, self._result(validation={"error": "boom"}))
 
-class TestRfqIdentifyItemsMultiBrand:
-    """A standard cross-brand part number (belt size codes etc.) must not
-    block the RFQ: multi_brand results are reported, not flagged."""
+        await rfq_actions.on_rfq_identify_items(action(rfq_id="RFQ-1"), rfq)
 
-    async def test_multi_brand_findings_reported(self, rfq, monkeypatch):
-        monkeypatch.setattr(rfq_actions, "_update_item_sync", lambda *a: None)
+        # The validation outcome is streamed by the orchestrator, so the
+        # handler itself has nothing to add here.
+        assert rfq.notifications[-1] == ("agent_done", None)
+
+    async def test_nothing_to_classify_is_reported(self, rfq, monkeypatch):
+        self._stub(monkeypatch, self._result(targets=[], classified={
+            "specific": [], "branded": [], "generic": [],
+        }))
+
+        await rfq_actions.on_rfq_identify_items(action(rfq_id="RFQ-1"), rfq)
+
+        assert any("Nothing to classify" in t for t in rfq.texts)
+
+    async def test_error_from_orchestrator_is_surfaced(self, rfq, monkeypatch):
+        self._stub(monkeypatch, {"error": "RFQ 'RFQ-1' not found."})
+
+        await rfq_actions.on_rfq_identify_items(action(rfq_id="RFQ-1"), rfq)
+
+        assert any("not found" in t for t in rfq.texts)
+
+    async def test_progress_is_streamed_to_the_chat(self, rfq, monkeypatch):
+        """Progress from the worker thread must land as chat messages, before
+        the results — that's what keeps a long web search from looking hung."""
+        self._stub(monkeypatch, self._result())
+
+        await rfq_actions.on_rfq_identify_items(action(rfq_id="RFQ-1"), rfq)
+
+        assert rfq.texts[0] == "Classifying & validating 2 item(s) in RFQ-1..."
+    async def test_missing_rfq_id_is_a_no_op(self, rfq, monkeypatch):
+        calls = self._stub(monkeypatch, self._result())
+
+        await rfq_actions.on_rfq_identify_items(action(), rfq)
+
+        assert calls == []
+        assert rfq.texts == []
+
+    async def test_badge_is_raised_and_lowered(self, rfq, monkeypatch):
+        self._stub(monkeypatch, self._result())
+
+        await rfq_actions.on_rfq_identify_items(action(rfq_id="RFQ-1"), rfq)
+
+        commands = [c for c, _ in rfq.notifications]
+        assert commands[0] == "agent_working"
+        assert commands[-1] == "agent_done"
+        assert commands.count("dashboard_refresh") >= 1
+
+    async def test_badge_is_lowered_even_when_the_pipeline_raises(self, rfq, monkeypatch):
+        def _boom(*args, **kwargs):
+            raise RuntimeError("exploded")
+
         monkeypatch.setattr(
-            "includes.tools.rfq_crud._set_quote_brand_from_items_sync",
-            lambda *a: None,
-        )
-        monkeypatch.setattr(
-            "includes.tools.rfq_crud._set_item_departments_sync",
-            lambda *a: None,
-        )
-        monkeypatch.setattr(
-            "includes.tools.product_tools._find_product_by_code",
-            lambda pn, brand=None: None,
-        )
-        monkeypatch.setattr(
-            "includes.tools.rfq_crud._validate_items_sync",
-            lambda rfq_id, web_items, user_id: {
-                "validated": [
-                    {"line": 1, "status": "multi_brand",
-                     "findings": "B82 is a standard belt size used by Gates, Bando, etc."}
-                ]
-            },
+            "includes.tools.rfq_crud._classify_rfq_items_sync", _boom,
         )
 
-        await rfq_actions.on_rfq_identify_items(action(
-            rfq_id="RFQ-1",
-            items=[{"line": 1, "description": "V-belt", "part_number": "B82", "brand": ""}],
-        ), rfq)
+        with pytest.raises(RuntimeError):
+            await rfq_actions.on_rfq_identify_items(action(rfq_id="RFQ-1"), rfq)
 
-        assert any("multi-brand" in m.content for m in rfq.messages)
+        assert ("agent_done", None) in rfq.notifications
 
 
 class TestRfqUpdateSupplier:

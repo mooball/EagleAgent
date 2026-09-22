@@ -200,8 +200,13 @@ class TestOpportunityRecordHelpers:
         assert "boom" in (result.error or "")
 
     def test_upsert_strips_line_identity_and_amount(self, monkeypatch):
-        """Existing lines must be re-added fresh (no line/links/amount) so
-        NetSuite recomputes amount from quantity × rate."""
+        """Existing lines must be re-added without any field NetSuite computes,
+        so NetSuite recalculates `amount` from quantity x rate.
+
+        Echoing `grossAmt` back in particular tells NetSuite the amount is
+        supplied, so it never recalculates it and the stale value survives a
+        price change (production bug on OP73387).
+        """
         fake_client = MagicMock()
         fake_client.get.return_value.json.return_value = {
             "item": {
@@ -213,6 +218,9 @@ class TestOpportunityRecordHelpers:
                         "quantity": 1,
                         "rate": 10.0,
                         "amount": 160.0,
+                        "grossAmt": 160.0,
+                        "quantityOnHand": 3,
+                        "quantityAvailable": 3,
                         "custcol_po_rate": 9.0,
                     }
                 ]
@@ -228,9 +236,9 @@ class TestOpportunityRecordHelpers:
             {"item": {"id": "111"}, "quantity": 5, "rate": 12.0},
         ])
         sent = fake_client.update_record.call_args.args[2]["item"]["items"][0]
-        assert "line" not in sent
-        assert "links" not in sent
-        assert "amount" not in sent
+        for computed in ("line", "links", "amount", "grossAmt",
+                         "quantityOnHand", "quantityAvailable"):
+            assert computed not in sent, f"{computed} must not be echoed back"
         assert sent["quantity"] == 5
         assert sent["custcol_po_rate"] == 9.0  # other fields preserved
 
