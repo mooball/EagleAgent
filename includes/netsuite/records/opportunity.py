@@ -9,6 +9,31 @@ from .base import CreateResult
 
 logger = logging.getLogger(__name__)
 
+# Line fields that NetSuite computes itself and that must NOT be echoed back
+# when writing the `item` sublist.
+#
+# `grossAmt` is the critical one. NetSuite derives a line's `amount` from
+# quantity x rate, but while we echo back the values NetSuite itself computed it
+# treats the amount as supplied and leaves it at whatever the line's first save
+# produced. That silently strands the amount whenever a line's price is later
+# changed: a re-sync updates `rate` but not `amount`, so the line shows the new
+# unit price against the old extended total (observed in production on
+# OP73387). Sending an explicit `amount` does not help - NetSuite ignores it.
+#
+# Verified live 2026-09-22 against a test opportunity (OP73207): a payload of
+# item/quantity/rate plus any of our custom or cost-estimate fields recalculates
+# `amount` correctly; adding `grossAmt` back suppresses the recalculation.
+_COMPUTED_LINE_FIELDS = frozenset({
+    "line",                    # sublist identity - must not be echoed
+    "links",                   # HATEOAS links
+    "amount",                  # derived: quantity x rate
+    "grossAmt",                # derived - echoing it suppresses recalculation
+    "quantityOnHand",          # read-only inventory snapshot
+    "quantityAvailable",       # read-only inventory snapshot
+    "estGrossProfit",          # derived
+    "estGrossProfitPercent",   # derived
+})
+
 
 def create_opportunity(
     customer_netsuite_id: str,
@@ -255,16 +280,13 @@ def upsert_opportunity_lines(netsuite_id: str, new_lines: list[dict]) -> CreateR
         item_id = str((line.get("item") or {}).get("id") or "")
         if not item_id:
             continue
-        # NetSuite REST silently IGNORES `amount` on existing lines and does
-        # not recompute it from quantity × rate on update. Dropping the line
-        # identity (`line`/`links`) and `amount` makes NetSuite treat the
-        # sublist entries as fresh lines, so computed fields (amount,
-        # est. gross profit) are recalculated while all other fields are
-        # preserved. Verified live on a test opportunity.
-        fresh = dict(line)
-        fresh.pop("line", None)
-        fresh.pop("links", None)
-        fresh.pop("amount", None)
+        # Echo the line without the fields NetSuite computes, so it recalculates
+        # `amount` (and the est. gross profit fields) from quantity x rate.
+        # See _COMPUTED_LINE_FIELDS for why `grossAmt` in particular must go.
+        fresh = {
+            key: value for key, value in line.items()
+            if key not in _COMPUTED_LINE_FIELDS
+        }
         by_item[item_id] = fresh
 
     for new in new_lines:
