@@ -149,6 +149,41 @@
     var pendingFiles = [];     // {id,name,type,mime,url,size,status,objectUrl}
     var pendingIntent = null;  // {name,label,icon} for the next message only
     var currentThreadId = DATA.current_thread_id || null;
+    // Threads the shell (dashboard) recently asked us to open, with timestamps.
+    // A bounded set rather than just the latest: the shell can fire two
+    // navigations a few ms apart (browser Back renders the previous context
+    // then the new one), and remembering only the newest let a stale fetch
+    // still bounce the dashboard.
+    var shellNav = [];         // [{threadId, at}]
+    var SHELL_NAV_TTL = 3000;  // ms a shell request stays authoritative
+
+    // Monotonic token guarding openThreadById. Each call takes a number; a
+    // fetch that resolves after a newer call has started is discarded instead
+    // of being acted on. Without this, overlapping opens each resolve against a
+    // lock that has since moved and "correct" the dashboard to the other RFQ,
+    // which re-renders a context, which opens another thread... a self-
+    // sustaining bounce between two RFQs.
+    var openSeq = 0;
+
+    function shellAskedFor(threadId) {
+        var now = Date.now();
+        shellNav = shellNav.filter(function (s) { return now - s.at < SHELL_NAV_TTL; });
+        return shellNav.some(function (s) { return s.threadId === threadId; });
+    }
+
+    function rememberShellNav(threadId) {
+        var now = Date.now();
+        shellNav = shellNav.filter(function (s) { return now - s.at < SHELL_NAV_TTL; });
+        shellNav.push({threadId: threadId, at: now});
+    }
+
+    // navLog lives on the shell (base.html). Present when embedded; absent when
+    // the panel is served standalone (/chat-ui/embed).
+    function navLog(kind, reason, detail) {
+        if (typeof window.navLog === 'function') {
+            window.navLog(kind, reason, detail);
+        }
+    }
 
     // Chainlit parity: single newlines render as line breaks (the agent's
     // plain-text lists like "Line 1 → …\nLine 2 → …" each get their own line).
@@ -743,14 +778,37 @@
     }
 
     function openThreadById(threadId) {
+        var seq = ++openSeq;
         fetch('/chat-ui/threads/' + threadId + '/meta', {credentials: 'same-origin'})
             .then(function (r) { return r.json(); })
             .then(function (meta) {
+                // A newer open has started since this fetch went out. Acting on
+                // a superseded result is what bounced the dashboard between
+                // RFQs, so drop it.
+                if (seq !== openSeq) {
+                    navLog('openThreadById superseded',
+                        'stale result discarded', {threadId: meta.id});
+                    return;
+                }
                 if (meta.rfq_id) {
                     if (lock && lock.rfq_id !== meta.rfq_id) {
-                        // Bound to an RFQ we're not locked to — move the whole UI there.
-                        document.dispatchEvent(new CustomEvent('chat-ui:open-rfq', {detail: {rfqId: meta.rfq_id}}));
-                        return;
+                        // The shell asked for this thread, so it is already
+                        // moving to this RFQ. Bouncing it from here is what
+                        // makes the two ping-pong.
+                        if (shellAskedFor(meta.id)) {
+                            navLog('chat->dashboard suppressed',
+                                'shell requested this thread',
+                                {threadId: meta.id, lock_rfq: lock.rfq_id,
+                                 meta_rfq: meta.rfq_id});
+                        } else {
+                            navLog('chat->dashboard open-rfq',
+                                'lock/rfq mismatch - bouncing dashboard',
+                                {threadId: meta.id, lock_rfq: lock.rfq_id,
+                                 meta_rfq: meta.rfq_id});
+                            // Bound to an RFQ we're not locked to — move the whole UI there.
+                            document.dispatchEvent(new CustomEvent('chat-ui:open-rfq', {detail: {rfqId: meta.rfq_id}}));
+                            return;
+                        }
                     }
                     // Our RFQ's thread (lock not yet applied is fine) — display it.
                     if (!threads.some(function (t) { return t.id === meta.id; })) {
@@ -780,6 +838,7 @@
     function createThread() {
         if (creatingThread) { return; }
         creatingThread = true;
+        navLog('create thread', lock ? 'while locked to ' + lock.rfq_id : 'no lock', null);
         var form = new FormData();
         // All threads start on the default (Eagle) agent; commands route
         // per turn via the intent mechanism.
@@ -1058,6 +1117,12 @@
     // Dashboard shell → embed bridge (replaces the iframe postMessage glue)
     document.addEventListener('chat-ui:navigate', function (e) {
         var d = e.detail || {};
+        if (d.threadId) {
+            rememberShellNav(d.threadId);
+            navLog('shell->chat', 'shell asked for thread', {threadId: d.threadId});
+        } else {
+            navLog('shell->chat', d.fresh ? 'shell asked for a fresh chat' : 'shell asked to show list', null);
+        }
         if (lock) {
             // RFQ-locked: thread navigation is filtered by openThreadById
             // (matches lock or redirects to RFQ). Explicit list navigation
@@ -1090,6 +1155,7 @@
     // RFQ lock state — the shell is the source of truth for where we are.
     function applyLock(next) {
         if (JSON.stringify(next || null) === JSON.stringify(lock || null)) { return; }
+        navLog('lock changed', 'from shell context', {from: lock, to: next || null});
         lock = next || null;
         updateControls();
         if (!lock) { return; }

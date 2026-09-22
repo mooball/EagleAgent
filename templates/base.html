@@ -222,8 +222,14 @@
     <!-- Body: main content + agent panel -->
     <div class="h-[calc(100vh-3.5rem)] relative overflow-hidden">
 
-        <!-- Main content area -->
+        <!-- Main content area.
+             `hx-history-elt` scopes htmx's back/forward restore to this pane.
+             Without it htmx restores into document.body, which re-creates
+             #chat-ui-embed on every Back — re-fetching the panel and running
+             its scripts again, stacking a fresh set of document listeners on
+             top of the old ones (each set also opening its own SSE stream). -->
         <main id="main-content"
+              hx-history-elt
               class="h-full overflow-y-auto transition-panel px-6 pb-6"
               :class="{
                   'hidden': agentState === 'expanded'
@@ -260,6 +266,34 @@
     </div>
 
     <script>
+        // ---------------------------------------------------------------------
+        // Navigation trace. The dashboard and the chat panel each push the other
+        // around (context changes re-point the chat; the chat asks the dashboard
+        // to jump to an RFQ), which can oscillate. Every navigation decision is
+        // recorded here so a bounce can be reconstructed after the fact.
+        //
+        // Reproduce the bounce, then run:  navTrace()
+        // ---------------------------------------------------------------------
+        window.__navLog = [];
+        window.navLog = function (kind, reason, detail) {
+            window.__navLog.push({
+                t: new Date().toISOString(),
+                kind: kind,
+                reason: reason,
+                detail: detail === undefined ? null : detail,
+            });
+            if (window.__navLog.length > 300) { window.__navLog.shift(); }
+        };
+        window.navTrace = function () {
+            var rows = window.__navLog.map(function (e) {
+                return { time: e.t, kind: e.kind, reason: e.reason,
+                         detail: e.detail === null ? '' : JSON.stringify(e.detail) };
+            });
+            if (console.table) { console.table(rows); } else { console.log(rows); }
+            return rows;
+        };
+        window.navTraceReset = function () { window.__navLog = []; };
+
         function dashboard() {
             return {
                 agentState: localStorage.getItem('agentState') || 'panel',
@@ -268,6 +302,9 @@
                 currentContext: {},
                 agentWorking: false,
                 agentWorkingLabel: '',
+                // Loop breaker for the chat -> dashboard edge (chat-ui:open-rfq).
+                _openRfqHops: [],       // timestamps of accepted hops
+                _openRfqTrippedUntil: 0,
                 // Threads with a live run, keyed by thread id. Runs are isolated
                 // per thread, so Stop needs to name its target rather than
                 // cancelling everything the user has going.
@@ -279,6 +316,16 @@
                     // so Chainlit renders with the correct theme immediately
                     const currentTheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
                     try { localStorage.setItem('vite-ui-theme', currentTheme); } catch (_) {}
+
+                    // htmx only restores history entries whose state carries
+                    // {htmx: true}. A plain page load leaves the entry's state
+                    // null, so htmx's popstate handler ignores it — the URL
+                    // changes but nothing re-renders. That is why Back could
+                    // never reach the very first page opened in a tab.
+                    // replaceState (not push) marks the entry without adding one.
+                    if (!history.state || !history.state.htmx) {
+                        history.replaceState({htmx: true}, '', window.location.href);
+                    }
 
                     // Also send via postMessage once iframe finishes loading
                     const iframe = document.getElementById('agent-iframe');
@@ -457,6 +504,8 @@
                             const ctx = this.currentContext;
                             if (ctx && ctx.view === 'rfq_detail' && ctx.id
                                     && ctx.thread_id && ctx.thread_id !== newThreadId) {
+                                window.navLog('rebind', 'RFQ re-pointed to panel thread',
+                                    {rfqId: ctx.id, was: ctx.thread_id, now: newThreadId});
                                 fetch('/api/rfq-thread', {
                                     method: 'POST',
                                     headers: {'Content-Type': 'application/json'},
@@ -493,12 +542,13 @@
                             this._chatProfile = (e.detail && e.detail.label) || 'Eagle Agent';
                         });
                         document.addEventListener('chat-ui:open-rfq', (e) => {
-                            // The user clicked an RFQ-bound thread in the
-                            // Chats list — take the whole UI to its RFQ.
+                            // The panel clicked/decided to jump to an RFQ-bound
+                            // thread — take the whole UI to its RFQ. Guarded,
+                            // see _allowOpenRfqNav.
                             const rfqId = e.detail && e.detail.rfqId;
-                            if (rfqId) {
-                                this._handleDashboardCommand('agent_navigate', {url: '/rfqs/' + rfqId});
-                            }
+                            if (!rfqId) return;
+                            if (!this._allowOpenRfqNav(rfqId)) return;
+                            this._handleDashboardCommand('agent_navigate', {url: '/rfqs/' + rfqId});
                         });
                         document.addEventListener('chat-ui:leave-rfq', () => {
                             // A plain thread was picked from the list while on an
@@ -567,6 +617,25 @@
                         // Re-initialize Preline components (overlays, tooltips,
                         // dropdowns, ...) in swapped content — they only
                         // auto-init on page load otherwise.
+                        if (window.HSStaticMethods) {
+                            window.HSStaticMethods.autoInit();
+                        }
+                    });
+
+                    // Back/forward does NOT go through the normal swap pipeline:
+                    // htmx's loadHistoryFromServer() calls swapInnerHTML()
+                    // directly and fires 'htmx:historyRestore' instead of
+                    // 'htmx:afterSwap'. Without this, a Back re-renders the RFQ
+                    // pane but never re-routes the chat, leaving the dashboard
+                    // on one RFQ and the panel sitting on another's thread.
+                    document.body.addEventListener('htmx:historyRestore', () => {
+                        window.navLog('history restore', 're-routing chat after popstate', null);
+                        this.updateContext();
+                        this.updateActiveNav();
+                        const restored = document.getElementById('main-content');
+                        if (window.Alpine && restored) {
+                            Alpine.initTree(restored);
+                        }
                         if (window.HSStaticMethods) {
                             window.HSStaticMethods.autoInit();
                         }
@@ -671,11 +740,60 @@
                     return iframe;
                 },
 
+                // Loop breaker for the chat -> dashboard edge. Each accepted
+                // hop is a full page load, so a runaway is expensive. This is a
+                // safety net only: the underlying race (a superseded
+                // openThreadById acting on a stale lock) is fixed in
+                // chat_ui/embed.html, so this should never fire in normal use
+                // and deliberately does NOT throttle ordinary navigation.
+                _allowOpenRfqNav(rfqId) {
+                    const now = Date.now();
+                    const WINDOW_MS = 10000;    // rolling window for the trip test
+                    const MAX_HOPS = 6;         // hops within WINDOW before tripping
+                    const TRIP_MS = 5000;       // how long to stay tripped
+
+                    if (this._openRfqTrippedUntil && now < this._openRfqTrippedUntil) {
+                        window.navLog('open-rfq BLOCKED',
+                            'breaker open for ' + Math.ceil((this._openRfqTrippedUntil - now) / 1000) + 's',
+                            { rfqId: rfqId });
+                        return false;
+                    }
+
+                    // Already showing this RFQ — a reload would just churn.
+                    const ctx = this.currentContext || {};
+                    if (ctx.view === 'rfq_detail' && String(ctx.id) === String(rfqId)) {
+                        window.navLog('open-rfq ignored', 'already on this RFQ',
+                            { rfqId: rfqId });
+                        return false;
+                    }
+
+                    this._openRfqHops = (this._openRfqHops || [])
+                        .filter((t) => now - t < WINDOW_MS);
+                    this._openRfqHops.push(now);
+                    if (this._openRfqHops.length > MAX_HOPS) {
+                        this._openRfqTrippedUntil = now + TRIP_MS;
+                        window.navLog('open-rfq BREAKER TRIPPED',
+                            this._openRfqHops.length + ' hops in ' + WINDOW_MS + 'ms',
+                            { rfqId: rfqId });
+                        console.error(
+                            '[nav] RFQ/chat navigation loop detected — ' +
+                            this._openRfqHops.length + ' chat->dashboard RFQ jumps in ' +
+                            (WINDOW_MS / 1000) + 's. Blocking further jumps for ' +
+                            (TRIP_MS / 1000) + 's. Run navTrace() for the timeline.'
+                        );
+                        return false;
+                    }
+
+                    window.navLog('open-rfq allowed', 'navigating', { rfqId: rfqId });
+                    return true;
+                },
+
                 // Single choke point for chat navigation across transports.
                 // Iframe users get a src swap; beta embed users get a DOM event
                 // the panel chat listens for ('/chat/thread/{id}' or '/chat').
                 _navigateChat(src) {
                     this._lastNavigate = src || null;
+                    window.navLog('dashboard->chat', 'shell navigating panel', { src: src });
                     const iframe = document.getElementById('agent-iframe');
                     if (iframe) {
                         iframe.src = src;
@@ -714,6 +832,11 @@
                             this._lastContextIdentity = identity;
 
                             if (identityChanged) {
+                                window.navLog('context changed', 'routing chat', {
+                                    view: newCtx.view, id: newCtx.id || null,
+                                    thread_id: newCtx.thread_id || null,
+                                    active_thread: this._activeThreadId || null,
+                                });
                                 // Switch the chat to the RFQ's bound thread
                                 if (newCtx.thread_id && newCtx.thread_id !== this._activeThreadId) {
                                     this._navigateChat('/chat/thread/' + newCtx.thread_id);
@@ -832,7 +955,18 @@
                                 target: '#main-content',
                                 swap: 'innerHTML'
                             });
-                            history.pushState({}, '', url);
+                            // htmx only restores history entries it created
+                            // (it checks event.state.htmx in its popstate
+                            // handler). Pushing a bare `{}` meant Back did
+                            // nothing on these entries — you had to press it
+                            // once per entry to reach one htmx would restore.
+                            // Skip the push entirely when the URL is already
+                            // current: the old runaway pushed the same URL over
+                            // and over, which is what made Back need 4 presses.
+                            const here = window.location.pathname + window.location.search;
+                            if (url !== here) {
+                                history.pushState({htmx: true}, '', url);
+                            }
                             if (this.agentState === 'expanded') {
                                 this.agentState = 'panel';
                             }
@@ -888,6 +1022,8 @@
                         const rfqId = ctx.id;
                         const threadId = this._activeThreadId;
                         console.log('[bind] Auto-binding thread', threadId, 'to', rfqId);
+                        window.navLog('bind', 'auto-binding panel thread to RFQ',
+                            {rfqId: rfqId, threadId: threadId});
                         fetch('/api/rfq-thread', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},

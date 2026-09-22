@@ -99,6 +99,74 @@ An RFQ's thread is resolved (and created if missing) by
 self-heal path used by the dashboard bridge, which is why a button click on an
 RFQ that has never been chatted on works instead of failing.
 
+## Dashboard ↔ panel navigation (read before changing it)
+
+The dashboard and the panel each navigate the other, which is a feedback loop
+waiting to happen. Two rules keep it stable — **breaking either reintroduces a
+runaway that ping-pongs between RFQs until the tab is killed** (seen in
+production, traced 2026-09-22):
+
+**1. The shell is the source of truth.** `updateContext()` in `base.html` reads
+`data-dashboard-context` and calls `_navigateChat(thread_id)`. The panel must
+*never* bounce the dashboard for a thread the shell itself asked for — that is,
+`openThreadById()` must not fire `chat-ui:open-rfq` when the shell requested the
+thread it just opened. Shell requests are remembered in `shellNav`
+(`embed.html`) as a **bounded set with a TTL**, not just the latest id: the shell
+can fire two navigations a few ms apart (browser Back renders the previous
+context then the new one), and keeping only the newest let a stale fetch slip
+through.
+
+**2. `openThreadById()` results are sequence-guarded.** It fetches thread meta
+asynchronously, and overlapping calls are normal. Each call takes
+`++openSeq`; a fetch that resolves after a newer call started is **discarded**.
+Without this, two in-flight opens each resolve against a lock that has since
+moved, each "corrects" the dashboard to the other RFQ, and the corrections
+re-render contexts that trigger more navigations — self-sustaining. This was the
+actual root cause of the RFQ bounce.
+
+`base.html` also carries `_allowOpenRfqNav()`, a deliberately loose circuit
+breaker on the `chat-ui:open-rfq` → `agent_navigate` edge (6 hops / 10 s trips a
+5 s block). It is a **safety net, not the fix** — it should never fire in normal
+use. If it ever does, that is a bug in rules 1 or 2, not a threshold to raise.
+
+`navTrace()` in the browser console prints a ring buffer of the last 300
+navigation decisions from both sides, and `navTraceReset()` clears it. Reach for
+it first if navigation misbehaves — it shows *why* each hop happened.
+
+### htmx history: two non-obvious requirements
+
+Both of these cost real debugging time (2026-09-22). Neither is discoverable
+from our code — they are htmx 2.x implementation details in `base.html`.
+
+**`hx-history-elt` must be set, or htmx restores into `<body>`.**
+`getHistoryElement()` returns `[hx-history-elt]` **or `document.body`**. With no
+such element, every Back re-rendered the entire body, destroying and re-creating
+`#chat-ui-embed` — so `hx-trigger="load"` re-fetched the panel and its script ran
+again, **stacking a fresh set of `document` listeners on top of the old ones**
+(each set also opening its own SSE stream). Measured 4 stacked instances after 4
+Back presses. `#main-content` now carries the attribute, so popstate swaps only
+the content pane.
+
+**A history entry must have `state.htmx`, or htmx ignores it.**
+htmx's popstate handler is guarded:
+
+```js
+if (event.state && event.state.htmx) { restoreHistory() } else { … }
+```
+
+`agent_navigate` used to `pushState({}, '', url)`, so those entries were never
+restored — Back changed the URL and nothing re-rendered (`originalPopstate` is
+null here, so there was no fallback). It now pushes `{htmx: true}`. And because a
+plain page load leaves the *first* entry's state `null`, `init()` calls
+`history.replaceState({htmx: true}, …)` on load — without it, Back could never
+reach the page a tab was opened on, however many times you pressed it.
+
+**Back/forward does not fire `htmx:afterSwap`.** `loadHistoryFromServer()` calls
+`swapInnerHTML()` directly and fires `htmx:historyRestore` instead. Since
+`updateContext()` is wired to `htmx:afterSwap`, a restore must also be handled
+explicitly or the RFQ pane moves while the chat stays on the old thread. There is
+a dedicated `htmx:historyRestore` listener in `base.html` doing exactly that.
+
 ## Actions
 
 An action is a named handler plus a payload, declared with `ActionSpec`

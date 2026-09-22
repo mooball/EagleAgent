@@ -137,8 +137,10 @@ def _is_history_restore(request: Request) -> bool:
 
     htmx sends HX-History-Restore-Request: true when its history cache misses
     (cache is disabled via htmx.config.historyCacheSize = 0) and it re-requests
-    the URL via XHR. It swaps the response into the whole <body>, so we must
-    return the full page rather than a partial.
+    the URL via XHR. On a cache miss it swaps into the element marked
+    ``hx-history-elt``, which ``base.html`` puts on ``#main-content`` so the
+    chat panel is left alone. We still return the full page: htmx extracts
+    that element from the response and swaps only its children.
     """
     return request.headers.get("hx-history-restore-request") == "true"
 
