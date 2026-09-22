@@ -2,15 +2,21 @@
 
 This guide walks you through setting up Google OAuth authentication for EagleAgent.
 
-## Step 1: Generate Chainlit Auth Secret
+## Step 1: Generate a Session Secret
 
-Run this command to generate a secure authentication secret:
+Run this command to generate a secure secret:
 
 ```bash
-uv run chainlit create-secret
+python -c "import secrets; print(secrets.token_urlsafe(64))"
 ```
 
-Copy the generated secret and add it to your `.env` file as `CHAINLIT_AUTH_SECRET`.
+Copy the generated secret and add it to your `.env` file as
+`CHAINLIT_AUTH_SECRET`.
+
+> The name is historical — this secret signs the **login session cookie** and
+> has nothing to do with Chainlit any more. `SESSION_SECRET` is also read and
+> takes precedence if you prefer the clearer name; set whichever you use to the
+> **same value** you already have, or every existing session is invalidated.
 
 ## Step 2: Create Google OAuth Credentials
 
@@ -46,7 +52,8 @@ Copy the generated secret and add it to your `.env` file as `CHAINLIT_AUTH_SECRE
 Add these variables to your `.env` file:
 
 ```bash
-# Chainlit Authentication Secret (from Step 1)
+# Session signing secret (from Step 1) — signs the login session cookie.
+# SESSION_SECRET is read first; this historical name is the fallback.
 CHAINLIT_AUTH_SECRET=your_generated_secret_here
 
 # Google OAuth Credentials (from Step 2)
@@ -58,9 +65,6 @@ OAUTH_GOOGLE_CLIENT_SECRET=your_client_secret_here
 # Only users from these domains will be able to authenticate
 # Leave empty or comment out to allow all Google accounts (including personal Gmail)
 OAUTH_ALLOWED_DOMAINS=mooball.com,eagle-exports.com
-
-# Only needed if running behind a reverse proxy (production)
-# CHAINLIT_URL=https://yourdomain.com
 ```
 
 ## Step 4: Test Authentication
@@ -157,7 +161,7 @@ https://app.yourdomain.com/auth/google/callback
 Ensure these are set in Railway:
 
 ```bash
-CHAINLIT_URL=https://your-railway-url.up.railway.app
+CHAINLIT_AUTH_SECRET=your_generated_secret_here
 OAUTH_GOOGLE_CLIENT_ID=your_client_id
 OAUTH_GOOGLE_CLIENT_SECRET=your_client_secret
 OAUTH_ALLOWED_DOMAINS=yourdomain.com
@@ -184,12 +188,11 @@ See the [Development Workflow](DEVELOPMENT_WORKFLOW.md) for deployment instructi
 - Verify `.env` file is loaded correctly: `grep OAUTH_ALLOWED_DOMAINS .env`
 
 ### Users can't see chat history
-- Chat history requires both authentication AND a data layer
-- The PostgreSQL data layer is configured automatically via `app.py`
+- Chat history is stored per thread in the chat tables (`threads`/`steps`),
+  written by `includes/chat/transcript.py`. A user only sees threads they own.
 
 ## Next Steps
 
-Once authentication is working, you can:
-1. Set up a data layer (PostgreSQL or custom PostgreSQL) for conversation persistence
-2. Implement `@cl.on_chat_resume` to restore conversation state
-3. Deploy to production with proper CHAINLIT_URL configuration
+Once authentication is working:
+1. Deploy to production (see [Development Workflow](DEVELOPMENT_WORKFLOW.md))
+2. Read [Chat UI](CHAT_UI.md) for how conversations are stored and streamed

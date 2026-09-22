@@ -55,7 +55,7 @@ When the user tells you information about themselves, use the remember_user_info
 
 ### HumanMessage
 **Purpose**: Represent user input  
-**Constructed**: In `@cl.on_message` handler from `message.content`  
+**Constructed**: By the Chat UI turn handler from the composer text  
 **Frequency**: One per user message  
 **Persisted**: Yes, stored in LangGraph checkpointer  
 
@@ -101,18 +101,19 @@ Here's the complete flow from user message to LLM response:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ 1. User sends message via Chainlit UI                          │
+│ 1. User sends message via the Chat UI                            │
 └────────────────────┬────────────────────────────────────────────┘
                      │
                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ 2. @cl.on_message handler (app.py)                             │
-│    - Retrieves thread_id from session                          │
-│    - Retrieves user_id from session                            │
-│    - Processes file attachments (if any)                       │
+┌───────────────────────────────────────────────────────────────┐
+│ 2. post_message handler (routes/chat_ui.py)                     │
+│    - Resolves thread_id from the URL + checks ownership        │
+│    - Retrieves user_id from the session                        │
+│    - Attaches any pending file elements to this step           │
 │    - Injects dashboard context (what page user is viewing)     │
-│    - Creates HumanMessage from message.content                 │
+│    - Appends the message to the transcript                     │
 │    - Prepares graph inputs: {messages: [...], user_id: ...}    │
+│    - Spawns _run_task() on the SSE stream for this thread       │
 └────────────────────┬────────────────────────────────────────────┘
                      │
                      ▼
@@ -173,7 +174,8 @@ Here's the complete flow from user message to LLM response:
                      ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 7. Response streaming                                           │
-│    - Stream response tokens to Chainlit UI                     │
+│    - Stream response tokens over SSE to the Chat UI             │
+│    - Persist steps/elements to the transcript tables           │
 │    - Save final state to checkpointer                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -213,8 +215,8 @@ EagleAgent uses a sophisticated dual-memory system:
 
 **User experience**:
 - User starts conversation → creates new thread_id
-- User closes browser → thread_id stored in Chainlit data layer
-- User returns → Chainlit restores thread_id → LangGraph loads full conversation state
+- User closes browser → thread_id stored in the `chat_ui_current_threads` table
+- User returns → the app restores thread_id → LangGraph loads full conversation state
 - Messages appear in sidebar, agent remembers conversation context
 
 ### Cross-Thread Memory (Store)
@@ -387,7 +389,8 @@ Priority order for determining how to address the user:
    - Always available from authentication
    - Used as fallback
 
-**Code location**: See [`app.py:on_chat_start()`](app.py) lines 221-233
+**Code location**: See `_current_thread_id_or_create()` in
+[`includes/dashboard/routes/chat_ui.py`](includes/dashboard/routes/chat_ui.py)
 
 ---
 
@@ -400,7 +403,7 @@ Understanding where different types of configuration live:
 **Contents**:
 - `GOOGLE_API_KEY` - LLM access
 
-- `DATABASE_URL` - Chainlit data layer (PostgreSQL)
+- `DATABASE_URL` - Postgres (checkpointer, store, transcript, dashboard data)
 - `OAUTH_*` - Authentication settings
 
 **When to modify**: Changing deployment environment, credentials, OAuth providers
@@ -415,20 +418,24 @@ Understanding where different types of configuration live:
 
 **When to modify**: Changing agent behavior, tool instructions, profile context
 
-### UI Configuration
-**File**: [`chainlit.md`](../chainlit.md)  
-**Contents**: Welcome message shown in Chainlit UI  
+### Chat UI Configuration
+**Files**: [`templates/chat_ui/`](../templates/chat_ui/) (`embed.html`, `index.html`, `thread.html`) and [`templates/base.html`](../templates/base.html)  
+**Contents**: Composer, thread sidebar, agent picker, embedded JSON payload  
 **Scope**: User-facing only, NOT sent to LLM
 
-**When to modify**: Changing welcome screen content
+Composer commands are generated from each agent's `command_intents()` — see
+`_command_data()` in `includes/dashboard/routes/chat_ui.py`.
+
+**When to modify**: Changing the chat UI layout or composer affordances
 
 ### Graph Configuration
-**File**: [`app.py`](app.py)  
+**File**: [`includes/graph.py`](includes/graph.py)  
 **Contents**:
 - Graph structure (nodes, edges)
 - State schema (`SupervisorState`)
 - Model initialization
 - Supervisor routing and agent node wiring
+- `setup_globals()` — global/bridge initialization
 
 **When to modify**: Adding new agent nodes, changing conversation flow, modifying state
 
@@ -456,7 +463,7 @@ Understanding where different types of configuration live:
 ❌ **DON'T**: Cache system prompts (profile can change)
 
 ✅ **DO**: Use helper functions from [`includes/prompts.py`](includes/prompts.py)  
-❌ **DON'T**: Inline string concatenation in [`app.py`](app.py)
+❌ **DON'T**: Inline string concatenation in agent or route code
 
 ### 3. Testing Prompts
 
@@ -507,7 +514,7 @@ When ready to migrate prompts to YAML:
    PROMPTS = yaml.safe_load(Path("config/prompts.yaml").read_text())
    ```
 5. Update helper functions to reference `PROMPTS` dict
-6. No changes needed to [`app.py`](app.py) - still uses `build_system_prompt()`
+6. No changes needed to the routes - they still call `build_system_prompt()`
 
 ---
 
@@ -525,8 +532,8 @@ When ready to migrate prompts to YAML:
 
 **Check**:
 1. Is PostgreSQL running?
-2. Is `user_id` being set in `@cl.on_chat_start` and `@cl.on_chat_resume`?
-3. Is store initialized correctly? Check `app.py` `setup_globals()`
+2. Is `user_id` being set when the thread is created/resolved?
+3. Is store initialized correctly? Check `setup_globals()` in [`includes/graph.py`](includes/graph.py)
 4. Are tool calls executing successfully? Check tool message content
 
 ### System prompt seems stale
@@ -534,13 +541,13 @@ When ready to migrate prompts to YAML:
 **Check**:
 - System prompt is constructed fresh on each agent invocation via `get_system_prompt_async()`
 - If profile changed but prompt didn't update → check store.aget() is returning updated data
-- Dashboard context is injected per-message in `@cl.on_message`
+- Dashboard context is injected per-message by the Chat UI turn handler
 
 ### Conversation history not loading on resume
 
 **Check**:
-1. Is thread_id being restored in `@cl.on_chat_resume`?
-2. Is checkpointer configured correctly? Check [`app.py`](app.py) line 142
+1. Is thread_id being restored by `_current_thread_id_or_create()`?
+2. Is checkpointer configured correctly? Check graph construction in [`includes/graph.py`](includes/graph.py)
 3. Are messages being saved? Check PostgreSQL `checkpoints` collection
 4. Is `config={"configurable": {"thread_id": ...}}` being passed to graph?
 

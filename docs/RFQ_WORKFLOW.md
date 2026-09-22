@@ -15,7 +15,7 @@ includes/tools/
       │
       ▼
 includes/chat/
-  └── rfq_actions.py   — Chainlit action callbacks (UI button handlers)
+  └── rfq_actions.py   — RFQ_ACTIONS handlers (UI button handlers)
       │
       ▼
 includes/agents/
@@ -37,22 +37,22 @@ The batch "Find All Suppliers" button and the chat message "find suppliers" now 
 Button click                        Chat message
     │                                    │
     ▼                                    ▼
-synthetic cl.Message               user types message
-("Find suppliers for all               │
- items on RFQ-2026-XXXX")              ▼
-    │                            @cl.on_message (main)
+POST /chat-ui/threads/{tid}/action  user types message
+  {action: find_suppliers_all,           │
+   rfq_id: RFQ-2026-XXXX}                ▼
+    │                            POST /chat-ui/threads/{tid}/messages
     ▼                                    │
-_main_pinned(synthetic, tid)             ▼
-    │                            Supervisor routes to
-    ▼                            ProcurementAgent
-@cl.on_message (main)                    │
-    │                                    ▼
-    ▼                            _try_find_suppliers_pipeline()
-Supervisor routes to                     │
-ProcurementAgent                   7-step pipeline runs
+POST /chat-ui/threads/{tid}/messages     ▼
+(synthetic message)                 Supervisor routes to
+    │                            ProcurementAgent
+    ▼                                    │
+Supervisor routes to                     ▼
+ProcurementAgent                    _try_find_suppliers_pipeline()
     │                                    │
-    ▼                                    ▼
-_try_find_suppliers_pipeline()    IDENTICAL OUTCOME
+    ▼                              7-step pipeline runs
+_try_find_suppliers_pipeline()           │
+    │                                    ▼
+    └──────────► IDENTICAL OUTCOME ◄─────┘
 ```
 
 ## The 7-Step Find-Suppliers Pipeline
@@ -85,7 +85,7 @@ When the user asks to find suppliers (via button or chat), the pipeline runs the
 
 | Button | Triggers | What It Does |
 |--------|----------|-------------|
-| **Classify & Validate** | `rfq_identify_items` callback | Classifies all unmatched items, validates specific items via internal DB + web discrepancy check |
+| **Classify & Validate** | `rfq_identify_items` action | Classifies every item in an `unmatched` or `discrepancy` state, matches them against the internal product DB, and web-validates the `specific` ones that miss. Also auto-sets the quote brand and item departments. |
 | **Find Previous Suppliers** | `rfq_find_previous_suppliers` callback | Runs grouping + internal DB search + brand lookup + cross-apply. No web search. |
 | **Find New Suppliers** | `rfq_find_new_suppliers` callback | Web search only — requires previous suppliers step to have run first |
 | *(Find All Suppliers)* | `rfq_find_all_suppliers` → synthetic message → pipeline | Full 7-step pipeline via graph. Used programmatically; currently no visible button. |
@@ -94,7 +94,7 @@ When the user asks to find suppliers (via button or chat), the pipeline runs the
 
 | Button | Triggers | What It Does |
 |--------|----------|-------------|
-| **Classify & Validate** | `rfq_identify_items` callback (single item) | Classifies + validates a single line item |
+| **Classify & Validate** | `rfq_identify_items` action (single line) | Same process, scoped to one line |
 | **Find Suppliers** | `rfq_find_suppliers` callback → Phase 1 only | Searches internal DB for suppliers matching this line. Then asks "Search Web?" |
 | **Search Web** (appears after Find Suppliers) | `rfq_find_web_suppliers_for_line` callback | Web search for this specific line — only shown after user clicks |
 
@@ -103,39 +103,29 @@ When the user asks to find suppliers (via button or chat), the pipeline runs the
 - **Batch buttons** are disabled (greyed out) while the agent is processing any action — prevents race conditions from rapid clicking.
 - **Per-item buttons** remain always enabled — clicking "Find Suppliers" on multiple lines concurrently is a valid workflow.
 
-## Thread-Pinning Architecture
+## Thread Targeting
 
-When a button action runs (which may take 30+ seconds), the user might navigate to a different RFQ in the dashboard. Without protection, Chainlit's `on_chat_resume` overwrites the session `thread_id` — sending in-progress messages to the wrong conversation.
+A button action can run for 30+ seconds, and the user may navigate to a different RFQ meanwhile. Originally Chainlit's `on_chat_resume` would overwrite a session-wide `thread_id`, sending in-progress messages to the wrong conversation; that needed a `_pin_thread()` / `_send_pinned()` dance.
 
-**Solution:** All RFQ action callbacks use the `_pin_thread()` context manager:
+**That mechanism is gone.** A run now belongs to its own thread, and every handler receives a `ChatContext` already bound to it. Navigating elsewhere changes nothing about where the output lands, so there is no pinning to coordinate.
 
-```python
-async with _pin_thread() as pinned_tid:
-    # Captures thread_id at callback start
-    await _send_pinned("Processing...", pinned_tid)  # Always goes to correct thread
-    # ... do work ...
-    await _send_pinned("Done!", pinned_tid)
-```
-
-**`_send_pinned()`** checks if the current thread still matches the pinned one. If the user switched threads, it temporarily swaps back to send the message, then restores.
-
-**`_main_pinned()`** does the same for graph invocations — ensuring agent responses land in the correct thread even if the user has navigated away.
+The one thing worth knowing: the dashboard tells the server which **RFQ** a click belongs to, and the server resolves the conversation for it — finding, repairing, or creating the thread bound to that RFQ. See [Agent Bridge](./AGENT_BRIDGE.md).
 
 ## Code Map
 
 | File | Role |
 |------|------|
-| `includes/chat/rfq_actions.py` | Chainlit `@cl.action_callback` handlers for all dashboard buttons. Per-item + batch. Thread-pinning. |
-| `includes/agents/procurement_agent.py` | `_try_find_suppliers_pipeline` — the 7-step programmatic pipeline. Triggered by "find suppliers" keyword in chat or synthetic button message. |
-| `includes/tools/rfq_crud.py` | Sync database functions: `_classify_rfq_items_sync`, `_validate_items_sync`, `_group_rfq_items_sync`, `_find_purchase_suppliers_sync`, `_find_brand_suppliers_sync`, `_cross_apply_suppliers_sync`, `_web_search_suppliers_sync`, `_sort_rfq_suppliers_sync`, plus all CRUD helpers. |
+| `includes/chat/rfq_actions.py` | `RFQ_ACTIONS` — `(payload, ctx)` handlers for all dashboard buttons (per-item + batch). |
+| `includes/tools/rfq_crud.py` | The work itself: `_classify_rfq_items_sync` (the single classify & validate process), `_validate_items_sync`, `_group_rfq_items_sync`, `_find_purchase_suppliers_sync`, `_find_brand_suppliers_sync`, `_cross_apply_suppliers_sync`, `_web_search_suppliers_sync`, `_sort_rfq_suppliers_sync`, plus all CRUD helpers. |
+| `includes/agents/procurement_agent.py` | `_try_find_suppliers_pipeline` — the 7-step programmatic find-suppliers pipeline. |
 | `includes/tools/quote_tools.py` | LangGraph `@tool` wrappers (`manage_rfq`, `get_rfq`), communication helpers (`_notify_rfq_updated`, `_notify_agent_working`, `_stream_to_user`), re-exports from rfq_crud. |
-| `includes/tools/product_tools.py` | `_find_purchase_history_for_part`, `_find_brand_suppliers_for_brands` / `_find_brand_suppliers_with_tier`, `_find_product_by_code` — internal DB search functions. |
-| `includes/agent_bridge.py` | Bridge between dashboard and Chainlit sessions. `dispatch_action()`, `notify_dashboard()`, per-session locking. |
-| `app.py` | `@cl.on_message` main handler. Validates, extracts intent, invokes graph, streams events. |
+| `includes/tools/product_tools.py` | `_find_purchase_history_for_part`, `_find_brand_suppliers_for_brands` / `_find_brand_suppliers_with_tier`, `_find_product_by_code` — internal DB search. |
+| `includes/agent_bridge.py` | Dashboard button → the RFQ's chat thread. Cooperative cancellation. |
+| `includes/dashboard/routes/chat_ui.py` | `/chat-ui` — the chat transport, action dispatch, run registry, SSE stream. |
 | `includes/graph.py` | LangGraph state machine — Supervisor routes to ProcurementAgent / ResearchAgent / GeneralAgent. |
 | `templates/rfq_detail.html` | Dashboard RFQ detail page with batch buttons. |
 | `templates/partials/_rfq_items_table.html` | Per-item line table with per-item action buttons. |
-| `templates/base.html` | Alpine.js `rfqDetail()` component — button handlers, `_sendAction()`, `agentBusy` flag, thread-pinning coordination. |
+| `templates/base.html` | Alpine.js `rfqDetail()` — button handlers, `_sendAction()`, `agentBusy` flag. |
 
 ## Data Model
 

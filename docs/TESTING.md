@@ -124,7 +124,7 @@ async def test_example(test_store):
 
 ### Storage Fixtures
 
-#### `temp_storage_dir` / `local_storage_client`
+#### `temp_storage_dir`
 - Temporary directory for file attachment tests
 - Auto-cleanup after test
 

@@ -4,7 +4,7 @@ This document describes the file attachment system for EagleAgent, which allows 
 
 ## Overview
 
-The system stores files on **local disk** via `LocalStorageClient` and processes them for use by the AI agent:
+The system stores files on **local disk** and processes them for use by the AI agent:
 
 - **Images**: Analyzed using Gemini's vision capabilities
 - **PDFs**: Text extracted and added to conversation context
@@ -14,9 +14,11 @@ The system stores files on **local disk** via `LocalStorageClient` and processes
 ## Architecture
 
 ```
-User Upload → Chainlit UI → app.py → LocalStorageClient → Document Processing → Agent Context
-                                   ↓
-                              PostgreSQL Metadata
+User Upload → Chat UI (POST /chat-ui/upload) → data/attachments/{object_key}
+                                                            ↓
+                                        transcript.create_element() → elements row
+                                                            ↓
+                                    Document Processing → Agent Context
 ```
 
 Files are saved to `DATA_DIR/attachments/` (default `./data/attachments/`) and served back to the browser via a Starlette `StaticFiles` mount at `/files`.
@@ -32,11 +34,11 @@ Ensure your `.env` file has:
 DATA_DIR=./data
 
 # Temporary files upload folder (default: .files)
-# This is where Chainlit stores uploaded files before processing
+# Scratch space for downloads etc. — NOT where chat uploads are stored
 TEMP_FILES_FOLDER=.files
 ```
 
-**Note**: The `TEMP_FILES_FOLDER` directory stores temporary files during upload. This folder should be added to `.gitignore` to prevent versioning temporary files. You can change this location if needed (e.g., `TEMP_FILES_FOLDER=temp_uploads`).
+**Note**: Chat uploads live under `DATA_DIR/attachments/`. `TEMP_FILES_FOLDER` is unrelated scratch space (browser downloads and similar) and should be gitignored.
 
 ### 2. Install Dependencies
 
@@ -47,7 +49,7 @@ uv sync
 Key dependencies for file processing:
 - `pdfplumber` - PDF text extraction
 - `Pillow` - Image processing
-- `aiofiles` - Async file I/O for `LocalStorageClient`
+- `aiofiles` - Async file I/O in the upload route
 
 ### 3. Run the Application
 
@@ -59,15 +61,10 @@ The `data/attachments/` directory is created automatically on startup.
 
 ## File Upload Configuration
 
-File uploads are configured in `.chainlit/config.toml`:
-
-```toml
-[features.spontaneous_file_upload]
-enabled = true
-accept = ["image/*", "application/pdf", "text/*", "audio/*"]
-max_files = 20
-max_size_mb = 50
-```
+Uploads are handled by `POST /chat-ui/upload` (`includes/dashboard/routes/chat_ui.py`).
+The observed MIME type comes from the browser's `content_type`; **there is no
+accept-list or size cap enforced server-side today** — the old `.chainlit/config.toml`
+limits went away with Chainlit. If you need limits, add them to that route.
 
 **Supported file types**:
 - Images: PNG, JPEG, GIF, WebP, etc.
@@ -80,29 +77,30 @@ max_size_mb = 50
 ### Upload Flow
 
 1. **User uploads file** via paperclip icon in chat UI
-2. **File validation** - type and size checked by Chainlit
-3. **Local storage** - file saved to `data/attachments/{thread_id}/{element_id}/{filename}`
+2. **Ownership check** — the thread must belong to the caller
+3. **Local storage** - file saved to `data/attachments/{object_key}`, where
+   `object_key = {user_id}/{element_id}/{safe_name}`
 4. **Document processing**:
    - Images → Base64 encoded for Gemini vision
    - PDFs → Text extracted from all pages
    - Text files → Content read and decoded
    - Audio → Metadata stored (transcription pending)
-5. **Metadata saved** - File info stored in PostgreSQL `elements` table
-6. **Multimodal message** - Created with text + file content
+5. **Metadata saved** - an `elements` row is written with `forId = NULL`, i.e. **pending**
+6. **Multimodal message** - sending the message attaches the element row to its step
 7. **Agent processes** - AI can analyze images or reference document content
 
 ### Storage Structure
 
 ```
 data/attachments/
-└── {thread_id}/
+└── {user_id}/
     └── {element_id}/
         ├── image1.jpg
         ├── document.pdf
         └── notes.txt
 ```
 
-Files are served to the browser at `/files/{thread_id}/{element_id}/{filename}` via the Starlette `StaticFiles` mount configured in `app.py`.
+Files are served at `/files/{object_key}` via the Starlette `StaticFiles` mount.
 
 ### Database Schema
 
@@ -178,10 +176,9 @@ psql $DATABASE_URL -c "SELECT mime, COUNT(*) FROM elements GROUP BY mime;"
 
 ### Files Not Processing
 
-1. Check file type is in `accept` list (`.chainlit/config.toml`)
-2. Verify file size under 50MB
-3. Check logs for processing errors
-4. Ensure dependencies installed: `uv sync`
+1. Check the MIME type was detected correctly (the browser supplies it)
+2. Check logs for processing errors
+3. Ensure dependencies installed: `uv sync`
 
 ### Vision Not Working for Images
 
@@ -199,15 +196,17 @@ psql $DATABASE_URL -c "SELECT mime, COUNT(*) FROM elements GROUP BY mime;"
 
 ### File Validation
 
-- File type restrictions in Chainlit config
-- Size limits (50MB max)
-- MIME type verification during processing
-- Path traversal prevention in `LocalStorageClient._get_full_path()`
+- MIME type comes from the upload and drives how the file is processed
+- **No server-side accept-list or size cap today** (the Chainlit config limits
+  are gone). Add them in `POST /chat-ui/upload` if needed.
+- Path traversal is prevented by keeping only `os.path.basename()` of the
+  supplied filename when building the `object_key`
 
 ### Data Privacy
 
 - Files stored on the **Railway application volume** (Singapore region)
-- User/thread-specific folders prevent cross-tenant access
+- User-specific folders prevent cross-tenant access, and every upload/download
+  is checked against thread ownership
 - No external cloud storage — files never leave the application host
 
 ## Future Enhancements
@@ -236,6 +235,6 @@ Tests cover:
 
 ## References
 
-- [Chainlit File Upload](https://docs.chainlit.io/advanced-features/multi-modal)
 - [LangChain Multimodal](https://python.langchain.com/docs/how_to/multimodal_inputs/)
 - [Gemini Vision API](https://ai.google.dev/gemini-api/docs/vision)
+- [Chat UI](./CHAT_UI.md) — the upload route and how attachments attach to a message

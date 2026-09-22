@@ -2,7 +2,7 @@
 
 ## Overview
 
-EagleAgent uses **LangGraph** to orchestrate a multi-agent system built on **Gemini** models (via `langchain-google-genai`). The system exposes three compiled graphs corresponding to three **Chainlit chat profiles**. All graphs share a PostgreSQL-backed checkpointer and cross-thread memory store.
+EagleAgent uses **LangGraph** to orchestrate a multi-agent system built on **Gemini** models (via `langchain-google-genai`). The system exposes three compiled graphs, one per agent in `includes/agents/registry.py`. All graphs share a PostgreSQL-backed checkpointer and cross-thread memory store.
 
 ---
 
@@ -167,7 +167,7 @@ Per-agent overrides via env vars: `GENERAL_AGENT_MODEL`, `PROCUREMENT_AGENT_MODE
 
 ```mermaid
 sequenceDiagram
-    participant App as app.py (Chainlit)
+    participant App as chat_ui / run_turn
     participant Graph as graph.py
     participant PG as PostgreSQL
 
@@ -183,9 +183,9 @@ sequenceDiagram
 
 ---
 
-## Chat Profile → Graph Mapping (app.py)
+## Agent → Graph Mapping (`includes/agents/registry.py`)
 
-| Chat Profile | Graph Variable | Nodes Active |
+| Agent | Graph Variable | Nodes Active |
 |-------------|---------------|--------------|
 | "Eagle Agent" | `graph` | Supervisor → GeneralAgent / ProcurementAgent / ResearchAgent |
 | "Research Agent" | `research_graph` | ResearchAgent (standalone, no RFQ tools) |

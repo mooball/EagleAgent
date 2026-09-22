@@ -102,9 +102,6 @@ class Config:
     
     # Temporary files upload folder
     TEMP_FILES_FOLDER = os.getenv("TEMP_FILES_FOLDER", ".files")
-    
-    # Chainlit URL (set after deployment, or localhost for dev)
-    CHAINLIT_URL = os.getenv("CHAINLIT_URL", "http://localhost:8000")
 
     # Display timezone (IANA name, e.g. "Australia/Brisbane")
     TIMEZONE = os.getenv("TIMEZONE", "Australia/Brisbane")

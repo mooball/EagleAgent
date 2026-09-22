@@ -2,7 +2,7 @@
 
 EagleAgent allows admin users to run registered server-side scripts directly from the chat UI. Scripts run as background processes — the chat remains responsive while they execute.
 
-> **Note:** The `SysAdminAgent` (which provides job management tools) is currently defined but **not wired into any active chat profile graph**. To enable script execution from the chat, `SysAdminAgent` needs to be added as a node in the main graph or given its own chat profile. The infrastructure (job runner, tools, progress messages) is fully implemented and ready.
+> **Note:** The `SysAdminAgent` (which provides job management tools) is currently defined but **not exposed as an agent of its own**. To enable script execution from the chat, `SysAdminAgent` needs to be added as a node in an existing graph (e.g. the Eagle Agent graph) or registered as a new agent in `includes/agents/registry.py`. The infrastructure (job runner, tools, progress messages) is fully implemented and ready.
 
 ## How It Works
 
@@ -58,7 +58,7 @@ Admins can use natural language:
 |--------|---------|
 | `config/scripts.py` | Script registry — allowlist of runnable scripts, argument validation |
 | `includes/job_runner.py` | `JobRunner` class — async subprocess management, reaper, signal handling |
-| `includes/job_progress.py` | Chainlit progress messages — start, periodic updates, completion |
+| `includes/job_progress.py` | Progress messages for background jobs — start, periodic updates, completion |
 | `includes/tools/job_tools.py` | LangGraph tool wrappers — `run_script`, `list_scripts`, `list_jobs`, `get_job_status`, `cancel_job` |
 
 ### Security
