@@ -1312,14 +1312,21 @@ class TestAddSuppliersIdGuard:
 
     def test_bogus_ids_are_stripped_before_persist(self, db_session):
         from includes.tools.rfq_crud import _add_suppliers_to_line_core
-        from sqlalchemy.orm.attributes import flag_modified
+        from includes.dashboard.models import Supplier
 
         rfq = self._make_rfq(db_session)
         line_item = db_session.query(RFQItem).filter(
             RFQItem.rfq_id == rfq.id, RFQItem.line == 1
         ).first()
 
-        real_id = str(uuid.uuid4())
+        # A supplied id is only a "real link" if the row exists — a random
+        # uuid4 is NOT sufficient (2026-09-23 incident: the agent invented
+        # UUID-shaped ids which were persisted as links to nothing).
+        real_supplier = Supplier(name="Real Linked Co", source="test")
+        db_session.add(real_supplier)
+        db_session.flush()
+        real_id = str(real_supplier.id)
+
         data = {
             "suppliers": [
                 {"name": "Porter Equipment Australia", "supplier_id": "sup_1597",
@@ -1339,9 +1346,30 @@ class TestAddSuppliersIdGuard:
         stored = {s["name"]: s for s in line_item.suppliers}
         assert "sup_1597" not in stored["Porter Equipment Australia"].values()
         assert stored["Porter Equipment Australia"].get("supplier_id") is None
-        # Valid UUIDs are untouched.
+        # Real, existing UUIDs are untouched.
         assert stored["Real Linked Co"]["supplier_id"] == real_id
-        assert stored["Real Linked Co"]["db_match"] == "exact"
+
+    def test_nonexistent_uuid_is_stripped_even_though_well_formed(self, db_session):
+        """Shape is not enough — the row must exist."""
+        from includes.tools.rfq_crud import _add_suppliers_to_line_core
+
+        rfq = self._make_rfq(db_session)
+        line_item = db_session.query(RFQItem).filter(
+            RFQItem.rfq_id == rfq.id, RFQItem.line == 1
+        ).first()
+
+        bogus = str(uuid.uuid4())  # valid shape, no such row
+        with patch("includes.tools.quote_tools._match_suppliers_to_db"), \
+             patch("includes.tools.quote_tools._enrich_supplier_pricing"):
+            added, _, _, error = _add_suppliers_to_line_core(
+                db_session, rfq, line_item,
+                {"suppliers": [{"name": "Invented Id Co", "supplier_id": bogus}]},
+            )
+
+        assert error is None
+        assert "Invented Id Co" in added
+        stored = {s["name"]: s for s in line_item.suppliers}
+        assert stored["Invented Id Co"].get("supplier_id") is None
 
     def test_valid_uuid_passthrough(self, db_session):
         from includes.tools.rfq_crud import _add_suppliers_to_line_core

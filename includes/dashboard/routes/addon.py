@@ -841,8 +841,25 @@ def create_rfq(body: CreateRfqRequest, user: AddonUser):
         # Spawn LLM extraction in background (non-blocking).
         # Pass rfq_number: we already created and linked the RFQ above, so the
         # pipeline must skip its own creation stage rather than bail out.
-        from includes.tools.rfq_creation_pipeline import trigger_rfq_creation_pipeline
-        trigger_rfq_creation_pipeline(tracking.id, user_id=user_ident, rfq_number=rfq_number)
+        #
+        # Lock the RFQ BEFORE the handoff so it is already read-only by the time
+        # this response reaches the caller — the pipeline's own stage-2 stamp
+        # lands ~100ms later, which left a window where a user could open the
+        # RFQ and find it editable. Its stamp preserves started_at, so this is
+        # the authoritative one.
+        from includes.tools.rfq_creation_pipeline import (
+            _clear_rfq_pipeline_activity,
+            _set_rfq_pipeline_activity,
+            trigger_rfq_creation_pipeline,
+        )
+        _set_rfq_pipeline_activity(rfq_number, "extracting_items")
+        try:
+            trigger_rfq_creation_pipeline(tracking.id, user_id=user_ident,
+                                          rfq_number=rfq_number)
+        except Exception:
+            # Never leave the RFQ locked if the run failed to start.
+            _clear_rfq_pipeline_activity(rfq_number)
+            raise
 
         # Build updated context to return (matches ContextResponse format)
         updated_context = {

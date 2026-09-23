@@ -56,15 +56,16 @@ class TestExtractSpreadsheetContent:
         from includes.email_pipeline import extract_spreadsheet_content
         csv_data = b"Name,Price,Qty\nWidget,10.50,100\nGadget,25.00,50"
         result = extract_spreadsheet_content(csv_data, "prices.csv", "text/csv")
-        assert "```csv" in result
-        assert "Widget" in result
-        assert "10.50" in result
+        assert result.ok
+        assert "```csv" in result.text
+        assert "Widget" in result.text
+        assert "10.50" in result.text
 
     def test_csv_truncation(self):
         from includes.email_pipeline import extract_spreadsheet_content
         long_csv = b"x" * 6000
         result = extract_spreadsheet_content(long_csv, "big.csv", "text/csv")
-        assert len(result) <= 5100  # 5000 + markdown fencing
+        assert len(result.text) <= 5100  # 5000 + markdown fencing
 
     def test_xlsx_basic(self):
         from includes.email_pipeline import extract_spreadsheet_content
@@ -80,13 +81,14 @@ class TestExtractSpreadsheetContent:
         xlsx_bytes = buf.getvalue()
 
         result = extract_spreadsheet_content(xlsx_bytes, "quote.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        assert "## Sheet: Pricing" in result
-        assert "ABC-123" in result
-        assert "42.5" in result
-        assert "4 weeks" in result
+        assert result.ok
+        assert "## Sheet: Pricing" in result.text
+        assert "ABC-123" in result.text
+        assert "42.5" in result.text
+        assert "4 weeks" in result.text
 
     def test_xlsx_empty_sheet(self):
-        from includes.email_pipeline import extract_spreadsheet_content
+        from includes.email_pipeline import AttachmentFailure, extract_spreadsheet_content
         from openpyxl import Workbook
         wb = Workbook()
         ws = wb.active
@@ -94,7 +96,8 @@ class TestExtractSpreadsheetContent:
         buf = io.BytesIO()
         wb.save(buf)
         result = extract_spreadsheet_content(buf.getvalue(), "empty.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        assert "empty" in result.lower()
+        assert result.failure == AttachmentFailure.EMPTY
+        assert result.text == "*[No content extracted]*"
 
     def test_xlsx_none_cells(self):
         from includes.email_pipeline import extract_spreadsheet_content
@@ -106,7 +109,7 @@ class TestExtractSpreadsheetContent:
         buf = io.BytesIO()
         wb.save(buf)
         result = extract_spreadsheet_content(buf.getvalue(), "sparse.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        assert "B2" in result
+        assert "B2" in result.text
 
     def test_xlsx_multi_sheet(self):
         from includes.email_pipeline import extract_spreadsheet_content
@@ -122,10 +125,10 @@ class TestExtractSpreadsheetContent:
         buf = io.BytesIO()
         wb.save(buf)
         result = extract_spreadsheet_content(buf.getvalue(), "multi.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        assert "Sheet1" in result
-        assert "Sheet2" in result
-        assert "Val1" in result
-        assert "Val2" in result
+        assert "Sheet1" in result.text
+        assert "Sheet2" in result.text
+        assert "Val1" in result.text
+        assert "Val2" in result.text
 
     def test_xlsx_truncation(self):
         from includes.email_pipeline import extract_spreadsheet_content
@@ -138,12 +141,14 @@ class TestExtractSpreadsheetContent:
         buf = io.BytesIO()
         wb.save(buf)
         result = extract_spreadsheet_content(buf.getvalue(), "big.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        assert len(result) <= 8000
+        assert len(result.text) <= 8000
 
     def test_corrupt_file(self):
-        from includes.email_pipeline import extract_spreadsheet_content
+        from includes.email_pipeline import AttachmentFailure, extract_spreadsheet_content
         result = extract_spreadsheet_content(b"not a real xlsx", "bad.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        assert "failed" in result.lower()
+        assert result.failure == AttachmentFailure.PARSE_ERROR
+        assert result.text == "*[Spreadsheet could not be parsed]*"
+        assert result.detail  # upstream message kept for humans/logs
 
 
 # ---------------------------------------------------------------------------

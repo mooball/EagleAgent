@@ -355,6 +355,14 @@ class RFQ(Base):
     
     updated_at = Column(DateTime(timezone=True), nullable=True)
     pipeline_stage = Column(String, nullable=False, server_default='unprocessed')  # unprocessed/classified/validation_gate/validated/grouped/suppliers_internal/awaiting_web_search/complete
+    # Active background-write lock — set while a pipeline is writing to this RFQ
+    # (currently the create-RFQ pipeline adding extracted items). Shape:
+    # {kind, step, started_at, heartbeat_at}. A heartbeat older than
+    # _PIPELINE_STALE_SECONDS is treated as stale so a crashed thread can never
+    # lock an RFQ permanently.
+    # NOTE: distinct from pipeline_stage, which tracks the supplier-finding
+    # lifecycle (unprocessed -> ... -> complete).
+    pipeline_activity = Column(JSONB, nullable=True)
 
     items = relationship('RFQItem', back_populates='rfq', order_by='RFQItem.line',
                          cascade='all, delete-orphan', lazy='selectin')

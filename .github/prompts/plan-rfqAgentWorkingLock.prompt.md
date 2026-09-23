@@ -1,10 +1,30 @@
 # Plan: RFQ Agent-Working Lock
 
-> Status: **PROPOSED — awaiting review** (2026-09-09)
+> Status: **APPROVED — implementing** (2026-09-23)
 > Related: [plan-rfqBulkOperations.prompt.md](plan-rfqBulkOperations.prompt.md),
 > [plan-grouped-supplier-search.prompt.md](plan-grouped-supplier-search.prompt.md)
-> Scope: lock the RFQ items tab read-only while the RFQ-creation pipeline is
-> still adding items, with a visible "agent is working" banner.
+> Scope: lock the RFQ read-only while the RFQ-creation pipeline is still
+> adding items, with a visible "agent is working" banner.
+
+---
+
+## 0. Approved decisions (2026-09-23)
+
+Three scope questions were put to the user and answered. These supersede the
+recommendations in §8.
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Scope of read-only | **Lock all** — items *and* the header. Stage 3 also calls `_update_rfq_sync()` for title/notes, so `POST /partial/rfqs/{rfq_id}/update` must be guarded alongside the item endpoints. |
+| 2 | Staleness threshold | **600 s** — reuse the existing `_PIPELINE_STALE_SECONDS` constant already used by `_annotate_pipeline_flags()` for the same class of marker. |
+| 3 | Supplier operations (swap/merge/drop/shortlist) | **Out of scope.** Stage 3 does not touch suppliers, so they stay unlocked. |
+
+One implementation change from the original design: instead of a bespoke
+`hx-trigger="every 10s"` banner, **reuse the existing comms poller idiom**
+(`data-processing` + `data-poll-url` consumed by `window._pipelinePoll` in
+`base.html`, formerly `_commsPoll` — generalised to drive any polled block). That
+pattern already does exactly this job for the comms tab, so
+generalising it keeps one polling mechanism in the codebase rather than two.
 
 ---
 
@@ -77,8 +97,8 @@ tab):
   - `_save_error()` (early failures after the flag exists)
   Both look up the RFQ by `rfq_token`/`rfq_number` and set the column NULL.
 - **Staleness rule (read side):** a flag whose `heartbeat_at` is older than
-  **30 min** is treated as absent. A crashed daemon thread therefore
-  self-heals the lock.
+  **600 s** (`_PIPELINE_STALE_SECONDS`, decision 2) is treated as absent. A
+  crashed daemon thread therefore self-heals the lock.
 
 ### 3.2 Read-side helper
 
@@ -96,8 +116,9 @@ def _rfq_pipeline_active(rfq) -> dict | None:
     return act if age < PIPELINE_STALE_AFTER else None
 ```
 
-`PIPELINE_STALE_AFTER = timedelta(minutes=30)` module constant. (Existing
-`system_settings.py` pattern if we prefer a configurable threshold.)
+`_PIPELINE_STALE_SECONDS = 600` — the constant already defined at the top of
+`routes/rfqs.py` for exactly this class of marker. Reused rather than
+redefined, so both staleness checks stay in step.
 
 ### 3.3 Server-side guards (409)
 
@@ -115,15 +136,20 @@ def _rfq_lock_response(rfq) -> Response | None:
     )
 ```
 
-Wired into the **item mutation** endpoints (all already fetch the RFQ):
+Wired into the **mutation** endpoints (decision 1 — items + header):
 
 | Endpoint | Line |
 |---|---|
-| `POST /partial/rfqs/{rfq_id}/add-item` | 2249 |
-| `POST /partial/rfqs/{rfq_id}/update-item` | 2106 |
-| `DELETE /partial/rfqs/{rfq_id}/delete-item/{line}` | 2145 |
-| `POST /partial/rfqs/{rfq_id}/bulk-update-items` | 2209 |
-| `POST /partial/rfqs/{rfq_id}/clear-suppliers` | 2315 |
+| `POST /partial/rfqs/{rfq_id}/update` | 2019 |
+| `POST /partial/rfqs/{rfq_id}/update-item` | 2139 |
+| `DELETE /partial/rfqs/{rfq_id}/delete-item/{line}` | 2178 |
+| `POST /partial/rfqs/{rfq_id}/bulk-update-items` | 2242 |
+| `POST /partial/rfqs/{rfq_id}/add-item` | 2282 |
+
+Supplier operations (swap / merge / drop / shortlist / copy / **clear-suppliers**)
+are deliberately **not** guarded — decision 3. `clear-suppliers` mutates a
+line's supplier list, not its item fields, so it cannot race `_add_items_sync`
+or `_update_rfq_sync`.
 
 409 responses render through the existing HTMX error path (toast:
 `window.eaToast(msg, false)`), so the user gets a visible explanation rather
@@ -159,9 +185,10 @@ GET /partial/rfqs/{rfq_id}/pipeline-status
 - When finished, returns empty body + `HX-Trigger: pipelineDone`; a listener
   on the items container re-fetches `#rfq-items-container`, revealing the
   full item list. No manual action needed.
-- The banner wrapper polls with `hx-trigger="every 10s"` while rendered —
-  the poll element disappears with the banner, so no polling overhead when
-  idle.
+- The banner wrapper carries `data-poll-url` and is polled by the shared
+  comms poller (`window._pipelinePoll`) at 4 s while `data-processing="true"` —
+  the poll element disappears with the banner, so there is no polling
+  overhead when idle. One polling mechanism, not two.
 - Dashboard `dashboard_refresh` events (already pushed after each batch of
   agent work) also re-render the tab, so classic Chainlit users see the
   banner appear without waiting for the poll.
@@ -181,7 +208,7 @@ cross-thread-memory push (see `docs/CROSS_THREAD_MEMORY.md`) is noted in §8.
 | No pipeline running | Normal | Allowed |
 | Pipeline active (fresh flag) | Banner + read-only | 409 + toast |
 | Pipeline finished | Banner gone, items listed | Allowed |
-| Flag stale > 30 min (crash) | Normal | Allowed (self-healed) |
+| Flag stale > 600 s (crash) | Normal | Allowed (self-healed) |
 | RFQ not yet created (stage 2) | N/A — page is the email panel, which already shows "processing" | — |
 
 ---
@@ -197,7 +224,7 @@ cross-thread-memory push (see `docs/CROSS_THREAD_MEMORY.md`) is noted in §8.
 - **Concurrent triggers** → existing atomic claim on `email_tracking`
   prevents double-processing; only the winning run touches the RFQ flag.
 - **Item edit in a second tab** → 409 regardless of which tab sent it; the
-  first tab's poll shows the banner within 10s.
+  first tab's poll shows the banner within 4 s.
 - **Refresh spam** → `pipeline-status` is a tiny partial, cheap to poll.
 - **Bulk operations / supplier ops** (swap-supplier, merge-suppliers, …) →
   see §8, intentionally out of initial scope.
@@ -243,23 +270,27 @@ Existing suite must stay green (1412 passed / 2 skipped baseline).
 
 ## 8. Open questions
 
-1. **Scope of read-only** — items-only (add/update/delete/bulk/clear) or
-   also supplier operations (swap/merge/drop/shortlist/copy)? Recommend
-   items-only first; suppliers can be extended later.
-2. **Malformed flag handling** — treat malformed `pipeline_activity` as
+Resolved (see §0):
+
+1. **Scope of read-only** — **resolved: lock all** (items + header). Supplier
+   operations stay out of scope.
+2. **Staleness threshold** — **resolved: 600 s**, matching the existing
+   `_PIPELINE_STALE_SECONDS`.
+3. **Lock whole RFQ or items tab only** — **resolved: whole RFQ.** A banner is
+   shown on the items tab (where the writes land), and the header edit form is
+   suppressed server-side while the flag is active.
+
+Still open (no decision needed to ship v1):
+
+4. **Malformed flag handling** — treat malformed `pipeline_activity` as
    active (lock) or absent (unlock)? Recommend absent + log warning, to
    avoid a stuck lock.
-3. **Staleness threshold** — 30 min reasonable? Extraction is usually <2 min.
-4. **Guard `/api/rfq/{rfq_number}/extract-items`** (agent-initiated
+5. **Guard `/api/rfq/{rfq_number}/extract-items`** (agent-initiated
    re-extraction) with the same 409? It is a different async mechanism.
-5. **Cross-thread completion push** — worth adding a
+6. **Cross-thread completion push** — worth adding a
    cross-thread-memory notification so Chainlit users get an instant
-   `dashboard_refresh` instead of waiting ≤10s? (Poll is the fallback
+   `dashboard_refresh` instead of waiting ≤4s? (Poll is the fallback
    either way.)
-6. **Lock whole RFQ or items tab only** — title/notes/quote fields can also
-   race stage 3's `_update_rfq_sync()`. Recommend keeping the visible lock
-   scoped to items, and relying on the 409s; whole-RFQ lock is a follow-up
-   if races appear elsewhere.
 
 ---
 
@@ -273,3 +304,98 @@ Existing suite must stay green (1412 passed / 2 skipped baseline).
    (`node --check` on extracted inline scripts).
 6. Full test suite, then a manual end-to-end run with a real email so the
    user can watch the lock engage and self-clear.
+
+---
+
+## 10. Post-implementation fix — lock DISCOVERY (2026-09-23)
+
+Reported after the first real test: *"run the script, navigate to the RFQ
+immediately, and it is not read-only; reload or change tabs and the message
+appears."*
+
+### Diagnosis
+
+Verified against the running server (forged session, real HTTP): the server was
+correct in every case — banner and read-only markup both present when the lock
+existed at render time, `Cache-Control: no-store`, `historyCacheSize = 0`. The
+gap between "RFQ created" and "lock stamped" measured **133 ms**, far too short
+for a human to hit deliberately.
+
+**The actual defect was discovery, not rendering:** the only element on the items
+tab carrying `data-poll-url` was the banner, and the banner only renders
+`{% if pipeline_active %}`. So a tab rendered while unlocked had **no poller at
+all** and could never learn that a run started. Nothing pushed either — the
+create-RFQ pipeline runs in a daemon thread with no chat context, so it emits no
+`dashboard_refresh`. Result: any page open (or already rendered) when a run
+started stayed editable until a manual reload.
+
+The test workflow made it easy to reproduce: `--reset` deletes the RFQ and
+numbering is `max+1`, so the recreated RFQ reuses the **same number** — a stale
+tab and the new run share a URL.
+
+### Fix
+
+1. **Always-on state watcher on the items tab.** A hidden
+   `#rfq-pipeline-watch` div (rendered while `pipeline_active or rfq_is_fresh`)
+   polls a new cheap JSON endpoint
+   `GET /partial/rfqs/{id}/pipeline-active` → `{"active", "step", "label"}`.
+   `window._pipelineWatch` in `base.html` compares against the page's current
+   state and re-renders the items tab **only on a flip**, in either direction.
+   This covers the 133 ms window, an already-open page, and unlocking. The
+   `start()` early-return re-syncs state from the freshly rendered markup, so our
+   own refresh cannot be mistaken for a change and cause a loop.
+2. **Watch window** = `_PIPELINE_WATCH_WINDOW_HOURS = 1`, using the existing
+   `age_hours` (`0` means "under an hour" *and* "unknown" — both err towards
+   watching). Idle old RFQs generate no traffic.
+3. **Stamp the lock in the route, before the handoff.** `addon.create_rfq()` now
+   calls `_set_rfq_pipeline_activity(rfq_number, "extracting_items")` before
+   `trigger_rfq_creation_pipeline()`, so the RFQ is already read-only by the time
+   the caller learns its number. If the thread fails to start, the route clears
+   the lock so an RFQ can never be stranded locked.
+4. **One debounced refresh path** — `_refreshItemsTab()` (1.5 s) shared by the
+   watcher and the banner's `pipelineDone` trigger, which can both fire within
+   the same second when a run ends.
+
+Tests: `TestFreshnessFlag`, `TestPipelineActiveProbe`,
+`TestAddonRouteLocksBeforeHandoff` (+10, total 52 in the lock file).
+
+### 10.1 Follow-up — the watcher never actually ran (2026-09-23)
+
+Reported next: *"when the read-only warning finishes it doesn't reload the item
+list, so I get an empty RFQ until I reload."*
+
+Verified against the server first (real run, polling everything the browser
+polls): the server is correct throughout — items appear at ~52 s while still
+locked, and at the unlock moment the items partial already renders them:
+
+```
+ 52.0  True    1403   2 item rows   <- items appear, still locked
+ 53.1  False      0   2 item rows   <- lock cleared, items present
+```
+
+So a refresh at unlock would have shown them. The fault was entirely client-side,
+and it was **two wiring bugs in `base.html`**, either of which alone stops the
+watcher dead:
+
+1. **Definition-after-use.** `_reconcilePolls()` was called (to kick the pollers
+   on the initial render) *above* the `window._pipelineWatch = {…}` assignment.
+   The first reconcile therefore touched `undefined` and threw a `TypeError` —
+   silently, in an event handler. The banner's own poller starts earlier in the
+   same function, so it kept working (which is why the banner appeared and
+   disappeared correctly), but the watcher never started.
+2. **Signature mismatch.** The call site passed no argument while `start(el)`
+   read `el.dataset`, so even later reconciles threw.
+
+Fixes: the watcher now reads the element itself (no argument to get wrong), the
+`_reconcilePolls()` kick moved below the assignment, every `_pipelineWatch`
+reference is guarded, and the state store is the **rendered DOM node**
+(`data-active`) rather than a JS variable — so a re-render can't desync it.
+
+Behaviour is now verified without a browser, by driving the extracted script
+block in Node with a stub DOM: stale-locked → refresh, current → no refresh (no
+loop), unlocked → discovers a new run, element removed → stops.
+
+**Lesson worth keeping:** the previous round of "verification" only proved the
+*server* half. Client wiring was asserted, never executed — and both bugs sat in
+the unexecuted half. Drive the JS too.
+

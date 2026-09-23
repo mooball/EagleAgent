@@ -21,6 +21,10 @@ from typing import Optional
 from langchain_core.tools import tool
 
 from includes.email_pipeline import (
+    AttachmentFailure,
+    BundleFailure,
+    ContentBundle,
+    PLACEHOLDER_UNREADABLE,
     llm_call_with_retry,
     get_pipeline_model,
     fetch_gmail_attachment_bytes,
@@ -375,20 +379,26 @@ def _strip_signature(text: str) -> str:
     return text.strip()
 
 
-def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[str] | None = None) -> str:
-    """Synchronous extraction: fetch body + process attachments.
+def build_content_bundle(email_tracking_id: int, quote_attachments: list[str] | None = None) -> ContentBundle:
+    """Build the extraction bundle, reporting what could not be read.
+
+    Named deliberately: there is already an agent tool called
+    `extract_email_content` in create_supplier_quote_tools(), and a module-level
+    function of the same name would shadow it there.
 
     Image attachments are triaged via the signature cache — known
-    signature/logo images are skipped automatically. The quote_attachments
-    parameter is deprecated and ignored (kept for backward compatibility).
+    signature/logo images are skipped automatically and counted as such, NOT as
+    failures. The quote_attachments parameter is deprecated and ignored.
 
-    Returns a Markdown content bundle with body + extracted attachment content.
+    Failures are recorded here rather than smuggled into the bundle text, so a
+    caller can tell "we read 9 of 10 attachments" from "the document really did
+    contain those words".
     """
     session = _get_session()
     try:
         tracking = _get_email_tracking(session, email_tracking_id)
         if not tracking:
-            return "Error: Email not found"
+            return ContentBundle(bundle_failure=BundleFailure.EMAIL_NOT_FOUND)
 
         # Self-heal content-less placeholder rows (e.g. created by the Gmail
         # add-on or the sync's Tier-3 match before content was fetched). Fetch
@@ -398,6 +408,7 @@ def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[
             _backfill_email_content_from_gmail(session, tracking)
 
         parts = []
+        bundle = ContentBundle()
 
         # Email body — restructure forwarded emails to surface the original request
         body = tracking.body_markdown or tracking.body_html or ""
@@ -444,6 +455,7 @@ def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[
                 if not att_id:
                     continue
 
+                bundle.attachment_total += 1
                 size_kb = size / 1024 if size else 0
                 header = f"## Attachment: {filename} ({size_kb:.0f} KB)"
 
@@ -452,31 +464,67 @@ def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[
                     tracking.user_email, tracking.gmail_message_id, att_id
                 )
                 if not raw_bytes:
-                    parts.append(f"{header}\n\n*[Failed to fetch attachment]*")
+                    bundle.failures.append({
+                        "filename": filename,
+                        "code": AttachmentFailure.FETCH_FAILED.value,
+                        "detail": "Gmail returned no bytes",
+                    })
+                    parts.append(f"{header}\n\n{PLACEHOLDER_UNREADABLE}")
                     continue
 
-                # Process based on MIME type
+                # Dispatch on MIME type. Signatures are skipped deliberately, so
+                # they are counted separately rather than as failures.
                 if mime_type == "application/pdf" or filename.lower().endswith(".pdf"):
-                    extracted = extract_pdf_content(raw_bytes, filename, pipeline="QUOTE")
-                    parts.append(f"{header}\n\n{extracted}")
+                    ext = extract_pdf_content(raw_bytes, filename, pipeline="QUOTE")
                 elif mime_type.startswith("image/"):
-                    # Triage: skip known signatures, classify unknowns
                     if triage_image(raw_bytes, mime_type, filename, email_tracking_id, pipeline="QUOTE") == "signature":
+                        bundle.skipped_as_signature += 1
                         continue
-                    extracted = extract_image_content(raw_bytes, filename, mime_type, pipeline="QUOTE")
-                    parts.append(f"{header}\n\n{extracted}")
+                    ext = extract_image_content(raw_bytes, filename, mime_type, pipeline="QUOTE")
                 elif "spreadsheet" in mime_type or filename.lower().endswith((".xlsx", ".xls", ".csv")):
-                    extracted = extract_spreadsheet_content(raw_bytes, filename, mime_type)
-                    parts.append(f"{header}\n\n{extracted}")
+                    ext = extract_spreadsheet_content(raw_bytes, filename, mime_type)
                 else:
+                    bundle.failures.append({
+                        "filename": filename,
+                        "code": AttachmentFailure.UNSUPPORTED.value,
+                        "detail": mime_type or "unknown mime type",
+                    })
                     parts.append(f"{header}\n\n*[Unsupported attachment type: {mime_type}]*")
+                    continue
+
+                if ext.failure:
+                    bundle.failures.append({
+                        "filename": filename,
+                        "code": ext.failure.value,
+                        "detail": ext.detail,
+                    })
+                else:
+                    bundle.attachment_read += 1
+                parts.append(f"{header}\n\n{ext.text}")
 
         if not parts:
-            return "Error: No content found in email (no body or attachments)"
+            bundle.bundle_failure = BundleFailure.NO_CONTENT
+            return bundle
 
-        return "\n\n---\n\n".join(parts)
+        bundle.text = "\n\n---\n\n".join(parts)
+        return bundle
     finally:
         session.close()
+
+
+def _extract_email_content_sync(email_tracking_id: int, quote_attachments: list[str] | None = None) -> str:
+    """Backward-compatible wrapper around build_content_bundle().
+
+    Returns the bundle text, or the legacy "Error: ..." sentinel when the bundle
+    is unusable — callers still test `startswith("Error:")`. New code should call
+    build_content_bundle() and read `bundle_failure` instead.
+    """
+    bundle = build_content_bundle(email_tracking_id, quote_attachments)
+    if bundle.bundle_failure == BundleFailure.EMAIL_NOT_FOUND:
+        return "Error: Email not found"
+    if bundle.bundle_failure == BundleFailure.NO_CONTENT:
+        return "Error: No content found in email (no body or attachments)"
+    return bundle.text
 
 
 
@@ -854,16 +902,29 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                 return
 
             # Stage 2: Extract
-            content = _extract_email_content_sync(email_tracking_id, classification.get("quote_attachments"))
-            if content.startswith("Error:"):
+            bundle = build_content_bundle(email_tracking_id, classification.get("quote_attachments"))
+            input_report = bundle.to_dict()
+            input_warnings: list[str] = []
+            if bundle.failures:
+                named = ", ".join(f["filename"] for f in bundle.failures[:3])
+                extra = f" (+{len(bundle.failures) - 3} more)" if len(bundle.failures) > 3 else ""
+                input_warnings.append(
+                    f"{len(bundle.failures)} attachment(s) could not be read: {named}{extra}"
+                )
+
+            if bundle.bundle_failure is not None or not bundle.text:
+                reason = bundle.bundle_failure.value if bundle.bundle_failure else "empty bundle"
                 _save_pipeline_result(email_tracking_id, {
                     "classification": "quote_response",
                     "reason": classification["reason"],
-                    "error": content,
+                    "error": f"Failed to extract email content: {reason}",
+                    "input": input_report,
                     "processed_at": _now_iso(),
                 })
-                logger.warning(f"[quote-pipeline] #{email_tracking_id}: extraction failed — {content}")
+                logger.warning(f"[quote-pipeline] #{email_tracking_id}: extraction failed — {reason}")
                 return
+
+            content = bundle.text
 
             # Stage 3: Interpret + Apply
             supplier_name = classification.get("supplier_name") or "Unknown"
@@ -874,6 +935,7 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                     "reason": classification["reason"],
                     "supplier_name": supplier_name,
                     "error": quote_data["error"],
+                    "input": input_report,
                     "processed_at": _now_iso(),
                 })
                 logger.warning(f"[quote-pipeline] #{email_tracking_id}: interpretation failed — {quote_data['error']}")
@@ -909,7 +971,8 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                 "notes": quote_data.get("notes"),
                 "quote_number": quote_number_val,
                 "quote_date": final_quote_date,
-                "warnings": quote_data.get("warnings", []),
+                "warnings": quote_data.get("warnings", []) + input_warnings,
+                "input": input_report,
                 "actions": actions,
                 "processed_at": _now_iso(),
             })

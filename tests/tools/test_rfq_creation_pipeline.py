@@ -344,6 +344,120 @@ class TestGuardChecks:
 
 
 # ---------------------------------------------------------------------------
+# Input completeness — what the pipeline could NOT read from the email
+#
+# An attachment that fails to extract used to vanish silently: the RFQ came out
+# one line short and nothing said why. See
+# .github/prompts/plan-attachmentFailureCodes.prompt.md
+# ---------------------------------------------------------------------------
+
+class TestInputCompletenessRecording:
+    def _tracking(self, db_session):
+        cust = _create_test_customer(db_session)
+        return _create_test_email_tracking(db_session, customer_id=cust.id)
+
+    def test_failed_attachment_flows_into_llm_result(self, db_session):
+        """The bundle's failure report must reach the caller's llm_result."""
+        from includes.email_pipeline import AttachmentFailure, ContentBundle
+        from includes.tools.rfq_creation_pipeline import _extract_rfq_items_sync
+
+        tracking = self._tracking(db_session)
+
+        bundle = ContentBundle(
+            text="## Email Body\n\nplease quote the attached",
+            attachment_total=10,
+            attachment_read=9,
+            failures=[{
+                "filename": "estimate QBRI1207.pdf",
+                "code": AttachmentFailure.MODEL_ERROR.value,
+                "detail": "500 INTERNAL",
+            }],
+        )
+        response = MagicMock()
+        response.text = json.dumps({
+            "has_items": True,
+            "items": [{"input_description": "Ten-0 Superflex Strop", "quantity": 2}],
+        })
+
+        with patch("includes.tools.supplier_quote_pipeline.build_content_bundle",
+                   return_value=bundle), \
+             patch("includes.tools.rfq_creation_pipeline.llm_call_with_retry",
+                   return_value=response):
+            items, llm_result = _extract_rfq_items_sync(tracking.id)
+
+        assert len(items) == 1
+        report = llm_result["_input_report"]
+        assert report["attachment_read"] == 9
+        assert report["attachment_total"] == 10
+        assert report["failures"][0]["filename"] == "estimate QBRI1207.pdf"
+        assert report["failures"][0]["code"] == "model_error"
+
+        # Exactly one human warning, naming the file.
+        assert len(llm_result["warnings"]) == 1
+        assert "estimate QBRI1207.pdf" in llm_result["warnings"][0]
+
+    def test_clean_run_adds_no_warning(self, db_session):
+        from includes.email_pipeline import ContentBundle
+        from includes.tools.rfq_creation_pipeline import _extract_rfq_items_sync
+
+        tracking = self._tracking(db_session)
+        bundle = ContentBundle(text="## Email Body\n\nplease quote",
+                               attachment_total=2, attachment_read=2)
+        response = MagicMock()
+        response.text = json.dumps({"has_items": True,
+                                    "items": [{"input_description": "Widget"}]})
+
+        with patch("includes.tools.supplier_quote_pipeline.build_content_bundle",
+                   return_value=bundle), \
+             patch("includes.tools.rfq_creation_pipeline.llm_call_with_retry",
+                   return_value=response):
+            _items, llm_result = _extract_rfq_items_sync(tracking.id)
+
+        assert llm_result["warnings"] == []
+        assert llm_result["_input_report"]["failures"] == []
+
+    def test_stage4_stores_input_on_the_result(self, db_session):
+        """Stage 4 persists the report under `input` for the comms modal."""
+        tracking = self._tracking(db_session)
+        llm_result = {
+            "has_items": True,
+            "items": [{"input_description": "Widget"}],
+            "warnings": ["1 attachment(s) could not be read: estimate.pdf"],
+            "_input_report": {
+                "attachment_total": 10,
+                "attachment_read": 9,
+                "skipped_as_signature": 0,
+                "failures": [{"filename": "estimate.pdf", "code": "model_error",
+                              "detail": "500 INTERNAL"}],
+                "bundle_failure": None,
+            },
+        }
+
+        with patch("includes.tools.rfq_creation_pipeline._get_session",
+                   return_value=db_session), \
+             patch("includes.tools.rfq_crud._create_rfq_sync",
+                   return_value={"rfq_number": "RFQ-2026-0001", "id": "test-id"}), \
+             patch("includes.tools.rfq_crud._add_items_sync"), \
+             patch("includes.netsuite.records.opportunity.create_and_link_opportunity"), \
+             patch("includes.tools.rfq_creation_pipeline._extract_rfq_items_sync",
+                   return_value=([{"input_description": "Widget"}], llm_result)):
+
+            from includes.tools.rfq_creation_pipeline import _run_rfq_creation_pipeline
+            _run_rfq_creation_pipeline(tracking.id, "test-user")
+
+        db_session.expire_all()
+        row = db_session.query(EmailTracking).filter(
+            EmailTracking.id == tracking.id).first()
+        result = row.rfq_creation_result
+
+        assert result["status"] == "complete"
+        assert result["input"]["attachment_read"] == 9
+        assert result["input"]["attachment_total"] == 10
+        assert result["input"]["failures"][0]["code"] == "model_error"
+        assert result["warnings"] == ["1 attachment(s) could not be read: estimate.pdf"]
+
+
+# ---------------------------------------------------------------------------
 # _now_iso / _now_dt
 # ---------------------------------------------------------------------------
 

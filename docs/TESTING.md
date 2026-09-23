@@ -175,6 +175,202 @@ uv run pytest tests/ -v -s
 
 ---
 
+## Manual End-to-End Testing (Local)
+
+Automated tests cover the units; some flows also need a real run against your
+local database. The hard one is the **Gmail add-on**, because the add-on posts to
+production (`BACKEND_URL = https://agent.eaglexp.com.au` in `addon/Code.gs`) and
+`/api/addon/*` is gated behind a Google OIDC token that only Apps Script can
+mint. Clicking the add-on therefore can never reach your local server.
+
+`scripts/test_rfq_creation.py` solves this by replaying the **"Create RFQ + OP"**
+flow in-process: it calls the real `addon.create_rfq()` route function with the
+same body the add-on sends (`{gmail_message_id, gmail_thread_id}`), so every
+guard and write runs exactly as it does in production — minus HTTP and auth.
+
+### 🛡 NetSuite writes are blocked by default
+
+There is no NetSuite sandbox in this codebase, and `Config.NETSUITE_ACCOUNT_ID`
+defaults to `794882` — **production**. Both the add-on route and the create-RFQ
+pipeline call `create_and_link_opportunity()`, which writes a real Opportunity.
+
+So the script **intercepts that call by default** and reports it as
+`🛡 intercepted`. Nothing reaches NetSuite unless you explicitly pass
+`--allow-netsuite`, which you should not need for local testing.
+
+> **Why it works this way.** An earlier version made blocking opt-in via
+> `--no-netsuite`, and combined with `--reset` falling through to a trigger that
+> was a real hazard: a command that read like "just clean up after the last run"
+> silently created live opportunities in production NetSuite. Fail closed.
+
+`--no-netsuite` is still accepted as a no-op for compatibility with older notes,
+but it is no longer needed.
+
+### Getting test data in
+
+Either pull real mail into the local database:
+
+```bash
+# From your own mailbox (recommended — attachments resolve from Gmail on demand)
+uv run python -m scripts.sync_gmail_mailboxes --user you@eagle-exports.com
+
+# Or copy emails + RFQs from production
+uv run python -m scripts.sync_prod_mail_data --limit 50
+```
+
+### The workflow
+
+Both `uv run python -m scripts.test_rfq_creation` and
+`uv run python scripts/test_rfq_creation.py` work — the script bootstraps the
+repo root onto `sys.path`, so running it as a plain file is fine too.
+
+```bash
+# 1. List recent emails and how ready each is (read-only)
+uv run python -m scripts.test_rfq_creation --recent 10
+uv run python -m scripts.test_rfq_creation --recent 20 --search RFQ
+
+# 2. Inspect one email: customer linked? already processed?
+uv run python -m scripts.test_rfq_creation --email-id 42844
+
+# 3. Link a customer if the route's guard complains (id or name fragment)
+uv run python -m scripts.test_rfq_creation --email-id 42844 --link-customer "Ranger"
+
+# 4. Preview the whole thing without writing anything
+uv run python -m scripts.test_rfq_creation --email-id 42844 --dry-run
+
+# 5. Run it — creates the RFQ, watches the pipeline. NetSuite writes stay blocked.
+uv run python -m scripts.test_rfq_creation --email-id 42844 --yes
+
+# 6. Iterate. --reset is STANDALONE: it stops after cleaning up, and does NOT
+#    create an RFQ. Run step 5 again separately to replay.
+uv run python -m scripts.test_rfq_creation --email-id 42844 --reset --yes
+```
+
+**Actions that stop rather than run:** `--recent`, `--dry-run`, `--reset`. Only a
+plain "inspect or run" invocation reaches the trigger.
+
+The script refuses to run against a non-local `DATABASE_URL` unless you pass
+`--yes`, because it **writes** (creates RFQs, links emails, resets guards).
+
+### Watching the agent-working lock
+
+Step 4 prints the RFQ number and its dashboard URL as soon as the RFQ exists.
+Open that URL, then watch the run in the terminal:
+
+```
+  → RFQ created: RFQ-2026-1234
+    Open http://localhost:8000/rfqs/RFQ-2026-1234 now to watch the banner.
+
+  [09:32:23] step=extracting_items  status=processing
+  [09:33:23] step=updating_details  status=processing
+  [09:33:25] pipeline finished — status=complete, items=2
+  [09:33:25] lock: cleared   items on RFQ: 2
+```
+
+In the browser you should see: the blue banner at the top of the RFQ Items tab,
+no Add/Edit/Delete controls, then — once the run finishes — the banner vanishing
+on its own and the extracted lines appearing (the page polls itself).
+
+To confirm the server-side guard rather than just the hidden buttons, run this in
+the browser console while the banner is up:
+
+```javascript
+htmx.ajax('POST', '/partial/rfqs/RFQ-2026-1234/add-item',
+          {target: '#main-content', values: {input_description: 'should fail'}})
+```
+
+It should toast a 409 rather than adding a line. See
+`.github/prompts/plan-rfqAgentWorkingLock.prompt.md` for how the lock works.
+
+### Reproducing extraction failures on demand
+
+Some failures only happen upstream at random. The original motivating case was
+Gemini returning `500 INTERNAL` for one PDF in a 10-attachment email, which
+silently produced an RFQ one line short — no error in the UI, the pipeline notes
+or the RFQ. Retrying cannot reproduce it, because the failure is transient.
+
+`--inject-attachment-failure` makes a named attachment report as unreadable so
+the failure path can be exercised deterministically. Everything downstream is the
+real code path: the bundle report, `rfq_creation_result["input"]`, the human
+warning line, and the "Attachments Read" block in the comms modal.
+
+```bash
+# 1. Reset first (standalone) — 49663 is the 10-attachment email carrying
+#    `estimate QBRI1207.pdf`, which is the attachment that originally 500'd.
+uv run python -m scripts.test_rfq_creation --email-id 49663 --reset --yes
+
+# 2. Replay the flow with that one attachment forced to fail.
+uv run python -m scripts.test_rfq_creation --email-id 49663 \
+    --inject-attachment-failure "estimate QBRI1207.pdf:model_error" --yes
+```
+
+Expected terminal output at the end of the run:
+
+```
+  [09:41:12] pipeline finished — status=complete, items=1
+             warning: 1 attachment(s) could not be read: estimate QBRI1207.pdf
+             input:       9 of 10 attachments read (9 skipped as signature)
+             unreadable:  estimate QBRI1207.pdf [model_error] injected by ...
+```
+
+In the comms modal the **Attachments Read** row goes amber and reads
+`9 of 10 (9 skipped as signature)`, with the warning listed underneath.
+
+Syntax is `FILENAME[:CODE]`, repeatable. `CODE` defaults to `model_error`; use
+`*:CODE` to fail every attachment. Valid codes:
+
+| Code | Meaning |
+|---|---|
+| `model_error` | upstream call failed (transient — the original bug) |
+| `parse_error` | returned content that could not be parsed |
+| `empty` | read successfully but yielded nothing |
+| `fetch_failed` | could not retrieve the attachment bytes |
+| `unsupported` | file type never handled (a deterministic gap) |
+
+The script refuses a filename the email does not have (and lists the real ones),
+and refuses an unknown code — a typo should not "pass" while testing nothing.
+
+**Where this lives:** it is a test-only monkeypatch *inside*
+`scripts/test_rfq_creation.py`. No production module gains an `if TESTING` branch
+and no environment variable can enable it in the deployed app. It patches the
+extractors **as bound in `supplier_quote_pipeline`** (the caller's references),
+not the definitions in `email_pipeline` — patching the definitions would replace
+a name nobody looks up and silently do nothing.
+
+Not covered: `bundle_failure` codes (`no_content`, `email_not_found`) fail before
+the attachment loop and are not reachable this way.
+
+For a faster, non-destructive check of just the extraction step (creates no RFQ,
+resets nothing), `_probe_bundle.py` in the repo root drives the same patcher:
+
+```bash
+uv run python -m scripts.probe_content_bundle 49663
+uv run python -m scripts.probe_content_bundle 49663 --inject "estimate QBRI1207.pdf:model_error"
+```
+
+### Notes and gotchas
+
+- **The pipeline runs in a daemon thread.** If the script exits immediately, the
+  run is killed mid-flight, leaving a half-populated RFQ and a stuck lock. The
+  script therefore polls until the run reaches a terminal state. `--no-watch`
+  disables that — only use it if you know why.
+- **Re-runs are blocked by design.** `rfq_creation_result` / `rfq_token` are
+  idempotency guards; `--reset` deletes the previous RFQ and clears them for the
+  whole email *thread*.
+- **`--reset` reuses the same RFQ number.** Numbering is `max+1`, so deleting the
+  RFQ makes the next run take the *same* number. A browser tab still showing the
+  old RFQ will therefore share a URL with the new run — close or reload it, or
+  you'll be looking at a stale page and concluding the lock didn't engage.
+- **`--reset` does not touch NetSuite.** If a previous run created a real
+  opportunity, delete it in NetSuite by hand.
+- **Attachments** are fetched from Gmail on demand by the extraction step, so a
+  message must still exist in a mailbox your local Gmail credentials can read.
+  Prod-synced rows may not resolve attachments.
+- **`--direct`** skips the add-on route and lets the pipeline create the RFQ
+  itself, exercising the other lock path (and not checking the customer guard).
+
+---
+
 ## Writing New Tests
 
 ### Test a Store Component
