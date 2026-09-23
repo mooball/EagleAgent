@@ -409,6 +409,34 @@ def resolve_supplier_id(session, supplier_id, _max_hops: int = 5):
     return supplier_id
 
 
+def existing_supplier_ids(session, supplier_ids) -> set[str]:
+    """Return the subset of ``supplier_ids`` that resolves to a real supplier row.
+
+    ``rfq_items.suppliers`` is JSONB with no foreign key, so an element can
+    carry a ``supplier_id`` that never existed — the agent can invent
+    UUID-shaped ids that pass a shape check (2026-09-23 incident: four RFQs
+    held ids for suppliers that were never real, and once one of them was
+    marked *selected* the whole RFQ detail page 500'd).
+
+    Callers about to treat an id as a real DB link must verify it here first.
+    Malformed values are dropped rather than raising — Postgres rejects a
+    non-uuid string cast. Returned ids are normalised via ``str(uuid.UUID(...))``.
+    """
+    wanted: set[str] = set()
+    for value in supplier_ids:
+        if not value:
+            continue
+        try:
+            wanted.add(str(uuid.UUID(str(value))))
+        except (ValueError, TypeError, AttributeError):
+            continue  # malformed — the caller's shape check deals with it
+    if not wanted:
+        return set()
+
+    rows = session.query(Supplier.id).filter(Supplier.id.in_(list(wanted))).all()
+    return {str(r[0]) for r in rows}
+
+
 def active_suppliers(session):
     """Base query for any user-facing supplier choice list."""
     return session.query(Supplier).filter(

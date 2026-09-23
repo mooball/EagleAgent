@@ -1167,6 +1167,16 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
     if not suppliers_list:
         return [], [], [], "Error: 'name' or 'suppliers' list is required for add_supplier."
 
+    # Verify the supplied ids exist before treating any of them as a DB link.
+    # A UUID-shaped id that resolves to nothing must be dropped so name
+    # matching resolves the real record — the agent can invent ids that pass a
+    # shape check (2026-09-23 incident: invented ids reached four RFQs and one
+    # of them 500'd the whole RFQ page once it was marked selected).
+    from includes.dashboard.supplier_dedup import existing_supplier_ids
+    known_ids = existing_supplier_ids(
+        session, [s.get("supplier_id") for s in suppliers_list]
+    )
+
     _bad_names = {"unknown", ""}
     skipped_names = []
     valid_suppliers = []
@@ -1185,6 +1195,15 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
                 sid, name,
             )
             sup["supplier_id"] = None
+        elif sid and str(sid) not in known_ids:
+            # Well-formed but resolves to no supplier row — same treatment.
+            logger.warning(
+                "[add-suppliers] dropping non-existent supplier_id %r for '%s' — will match by name",
+                sid, name,
+            )
+            sup["supplier_id"] = None
+            sup.pop("db_match", None)
+            sup.pop("near_miss_names", None)
         has_db_link = bool(sup.get("supplier_id"))
         if not has_db_link and name.lower() in _bad_names:
             skipped_names.append(name or "Unknown")
@@ -1806,6 +1825,22 @@ def _select_quote_core(session, rfq, line_item, data):
             break
     if not target:
         return f"Error: supplier '{name}' not found on line {line_item.line}.", None
+
+    # Never mark a supplier selected when its database link is broken — the RFQ
+    # detail page dereferences the selected supplier's row, so selecting a
+    # dangling id takes the whole page down (2026-09-23, RFQ-2026-2111). Fail
+    # loudly instead. Deselecting stays allowed so a bad state can be undone.
+    if target.get("quote_status") != "selected":
+        target_id = target.get("supplier_id")
+        if target_id:
+            from includes.dashboard.supplier_dedup import existing_supplier_ids
+            if str(target_id) not in existing_supplier_ids(session, [target_id]):
+                return (
+                    f"Error: cannot select '{name}' on line {line_item.line} — its "
+                    f"database link is broken (supplier_id {target_id} does not "
+                    f"exist). Remove and re-add the supplier on that line first.",
+                    None,
+                )
 
     if target.get("quote_status") == "selected":
         target["quote_status"] = "quoted"

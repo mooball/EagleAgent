@@ -646,6 +646,16 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             else:
                 item["brand_ns_id"] = None
 
+            # Flag supplier entries whose database link does not resolve.
+            # `rfq_items.suppliers` is JSONB with no foreign key, so an element
+            # can carry a `supplier_id` that never existed — the agent can
+            # invent UUID-shaped ids that pass a shape check. Never dereference
+            # one: a single dangling id 500'd this whole page on 2026-09-23
+            # (RFQ-2026-2111) because the selected supplier's row is not None.
+            for _sup in (item.get("suppliers") or []):
+                _sid = _sup.get("supplier_id")
+                _sup["link_broken"] = bool(_sid) and str(_sid) not in suppliers
+
             selected = next(
                 (s for s in (item.get("suppliers") or []) if s.get("quote_status") == "selected"),
                 None,
@@ -654,7 +664,8 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             if selected is not None:
                 selected["ns_linked"] = False
                 selected["near_matches"] = []
-                if selected.get("supplier_id"):
+                selected["supplier_missing"] = bool(selected.get("link_broken"))
+                if selected.get("supplier_id") and not selected["supplier_missing"]:
                     sup = suppliers.get(str(selected["supplier_id"]))
                     if sup is not None:
                         selected["netsuite_id"] = sup.netsuite_id
@@ -687,6 +698,15 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                     selected["supplier_phone"] = (contact.get("phone") or "").strip()
                     selected["supplier_email"] = (contact.get("email") or "").strip()
                     selected["supplier_contact"] = (contact.get("name") or "").strip()
+                elif selected["supplier_missing"]:
+                    # Dangling id: render with empty prefill + a warning rather
+                    # than crashing every tab of the RFQ detail page.
+                    logger.warning(
+                        "[rfq-detail] %s line %s: selected supplier %r references "
+                        "supplier_id %s which does not exist — rendering with a warning",
+                        rfq.get("id"), item.get("line"), selected.get("name"),
+                        selected.get("supplier_id"),
+                    )
 
             # Mandatory-for-sync rules (UI-enforced even if NetSuite doesn't
             # require them). Not-in-NetSuite is deliberately NOT a stopper:
@@ -730,6 +750,12 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                 issues.append({
                     "key": "supplier",
                     "label": "Supplier not selected — choose one on the Selection tab",
+                })
+            elif selected.get("supplier_missing"):
+                issues.append({
+                    "key": "supplier",
+                    "label": "Selected supplier has no database record — "
+                             "remove and re-add it on the Selection tab",
                 })
             elif selected.get("near_matches"):
                 warnings.append({
