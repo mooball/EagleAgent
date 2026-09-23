@@ -388,6 +388,46 @@ def _resolve_salutation_name(contacts: list[dict], entity_type: str = "supplier"
     return None
 
 
+def _build_rfq_link_targets(rfq: dict) -> dict:
+    """Customer + shortlisted suppliers on this RFQ, for the comms-tab link modal.
+
+    Reads the already-loaded RFQ dict (``items[].suppliers[]``) so no extra
+    query is needed. Only shortlisted suppliers are offered — the same set the
+    Suppliers tab emails. A supplier whose ``supplier_id`` is missing or is not
+    a UUID (legacy ids like ``sup_1597``) is returned with ``id: None`` so the
+    UI can grey it out rather than silently hiding a supplier the user expects
+    to see.
+    """
+    suppliers: dict[str, dict] = {}
+    for item in rfq.get("items", []):
+        for sup in item.get("suppliers", []):
+            if not isinstance(sup, dict) or sup.get("status") != "shortlisted":
+                continue
+            name = (sup.get("name") or "").strip()
+            if not name:
+                continue
+            raw_id = sup.get("supplier_id")
+            supplier_id = str(raw_id) if _is_valid_uuid(raw_id) else None
+
+            key = name.lower()
+            entry = suppliers.get(key)
+            if entry is None:
+                suppliers[key] = {"id": supplier_id, "name": name}
+            elif entry["id"] is None and supplier_id:
+                # Same supplier on several items — keep the first real id seen.
+                entry["id"] = supplier_id
+
+    customer_id = rfq.get("customer_id")
+    customer = None
+    if _is_valid_uuid(customer_id):
+        customer = {"id": str(customer_id), "name": rfq.get("customer") or "Customer"}
+
+    return {
+        "customer": customer,
+        "suppliers": sorted(suppliers.values(), key=lambda s: s["name"].lower()),
+    }
+
+
 def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
     """Group shortlisted suppliers with their line items for email template rendering."""
     supplier_map: dict[str, dict] = {}
@@ -3176,6 +3216,25 @@ async def partial_rfq_email_suppliers(
         "rfq": rfq,
         "suppliers": suppliers,
     })
+
+
+@router.get("/partial/rfqs/{rfq_id}/link-targets")
+async def partial_rfq_link_targets(request: Request, rfq_id: str,
+                                   user: dict = Depends(require_user)):
+    """JSON: the RFQ's customer + shortlisted suppliers.
+
+    Backs the communications-tab "link this email to a business" modal, so the
+    only choices offered are entities already on this RFQ — no free-text search.
+
+    Declared before the ``/{tab}`` catch-all so it is not mistaken for a tab.
+    """
+    from includes.tools.quote_tools import _get_rfq_dict_sync
+
+    rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+    if not rfq:
+        return JSONResponse({"status": "error", "message": "RFQ not found"}, status_code=404)
+
+    return JSONResponse({"status": "ok", **_build_rfq_link_targets(rfq)})
 
 
 @router.get("/partial/rfqs/{rfq_id}/communications-block")

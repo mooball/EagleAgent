@@ -732,6 +732,12 @@
     {% include "partials/_ai_summary_modal.html" %}
     </div>
 
+    <!-- Link-email modal for "Other / Unmatched" threads (also outside the
+         polled block, so a comms refresh can't close it mid-click) -->
+    <div x-data="emailLinker">
+    {% include "partials/_rfq_link_email_modal.html" %}
+    </div>
+
     <!-- Pipeline Detail Modal -->
     <div x-data="{ showPipeline: false, pd: {}, feedbackOpen: false, feedbackText: '', feedbackSubmitting: false, feedbackMsg: '', feedbackError: false,
                    submitFeedback() {

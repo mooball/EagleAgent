@@ -1114,6 +1114,75 @@
             };
         }
 
+        // RFQ comms: link an unmatched email thread to a business on this RFQ.
+        // The choices are the RFQ's own shortlist plus its customer (fetched from
+        // /partial/rfqs/{id}/link-targets) rather than a global entity search —
+        // deliberately no free-text search, so a thread can only be attached to
+        // something already on the RFQ.
+        function emailLinker() {
+            return {
+                show: false,
+                rfqId: null,
+                emailId: null,
+                subject: '',
+                loading: false,
+                busy: false,
+                error: '',
+                customer: null,
+                suppliers: [],
+                init() { window._openLinkEmail = this.open.bind(this); },
+                open(rfqId, emailId, subject) {
+                    this.rfqId = rfqId;
+                    this.emailId = emailId;
+                    this.subject = subject || '';
+                    this.error = '';
+                    this.customer = null;
+                    this.suppliers = [];
+                    this.loading = true;
+                    this.show = true;
+                    var self = this;
+                    fetch('/partial/rfqs/' + encodeURIComponent(rfqId) + '/link-targets', { credentials: 'same-origin' })
+                        .then(function(r) { return r.json(); })
+                        .then(function(d) {
+                            if (!d || d.status !== 'ok') throw new Error((d && d.message) || 'Could not load link targets');
+                            self.customer = d.customer || null;
+                            self.suppliers = d.suppliers || [];
+                        })
+                        .catch(function(e) { self.error = e.message; })
+                        .finally(function() { self.loading = false; });
+                },
+                link(kind, target) {
+                    if (this.busy || !target || !target.id) return;
+                    this.busy = true;
+                    this.error = '';
+                    var self = this;
+                    fetch('/api/admin/link-email', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ email_id: this.emailId, link_type: kind, entity_id: target.id }),
+                    })
+                        .then(function(r) { return r.json(); })
+                        .then(function(d) {
+                            if (!d || d.status !== 'ok') throw new Error((d && d.message) || 'Link failed');
+                            self.show = false;
+                            self._refreshComms();
+                            window.eaToast(d.message || ('Linked to ' + target.name), true);
+                        })
+                        .catch(function(e) { self.error = e.message; })
+                        .finally(function() { self.busy = false; });
+                },
+                _refreshComms() {
+                    // Same outerHTML swap the comms poller uses, so the thread
+                    // leaves "Other / Unmatched" and lands under its new group.
+                    if (!this.rfqId || !window.htmx) return;
+                    htmx.ajax('GET', '/partial/rfqs/' + encodeURIComponent(this.rfqId) + '/communications-block',
+                        { target: '#rfq-comms', swap: 'outerHTML' });
+                },
+                close() { this.show = false; }
+            };
+        }
+
         // Append human 'time ago' labels to date spans emitted by the AI summary
         function _decorateTimeAgo(root) {
             if (!root) return;
