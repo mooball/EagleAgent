@@ -853,6 +853,21 @@ window._emailData = {
                             <span x-show="rd.extraction_method" class="text-gray-400 ml-1" x-text="'via ' + rd.extraction_method"></span>
                         </div>
 
+                        <!-- Input completeness: how much of the email we could read.
+                             Amber only when something failed to read — skipped
+                             signatures are expected, not a problem. -->
+                        <template x-if="rd.input && rd.input.attachment_total">
+                            <div class="text-xs">
+                                <span class="font-medium text-gray-500 dark:text-gray-400">Attachments Read:</span>
+                                <span :class="(rd.input.failures && rd.input.failures.length)
+                                              ? 'text-amber-600 dark:text-amber-400 font-medium'
+                                              : 'text-gray-700 dark:text-gray-300'"
+                                      x-text="(rd.input.attachment_read || 0) + ' of ' + rd.input.attachment_total"></span>
+                                <span x-show="rd.input.skipped_as_signature" class="text-gray-400 ml-1"
+                                      x-text="'(' + rd.input.skipped_as_signature + ' skipped as signature)'"></span>
+                            </div>
+                        </template>
+
                         <!-- Warnings -->
                         <template x-if="rd.warnings && rd.warnings.length > 0">
                             <div>

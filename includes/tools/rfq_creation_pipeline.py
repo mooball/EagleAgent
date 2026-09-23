@@ -421,6 +421,10 @@ def _run_rfq_creation_pipeline(
         "customer_notes": llm_result.get("customer_notes", "") if llm_result else "",
         "raw_items": items,
         "warnings": llm_result.get("warnings", []) if llm_result else [],
+        # What the pipeline could not read from the email (attachment failures,
+        # counts). Feeds the user-facing warning above and later confidence
+        # scoring. None when there was no bundle report at all.
+        "input": llm_result.get("_input_report") if llm_result else None,
         "actions": [f"Created RFQ {rfq_number} with {len(items)} items"],
         "processed_at": _now_iso(),
     }
@@ -517,18 +521,38 @@ def _extract_rfq_items_sync(email_tracking_id: int) -> tuple[list, Optional[dict
     {input_description, input_code, brand, quantity, uom, confidence}
     and llm_result is the full parsed LLM response dict.
     """
-    from includes.tools.supplier_quote_pipeline import _extract_email_content_sync
+    from includes.tools.supplier_quote_pipeline import build_content_bundle
 
     # Build content bundle (email body + PDF/image attachments + spreadsheets)
     # NOTE: internally uses QUOTE pipeline models for vision/PDF processing
-    content_bundle = _extract_email_content_sync(email_tracking_id)
-    if not content_bundle or content_bundle.startswith("Error:"):
-        logger.warning(f"[rfq-creation] #{email_tracking_id}: empty content bundle — {content_bundle}")
-        return [], {"error": f"Failed to extract email content: {content_bundle}"}
+    bundle = build_content_bundle(email_tracking_id)
+
+    # Carry what we could NOT read out to the caller. Stage 4 stores this as
+    # result["input"], which is what makes "9 of 10 attachments" visible instead
+    # of an RFQ that is quietly one line short with no explanation.
+    report = bundle.to_dict()
+    input_warnings: list[str] = []
+    if bundle.failures:
+        named = ", ".join(f["filename"] for f in bundle.failures[:3])
+        extra = f" (+{len(bundle.failures) - 3} more)" if len(bundle.failures) > 3 else ""
+        input_warnings.append(
+            f"{len(bundle.failures)} attachment(s) could not be read: {named}{extra}"
+        )
+
+    def _fail(error: str, **extra) -> tuple[list, dict]:
+        """Every early return carries the input report and its warnings."""
+        payload = {"error": error, "_input_report": report, "warnings": input_warnings}
+        payload.update(extra)
+        return [], payload
+
+    if bundle.bundle_failure is not None or not bundle.text:
+        reason = bundle.bundle_failure.value if bundle.bundle_failure else "empty bundle"
+        logger.warning(f"[rfq-creation] #{email_tracking_id}: unusable content bundle — {reason}")
+        return _fail(f"Failed to extract email content: {reason}")
 
     # LLM extraction
     prompt = _load_extraction_prompt()
-    full_prompt = f"{prompt}\n\n---\n\n## Email Content\n\n{content_bundle}"
+    full_prompt = f"{prompt}\n\n---\n\n## Email Content\n\n{bundle.text}"
 
     response = llm_call_with_retry(
         pipeline="RFQ_CREATION",
@@ -541,7 +565,7 @@ def _extract_rfq_items_sync(email_tracking_id: int) -> tuple[list, Optional[dict
     raw_text = (response.text or "").strip()
     if not raw_text:
         logger.warning(f"[rfq-creation] #{email_tracking_id}: LLM returned empty response")
-        return [], {"error": "LLM returned empty response", "raw_response": ""}
+        return _fail("LLM returned empty response", raw_response="")
 
     # Parse JSON from response (handle markdown code fences)
     raw_original = raw_text
@@ -555,10 +579,12 @@ def _extract_rfq_items_sync(email_tracking_id: int) -> tuple[list, Optional[dict
         llm_result = json.loads(raw_text)
     except json.JSONDecodeError:
         logger.warning(f"[rfq-creation] #{email_tracking_id}: LLM returned invalid JSON: {raw_text[:300]}")
-        return [], {"error": "LLM returned invalid JSON", "raw_response": raw_original[:1000]}
+        return _fail("LLM returned invalid JSON", raw_response=raw_original[:1000])
 
     # Store the raw response for debugging
     llm_result["_raw_response"] = raw_original[:2000]
+    llm_result["_input_report"] = report
+    llm_result["warnings"] = (llm_result.get("warnings") or []) + input_warnings
 
     # Items are already in standard 5-field format from the LLM prompt
     # ({input_description, input_code, brand, quantity, uom, confidence}).

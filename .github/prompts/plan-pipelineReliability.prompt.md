@@ -1,6 +1,32 @@
 # Plan: Email Pipeline Infrastructure — Shared LLM Helpers, Signature Detection & Retry
 
-**Status:** Not started
+> ⚠️ **STALE — mostly implemented. Status below is wrong.** (annotated 2026-09-23)
+>
+> The "Not started" status is left as-written for history, but the core of this
+> plan is already in the codebase on `main`:
+>
+> - **Shared LLM helper** — `llm_call_with_retry(pipeline=, step=, contents=,
+>   temperature=, timeout=)` in `includes/email_pipeline.py` is the single entry
+>   point used by every pipeline. *(§1e)*
+> - **504/DEADLINE_EXCEEDED retry** — that helper retries on `504`, `503` and
+>   `DEADLINE_EXCEEDED` with model fallback, and re-raises permanent errors
+>   without retrying. *(§1e, and problem #1 below)*
+> - **Signature detection** — both halves exist: `_strip_signature()` trims
+>   signature blocks from the thread text, and image attachments are triaged via
+>   the signature cache (`triage_image(...) == "signature"`) so known
+>   signature/logo images are skipped. The skipped count is now exposed as
+>   `ContentBundle.skipped_as_signature`. *(§3e, and problem #2 below)*
+>
+> What is **not** obviously done: the failure *reporting* story — which was
+> picked up separately by
+> [plan-attachmentFailureCodes.prompt.md](plan-attachmentFailureCodes.prompt.md)
+> (implemented 2026-09-23), covering unreadable attachments, `unsupported` types
+> and bundle-level failures with per-attachment codes.
+>
+> Before actioning anything here, re-verify each section against the code — do
+> not assume the checkboxes/sections below still represent outstanding work.
+
+**Status:** ~~Not started~~ → **largely implemented; see banner above**
 **Created:** 2026-07-13
 **Branch:** rfq-updates-july
 

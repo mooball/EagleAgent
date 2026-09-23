@@ -10,6 +10,8 @@ each pipeline's own module (e.g. supplier_quote_pipeline.py).
 """
 
 import base64
+from dataclasses import dataclass, field
+from enum import Enum
 import hashlib
 import logging
 import os
@@ -279,14 +281,109 @@ def fetch_gmail_attachment_bytes(
 
 # ---------------------------------------------------------------------------
 # Attachment content extraction
+#
+# Failures are reported as CODES, not marker strings. Previously the failure
+# WAS the content — extract_pdf_content returned "*[PDF extraction failed:
+# ...]*", which got appended to the bundle and fed to the extraction LLM. So a
+# caller could not tell a failed attachment from one whose text legitimately
+# contained those words, and "9 of 10 attachments read" was not representable.
+#
+# A closed set of codes means callers can branch on them (the same reason HTTP
+# has status classes); `detail` carries the upstream message for humans only.
 # ---------------------------------------------------------------------------
+
+# What the LLM sees in place of content we never got. Deliberately neutral, so
+# upstream error text stops leaking into the prompt.
+PLACEHOLDER_UNREADABLE = "*[Attachment could not be read]*"
+PLACEHOLDER_EMPTY = "*[No content extracted]*"
+PLACEHOLDER_UNPARSED = "*[Spreadsheet could not be parsed]*"
+
+# Cap upstream error text so stored JSONB stays readable.
+_DETAIL_MAX = 200
+
+
+def _short(exc: object) -> str:
+    """One-line, length-capped failure detail. Never used for branching."""
+    return " ".join(str(exc).split())[:_DETAIL_MAX]
+
+
+class AttachmentFailure(str, Enum):
+    """Why one attachment's content is missing from the bundle.
+
+    UNSUPPORTED is a deterministic gap (retrying will not help) and is kept
+    distinct from MODEL_ERROR (transient) so confidence scoring can later weight
+    them differently.
+    """
+    FETCH_FAILED = "fetch_failed"   # bytes could not be downloaded from Gmail
+    UNSUPPORTED = "unsupported"     # mime type we do not handle at all
+    MODEL_ERROR = "model_error"     # LLM raised after retries (5xx, timeout, ...)
+    EMPTY = "empty"                 # LLM returned nothing, or the document was blank
+    PARSE_ERROR = "parse_error"     # local parsing failed (xlsx / csv)
+
+
+class BundleFailure(str, Enum):
+    """Why the whole bundle is unusable."""
+    EMAIL_NOT_FOUND = "email_not_found"
+    NO_CONTENT = "no_content"       # no body AND no readable attachments
+
+
+@dataclass
+class AttachmentExtraction:
+    """One attachment's contribution to the bundle, plus how it went."""
+    text: str
+    failure: AttachmentFailure | None = None
+    detail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.failure is None
+
+
+@dataclass
+class ContentBundle:
+    """Everything an email gave us to work with, plus what it did not.
+
+    ``text`` is the Markdown bundle handed to extraction. The counters and
+    ``failures`` are metadata that did not previously exist as data, which made
+    "the pipeline read 9 of 10 attachments" unrepresentable — an attachment could
+    vanish and the result still looked complete.
+
+    ``failures`` entries are ``{filename, code, detail}`` with ``code`` from
+    AttachmentFailure, shaped so they can be stored in JSONB as-is.
+    """
+    text: str = ""
+    attachment_total: int = 0
+    attachment_read: int = 0
+    skipped_as_signature: int = 0
+    failures: list[dict] = field(default_factory=list)
+    bundle_failure: BundleFailure | None = None
+
+    @property
+    def complete(self) -> bool:
+        """True when the bundle is usable and every attachment contributed."""
+        return self.bundle_failure is None and not self.failures
+
+    def to_dict(self) -> dict:
+        """Storage shape for the pipeline result's ``input`` key."""
+        return {
+            "attachment_total": self.attachment_total,
+            "attachment_read": self.attachment_read,
+            "skipped_as_signature": self.skipped_as_signature,
+            "failures": list(self.failures),
+            "bundle_failure": self.bundle_failure.value if self.bundle_failure else None,
+        }
+
 
 def extract_pdf_content(
     pdf_bytes: bytes,
     filename: str,
     pipeline: str = "QUOTE",
-) -> str:
-    """Extract text and tabular data from a PDF via Gemini."""
+) -> AttachmentExtraction:
+    """Extract text and tabular data from a PDF via Gemini.
+
+    Never raises: a failure comes back as an AttachmentExtraction carrying a
+    code, so the caller can record what could not be read.
+    """
     from google.genai import types as _types
 
     try:
@@ -318,11 +415,15 @@ def extract_pdf_content(
                     f"Gemini PDF extraction empty for {filename}: "
                     f"finish_reason={candidates[0].finish_reason}"
                 )
-            return "*[No content extracted from PDF]*"
-        return response.text
+            return AttachmentExtraction(
+                PLACEHOLDER_EMPTY, AttachmentFailure.EMPTY, "model returned no text"
+            )
+        return AttachmentExtraction(response.text)
     except Exception as e:
         logger.error(f"Gemini PDF extraction failed for {filename}: {e}")
-        return f"*[PDF extraction failed: {e}]*"
+        return AttachmentExtraction(
+            PLACEHOLDER_UNREADABLE, AttachmentFailure.MODEL_ERROR, _short(e)
+        )
 
 
 def extract_image_content(
@@ -330,7 +431,7 @@ def extract_image_content(
     filename: str,
     mime_type: str,
     pipeline: str = "QUOTE",
-) -> str:
+) -> AttachmentExtraction:
     """Extract text and tabular data from an image via Gemini OCR."""
     from google.genai import types as _types
 
@@ -350,13 +451,19 @@ def extract_image_content(
             temperature=0.1,
             timeout=60000,
         )
-        return response.text or "*[No content extracted]*"
+        if not response.text:
+            return AttachmentExtraction(
+                PLACEHOLDER_EMPTY, AttachmentFailure.EMPTY, "model returned no text"
+            )
+        return AttachmentExtraction(response.text)
     except Exception as e:
         logger.error(f"Gemini image extraction failed for {filename}: {e}")
-        return f"*[Image extraction failed: {e}]*"
+        return AttachmentExtraction(
+            PLACEHOLDER_UNREADABLE, AttachmentFailure.MODEL_ERROR, _short(e)
+        )
 
 
-def extract_spreadsheet_content(data: bytes, filename: str, mime_type: str) -> str:
+def extract_spreadsheet_content(data: bytes, filename: str, mime_type: str) -> AttachmentExtraction:
     """Extract spreadsheet content. CSV parsed directly; Excel via openpyxl.
 
     No LLM call — purely local parsing.
@@ -364,7 +471,7 @@ def extract_spreadsheet_content(data: bytes, filename: str, mime_type: str) -> s
     if filename.lower().endswith(".csv"):
         try:
             text = data.decode("utf-8", errors="replace")
-            return f"```csv\n{text[:5000]}\n```"
+            return AttachmentExtraction(f"```csv\n{text[:5000]}\n```")
         except Exception:
             pass
 
@@ -390,8 +497,12 @@ def extract_spreadsheet_content(data: bytes, filename: str, mime_type: str) -> s
         wb.close()
         result_text = "\n".join(parts)
         if not result_text.strip():
-            return "*[Spreadsheet appears empty]*"
-        return result_text[:8000]
+            return AttachmentExtraction(
+                PLACEHOLDER_EMPTY, AttachmentFailure.EMPTY, "spreadsheet has no rows"
+            )
+        return AttachmentExtraction(result_text[:8000])
     except Exception as e:
         logger.error(f"Local spreadsheet extraction failed for {filename}: {e}")
-        return f"*[Spreadsheet extraction failed: {e}]*"
+        return AttachmentExtraction(
+            PLACEHOLDER_UNPARSED, AttachmentFailure.PARSE_ERROR, _short(e)
+        )
