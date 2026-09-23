@@ -20,7 +20,8 @@
     "supplierLines": items | selectattr('suppliers') | map(attribute='line') | list,
     "allLines": items | map(attribute='line') | list,
     "unmatched": items | selectattr('match', 'equalto', 'unmatched') | list,
-    "departments": departments | default([])
+    "departments": departments | default([]),
+    "pipelineActive": pipeline_active | default(false)
 } | tojson }}</script>
 <div data-dashboard-context='{{ ctx | tojson }}' class="pt-6"
      x-data="rfqDetail()"
@@ -271,7 +272,7 @@
                 </div>
             </form>
             <div class="flex items-center gap-1 shrink-0">
-                <button x-show="!editingHeader" @click="editingHeader = true"
+                <button x-show="!editingHeader && !pipelineActive" @click="editingHeader = true"
                         class="btn-sm">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                     Edit
@@ -346,6 +347,22 @@
 
     {% if active_tab == 'items' %}
 
+    {# State watcher — lets a tab that rendered while UNLOCKED discover a run
+       that starts later. The banner only polls once it is already on screen, so
+       without this an open page would never learn the agent had started (and
+       would stay editable until a manual reload). Present only while the RFQ is
+       fresh or already locked, so idle RFQs generate no traffic. #}
+    {% if pipeline_active or rfq_is_fresh %}
+    <div id="rfq-pipeline-watch" hidden
+         data-watch-url="/partial/rfqs/{{ rfq.id }}/pipeline-active"
+         data-items-url="/partial/rfqs/{{ rfq.id }}/items"
+         data-active="{{ 'true' if pipeline_active else 'false' }}"></div>
+    {% endif %}
+
+    {% if pipeline_active %}
+    {% include "partials/_rfq_pipeline_banner.html" %}
+    {% endif %}
+
     {% if items %}
     <!-- Summary bar -->
     <div class="flex items-center justify-between mb-3">
@@ -356,7 +373,9 @@
             <span>·</span>
             <span class="hs-tooltip inline-flex">
             <button @click="identifyItems()"
-                    class="btn-sm btn-accent">
+                    :disabled="agentBusy || pipelineActive"
+                    class="btn-sm btn-accent"
+                    :class="{'opacity-50 cursor-not-allowed': agentBusy || pipelineActive}">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
                 Classify &amp; Validate
             </button>
@@ -375,9 +394,9 @@
             <span>·</span>
             <span class="hs-tooltip inline-flex">
             <button @click="findPreviousSuppliers()"
-                    :disabled="agentBusy"
+                    :disabled="agentBusy || pipelineActive"
                     class="btn-sm btn-accent"
-                    :class="{'opacity-50 cursor-not-allowed': agentBusy}">
+                    :class="{'opacity-50 cursor-not-allowed': agentBusy || pipelineActive}">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
                 Find Previous Sales
             </button>
@@ -386,9 +405,9 @@
             <span>·</span>
             <span class="hs-tooltip inline-flex">
             <button @click="findBrandSuppliers()"
-                    :disabled="agentBusy"
+                    :disabled="agentBusy || pipelineActive"
                     class="btn-sm btn-accent"
-                    :class="{'opacity-50 cursor-not-allowed': agentBusy}">
+                    :class="{'opacity-50 cursor-not-allowed': agentBusy || pipelineActive}">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"/></svg>
                 Find Brand Suppliers
             </button>
@@ -397,9 +416,9 @@
             <span>·</span>
             <span class="hs-tooltip inline-flex">
             <button @click="findNewSuppliers()"
-                    :disabled="agentBusy"
+                    :disabled="agentBusy || pipelineActive"
                     class="btn-sm btn-accent"
-                    :class="{'opacity-50 cursor-not-allowed': agentBusy}">
+                    :class="{'opacity-50 cursor-not-allowed': agentBusy || pipelineActive}">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                 Find New Suppliers
             </button>
@@ -445,7 +464,7 @@
                 <span x-text="allExpanded ? 'Collapse all' : 'Expand all'"></span>
             </button>
             <button @click="enterEditAll()"
-                    x-show="!editAllMode"
+                    x-show="!editAllMode && !pipelineActive"
                     class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-1">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                 Edit All
@@ -612,7 +631,7 @@
     </div> {# /rfq-items-container #}
 
     <!-- Action buttons -->
-    <div class="flex gap-2 mt-4">
+    <div x-show="!pipelineActive" class="flex gap-2 mt-4">
         <button @click="addingItem = true"
                 class="btn">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
@@ -627,8 +646,12 @@
 
     {% else %}
     <div class="space-y-3">
+        {% if pipeline_active %}
+        <p class="text-sm text-gray-500 dark:text-gray-400 italic">Items will appear here as soon as EagleAgent finishes reading the email.</p>
+        {% else %}
         <p class="text-sm text-gray-500 dark:text-gray-400 italic">No items yet.</p>
-        <div x-show="!addingItem" class="flex gap-2">
+        {% endif %}
+        <div x-show="!addingItem && !pipelineActive" class="flex gap-2">
             <button @click="addingItem = true"
                     class="btn">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>

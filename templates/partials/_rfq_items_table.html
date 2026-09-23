@@ -1,4 +1,5 @@
-{# Reusable items table — expects: table_items (list), rfq (dict), show_add_row (bool) #}
+{# Reusable items table — expects: table_items (list), rfq (dict), show_add_row (bool),
+   pipeline_active (bool, optional — renders read-only when true). #}
 <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-visible">
     <table class="w-full text-sm table-fixed">
         <colgroup>
@@ -120,7 +121,12 @@
                     <div class="flex items-center justify-end gap-1">
                         {% if suppliers %}
                         <span class="tabular-nums text-xs text-gray-500">{{ active_suppliers | length }} suppliers</span>
-                        {% elif item.match == 'specific' or item.match == 'branded' or item.match == 'generic' %}
+                        {% endif %}
+                        {# Read-only while a pipeline is writing to this RFQ — no item
+                           edits, no per-line agent runs. The server 409s regardless. #}
+                        {% if not pipeline_active %}
+                        {% if not suppliers %}
+                        {% if item.match == 'specific' or item.match == 'branded' or item.match == 'generic' %}
                         <button class="btn-sm"
                                 @click.stop="findSuppliers({{ item.line }})">
                             Find Suppliers
@@ -141,11 +147,13 @@
                             </button>
                         </form>
                         {% endif %}
+                        {% endif %}
                         <button class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity"
                                 @click.stop="editingItem = {{ item.line }}"
                                 title="Edit item">
                             <svg class="w-[18px] h-[18px] text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                         </button>
+                        {% endif %}
                     </div>
                 </td>
             </tr>
@@ -512,7 +520,7 @@
             </tr>
             {% endif %}
             {% endfor %}
-            {% if show_add_row %}
+            {% if show_add_row and not pipeline_active %}
             <!-- Add item row -->
             <tr x-show="addingItem" x-cloak class="bg-green-50 dark:bg-green-950">
                 <td class="px-2 py-2.5 text-center font-mono text-xs text-gray-400">+</td>

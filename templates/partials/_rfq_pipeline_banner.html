@@ -1,0 +1,34 @@
+{# Pipeline-activity banner — shown while a background pipeline is writing to this
+   RFQ (currently the create-RFQ pipeline adding extracted items).
+
+   Expects: rfq (dict with id), pipeline_step_label (str).
+
+   Self-polling: carries data-poll-url so the shared dashboard poller refreshes
+   it in place (see _reconcilePolls in base.html). When the server reports the
+   pipeline finished, the poll returns an empty body plus an HX-Trigger that
+   reloads the items tab — so the banner vanishes and the new items appear
+   without the user doing anything. #}
+<div id="rfq-pipeline-banner"
+     data-poll-url="/partial/rfqs/{{ rfq.id }}/pipeline-status"
+     data-processing="true"
+     class="mb-4 flex items-start gap-3 rounded-lg border border-blue-300 bg-blue-50 p-3 dark:border-blue-700 dark:bg-blue-950/40">
+    <svg class="mt-0.5 h-4 w-4 shrink-0 animate-spin text-blue-600 dark:text-blue-400"
+         fill="none" viewBox="0 0 24 24" aria-hidden="true">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+    </svg>
+    <div class="min-w-0 flex-1">
+        <p class="text-sm font-medium text-blue-900 dark:text-blue-100">
+            🤖 EagleAgent is still building this RFQ — {{ pipeline_step_label }}…
+        </p>
+        <p class="mt-0.5 text-xs text-blue-700 dark:text-blue-300">
+            Read-only until it finishes. Items will appear here automatically — no need to refresh.
+        </p>
+    </div>
+    <button type="button"
+            hx-get="/partial/rfqs/{{ rfq.id }}/items"
+            hx-target="#main-content" hx-swap="innerHTML"
+            class="shrink-0 rounded border border-blue-300 bg-white px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-600 dark:bg-blue-900 dark:text-blue-200 dark:hover:bg-blue-800">
+        Refresh now
+    </button>
+</div>

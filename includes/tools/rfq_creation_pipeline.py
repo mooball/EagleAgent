@@ -50,14 +50,90 @@ def _now_dt():
     return datetime.now(timezone.utc)
 
 
-def _save_rfq_creation_result(email_tracking_id: int, result: dict) -> None:
-    """Persist pipeline result to the email_tracking record."""
+# ---------------------------------------------------------------------------
+# Dashboard lock (rfqs.pipeline_activity)
+# ---------------------------------------------------------------------------
+
+PIPELINE_KIND = "rfq_creation"
+
+
+def _set_rfq_pipeline_activity(rfq_number: str | None, step: str) -> None:
+    """Stamp (or heartbeat) the RFQ's ``pipeline_activity`` lock.
+
+    Called at each stage boundary so the dashboard can both refuse edits and
+    show which step the agent is on. ``started_at`` is preserved across
+    heartbeats; only ``heartbeat_at`` moves.
+
+    Never raises — a failure here must not abort the pipeline, and the read
+    side treats a stale heartbeat as inactive anyway.
+    """
+    if not rfq_number:
+        return
     session = _get_session()
+    try:
+        from includes.dashboard.models import RFQ
+
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if not rfq:
+            return
+        now = _now_iso()
+        previous = rfq.pipeline_activity or {}
+        rfq.pipeline_activity = {
+            "kind": PIPELINE_KIND,
+            "step": step,
+            "started_at": previous.get("started_at") or now,
+            "heartbeat_at": now,
+        }
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        logger.warning(f"[rfq-creation] {rfq_number}: failed to set pipeline activity "
+                       f"({step}) — {e}")
+    finally:
+        session.close()
+
+
+def _clear_rfq_pipeline_activity(rfq_number: str | None) -> None:
+    """Release the RFQ's ``pipeline_activity`` lock.
+
+    Called from the single terminal funnel (``_save_rfq_creation_result``) so
+    complete / partial / error outcomes all unlock. Never raises.
+    """
+    if not rfq_number:
+        return
+    session = _get_session()
+    try:
+        from includes.dashboard.models import RFQ
+
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        if rfq and rfq.pipeline_activity is not None:
+            rfq.pipeline_activity = None
+            session.commit()
+            logger.info(f"[rfq-creation] {rfq_number}: pipeline activity cleared")
+    except Exception as e:
+        session.rollback()
+        logger.warning(f"[rfq-creation] {rfq_number}: failed to clear pipeline activity — {e}")
+    finally:
+        session.close()
+
+
+def _save_rfq_creation_result(email_tracking_id: int, result: dict,
+                              rfq_number: str | None = None) -> None:
+    """Persist pipeline result to the email_tracking record.
+
+    Also the single terminal funnel for releasing the dashboard lock, so every
+    outcome (complete / partial / error) unlocks the RFQ.
+    """
+    session = _get_session()
+    lock_target = result.get("rfq_number") or rfq_number
     try:
         tracking = _get_email_tracking(session, email_tracking_id)
         if not tracking:
             logger.warning(f"[rfq-creation] #{email_tracking_id}: cannot save result — email not found")
             return
+        # The RFQ is linked to the email thread in stage 2 — use that to find the
+        # lock when the result itself carries no rfq_number (early failures).
+        lock_target = lock_target or tracking.rfq_token
         tracking.rfq_creation_result = result
         session.commit()
         logger.info(f"[rfq-creation] #{email_tracking_id}: result saved "
@@ -67,15 +143,17 @@ def _save_rfq_creation_result(email_tracking_id: int, result: dict) -> None:
         logger.warning(f"[rfq-creation] #{email_tracking_id}: failed to save result — {e}")
     finally:
         session.close()
+        _clear_rfq_pipeline_activity(lock_target)
 
 
-def _save_error(email_tracking_id: int, error: str) -> None:
-    """Save an error result."""
+def _save_error(email_tracking_id: int, error: str,
+                rfq_number: str | None = None) -> None:
+    """Save an error result (and release the dashboard lock)."""
     _save_rfq_creation_result(email_tracking_id, {
         "status": "error",
         "error": error,
         "processed_at": _now_iso(),
-    })
+    }, rfq_number=rfq_number)
 
 
 def _deduplicate_items(items: list) -> list:
@@ -215,11 +293,14 @@ def _run_rfq_creation_pipeline(
 
         if rfq_number:
             # Caller already created and linked the RFQ, and created the
-            # opportunity, so only the extraction stages are left.
+            # opportunity, so only the extraction stages are left. Lock it now:
+            # the pipeline is about to write items into an RFQ that is already
+            # visible and editable in the dashboard.
             logger.info(
                 f"[rfq-creation] #{email_tracking_id}: {rfq_number} pre-created by caller, "
                 f"skipping stage 2"
             )
+            _set_rfq_pipeline_activity(rfq_number, "extracting_items")
         else:
             rfq = _create_rfq_sync(
                 data={
@@ -237,6 +318,10 @@ def _run_rfq_creation_pipeline(
 
             rfq_number = rfq["rfq_number"]
             logger.info(f"[rfq-creation] #{email_tracking_id}: created {rfq_number} for {customer_name}")
+
+            # Lock immediately — everything from here on writes into an RFQ the
+            # user can already see. Covers the email-link + opportunity window too.
+            _set_rfq_pipeline_activity(rfq_number, "extracting_items")
 
             # Link entire email thread to the new RFQ immediately
             session.execute(
@@ -270,7 +355,8 @@ def _run_rfq_creation_pipeline(
     except Exception as e:
         session.rollback()
         logger.exception(f"[rfq-creation] #{email_tracking_id}: failed to create RFQ")
-        _save_error(email_tracking_id, f"Failed to create RFQ: {e}")
+        _save_error(email_tracking_id, f"Failed to create RFQ: {e}",
+                    rfq_number=rfq_number)
         return
     finally:
         session.close()
@@ -297,6 +383,7 @@ def _run_rfq_creation_pipeline(
     # Add items to the RFQ
     if items:
         from includes.tools.rfq_crud import _add_items_sync
+        _set_rfq_pipeline_activity(rfq_number, "adding_items")
         try:
             _add_items_sync(
                 rfq_number=rfq_number,
@@ -317,6 +404,7 @@ def _run_rfq_creation_pipeline(
             updates["notes"] = llm_result["customer_notes"]
         if updates:
             try:
+                _set_rfq_pipeline_activity(rfq_number, "updating_details")
                 _update_rfq_sync(rfq_number, updates, user_id)
                 logger.info(f"[rfq-creation] #{email_tracking_id}: updated title/notes on {rfq_number}")
             except Exception as e:

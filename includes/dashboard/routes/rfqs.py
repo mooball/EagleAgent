@@ -1,6 +1,7 @@
 """RFQ routes: list, detail, create, update items/suppliers, price history."""
 
 import asyncio
+import json
 import logging
 import math
 from datetime import datetime, timezone
@@ -1118,6 +1119,28 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
     }
 
 
+def _add_pipeline_flags(ctx: dict, rfq: dict) -> dict:
+    """Stamp pipeline-activity flags onto a template context.
+
+    While a pipeline is writing to this RFQ (e.g. the create-RFQ pipeline
+    adding extracted items) the page renders read-only and polls for
+    completion. The 409 guards on the mutation endpoints are the real
+    protection; this only drives the UI.
+    """
+    act = _rfq_pipeline_active(rfq)
+    ctx["pipeline_active"] = bool(act)
+    ctx["pipeline_activity"] = act or {}
+    ctx["pipeline_step_label"] = _pipeline_step_label(act)
+    # The items tab also renders a state watcher while the RFQ is fresh so a tab
+    # opened while UNLOCKED can still discover a run that starts later (the
+    # banner only polls once it is already on screen). ``age_hours`` is whole
+    # hours and is 0 both for "under an hour" and for an unknown created date —
+    # either way, watching is the safe side to err on.
+    age = rfq.get("age_hours")
+    ctx["rfq_is_fresh"] = bool(act) or age is None or age < _PIPELINE_WATCH_WINDOW_HOURS
+    return ctx
+
+
 def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
     ctx = {
         "user": user,
@@ -1129,6 +1152,7 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
     }
     ctx.update(_rfq_sync_readiness(rfq))
     _annotate_brand_db_status(rfq)
+    _add_pipeline_flags(ctx, rfq)
     if ctx["active_tab"] == "selection":
         _annotate_last_sale(rfq)
     if ctx["active_tab"] == "quotation":
@@ -1242,6 +1266,80 @@ def _annotate_pipeline_flags(event: dict) -> None:
                     pass
         event[f"{prefix}_processing"] = processing and not stale
         event[f"{prefix}_stale"] = processing and stale
+
+
+# Human labels for the create-RFQ pipeline's steps (rfqs.pipeline_activity.step).
+_PIPELINE_STEP_LABELS = {
+    "extracting_items": "reading the email",
+    "adding_items": "adding items",
+    "updating_details": "updating details",
+}
+
+# How long after creation the items tab keeps watching for a pipeline lock to
+# appear. A run starts within seconds of the RFQ being created (the add-on
+# creates the RFQ, then the pipeline runs), so a short window keeps idle RFQs
+# from polling forever. Whole hours, matching `age_hours`.
+_PIPELINE_WATCH_WINDOW_HOURS = 1
+
+
+def _rfq_pipeline_active(rfq) -> dict | None:
+    """Return an RFQ's live ``pipeline_activity`` dict, or None if inactive.
+
+    A marker whose heartbeat is older than ``_PIPELINE_STALE_SECONDS`` is
+    treated as absent, so a crashed daemon thread can never lock an RFQ
+    permanently. A malformed marker is also treated as absent (unlock) rather
+    than active — a stuck lock is worse than a missed one.
+    """
+    if rfq is None:
+        return None
+    if isinstance(rfq, dict):
+        act = rfq.get("pipeline_activity")
+    else:
+        act = getattr(rfq, "pipeline_activity", None)
+    if not isinstance(act, dict) or not act:
+        return None
+    heartbeat = act.get("heartbeat_at") or act.get("started_at")
+    if not isinstance(heartbeat, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(heartbeat.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if (datetime.now(timezone.utc) - dt).total_seconds() > _PIPELINE_STALE_SECONDS:
+        return None
+    return act
+
+
+def _rfq_pipeline_activity_for(rfq_number: str) -> dict | None:
+    """Look up an RFQ by number and return its live pipeline activity."""
+    from includes.dashboard.models import RFQ
+
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_number).first()
+        return _rfq_pipeline_active(rfq)
+    except Exception:
+        logger.exception(f"pipeline-lock: check failed for {rfq_number}")
+        return None
+    finally:
+        session.close()
+
+
+def _pipeline_step_label(act: dict | None) -> str:
+    """Short present-progress phrase for the banner (e.g. 'adding items')."""
+    return _PIPELINE_STEP_LABELS.get((act or {}).get("step", ""), "working")
+
+
+def _pipeline_lock_message(act: dict | None) -> str:
+    """User-facing explanation for a lock rejection, with the current step."""
+    step = _PIPELINE_STEP_LABELS.get((act or {}).get("step", ""))
+    msg = "EagleAgent is still building this RFQ"
+    if step:
+        msg += f" — {step}"
+    msg += ". Editing is disabled until it finishes; this page will unlock automatically."
+    return msg
 
 
 def _rfq_comms_context(rfq: dict) -> dict:
@@ -1652,7 +1750,7 @@ async def rfq_new(request: Request, user: dict = Depends(require_user)):
     _enrich_rfq_supplier_contacts(rfq)
     rfq_id = rfq["id"]
 
-    response = templates.TemplateResponse(request, "partials/rfq_detail.html", {
+    response = templates.TemplateResponse(request, "partials/rfq_detail.html", _add_pipeline_flags({
         "user": user,
         "rfq": rfq,
         "rfq_thread_id": None,
@@ -1660,7 +1758,7 @@ async def rfq_new(request: Request, user: dict = Depends(require_user)):
         "all_users": _get_all_user_emails(),
         "departments": _department_options(),
         "header_auto_edit": True,
-    })
+    }, rfq))
     response.headers["HX-Push-Url"] = f"/rfqs/{rfq_id}"
     return response
 
@@ -2020,6 +2118,10 @@ async def api_brand_search(request: Request, q: str = "", user: dict = Depends(r
 async def partial_rfq_update(request: Request, rfq_id: str,
                              user: dict = Depends(require_user)):
     """Update RFQ header properties (customer, netsuite, hubspot, notes)."""
+    # The create-RFQ pipeline writes title/notes in stage 3 — refuse to race it.
+    act = await asyncio.to_thread(_rfq_pipeline_activity_for, rfq_id)
+    if act:
+        return HTMLResponse(f"<p>{_pipeline_lock_message(act)}</p>", status_code=409)
     form = await request.form()
     data = {}
     updatable = ["customer", "customer_id", "opportunity_id", "assigned_to", "title", "notes", "netsuite_opportunity", "hubspot_deal", "quote_brand_id"]
@@ -2140,6 +2242,9 @@ async def partial_rfq_create_opportunity(request: Request, rfq_id: str,
 async def partial_rfq_update_item(request: Request, rfq_id: str,
                                   user: dict = Depends(require_user)):
     """Update a single RFQ line item."""
+    act = await asyncio.to_thread(_rfq_pipeline_activity_for, rfq_id)
+    if act:
+        return HTMLResponse(f"<p>{_pipeline_lock_message(act)}</p>", status_code=409)
     form = await request.form()
     try:
         line_num = int(form.get("line", 0))
@@ -2179,6 +2284,9 @@ async def partial_rfq_update_item(request: Request, rfq_id: str,
 async def partial_rfq_delete_item(request: Request, rfq_id: str, line: int,
                                   user: dict = Depends(require_user)):
     """Delete a single RFQ line item and renumber remaining items."""
+    act = await asyncio.to_thread(_rfq_pipeline_activity_for, rfq_id)
+    if act:
+        return HTMLResponse(f"<p>{_pipeline_lock_message(act)}</p>", status_code=409)
     from includes.tools.rfq_crud import _delete_item_sync
     user_ident = user.get("identifier", "dashboard")
     result = await asyncio.to_thread(_delete_item_sync, rfq_id, line, user_ident)
@@ -2243,6 +2351,10 @@ async def partial_rfq_merge_suppliers(request: Request, rfq_id: str,
 async def partial_rfq_bulk_update_items(request: Request, rfq_id: str,
                                         user: dict = Depends(require_user)):
     """Bulk update multiple RFQ line items in one request (spreadsheet edit mode)."""
+    act = await asyncio.to_thread(_rfq_pipeline_activity_for, rfq_id)
+    if act:
+        return JSONResponse({"status": "error", "message": _pipeline_lock_message(act)},
+                            status_code=409)
     body = await request.json()
     items_data = body.get("items", [])
     if not items_data:
@@ -2283,6 +2395,9 @@ async def partial_rfq_bulk_update_items(request: Request, rfq_id: str,
 async def partial_rfq_add_item(request: Request, rfq_id: str,
                                user: dict = Depends(require_user)):
     """Add a new line item to the RFQ."""
+    act = await asyncio.to_thread(_rfq_pipeline_activity_for, rfq_id)
+    if act:
+        return HTMLResponse(f"<p>{_pipeline_lock_message(act)}</p>", status_code=409)
     form = await request.form()
 
     qty = form.get("quantity", "").strip()
@@ -2361,11 +2476,11 @@ async def partial_rfq_clear_suppliers(request: Request, rfq_id: str,
     else:
         rfq = result
     _enrich_rfq_supplier_contacts(rfq)
-    return templates.TemplateResponse(request, "partials/rfq_detail.html", {
+    return templates.TemplateResponse(request, "partials/rfq_detail.html", _add_pipeline_flags({
         "user": user, "rfq": rfq,
         "rfq_thread_id": _lookup_rfq_thread_id(rfq_id, user.get("email", "")),
         "departments": _department_options(),
-    })
+    }, rfq))
 
 
 @router.post("/partial/rfqs/{rfq_id}/update-supplier-status")
@@ -3081,6 +3196,56 @@ async def partial_rfq_comms_block(request: Request, rfq_id: str,
     ctx["rfq"] = rfq
     ctx["user"] = user
     response = templates.TemplateResponse(request, "partials/_rfq_comms.html", ctx)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/partial/rfqs/{rfq_id}/pipeline-active")
+async def partial_rfq_pipeline_active(request: Request, rfq_id: str,
+                                      user: dict = Depends(require_user)):
+    """Cheap JSON probe: is a pipeline writing to this RFQ right now?
+
+    Polled by the items-tab state watcher so a page rendered while UNLOCKED can
+    discover a run that starts later, and so a locked page notices when it
+    clears. The banner cannot do this on its own — it only polls once it is
+    already on screen, so an already-open tab would never learn.
+
+    Declared before the ``/{tab}`` catch-all so it is not mistaken for a tab.
+    """
+    act = await asyncio.to_thread(_rfq_pipeline_activity_for, rfq_id)
+    return JSONResponse({
+        "active": bool(act),
+        "step": (act or {}).get("step"),
+        "label": _pipeline_step_label(act) if act else None,
+    })
+
+
+@router.get("/partial/rfqs/{rfq_id}/pipeline-status")
+async def partial_rfq_pipeline_status(request: Request, rfq_id: str,
+                                     user: dict = Depends(require_user)):
+    """Poll target for the RFQ pipeline-activity banner.
+
+    Returns the banner while a pipeline is writing to this RFQ, or an empty
+    body plus ``HX-Trigger: pipelineDone`` once it has finished — the trigger
+    tells the dashboard to reload the items tab so the newly-written items
+    appear, unlocked.
+
+    Declared before the ``/{tab}`` catch-all so it is not mistaken for a tab.
+    """
+    act = await asyncio.to_thread(_rfq_pipeline_activity_for, rfq_id)
+    if not act:
+        return Response(
+            content="",
+            media_type="text/html",
+            headers={"HX-Trigger": json.dumps({
+                "pipelineDone": {"itemsUrl": f"/partial/rfqs/{rfq_id}/items"},
+            })},
+        )
+    response = templates.TemplateResponse(request, "partials/_rfq_pipeline_banner.html", {
+        "rfq": {"id": rfq_id},
+        "pipeline_activity": act,
+        "pipeline_step_label": _pipeline_step_label(act),
+    })
     response.headers["Cache-Control"] = "no-store"
     return response
 

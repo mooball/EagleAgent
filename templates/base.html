@@ -1217,6 +1217,7 @@
                 editingItem: null,
                 addingItem: false,
                 agentBusy: false,
+                pipelineActive: false,
                 editAllMode: false,
                 editAllItems: [],
                 editAllOriginals: {},
@@ -1251,6 +1252,7 @@
                     this._allLines = data.allLines || [];
                     this._unmatchedItems = data.unmatched || [];
                     this.departments = data.departments || [];
+                    this.pipelineActive = data.pipelineActive || false;
                     // Index items by line number for quick lookup
                     (data.items || []).forEach(i => this._items[i.line] = i);
                     // Auto-open header edit form for blank RFQs (no customer yet)
@@ -1258,7 +1260,7 @@
                     if (ctxEl) {
                         try {
                             var ctx = JSON.parse(ctxEl.dataset.dashboardContext);
-                            if (ctx.header_auto_edit && !ctx.customer) {
+                            if (ctx.header_auto_edit && !ctx.customer && !this.pipelineActive) {
                                 this.editingHeader = true;
                             }
                         } catch(e) {}
@@ -3464,50 +3466,144 @@
     });
     </script>
     <script>
-    // ── RFQ communications polling ─────────────────────────────────────────
-    // One shared timer refreshing the comms block in place. Polls whenever the
-    // block is on screen (so it picks up pipeline runs triggered from another
-    // tab/page), with a faster interval while a pipeline is processing.
-    // Reconciled after every HTMX swap and on tab visibility changes.
-    window._commsPoll = {
-        timer: null,
-        interval: null,
-        start(url, interval) {
-            if (!url) return;
-            if (this.timer && this.interval === interval) return;
-            this.stop();
-            this.interval = interval;
-            this.timer = setInterval(() => {
-                if (!document.getElementById('rfq-comms')) { this.stop(); return; }
-                htmx.ajax('GET', url, { target: '#rfq-comms', swap: 'outerHTML' });
+    // ── Pipeline polling ───────────────────────────────────────────────────
+    // Any element carrying data-poll-url is refreshed in place: the RFQ comms
+    // block, and the RFQ pipeline-activity banner. Polls whenever such a block
+    // is on screen (so it picks up pipeline runs triggered from another
+    // tab/page), with a faster interval while a block is marked
+    // data-processing="true". This is also how a locked RFQ discovers that the
+    // agent has finished. Reconciled after every HTMX swap, on load, and on tab
+    // visibility changes.
+    window._pipelinePoll = {
+        timers: {},
+        specs: {},
+        start(id, url, interval) {
+            if (!id || !url) return;
+            var spec = this.specs[id];
+            if (this.timers[id] && spec && spec.url === url && spec.interval === interval) return;
+            this.stop(id);
+            this.specs[id] = { url: url, interval: interval };
+            this.timers[id] = setInterval(function () {
+                var el = document.getElementById(id);
+                if (!el) { window._pipelinePoll.stop(id); return; }
+                htmx.ajax('GET', el.dataset.pollUrl, { target: '#' + id, swap: 'outerHTML' });
             }, interval);
         },
-        stop() {
-            if (this.timer) { clearInterval(this.timer); this.timer = null; this.interval = null; }
+        stop(id) {
+            if (this.timers[id]) { clearInterval(this.timers[id]); delete this.timers[id]; }
+            delete this.specs[id];
+        },
+        stopAll() {
+            Object.keys(this.timers).forEach(function (id) { window._pipelinePoll.stop(id); });
         }
     };
-    function _reconcileCommsPoll() {
-        if (document.hidden) { window._commsPoll.stop(); return; }
-        var block = document.getElementById('rfq-comms');
-        if (!block) { window._commsPoll.stop(); return; }
-        var interval = block.dataset.processing === 'true' ? 4000 : 10000;
-        window._commsPoll.start(block.dataset.pollUrl, interval);
+    function _reconcilePolls() {
+        if (document.hidden) {
+            window._pipelinePoll.stopAll();
+            if (window._pipelineWatch) window._pipelineWatch.stop();
+            return;
+        }
+        var seen = {};
+        document.querySelectorAll('[data-poll-url]').forEach(function (el) {
+            if (!el.id || !el.dataset.pollUrl) return;
+            seen[el.id] = true;
+            var interval = el.dataset.processing === 'true' ? 4000 : 10000;
+            window._pipelinePoll.start(el.id, el.dataset.pollUrl, interval);
+        });
+        // Drop timers whose element has left the page — e.g. the
+        // pipeline-activity banner is gone because the agent finished.
+        Object.keys(window._pipelinePoll.timers).forEach(function (id) {
+            if (!seen[id]) window._pipelinePoll.stop(id);
+        });
+        // Reconcile the items-tab state watcher alongside the pollers.
+        // Guarded: _reconcilePolls can run before the watcher is defined.
+        if (!window._pipelineWatch) return;
+        var watchEl = document.getElementById('rfq-pipeline-watch');
+        if (watchEl) window._pipelineWatch.start();
+        else window._pipelineWatch.stop();
     }
-    document.addEventListener('htmx:afterSwap', _reconcileCommsPoll);
+    document.addEventListener('htmx:afterSwap', _reconcilePolls);
     // htmx:load fires on initial page load (and after content loads) — without
-    // this, a full page render of the comms tab never starts the poller.
-    document.addEventListener('htmx:load', _reconcileCommsPoll);
-    document.addEventListener('visibilitychange', _reconcileCommsPoll);
+    // this, a full page render never starts the pollers.
+    document.addEventListener('htmx:load', _reconcilePolls);
+    document.addEventListener('visibilitychange', _reconcilePolls);
     document.addEventListener('htmx:beforeRequest', function (e) {
-        // A swap that replaces #main-content removes the comms block; stop
-        // polling — htmx:afterSwap will restart it if the new page needs it.
+        // A swap that replaces #main-content removes the polled blocks; stop
+        // everything — htmx:afterSwap will restart whatever the new page needs.
         if (e.detail.elt && e.detail.elt.id === 'main-content') {
-            window._commsPoll.stop();
+            window._pipelinePoll.stopAll();
+            if (window._pipelineWatch) window._pipelineWatch.stop();
         }
     });
-    window.addEventListener('beforeunload', function () { window._commsPoll.stop(); });
-    // Kick the poller immediately for the initial page render.
-    _reconcileCommsPoll();
+    window.addEventListener('beforeunload', function () {
+        window._pipelinePoll.stopAll();
+        if (window._pipelineWatch) window._pipelineWatch.stop();
+    });
+
+    // ── Items-tab state watcher ───────────────────────────────────────────
+    // The banner only polls once it is rendered, so a tab opened while UNLOCKED
+    // would never learn that a run started; and a page rendered while locked
+    // would never learn that it finished. This probes a cheap JSON endpoint and
+    // re-renders the items tab whenever the page no longer matches the server.
+    //
+    // Two deliberate choices, both learned the hard way:
+    //   1. The rendered element IS the state store (its data-active attribute),
+    //      so there is no JS variable to fall out of sync — including across a
+    //      re-render.
+    //   2. Nothing depends on htmx swap events. The banner removes itself via its
+    //      own empty poll response, and events fired on a detached element never
+    //      bubble, so a refresh driven by those events can silently miss.
+    window._pipelineWatch = {
+        timer: null,
+        start() {
+            if (this.timer) return;
+            this.timer = setInterval(function () { window._pipelineWatch.tick(); }, 2000);
+        },
+        stop() {
+            if (this.timer) { clearInterval(this.timer); this.timer = null; }
+        },
+        tick() {
+            var el = document.getElementById('rfq-pipeline-watch');
+            if (!el) { this.stop(); return; }
+            var shown = el.dataset.active === 'true';
+            fetch(el.dataset.watchUrl, { credentials: 'same-origin' })
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (data) {
+                    if (!data || typeof data.active !== 'boolean') return;
+                    if (data.active === shown) return;  // page is current
+                    // Stale page — re-render it. The re-render rewrites
+                    // data-active, so this cannot loop.
+                    _refreshItemsTab(el.dataset.itemsUrl);
+                })
+                .catch(function () { /* transient — the next tick retries */ });
+        }
+    };
+
+    // Start the watcher for the initial render. Order matters: this must come
+    // AFTER window._pipelineWatch is assigned, because _reconcilePolls touches
+    // it. The previous version defined the watcher below this point, so the
+    // first _reconcilePolls() threw a TypeError and the watcher never ran at
+    // all — which is why a locked page never refreshed itself when the run
+    // finished.
+    _reconcilePolls();
+
+    // Single debounced refresh path: the state watcher and the banner's
+    // pipelineDone trigger can both fire within the same second when a run
+    // ends, and one re-render is enough.
+    window._lastItemsRefresh = 0;
+    function _refreshItemsTab(url) {
+        if (!url || !window.htmx) return;
+        var now = Date.now();
+        if (now - window._lastItemsRefresh < 1500) return;
+        window._lastItemsRefresh = now;
+        htmx.ajax('GET', url, { target: '#main-content', swap: 'innerHTML' });
+    }
+
+    // Fired (via HX-Trigger) when a pipeline that was locking an RFQ finishes:
+    // reload the items tab so the newly-written items appear, unlocked.
+    document.body.addEventListener('pipelineDone', function (e) {
+        _refreshItemsTab(e.detail && e.detail.itemsUrl);
+    });
 
     // Back/forward from the browser bfcache restores a stale page without any
     // request — refetch main content so data is always current.

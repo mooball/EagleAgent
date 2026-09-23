@@ -293,6 +293,9 @@ def _rfq_to_dict(rfq) -> dict:
         "item_groups": rfq.item_groups,
         "opportunity_sync_state": rfq.opportunity_sync_state or {},
         "pipeline_stage": getattr(rfq, "pipeline_stage", "unprocessed") or "unprocessed",
+        # Background-write lock, honoured by the dashboard (read-only + banner)
+        # while a pipeline is adding items / updating the header.
+        "pipeline_activity": rfq.pipeline_activity or None,
         "supplier_meta": rfq.supplier_meta or {},
         "items": items,
     }
