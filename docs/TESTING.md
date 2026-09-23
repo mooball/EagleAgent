@@ -175,6 +175,132 @@ uv run pytest tests/ -v -s
 
 ---
 
+## Manual End-to-End Testing (Local)
+
+Automated tests cover the units; some flows also need a real run against your
+local database. The hard one is the **Gmail add-on**, because the add-on posts to
+production (`BACKEND_URL = https://agent.eaglexp.com.au` in `addon/Code.gs`) and
+`/api/addon/*` is gated behind a Google OIDC token that only Apps Script can
+mint. Clicking the add-on therefore can never reach your local server.
+
+`scripts/test_rfq_creation.py` solves this by replaying the **"Create RFQ + OP"**
+flow in-process: it calls the real `addon.create_rfq()` route function with the
+same body the add-on sends (`{gmail_message_id, gmail_thread_id}`), so every
+guard and write runs exactly as it does in production — minus HTTP and auth.
+
+### 🛡 NetSuite writes are blocked by default
+
+There is no NetSuite sandbox in this codebase, and `Config.NETSUITE_ACCOUNT_ID`
+defaults to `794882` — **production**. Both the add-on route and the create-RFQ
+pipeline call `create_and_link_opportunity()`, which writes a real Opportunity.
+
+So the script **intercepts that call by default** and reports it as
+`🛡 intercepted`. Nothing reaches NetSuite unless you explicitly pass
+`--allow-netsuite`, which you should not need for local testing.
+
+> **Why it works this way.** An earlier version made blocking opt-in via
+> `--no-netsuite`, and combined with `--reset` falling through to a trigger that
+> was a real hazard: a command that read like "just clean up after the last run"
+> silently created live opportunities in production NetSuite. Fail closed.
+
+`--no-netsuite` is still accepted as a no-op for compatibility with older notes,
+but it is no longer needed.
+
+### Getting test data in
+
+Either pull real mail into the local database:
+
+```bash
+# From your own mailbox (recommended — attachments resolve from Gmail on demand)
+uv run python -m scripts.sync_gmail_mailboxes --user you@eagle-exports.com
+
+# Or copy emails + RFQs from production
+uv run python -m scripts.sync_prod_mail_data --limit 50
+```
+
+### The workflow
+
+```bash
+# 1. List recent emails and how ready each is (read-only)
+uv run python -m scripts.test_rfq_creation --recent 10
+uv run python -m scripts.test_rfq_creation --recent 20 --search RFQ
+
+# 2. Inspect one email: customer linked? already processed?
+uv run python -m scripts.test_rfq_creation --email-id 42844
+
+# 3. Link a customer if the route's guard complains (id or name fragment)
+uv run python -m scripts.test_rfq_creation --email-id 42844 --link-customer "Ranger"
+
+# 4. Preview the whole thing without writing anything
+uv run python -m scripts.test_rfq_creation --email-id 42844 --dry-run
+
+# 5. Run it — creates the RFQ, watches the pipeline. NetSuite writes stay blocked.
+uv run python -m scripts.test_rfq_creation --email-id 42844 --yes
+
+# 6. Iterate. --reset is STANDALONE: it stops after cleaning up, and does NOT
+#    create an RFQ. Run step 5 again separately to replay.
+uv run python -m scripts.test_rfq_creation --email-id 42844 --reset --yes
+```
+
+**Actions that stop rather than run:** `--recent`, `--dry-run`, `--reset`. Only a
+plain "inspect or run" invocation reaches the trigger.
+
+The script refuses to run against a non-local `DATABASE_URL` unless you pass
+`--yes`, because it **writes** (creates RFQs, links emails, resets guards).
+
+### Watching the agent-working lock
+
+Step 4 prints the RFQ number and its dashboard URL as soon as the RFQ exists.
+Open that URL, then watch the run in the terminal:
+
+```
+  → RFQ created: RFQ-2026-1234
+    Open http://localhost:8000/rfqs/RFQ-2026-1234 now to watch the banner.
+
+  [09:32:23] step=extracting_items  status=processing
+  [09:33:23] step=updating_details  status=processing
+  [09:33:25] pipeline finished — status=complete, items=2
+  [09:33:25] lock: cleared   items on RFQ: 2
+```
+
+In the browser you should see: the blue banner at the top of the RFQ Items tab,
+no Add/Edit/Delete controls, then — once the run finishes — the banner vanishing
+on its own and the extracted lines appearing (the page polls itself).
+
+To confirm the server-side guard rather than just the hidden buttons, run this in
+the browser console while the banner is up:
+
+```javascript
+htmx.ajax('POST', '/partial/rfqs/RFQ-2026-1234/add-item',
+          {target: '#main-content', values: {input_description: 'should fail'}})
+```
+
+It should toast a 409 rather than adding a line. See
+`.github/prompts/plan-rfqAgentWorkingLock.prompt.md` for how the lock works.
+
+### Notes and gotchas
+
+- **The pipeline runs in a daemon thread.** If the script exits immediately, the
+  run is killed mid-flight, leaving a half-populated RFQ and a stuck lock. The
+  script therefore polls until the run reaches a terminal state. `--no-watch`
+  disables that — only use it if you know why.
+- **Re-runs are blocked by design.** `rfq_creation_result` / `rfq_token` are
+  idempotency guards; `--reset` deletes the previous RFQ and clears them for the
+  whole email *thread*.
+- **`--reset` reuses the same RFQ number.** Numbering is `max+1`, so deleting the
+  RFQ makes the next run take the *same* number. A browser tab still showing the
+  old RFQ will therefore share a URL with the new run — close or reload it, or
+  you'll be looking at a stale page and concluding the lock didn't engage.
+- **`--reset` does not touch NetSuite.** If a previous run created a real
+  opportunity, delete it in NetSuite by hand.
+- **Attachments** are fetched from Gmail on demand by the extraction step, so a
+  message must still exist in a mailbox your local Gmail credentials can read.
+  Prod-synced rows may not resolve attachments.
+- **`--direct`** skips the add-on route and lets the pipeline create the RFQ
+  itself, exercising the other lock path (and not checking the customer guard).
+
+---
+
 ## Writing New Tests
 
 ### Test a Store Component

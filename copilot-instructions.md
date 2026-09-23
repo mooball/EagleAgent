@@ -385,7 +385,11 @@ Admin users can run registered scripts from the chat. See `docs/SERVER_SCRIPTS.m
 - When patching config in tests, use `@patch('includes.agents.general_agent.config')` (patch where it's imported).
 - When patching chat modules, use `@patch('includes.chat.actions.config')`.
 - When patching dashboard modules, use `@patch('includes.dashboard.routes.config')`.
-- See `docs/TESTING.md` for full guide.
+- See `docs/TESTING.md` for full guide — including **Manual End-to-End Testing
+  (Local)**, which covers `scripts/test_rfq_creation.py` (replays the Gmail
+  add-on "Create RFQ" flow locally, since the add-on itself posts to prod).
+  NetSuite writes are intercepted by default there; `--reset` is standalone and
+  stops without creating an RFQ.
 
 ## Error Handling & Logging
 - Use Python `logging` (not `print`).
