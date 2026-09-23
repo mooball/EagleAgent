@@ -220,6 +220,10 @@ uv run python -m scripts.sync_prod_mail_data --limit 50
 
 ### The workflow
 
+Both `uv run python -m scripts.test_rfq_creation` and
+`uv run python scripts/test_rfq_creation.py` work — the script bootstraps the
+repo root onto `sys.path`, so running it as a plain file is fine too.
+
 ```bash
 # 1. List recent emails and how ready each is (read-only)
 uv run python -m scripts.test_rfq_creation --recent 10
@@ -277,6 +281,72 @@ htmx.ajax('POST', '/partial/rfqs/RFQ-2026-1234/add-item',
 
 It should toast a 409 rather than adding a line. See
 `.github/prompts/plan-rfqAgentWorkingLock.prompt.md` for how the lock works.
+
+### Reproducing extraction failures on demand
+
+Some failures only happen upstream at random. The original motivating case was
+Gemini returning `500 INTERNAL` for one PDF in a 10-attachment email, which
+silently produced an RFQ one line short — no error in the UI, the pipeline notes
+or the RFQ. Retrying cannot reproduce it, because the failure is transient.
+
+`--inject-attachment-failure` makes a named attachment report as unreadable so
+the failure path can be exercised deterministically. Everything downstream is the
+real code path: the bundle report, `rfq_creation_result["input"]`, the human
+warning line, and the "Attachments Read" block in the comms modal.
+
+```bash
+# 1. Reset first (standalone) — 49663 is the 10-attachment email carrying
+#    `estimate QBRI1207.pdf`, which is the attachment that originally 500'd.
+uv run python -m scripts.test_rfq_creation --email-id 49663 --reset --yes
+
+# 2. Replay the flow with that one attachment forced to fail.
+uv run python -m scripts.test_rfq_creation --email-id 49663 \
+    --inject-attachment-failure "estimate QBRI1207.pdf:model_error" --yes
+```
+
+Expected terminal output at the end of the run:
+
+```
+  [09:41:12] pipeline finished — status=complete, items=1
+             warning: 1 attachment(s) could not be read: estimate QBRI1207.pdf
+             input:       9 of 10 attachments read (9 skipped as signature)
+             unreadable:  estimate QBRI1207.pdf [model_error] injected by ...
+```
+
+In the comms modal the **Attachments Read** row goes amber and reads
+`9 of 10 (9 skipped as signature)`, with the warning listed underneath.
+
+Syntax is `FILENAME[:CODE]`, repeatable. `CODE` defaults to `model_error`; use
+`*:CODE` to fail every attachment. Valid codes:
+
+| Code | Meaning |
+|---|---|
+| `model_error` | upstream call failed (transient — the original bug) |
+| `parse_error` | returned content that could not be parsed |
+| `empty` | read successfully but yielded nothing |
+| `fetch_failed` | could not retrieve the attachment bytes |
+| `unsupported` | file type never handled (a deterministic gap) |
+
+The script refuses a filename the email does not have (and lists the real ones),
+and refuses an unknown code — a typo should not "pass" while testing nothing.
+
+**Where this lives:** it is a test-only monkeypatch *inside*
+`scripts/test_rfq_creation.py`. No production module gains an `if TESTING` branch
+and no environment variable can enable it in the deployed app. It patches the
+extractors **as bound in `supplier_quote_pipeline`** (the caller's references),
+not the definitions in `email_pipeline` — patching the definitions would replace
+a name nobody looks up and silently do nothing.
+
+Not covered: `bundle_failure` codes (`no_content`, `email_not_found`) fail before
+the attachment loop and are not reachable this way.
+
+For a faster, non-destructive check of just the extraction step (creates no RFQ,
+resets nothing), `_probe_bundle.py` in the repo root drives the same patcher:
+
+```bash
+uv run python -m scripts.probe_content_bundle 49663
+uv run python -m scripts.probe_content_bundle 49663 --inject "estimate QBRI1207.pdf:model_error"
+```
 
 ### Notes and gotchas
 

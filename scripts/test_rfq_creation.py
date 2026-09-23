@@ -99,17 +99,58 @@ deliberate: `PROD_DATABASE_URL` lives in `.env`, and this script WRITES.
 NetSuite writes are blocked by default (see above). Actions that stop instead of
 running: `--recent`, `--dry-run`, `--reset`. Only a plain "inspect or run"
 invocation reaches the trigger.
+
+REPRODUCING EXTRACTION FAILURES ON DEMAND
+-----------------------------------------
+Some failures only happen upstream at random — e.g. Gemini returning
+`500 INTERNAL` for one PDF, which silently shortened an RFQ. You cannot re-create
+that by retrying, so use `--inject-attachment-failure` to make a named attachment
+report as unreadable. Everything downstream is the real production code path:
+the bundle report, `rfq_creation_result["input"]`, the human warning, and the
+"Attachments Read" block in the comms modal.
+
+    # the real case: 10 attachments, one PDF that Gemini once 500'd on
+    uv run python -m scripts.test_rfq_creation --email-id 49663 --reset --yes
+    uv run python -m scripts.test_rfq_creation --email-id 49663 \
+        --inject-attachment-failure "estimate QBRI1207.pdf:model_error" --yes
+
+Syntax is `FILENAME[:CODE]`, repeatable, `CODE` defaults to `model_error`.
+Use `*:CODE` to fail every attachment on the email. Valid codes:
+
+    model_error    upstream call failed (transient — the original bug)
+    parse_error    returned content we could not parse
+    empty          read successfully but yielded nothing
+    fetch_failed   could not retrieve the attachment bytes
+    unsupported    file type we never handle (a deterministic gap)
+
+This is a test-only monkeypatch inside this script — no production module gains
+a `if TESTING` branch, and no env var can turn it on in the deployed app. It
+patches the extractors as bound in `supplier_quote_pipeline` (the caller's
+references), not the definitions in `email_pipeline`; patching the definitions
+would silently do nothing.
+
+Not covered: `bundle_failure` codes (`no_content`, `email_not_found`) happen
+before the attachment loop and are not reachable this way.
 """
 
 import argparse
+import inspect
 import json
+import os
 import sys
 import time
-from contextlib import nullcontext
+from contextlib import ExitStack
 from datetime import datetime
 from types import SimpleNamespace
 
 from sqlalchemy import text
+
+# Running this file directly (rather than with `-m`) puts `scripts/` on
+# sys.path[0], not the repo root, so `includes.*` would not resolve. Several
+# scripts in this repo do the same. Both invocations therefore work:
+#     uv run python -m scripts.test_rfq_creation ...
+#     uv run python scripts/test_rfq_creation.py ...
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 DEFAULT_BASE_URL = "http://localhost:8000"
@@ -257,7 +298,33 @@ def print_snapshot(snap: dict, base_url: str) -> None:
               f"(items_extracted={result.get('items_extracted', 0)})")
         for w in (result.get("warnings") or [])[:5]:
             print(f"    warning: {w}")
+        print_input_report(result, prefix="    ")
     print()
+
+
+def print_input_report(result: dict, prefix: str = "             ") -> None:
+    """Show what the run could NOT read from the email.
+
+    This is the whole point of the input-completeness work: an attachment that
+    failed to extract used to vanish silently, leaving an RFQ that was quietly
+    one line short. Printed only when there is something to say.
+    """
+    report = result.get("input") if isinstance(result, dict) else None
+    if not report:
+        return
+
+    total = report.get("attachment_total") or 0
+    read = report.get("attachment_read") or 0
+    skipped = report.get("skipped_as_signature") or 0
+    failures = report.get("failures") or []
+
+    print(f"{prefix}input:       {read} of {total} attachments read"
+          + (f" ({skipped} skipped as signature)" if skipped else ""))
+    if report.get("bundle_failure"):
+        print(f"{prefix}bundle:      FAILED — {report['bundle_failure']}")
+    for f in failures:
+        print(f"{prefix}unreadable:  {f.get('filename')} "
+              f"[{f.get('code')}] {str(f.get('detail') or '')[:70]}")
 
 
 def list_recent(session, count: int, base_url: str, search: str | None = None) -> None:
@@ -443,6 +510,96 @@ class NetSuiteRecorder:
         )
 
 
+# ---------------------------------------------------------------------------
+# Fault injection
+# ---------------------------------------------------------------------------
+
+def failure_codes() -> list[str]:
+    """Valid `--inject-attachment-failure` codes, read off the real enum."""
+    from includes.email_pipeline import AttachmentFailure
+
+    return [c.value for c in AttachmentFailure]
+
+
+def parse_injection_specs(raw: list[str] | None) -> dict[str, str]:
+    """Turn `['name.pdf:code', ...]` into `{filename: code}`.
+
+    Exits loudly on an unknown code rather than injecting nothing.
+    """
+    specs: dict[str, str] = {}
+    for item in raw or []:
+        filename, sep, code = item.rpartition(":")
+        if not sep:                      # bare filename — use the default
+            filename, code = item, "model_error"
+        filename, code = filename.strip(), (code.strip() or "model_error")
+        if code not in failure_codes():
+            raise SystemExit(
+                f"\n  ✗ Unknown failure code {code!r} in --inject-attachment-failure.\n"
+                f"    Valid codes: {', '.join(failure_codes())}\n"
+            )
+        specs[filename] = code
+    return specs
+
+
+def attachment_filenames(session, email_id: int) -> list[str]:
+    """Filenames stored on the email's `attachments_json`, in order."""
+    rows = session.execute(text("""
+        SELECT a->>'filename'
+        FROM email_tracking et,
+             jsonb_array_elements(et.attachments_json) a
+        WHERE et.id = :id
+        ORDER BY a->>'filename'
+    """), {"id": email_id}).scalars().all()
+    return [r for r in rows if r]
+
+
+def build_attachment_failure_injection(specs: dict[str, str]):
+    """Force named attachments to report as unreadable, in-process.
+
+    Returns a `patch.multiple` context manager over the three extractor names
+    **as bound in `supplier_quote_pipeline`**. Those are the references the
+    pipeline actually calls; patching the definitions in `email_pipeline` would
+    replace a name nobody looks up and silently do nothing.
+
+    Each match returns a genuine `AttachmentExtraction` carrying a real
+    `AttachmentFailure`, so every downstream branch runs unmodified.
+    """
+    from unittest.mock import patch
+
+    import includes.tools.supplier_quote_pipeline as sqp
+    from includes.email_pipeline import (
+        PLACEHOLDER_UNREADABLE, AttachmentExtraction, AttachmentFailure,
+    )
+
+    def _wrap(real):
+        sig = inspect.signature(real)
+
+        def _fake(*args, **kwargs):
+            try:
+                filename = sig.bind(*args, **kwargs).arguments.get("filename")
+            except TypeError:
+                filename = None
+            code = specs.get(filename) if filename else None
+            code = code or specs.get("*")
+            if not code:
+                return real(*args, **kwargs)
+            print(f"  💉 injected failure: {filename} -> {code}")
+            return AttachmentExtraction(
+                text=PLACEHOLDER_UNREADABLE,
+                failure=AttachmentFailure(code),
+                detail="injected by --inject-attachment-failure (test only)",
+            )
+
+        return _fake
+
+    return patch.multiple(
+        sqp,
+        extract_pdf_content=_wrap(sqp.extract_pdf_content),
+        extract_image_content=_wrap(sqp.extract_image_content),
+        extract_spreadsheet_content=_wrap(sqp.extract_spreadsheet_content),
+    )
+
+
 def trigger_via_route(snap: dict) -> tuple[int, dict]:
     """Replay exactly what the Gmail add-on posts, in-process.
 
@@ -541,6 +698,7 @@ def watch(session, email_id: int, rfq_number: str | None, base_url: str,
                 print(f"             warning: {w}")
             if result.get("error"):
                 print(f"             error: {result['error']}")
+            print_input_report(result)
 
             final = snapshot(session, email_id)
             if final and final.get("rfq"):
@@ -631,6 +789,15 @@ def main() -> int:
     run.add_argument("--yes", "-y", action="store_true",
                      help="Skip confirmations, and allow a non-local database")
 
+    inject = parser.add_argument_group("fault injection (testing the failure paths)")
+    inject.add_argument("--inject-attachment-failure", metavar="FILENAME[:CODE]",
+                        action="append",
+                        help="Make a named attachment report as unreadable, so the "
+                             "failure path can be tested without waiting for a real "
+                             "upstream error. Repeatable. CODE defaults to "
+                             "'model_error'; use '*' as the filename to fail every "
+                             f"attachment. Codes: {', '.join(failure_codes())}")
+
     args = parser.parse_args()
 
     from includes.dashboard.database import get_session
@@ -657,6 +824,31 @@ def main() -> int:
             return 2
 
         print_snapshot(snap, args.base_url)
+
+        # Injecting a failure for an attachment the email does not have would
+        # "pass" while testing nothing at all, so refuse instead. Checked before
+        # the mutating prerequisites so a typo cannot trigger a --reset first.
+        inject_specs = parse_injection_specs(args.inject_attachment_failure)
+        if inject_specs:
+            present = set(attachment_filenames(session, email_id))
+            unknown = sorted(f for f in inject_specs if f != "*" and f not in present)
+            if unknown:
+                print("  ✗ --inject-attachment-failure names attachment(s) this "
+                      "email does not have:\n")
+                for f in unknown:
+                    print(f"      {f}")
+                print("\n  Attachments on this email:")
+                for f in sorted(present):
+                    print(f"      {f}")
+                print()
+                return 2
+
+            print("  💉 FAULT INJECTION ACTIVE — test-only, no production code involved")
+            for filename, code in inject_specs.items():
+                label = "every attachment" if filename == "*" else filename
+                print(f"      {label}  ->  {code}")
+            print("      These attachments will be reported as unreadable, so the\n"
+                  "      failure path (report, warning, modal block) runs for real.\n")
 
         # Mutating prerequisites.
         if args.link_customer:
@@ -755,19 +947,19 @@ def main() -> int:
         print("TRIGGER")
         _hr()
 
-        # The patch must stay active while the pipeline thread runs, so the
-        # whole trigger+watch block is inside the context manager.
+        # The patches must stay active while the pipeline thread runs, so the
+        # whole trigger+watch block stays inside the stack.
         from unittest.mock import patch
 
         recorder = NetSuiteRecorder()
-        # FAIL CLOSED: NetSuite writes are intercepted unless explicitly allowed.
-        patch_ctx = (
-            nullcontext() if args.allow_netsuite
-            else patch("includes.netsuite.records.opportunity.create_and_link_opportunity",
-                       recorder)
-        )
-
-        with patch_ctx:
+        with ExitStack() as stack:
+            # FAIL CLOSED: NetSuite writes are intercepted unless explicitly allowed.
+            if not args.allow_netsuite:
+                stack.enter_context(patch(
+                    "includes.netsuite.records.opportunity.create_and_link_opportunity",
+                    recorder))
+            if inject_specs:
+                stack.enter_context(build_attachment_failure_injection(inject_specs))
             if args.direct:
                 _, payload = trigger_directly(snap)
             else:
