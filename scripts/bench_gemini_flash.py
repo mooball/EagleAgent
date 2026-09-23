@@ -105,6 +105,15 @@ TRANSIENT_MARKERS = (
     "overloaded",
 )
 
+# Vertex service tiers. "standard" means omit the field entirely, which is the
+# default behaviour. Note the values are proto enum names — the API rejects
+# "priority"/"flex" with 400 Invalid value at 'service_tier'.
+TIER_VALUES: dict[str, str | None] = {
+    "standard": None,
+    "priority": "SERVICE_TIER_PRIORITY",
+    "flex": "SERVICE_TIER_FLEX",
+}
+
 
 # ---------------------------------------------------------------------------
 # Task definitions
@@ -371,6 +380,7 @@ class Result:
     retries: int = 0
     error: str | None = None
     out_chars: int = 0
+    tier: str = "standard"
 
     @property
     def overall_tokens_per_s(self) -> float | None:
@@ -427,12 +437,20 @@ def run_once(
     temperature: float,
     max_output_tokens: int,
     timeout_ms: int,
+    tier: str = "standard",
 ) -> Result:
+    http_options = types.HttpOptions(timeout=timeout_ms)
+    tier_value = TIER_VALUES.get(tier, None)
+    if tier_value:
+        # The SDK has no first-class service_tier field in 1.68.0, so it has to
+        # ride in the request body.
+        http_options.extra_body = {"service_tier": tier_value}
+
     config = types.GenerateContentConfig(
         temperature=temperature,
         max_output_tokens=max_output_tokens,
         thinking_config=types.ThinkingConfig(thinking_level=thinking),
-        http_options=types.HttpOptions(timeout=timeout_ms),
+        http_options=http_options,
     )
     if task.system:
         config.system_instruction = task.system
@@ -460,6 +478,7 @@ def run_once(
                 note=note,
                 retries=attempt,
                 out_chars=len(text),
+                tier=tier,
                 **_pick(usage),
             )
         except Exception as e:  # noqa: BLE001 - benchmark must not crash
@@ -482,6 +501,7 @@ def run_once(
         total_tokens=None,
         valid=None,
         note="",
+        tier=tier,
         error=f"{type(last_err).__name__}: {str(last_err)[:200]}",
     )
 
@@ -571,12 +591,12 @@ def _p90(values: list[float]) -> float:
 
 def summarise(results: list[Result], prices: dict[str, tuple[float, float]]):
     good = [r for r in results if r.ok]
-    groups: dict[tuple[str, str, str], list[Result]] = {}
+    groups: dict[tuple[str, str, str, str], list[Result]] = {}
     for r in good:
-        groups.setdefault((r.model, r.thinking, r.task), []).append(r)
+        groups.setdefault((r.model, r.thinking, r.tier, r.task), []).append(r)
 
     rows = []
-    for (model, thinking, task), rs in sorted(groups.items()):
+    for (model, thinking, tier, task), rs in sorted(groups.items()):
         walls = [r.wall_s for r in rs]
         ttfts = [r.ttft_s for r in rs if r.ttft_s is not None]
         overall = [r.overall_tokens_per_s for r in rs if r.overall_tokens_per_s]
@@ -589,6 +609,7 @@ def summarise(results: list[Result], prices: dict[str, tuple[float, float]]):
             {
                 "model": model,
                 "thinking": thinking,
+                "tier": tier,
                 "task": task,
                 "n": len(rs),
                 "wall_med": statistics.median(walls),
@@ -619,34 +640,35 @@ def print_report(results: list[Result], rows: list[dict], prices: dict[str, tupl
     print()
     print("PER-TASK RESULTS  (median over runs; t/s = output tokens / latency)")
     header = (
-        f"{'model':<16}{'think':<8}{'task':<15}{'n':>3}{'wall':>7}"
+        f"{'model':<14}{'think':<8}{'tier':<10}{'task':<15}{'n':>3}{'wall':>7}"
         f"{'p90':>7}{'ttft':>7}{'t/s':>7}{'out':>6}{'think':>7}{'valid%':>7}"
     )
     print(header)
     print("-" * len(header))
     for r in rows:
         print(
-            f"{short(r['model']):<16}{r['thinking']:<8}{r['task']:<15}{r['n']:>3}"
+            f"{short(r['model']):<14}{r['thinking']:<8}{r['tier']:<10}"
+            f"{r['task']:<15}{r['n']:>3}"
             f"{_fmt(r['wall_med']):>7}{_fmt(r['wall_p90']):>7}"
             f"{_fmt(r['ttft_med']):>7}{_fmt(r['tps'], '.1f'):>7}"
             f"{_fmt(r['out_tok'], '.0f'):>6}{_fmt(r['think_tok'], '.0f'):>7}"
             f"{_fmt(r['valid_pct'], '.0f'):>7}"
         )
 
-    # Roll up per model.
-    per_model: dict[tuple[str, str], list[dict]] = {}
+    # Roll up per model + tier.
+    per_model: dict[tuple[str, str, str], list[dict]] = {}
     for r in rows:
-        per_model.setdefault((r["model"], r["thinking"]), []).append(r)
+        per_model.setdefault((r["model"], r["thinking"], r["tier"]), []).append(r)
 
     print()
     print("PER-MODEL ROLL-UP  (unweighted mean across tasks)")
     header2 = (
-        f"{'model':<16}{'think':<8}{'tasks':>6}{'wall':>7}{'ttft':>7}"
+        f"{'model':<14}{'think':<8}{'tier':<10}{'tasks':>6}{'wall':>7}{'ttft':>7}"
         f"{'t/s':>7}{'out':>6}{'in':>6}{'$/1k':>10}"
     )
     print(header2)
     print("-" * len(header2))
-    for (model, thinking), rs in sorted(per_model.items()):
+    for (model, thinking, tier), rs in sorted(per_model.items()):
         walls = [r["wall_med"] for r in rs if r["wall_med"] is not None]
         ttfts = [r["ttft_med"] for r in rs if r["ttft_med"] is not None]
         tpss = [r["tps"] for r in rs if r["tps"]]
@@ -661,7 +683,7 @@ def print_report(results: list[Result], rows: list[dict], prices: dict[str, tupl
             per_call = (avg_in * in_p + (avg_out + avg_think) * out_p) / 1_000_000
             cost_cell = f"{per_call * 1000:.4f}"
         print(
-            f"{short(model):<16}{thinking:<8}{len(rs):>6}"
+            f"{short(model):<14}{thinking:<8}{tier:<10}{len(rs):>6}"
             f"{_fmt(statistics.mean(walls) if walls else None):>7}"
             f"{_fmt(statistics.mean(ttfts) if ttfts else None):>7}"
             f"{_fmt(statistics.mean(tpss) if tpss else None, '.1f'):>7}"
@@ -691,6 +713,22 @@ def print_report(results: list[Result], rows: list[dict], prices: dict[str, tupl
 # ---------------------------------------------------------------------------
 
 
+def _client_kwargs(location: str | None) -> dict:
+    """Client kwargs — only override the location when explicitly asked.
+
+    Left unset, the SDK resolves credentials and location from the environment
+    (GOOGLE_CLOUD_LOCATION), which is what production does. Passing a region
+    explicitly is how we test whether pinning beats global routing.
+    """
+    if not location:
+        return {}
+    kwargs: dict = {"location": location}
+    project = os.getenv("GOOGLE_CLOUD_PROJECT")
+    if project:
+        kwargs["project"] = project
+    return kwargs
+
+
 def parse_prices(items: list[str]) -> dict[str, tuple[float, float]]:
     prices: dict[str, tuple[float, float]] = {}
     for item in items or []:
@@ -708,8 +746,16 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--models", default=None, help="comma-separated model ids")
+    ap.add_argument("--location", default=None,
+                    help="Vertex location for the client, e.g. 'global' (default) or "
+                         "a region. NOTE: Gemini 3.x is served from 'global' only — "
+                         "regional locations 404 for them.")
     ap.add_argument("--baseline", action="store_true", help=f"also run {BASELINE_MODEL}")
     ap.add_argument("--thinking", default="low", help="comma-separated thinking levels (low is the only level all 5 models accept)")
+    ap.add_argument("--tier", default="standard",
+                    help="comma-separated Vertex service tiers to compare: "
+                         "standard, priority, flex. Priority costs more but is not "
+                         "preempted; Flex is ~50%% cheaper but slower.")
     ap.add_argument("--tasks", default=None, help="comma-separated task names")
     ap.add_argument("--runs", type=int, default=3, help="timed runs per combination")
     ap.add_argument("--warmup", type=int, default=1, help="discarded warm-up runs")
@@ -731,6 +777,12 @@ def main() -> int:
     if args.baseline and BASELINE_MODEL not in models:
         models.append(BASELINE_MODEL)
     thinkings = [t.strip() for t in args.thinking.split(",") if t.strip()]
+    tiers = [t.strip() for t in args.tier.split(",") if t.strip()]
+    unknown_tiers = [t for t in tiers if t not in TIER_VALUES]
+    if unknown_tiers:
+        raise SystemExit(
+            f"unknown tier(s): {unknown_tiers}\navailable: {list(TIER_VALUES)}"
+        )
     prices = parse_prices(args.price)
 
     if args.from_json:
@@ -762,11 +814,12 @@ def main() -> int:
     if unknown:
         raise SystemExit(f"unknown task(s): {unknown}\navailable: {list(all_tasks)}")
 
-    call_count = len(models) * len(thinkings) * len(task_names) * (args.runs + args.warmup)
+    call_count = len(models) * len(thinkings) * len(tiers) * len(task_names) * (args.runs + args.warmup)
 
     if args.dry_run:
         print("Models:     ", ", ".join(models))
         print("Thinking:   ", ", ".join(thinkings))
+        print("Tiers:      ", ", ".join(tiers))
         print("Tasks:      ", ", ".join(task_names))
         print(f"Runs:        {args.runs} timed + {args.warmup} warm-up (warm-up discarded)")
         print(f"Total calls: {call_count}  (sequential, {args.sleep}s apart)")
@@ -780,14 +833,14 @@ def main() -> int:
                   f"{f' + ~{syslen} system' if syslen else ''}  [{t.kind}]")
         return 0
 
-    client = genai.Client()
+    client = genai.Client(**(_client_kwargs(args.location)))
     results: list[Result] = []
     started = datetime.now(timezone.utc)
 
     print(f"Benchmarking {len(models)} model(s) x {len(thinkings)} thinking level(s) "
-          f"x {len(task_names)} task(s) = {call_count} calls (sequential)")
+          f"x {len(tiers)} tier(s) x {len(task_names)} task(s)")
     print(f"Project: {os.getenv('GOOGLE_CLOUD_PROJECT', '?')}  "
-          f"Location: {os.getenv('GOOGLE_CLOUD_LOCATION', '?')}")
+          f"Location: {args.location or os.getenv('GOOGLE_CLOUD_LOCATION', 'global')}")
     if args.use_known_prices:
         prices = {**KNOWN_PRICES, **prices}
         print(f"Using KNOWN_PRICES (Vertex global, 2026-09) for {len(prices)} model(s)")
@@ -810,7 +863,9 @@ def main() -> int:
         print()
 
     runnable = len([1 for k in support if support[k] == "ok"])
-    call_count = runnable * len(task_names) * (args.runs + args.warmup)
+    call_count = runnable * len(tiers) * len(task_names) * (args.runs + args.warmup)
+    print(f"  = {call_count} calls (sequential, {args.sleep}s apart)")
+    print()
 
     done = 0
     for model in models:
@@ -819,36 +874,38 @@ def main() -> int:
                 print(f"-- skipping {model} / {thinking} "
                       f"({support[(model, thinking)]})")
                 continue
-            for name in task_names:
-                task = all_tasks[name]
-                for i in range(args.runs + args.warmup):
-                    is_warmup = i < args.warmup
-                    run_idx = i - args.warmup
-                    res = run_once(
-                        client,
-                        model=model,
-                        task=task,
-                        thinking=thinking,
-                        stream=not args.no_stream,
-                        temperature=args.temperature,
-                        max_output_tokens=args.max_output_tokens,
-                        timeout_ms=args.timeout * 1000,
-                    )
-                    done += 1
-                    status = "ok" if res.ok else "FAIL"
-                    detail = res.note or (res.error or "")[:60]
-                    flag = "" if is_warmup or res.ok else "  <-- "
-                    print(
-                        f"[{done:>3}/{call_count}] {model:<24} {thinking:<8} "
-                        f"{name:<16} {status:<4} {res.wall_s:>6.2f}s "
-                        f"{'warm' if is_warmup else f'run{run_idx + 1}'} "
-                        f"{detail}{flag}",
-                        flush=True,
-                    )
-                    if not is_warmup:
-                        res.run = run_idx
-                        results.append(res)
-                    time.sleep(args.sleep)
+            for tier in tiers:
+                for name in task_names:
+                    task = all_tasks[name]
+                    for i in range(args.runs + args.warmup):
+                        is_warmup = i < args.warmup
+                        run_idx = i - args.warmup
+                        res = run_once(
+                            client,
+                            model=model,
+                            task=task,
+                            thinking=thinking,
+                            stream=not args.no_stream,
+                            temperature=args.temperature,
+                            max_output_tokens=args.max_output_tokens,
+                            timeout_ms=args.timeout * 1000,
+                            tier=tier,
+                        )
+                        done += 1
+                        status = "ok" if res.ok else "FAIL"
+                        detail = res.note or (res.error or "")[:60]
+                        flag = "" if is_warmup or res.ok else "  <-- "
+                        print(
+                            f"[{done:>3}/{call_count}] {model:<22} {thinking:<7} "
+                            f"{tier:<9} {name:<15} {status:<4} {res.wall_s:>6.2f}s "
+                            f"{'warm' if is_warmup else f'run{run_idx + 1}'} "
+                            f"{detail}{flag}",
+                            flush=True,
+                        )
+                        if not is_warmup:
+                            res.run = run_idx
+                            results.append(res)
+                        time.sleep(args.sleep)
 
     rows = summarise(results, prices)
     print_report(results, rows, prices)
@@ -868,6 +925,7 @@ def main() -> int:
             "elapsed_s": elapsed,
             "models": models,
             "thinking": thinkings,
+            "tiers": tiers,
             "tasks": task_names,
             "runs": args.runs,
             "warmup": args.warmup,
@@ -892,6 +950,7 @@ def _result_dict(r: Result) -> dict:
     d = {
         "model": r.model,
         "thinking": r.thinking,
+        "tier": r.tier,
         "task": r.task,
         "run": r.run,
         "ok": r.ok,
@@ -932,6 +991,7 @@ def _result_from_dict(d: dict) -> Result:
         retries=d.get("retries", 0),
         error=d.get("error"),
         out_chars=d.get("out_chars", 0),
+        tier=d.get("tier", "standard"),
     )
 
 

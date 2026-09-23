@@ -273,3 +273,16 @@ def stub_chat_model():
 async def setup_checkpointer(test_checkpointer):
     try: await test_checkpointer.setup()
     except Exception: pass
+
+
+@pytest.fixture(autouse=True)
+def disable_llm_telemetry(monkeypatch):
+    """Tests must never write rows into llm_call_log.
+
+    Without this, any test that exercises an LLM call path writes into the
+    developer's dev database — polluting the very table we use to reason about
+    production behaviour. Tests that exercise the sink opt back in explicitly.
+    """
+    from includes.llm import telemetry
+
+    monkeypatch.setattr(telemetry, "_enabled", lambda: False)

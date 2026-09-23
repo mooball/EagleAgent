@@ -15,14 +15,26 @@ from enum import Enum
 import hashlib
 import logging
 import os
+import re
 import time
 
 from config.settings import Config
 
 logger = logging.getLogger(__name__)
 
-# Default fallback model — fast, non-thinking, reliable
-FALLBACK_MODEL = "gemini-2.0-flash"
+# Model to try when the primary fails. This was hardcoded to
+# "gemini-2.0-flash", which now returns 404 NOT_FOUND — so the "fallback" was a
+# dead end that turned a recoverable 429 into a hard failure. Sourced from
+# config so it changes without a code edit.
+FALLBACK_MODEL = Config.FALLBACK_MODEL
+
+# Error classes worth trying another model for. Anything else (bad request,
+# auth, not-found) is a permanent condition that retrying cannot fix.
+_RETRYABLE_ERRORS = frozenset(
+    {"rate_limit", "unavailable", "deadline", "server_error", "timeout"}
+)
+
+_RETRY_HINT_RE = re.compile(r"retry in ([0-9.]+)\s*(s|seconds)?", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +47,17 @@ def get_pipeline_model(pipeline: str, step: str) -> str:
     Resolution order:
       1. Step-specific env var: {PIPELINE}_{STEP}_MODEL (e.g. QUOTE_CLASSIFY_MODEL)
       2. Pipeline-level env var: {PIPELINE}_PIPELINE_MODEL (e.g. QUOTE_PIPELINE_MODEL)
-      3. Config.DEFAULT_MODEL
+      3. Config.SYNC_MODEL when running inside a background sync workload,
+         otherwise Config.DEFAULT_MODEL
+
+    Step 3 is the fix for our own background work contending with live chat:
+    a pipeline with no explicit model would inherit DEFAULT_MODEL, which is the
+    same model the chat agent uses.
+
+    Note that an *explicit* per-pipeline model always wins, sync or not. Those
+    are deliberate quality choices (RFQ_CREATION_EXTRACT_MODEL is a Pro model)
+    and overriding them for being background work would silently downgrade a
+    user-visible output.
 
     Args:
         pipeline: Pipeline name prefix, e.g. "QUOTE", "CUSTOMER_REQUEST"
@@ -53,6 +75,11 @@ def get_pipeline_model(pipeline: str, step: str) -> str:
     if pipeline_model:
         return pipeline_model
 
+    from includes.llm.context import is_sync
+
+    if is_sync() and Config.SYNC_MODEL:
+        return Config.SYNC_MODEL
+
     return Config.DEFAULT_MODEL
 
 
@@ -60,70 +87,186 @@ def get_pipeline_model(pipeline: str, step: str) -> str:
 # LLM call with retry + model fallback
 # ---------------------------------------------------------------------------
 
+def get_pipeline_candidates(pipeline: str, step: str) -> list[str]:
+    """Ordered, de-duplicated models to try for a pipeline step.
+
+    The old code tried ``[primary, primary, FALLBACK_MODEL]`` — i.e. it burned
+    both its retries on the *same* model that was already overloaded, then fell
+    back to one that 404s. Trying distinct models is the whole point of having a
+    fallback.
+
+    Candidates are the primary first, then the configured ladder with anything
+    equal to the primary removed. That removal matters: with our current .env
+    the single FALLBACK_MODEL *is* the primary for the QUOTE pipeline, so a
+    naive implementation would produce a one-element list and quietly have no
+    failover.
+    """
+    primary = get_pipeline_model(pipeline, step)
+    ladder = list(Config.FALLBACK_CHAIN)
+    if FALLBACK_MODEL and FALLBACK_MODEL not in ladder:
+        ladder.insert(0, FALLBACK_MODEL)
+
+    candidates = [primary]
+    candidates.extend(m for m in ladder if m and m != primary)
+    return candidates
+
+
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    """Extract a server-suggested delay, if the API sent one.
+
+    Checks a Retry-After header first, then falls back to the SDK's
+    "... retry in 1.42 seconds" message. Returns None when nothing is suggested,
+    letting the caller use plain exponential backoff.
+    """
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers:
+        try:
+            raw = headers.get("retry-after") or headers.get("Retry-After")
+            if raw is not None:
+                return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            pass
+    match = _RETRY_HINT_RE.search(str(exc))
+    if match:
+        try:
+            return max(0.0, float(match.group(1)))
+        except ValueError:
+            pass
+    return None
+
+
+def _http_options(timeout_ms: int, service_tier: str | None):
+    """Build HttpOptions with a bounded retry policy and optional service tier."""
+    from google.genai import types as _types
+
+    options = _types.HttpOptions(
+        timeout=timeout_ms,
+        retry_options=_types.HttpRetryOptions(
+            attempts=Config.LLM_SDK_RETRY_ATTEMPTS,
+            initial_delay=1.0,
+            exp_base=2.0,
+            max_delay=8.0,
+            jitter=1.0,
+            http_status_codes=[408, 429, 500, 502, 503, 504],
+        ),
+    )
+    if service_tier:
+        # Vertex wants the proto enum name (SERVICE_TIER_PRIORITY), not
+        # "priority". The SDK has no first-class field for this in 1.68.0.
+        options.extra_body = {"service_tier": service_tier}
+    return options
+
+
 def llm_call_with_retry(
     pipeline: str,
     step: str,
     contents,
     temperature: float = 0.1,
-    timeout: int = 120000,
+    timeout: int | None = None,
+    scope: str | None = None,
+    correlation_id: str | None = None,
 ):
-    """Call Gemini with retry on transient errors (504, 503, DEADLINE_EXCEEDED).
+    """Call Gemini, walking distinct models on transient failure.
 
-    Retry strategy:
-      1. Try primary model for the pipeline/step
-      2. Retry primary model once (transient 504s)
-      3. Fall back to FALLBACK_MODEL
+    Strategy:
+      1. Try the pipeline/step's primary model.
+      2. On a *retryable* error, wait (honouring ``Retry-After`` when the API
+         sends one) and try the next distinct candidate.
+      3. Give up at ``Config.LLM_MAX_ATTEMPT_SECONDS`` or when candidates run
+         out, whichever comes first.
+
+    Permanent errors (400/401/403/404) raise immediately — retrying them just
+    wastes the user's time.
+
+    Every attempt is recorded to llm_call_log with its own row, so a failover
+    is visible after the fact rather than only when it fails outright.
 
     Args:
         pipeline: Pipeline name prefix (e.g. "QUOTE")
         step: Step name (e.g. "classify", "extract", "interpret")
         contents: Gemini contents (string, list of Parts, etc.)
         temperature: LLM temperature
-        timeout: HTTP timeout in milliseconds
+        timeout: HTTP timeout in milliseconds (defaults to config)
+        scope: Telemetry scope; defaults to ``pipeline:{pipeline}/{step}``
+        correlation_id: thread_id / rfq_number, to stitch a turn together
 
-    Returns the response object. Raises on permanent failure after all retries.
+    Returns the response object. Raises on permanent failure or exhaustion.
     """
     from google import genai as _genai
     from google.genai import types as _types
 
-    primary_model = get_pipeline_model(pipeline, step)
-    models_to_try = [primary_model, primary_model, FALLBACK_MODEL]
+    from includes.llm.telemetry import classify_error, instrument_call
 
-    last_error = None
-    for attempt, model in enumerate(models_to_try):
-        try:
-            client = _genai.Client(http_options={"timeout": timeout})
-            response = client.models.generate_content(
-                model=model,
-                contents=contents,
-                config=_types.GenerateContentConfig(temperature=temperature),
+    from includes.llm.context import SYNC, current_service_tier, current_workload
+
+    timeout = timeout or Config.LLM_REQUEST_TIMEOUT_MS
+    service_tier = current_service_tier()
+    if scope is None:
+        # Prefix background work so telemetry can separate sync traffic from
+        # user-triggered traffic on the same pipeline.
+        prefix = "sync" if current_workload() == SYNC else "pipeline"
+        scope = f"{prefix}:{pipeline}/{step}"
+    candidates = get_pipeline_candidates(pipeline, step)
+    deadline = time.monotonic() + Config.LLM_MAX_ATTEMPT_SECONDS
+
+    last_error: BaseException | None = None
+    previous_model: str | None = None
+
+    for index, model in enumerate(candidates):
+        if time.monotonic() >= deadline:
+            logger.warning(
+                f"[email-pipeline] {pipeline}/{step}: giving up after "
+                f"{Config.LLM_MAX_ATTEMPT_SECONDS}s budget"
             )
-            if attempt > 0:
+            break
+        try:
+            with instrument_call(
+                scope=scope,
+                model=model,
+                location=Config.GOOGLE_CLOUD_LOCATION,
+                service_tier=service_tier,
+                attempt=index + 1,
+                fell_back_from=previous_model,
+                correlation_id=correlation_id,
+            ) as record:
+                client = _genai.Client(
+                    http_options=_http_options(timeout, service_tier)
+                )
+                response = client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=_types.GenerateContentConfig(temperature=temperature),
+                )
+                record.set_response(response)
+            if index > 0:
                 logger.info(
-                    f"[email-pipeline] {pipeline}/{step}: succeeded on "
-                    f"attempt {attempt + 1} (model={model})"
+                    f"[email-pipeline] {pipeline}/{step}: succeeded after "
+                    f"falling back to {model} (from {previous_model})"
                 )
             return response
-        except Exception as e:
-            error_str = str(e)
-            is_transient = any(
-                code in error_str
-                for code in (
-                    "504", "503", "DEADLINE_EXCEEDED",
-                    "UNAVAILABLE", "RESOURCE_EXHAUSTED",
-                )
-            )
-            if not is_transient:
-                raise  # permanent error — don't retry
+        except Exception as e:  # noqa: BLE001 - re-raised below unless retryable
             last_error = e
+            error_class, _status = classify_error(e)
+            if error_class not in _RETRYABLE_ERRORS:
+                raise  # permanent — do not retry
+            previous_model = model
             logger.warning(
-                f"[email-pipeline] {pipeline}/{step}: attempt {attempt + 1} "
-                f"failed (model={model}): {e}"
+                f"[email-pipeline] {pipeline}/{step}: attempt {index + 1} "
+                f"failed (model={model}, error={error_class}): {e}"
             )
-            if attempt < len(models_to_try) - 1:
-                time.sleep(2 ** attempt)  # 1s, 2s backoff
+            if index < len(candidates) - 1:
+                delay = _retry_after_seconds(e)
+                if delay is None:
+                    delay = 2.0 ** index
+                remaining = deadline - time.monotonic()
+                delay = min(delay, max(0.0, remaining))
+                if delay > 0:
+                    time.sleep(delay)
 
-    raise last_error  # all retries exhausted
+    raise last_error if last_error else RuntimeError(
+        f"{pipeline}/{step}: no model candidates available"
+    )
 
 
 # ---------------------------------------------------------------------------

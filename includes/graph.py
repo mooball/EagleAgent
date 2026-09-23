@@ -83,12 +83,29 @@ class SupervisorState(TypedDict):
 # ---------------------------------------------------------------------------
 def create_model(agent_name: str) -> ChatGoogleGenerativeAI:
     """Create a model instance for a specific agent, using per-agent model overrides."""
+    from includes.llm.telemetry import LangChainTelemetryHandler
+
+    # Telemetry rides along as a callback because we cannot wrap the agent's
+    # invocation the way the raw-SDK path is wrapped. Scope is baked in here
+    # since the handler has no access to it later.
     # No frequency_penalty: Gemini rejects it on flash-lite models (400
     # "Penalty is not enabled for this model"). See includes/chat repetition guard.
     return ChatGoogleGenerativeAI(
         model=config.get_agent_model(agent_name),
         temperature=config.DEFAULT_TEMPERATURE,
         max_output_tokens=config.DEFAULT_MAX_TOKENS,
+        # LangChain defaults max_retries to 6. For an interactive turn that is
+        # the wrong trade: the user stares at a spinner while we retry a hot
+        # model. Prefer failing fast and letting the caller surface a retry.
+        max_retries=config.LLM_MAX_RETRIES,
+        timeout=config.LLM_REQUEST_TIMEOUT_MS / 1000,
+        callbacks=[
+            LangChainTelemetryHandler(
+                scope=f"agent:{agent_name}",
+                location=config.GOOGLE_CLOUD_LOCATION,
+                service_tier=config.INTERACTIVE_SERVICE_TIER or None,
+            )
+        ],
     )
 
 

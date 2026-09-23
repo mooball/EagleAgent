@@ -188,8 +188,13 @@ class TestLlmCallWithRetry:
             assert result.text == "ok"
             assert mock_client.models.generate_content.call_count == 2
 
-    def test_falls_back_to_fallback_model(self):
-        from includes.email_pipeline import llm_call_with_retry, FALLBACK_MODEL
+    def test_falls_back_through_distinct_models(self):
+        """Every attempt must use a different model than the one that failed.
+
+        The old implementation was ``[primary, primary, FALLBACK_MODEL]``, which
+        spent both retries on the model that was already overloaded.
+        """
+        from includes.email_pipeline import llm_call_with_retry
 
         mock_response = MagicMock()
         mock_response.text = "fallback ok"
@@ -205,9 +210,50 @@ class TestLlmCallWithRetry:
              patch("time.sleep"):
             result = llm_call_with_retry("QUOTE", "classify", ["test"])
             assert result.text == "fallback ok"
-            # Third call should use FALLBACK_MODEL
-            calls = mock_client.models.generate_content.call_args_list
-            assert calls[2][1]["model"] == FALLBACK_MODEL
+            models = [
+                call[1]["model"]
+                for call in mock_client.models.generate_content.call_args_list
+            ]
+            assert models[0] == "primary"
+            assert len(models) == len(set(models)), f"a model was retried: {models}"
+
+    def test_candidates_always_include_a_distinct_fallback(self):
+        """A fallback identical to the primary is not a fallback.
+
+        Not hypothetical: with our .env the QUOTE pipeline's primary model *is*
+        FALLBACK_MODEL, so a naive implementation yields a one-element candidate
+        list and silently has no failover at all.
+        """
+        from includes.email_pipeline import FALLBACK_MODEL, get_pipeline_candidates
+
+        with patch(
+            "includes.email_pipeline.get_pipeline_model", return_value=FALLBACK_MODEL
+        ):
+            candidates = get_pipeline_candidates("QUOTE", "classify")
+
+        assert candidates[0] == FALLBACK_MODEL
+        assert len(candidates) > 1, "no distinct fallback available"
+        assert len(candidates) == len(set(candidates))
+
+    def test_not_found_is_not_retried(self):
+        """A 404 must fail immediately.
+
+        This is the dead-fallback bug: FALLBACK_MODEL pointed at a model that
+        returns 404, so the "safety net" was itself the failure.
+        """
+        from includes.email_pipeline import llm_call_with_retry
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = Exception(
+            "404 NOT_FOUND. Publisher model gemini-2.0-flash was not found"
+        )
+
+        with patch("includes.email_pipeline.get_pipeline_model", return_value="test-model"), \
+             patch("google.genai.Client", return_value=mock_client), \
+             patch("time.sleep"):
+            with pytest.raises(Exception, match="404"):
+                llm_call_with_retry("QUOTE", "classify", ["test"])
+            assert mock_client.models.generate_content.call_count == 1
 
     def test_permanent_error_not_retried(self):
         from includes.email_pipeline import llm_call_with_retry

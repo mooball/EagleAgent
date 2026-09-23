@@ -70,8 +70,10 @@ class Config:
     PROCUREMENT_AGENT_MODEL = os.getenv("PROCUREMENT_AGENT_MODEL", "")
     SYSADMIN_AGENT_MODEL = os.getenv("SYSADMIN_AGENT_MODEL", "")
     RESEARCH_AGENT_MODEL = os.getenv("RESEARCH_AGENT_MODEL", "")
-    # Supervisor only picks between agents — use a fast model by default
-    SUPERVISOR_MODEL = os.getenv("SUPERVISOR_MODEL", "gemini-2.0-flash")
+    # Supervisor only picks between agents — use a fast model by default.
+    # (Was gemini-2.0-flash, which now returns 404 — see
+    # .github/prompts/plan-llmObservabilityAndFailover.prompt.md.)
+    SUPERVISOR_MODEL = os.getenv("SUPERVISOR_MODEL", "gemini-3.5-flash-lite")
     # Supplier quote pipeline (classify, extract, interpret)
     QUOTE_PIPELINE_MODEL = os.getenv("QUOTE_PIPELINE_MODEL", "")
     # RFQ creation pipeline (extract items from customer request emails)
@@ -80,6 +82,65 @@ class Config:
     # Vision-based item extraction (Smart Item Adder image parsing).
     # Defaults to empty — falls back to DEFAULT_MODEL (same as chat agent).
     VISION_EXTRACTION_MODEL = os.getenv("VISION_EXTRACTION_MODEL", "")
+
+    # Model used when the primary fails. Must be a model that actually exists:
+    # it was hardcoded to gemini-2.0-flash, which now 404s, making the whole
+    # failover path a dead end.
+    FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "gemini-3.5-flash-lite")
+    # Ordered fallback ladder, tried after the primary in this order, skipping
+    # any entry equal to the primary. Without this a single FALLBACK_MODEL can
+    # silently be the same model as the primary (which is exactly what our
+    # .env does for QUOTE_* today), leaving no failover at all.
+    # Defaults are the fastest and cheapest Flash models measured on 2026-09-23.
+    FALLBACK_CHAIN = [
+        m.strip()
+        for m in os.getenv(
+            "FALLBACK_CHAIN", "gemini-3.5-flash-lite,gemini-3.6-flash"
+        ).split(",")
+        if m.strip()
+    ]
+    # Background sync loops (Gmail / NetSuite / maintenance) run on this model
+    # and tier, so our own bulk work cannot contend with interactive chat turns
+    # for the same quota.
+    SYNC_MODEL = os.getenv("SYNC_MODEL", "gemini-3.5-flash-lite")
+
+    # ==================== Vertex location & service tiers ====================
+    # NOTE: Gemini 3.x models are only served from the global endpoint —
+    # regional locations 404 for them (measured 2026-09-24). Do not pin to a
+    # region without re-checking availability.
+    GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "")
+    GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "global")
+
+    # Vertex service tiers ("Standard" / "Priority" / "Flex").
+    # Priority = highest criticality; overflow is served at Standard instead of
+    # failing. Flex = ~50% cheaper, slower, for latency-tolerant background work.
+    # Empty string means omit service_tier entirely (Standard behaviour).
+    # Values must be the proto enum names, not "priority"/"flex".
+    INTERACTIVE_SERVICE_TIER = os.getenv("INTERACTIVE_SERVICE_TIER", "")
+    SYNC_SERVICE_TIER = os.getenv("SYNC_SERVICE_TIER", "")
+
+    # ==================== LLM retry policy ====================
+    # Google's retry guidance: for real-time workloads "fail fast — limit the
+    # number of retry attempts so users are not left waiting indefinitely".
+    # ChatGoogleGenerativeAI defaults max_retries to 6, which is where the
+    # endless "Agent working..." spinner came from: our own loop added 2 more
+    # on top, then fell back to a model that 404s.
+    LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
+    # Raw-SDK equivalent (google-genai HttpRetryOptions.attempts).
+    LLM_SDK_RETRY_ATTEMPTS = int(os.getenv("LLM_SDK_RETRY_ATTEMPTS", "2"))
+    # Overall wall-clock budget for one pipeline call across all candidates,
+    # so a retry storm cannot stall a background job indefinitely.
+    LLM_MAX_ATTEMPT_SECONDS = float(os.getenv("LLM_MAX_ATTEMPT_SECONDS", "45"))
+    LLM_REQUEST_TIMEOUT_MS = int(os.getenv("LLM_REQUEST_TIMEOUT_MS", "120000"))
+
+    # ==================== LLM telemetry ====================
+    # Records every LLM call to the llm_call_log table (plus a log line).
+    # Best-effort: telemetry failure never fails a request.
+    LLM_TELEMETRY_ENABLED = os.getenv("LLM_TELEMETRY_ENABLED", "1").lower() not in (
+        "0", "false", "no", "off",
+    )
+    # Days of history to keep; enforced by scripts/prune_llm_call_log.py.
+    LLM_TELEMETRY_RETENTION_DAYS = int(os.getenv("LLM_TELEMETRY_RETENTION_DAYS", "30"))
 
     # Model temperature (0.0 - 1.0)
     DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
