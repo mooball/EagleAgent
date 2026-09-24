@@ -50,6 +50,7 @@ __all__ = [
     "WidgetOutcome",
     "WidgetSpec",
     "apply_outcome",
+    "dispatch_lookup",
     "dispatch_widget",
     "form_to_data",
     "get_widget",
@@ -121,6 +122,11 @@ class WidgetSpec:
     submit: Callable[[dict[str, Any], dict[str, Any], str], WidgetOutcome]
     #: (state) -> extra template context (field options, RFQ lines, ...).
     context: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None
+    #: (query, state, user_email) -> {"results": [...]}. Synchronous; run in a
+    #: thread. For widgets with something to search: the transport serves it as
+    #: a JSON typeahead and stays ignorant of what is being searched, the same
+    #: way ``context`` keeps field options out of the route.
+    lookup: Optional[Callable[[str, dict[str, Any], str], dict[str, Any]]] = None
     icon: str = "⚡"
 
 
@@ -160,6 +166,7 @@ def register_widget(
     submit: Callable[[dict[str, Any], dict[str, Any], str], WidgetOutcome],
     *,
     context: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None,
+    lookup: Optional[Callable[[str, dict[str, Any], str], dict[str, Any]]] = None,
     icon: str = "⚡",
 ) -> WidgetSpec:
     """Register a widget. Raises on a duplicate name — silent replacement
@@ -173,6 +180,7 @@ def register_widget(
         template=template,
         submit=submit,
         context=context,
+        lookup=lookup,
         icon=icon,
     )
     _registry[name] = spec
@@ -203,6 +211,22 @@ def dispatch_widget(
     if spec is None:
         raise KeyError(name)
     return spec.submit(data, state, user_email)
+
+
+def dispatch_lookup(
+    name: str, query: str, state: dict[str, Any], user_email: str
+) -> dict[str, Any]:
+    """Run a widget's typeahead handler.
+
+    A widget with nothing to search returns no results rather than raising: the
+    client asks the same way for every widget.
+    """
+    spec = get_widget(name)
+    if spec is None:
+        raise KeyError(name)
+    if spec.lookup is None:
+        return {"results": []}
+    return spec.lookup(query, state, user_email)
 
 
 # ---------------------------------------------------------------------------

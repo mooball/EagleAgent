@@ -330,6 +330,10 @@
             showError('Still working on the previous message — one moment.');
             return;
         }
+        // Who had focus when the menu was clicked. The card arrives from a fetch,
+        // so by then the user may have started typing in the composer — putting
+        // the caret in the card would rip it out of their message.
+        var focusBefore = document.activeElement;
         fetch('/chat-ui/threads/' + active.id + '/widgets', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -350,6 +354,13 @@
             entry.widgetEl.innerHTML = res.data.html;
             wireWidget(entry.widgetEl);
             messages.scrollTop = messages.scrollHeight;
+            // Only if nothing has taken focus since the click: a slow response must
+            // not pull the user out of a message they have started typing.
+            var theirs = document.activeElement;
+            if (!theirs || theirs === document.body || theirs === focusBefore
+                || theirs === toolsBtn || !document.body.contains(theirs)) {
+                focusWidgetField(entry.widgetEl);
+            }
         }).catch(function () {
             showError('Network error — please retry.');
         });
@@ -644,6 +655,294 @@
         return scope.querySelector ? scope.querySelector('[data-widget]') : null;
     }
 
+    // ── Widget search: find a supplier we already have ─────────────────────
+    // The card opens on a typeahead; picking a result switches it to the
+    // "chosen" view, and "Create a new supplier" switches it to the form. All the
+    // views are already in the DOM, so no round trip is needed — the `mode` field
+    // moves and the reveal follows (see wireShowWhen).
+
+    //: A shorter query returns most of the table, so it is not sent.
+    var LOOKUP_MIN_CHARS = 2;
+    //: Keystrokes settle for this long before a search goes out.
+    var LOOKUP_DEBOUNCE_MS = 250;
+
+    function widgetIdOf(scope) {
+        var card = widgetCardEl(scope);
+        return card && card.dataset ? (card.dataset.widgetId || '') : '';
+    }
+
+    function widgetField(scope, name) {
+        var card = widgetCardEl(scope);
+        return card ? card.querySelector('[name="' + name + '"]') : null;
+    }
+
+    // Setting a field's value does not fire `change`, and wireShowWhen listens for
+    // exactly that — so a view switch has to announce itself.
+    function setWidgetMode(scope, mode) {
+        var field = widgetField(scope, 'mode');
+        if (!field) { return; }
+        field.value = mode;
+        field.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+
+    // Any edit invalidates a pick: the typed name no longer describes the id, and
+    // the server refuses a mismatched pair — so clear it here rather than let the
+    // user submit something that will bounce.
+    function clearWidgetSelection(scope) {
+        var field = widgetField(scope, 'supplier_id');
+        if (field) { field.value = ''; }
+    }
+
+    function showWidgetCreateForm(scope) {
+        setWidgetMode(scope, 'create');
+        // The create view's own first field, not the card's: the shared name field
+        // already holds what the user typed, so the next thing to fill in is the
+        // one below it.
+        focusWidgetField(scope, '[data-show-when="mode=create"]');
+    }
+
+    function selectExistingSupplier(scope, row) {
+        var idField = widgetField(scope, 'supplier_id');
+        var nameField = widgetField(scope, 'name');
+        if (idField) { idField.value = row.id; }
+        // The canonical name replaces what was typed: the server compares the two,
+        // so a mismatch (a stale pick) is caught rather than trusted.
+        if (nameField) { nameField.value = row.name; }
+
+        var card = widgetCardEl(scope);
+        var chosenName = card ? card.querySelector('[data-widget-chosen-name]') : null;
+        if (chosenName) { chosenName.textContent = row.name; }
+        var chosenMeta = card ? card.querySelector('[data-widget-chosen-meta]') : null;
+        if (chosenMeta) {
+            chosenMeta.textContent = [row.country, row.currency, row.email]
+                .filter(Boolean).join(' · ');
+        }
+        setWidgetMode(scope, 'chosen');
+    }
+
+    function widgetResultButtons(scope) {
+        var box = scope.querySelector('[data-widget-results]');
+        if (!box) { return []; }
+        var out = [];
+        var btns = box.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) { out.push(btns[i]); }
+        return out;
+    }
+
+    //: Gap left below a card when the client scrolls it back into view.
+    var WIDGET_REVEAL_GAP = 8;
+
+    // A card that grows must not grow *under* the composer: the messages box
+    // scrolls, so anything past its bottom edge is behind the input bar. The card
+    // is the last row, so nudging the box down by exactly the overflow shows the
+    // new rows (and the submit buttons below them) without moving anything when
+    // they already fit.
+    //
+    // Deliberately not scrollIntoView(): the panel is embedded in the dashboard
+    // document, so that call can scroll the page behind the panel as well.
+    function revealWidgetCard(scope) {
+        var card = widgetCardEl(scope);
+        if (!card || !messages || !card.getBoundingClientRect) { return; }
+        var cardRect = card.getBoundingClientRect();
+        var viewRect = messages.getBoundingClientRect();
+        // Only nudge a card the user can see at all. A card scrolled out of view
+        // in a long thread must not drag the panel back to the bottom.
+        if (cardRect.bottom < viewRect.top || cardRect.top > viewRect.bottom) { return; }
+        var overflow = cardRect.bottom - (viewRect.bottom - WIDGET_REVEAL_GAP);
+        if (overflow > 0) { messages.scrollTop += overflow; }
+    }
+
+    // The card holds every view at once, so "the first field" has to mean the
+    // first one the user can actually see — otherwise focus lands in a hidden
+    // view and the caret is nowhere.
+    function isFocusableWidgetField(el) {
+        if (!el || el.disabled) { return false; }
+        var type = String(el.type || '').toLowerCase();
+        if (type === 'hidden' || type === 'checkbox' || type === 'radio'
+            || type === 'button' || type === 'submit' || type === 'file'
+            || type === 'reset') {
+            return false;
+        }
+        // display:none collapses the box, so this is the visibility test — and
+        // it is what makes the check work in a stub DOM too.
+        return !!(el.offsetWidth || el.offsetHeight);
+    }
+
+    // Puts the caret in the card's first usable field: the typeahead when a card
+    // opens, the first field of a view when a button switches to it.
+    function focusWidgetField(scope, within) {
+        var card = widgetCardEl(scope);
+        if (!card) { return false; }
+        var root = within ? card.querySelector(within) : card;
+        if (!root) { return false; }
+        var fields = root.querySelectorAll('input, textarea, select');
+        for (var i = 0; i < fields.length; i++) {
+            if (!isFocusableWidgetField(fields[i])) { continue; }
+            fields[i].focus();
+            // Continue from what is already there rather than selecting it: a
+            // re-rendered card still has the typed name in the box.
+            if (fields[i].value && fields[i].setSelectionRange) {
+                try {
+                    fields[i].setSelectionRange(fields[i].value.length,
+                                                fields[i].value.length);
+                } catch (err) { /* not a text field */ }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    function highlightWidgetResult(scope, index) {
+        var btns = widgetResultButtons(scope);
+        for (var i = 0; i < btns.length; i++) {
+            if (!btns[i].classList) { continue; }
+            btns[i].classList.toggle('bg-gray-100', i === index);
+            btns[i].classList.toggle('dark:bg-neutral-800', i === index);
+        }
+        // The list is capped and scrolls internally, so arrowing past the fold has
+        // to bring the highlighted row along with it — inside the list only.
+        var box = scope.querySelector('[data-widget-results]');
+        var row = btns[index];
+        if (!box || !row || !row.getBoundingClientRect) { return; }
+        var rowRect = row.getBoundingClientRect();
+        var boxRect = box.getBoundingClientRect();
+        if (rowRect.top < boxRect.top) {
+            box.scrollTop -= (boxRect.top - rowRect.top);
+        } else if (rowRect.bottom > boxRect.bottom) {
+            box.scrollTop += (rowRect.bottom - boxRect.bottom);
+        }
+    }
+
+    // Returns how many results were rendered, so Enter can tell "no matches"
+    // (offer to create) from "still searching" (do nothing).
+    function renderWidgetResults(scope, results, query) {
+        var box = scope.querySelector('[data-widget-results]');
+        var status = scope.querySelector('[data-widget-lookup-status]');
+        if (!box) { return 0; }
+        box.innerHTML = '';
+        if (!results.length) {
+            if (status) {
+                status.textContent = 'No supplier matches “' + query + '”.';
+            }
+            return 0;
+        }
+        if (status) { status.textContent = ''; }
+        results.forEach(function (row) {
+            var btn = document.createElement('button');
+            btn.type = 'button';       // a bare <button> would submit the form
+            btn.className = 'w-full text-start px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-neutral-800';
+            btn.dataset.widgetResult = row.id;
+            var name = document.createElement('span');
+            name.className = 'block text-xs text-gray-800 dark:text-neutral-200 truncate';
+            name.textContent = row.name;
+            // Country/currency/email because supplier names repeat across
+            // countries and a bare name gives nothing to choose between.
+            var meta = document.createElement('span');
+            meta.className = 'block text-[11px] text-gray-400 dark:text-neutral-500 truncate';
+            meta.textContent = [row.country, row.currency, row.email].filter(Boolean).join(' · ');
+            btn.appendChild(name);
+            btn.appendChild(meta);
+            btn.addEventListener('click', function () { selectExistingSupplier(scope, row); });
+            box.appendChild(btn);
+        });
+        // The list just made the card taller; keep it out from under the composer.
+        revealWidgetCard(scope);
+        return results.length;
+    }
+
+    function wireWidgetSearch(scope) {
+        var input = scope.querySelector('[data-widget-lookup]');
+        if (!input || input.dataset.lookupWired === '1') { return; }
+        input.dataset.lookupWired = '1';
+
+        var timer = null;
+        var seq = 0;          // discards out-of-order responses
+        var active = -1;      // highlighted result
+        var lastCount = -1;   // -1 = a query is still in flight
+
+        var run = function () {
+            var query = String(input.value || '').trim();
+            var status = scope.querySelector('[data-widget-lookup-status]');
+            var box = scope.querySelector('[data-widget-results]');
+            if (!box) { return; }
+            if (query.length < LOOKUP_MIN_CHARS) {
+                box.innerHTML = '';
+                lastCount = -1;
+                if (status) {
+                    status.textContent = 'Start typing to find a supplier we already have.';
+                }
+                return;
+            }
+            var mine = ++seq;
+            if (status) { status.textContent = 'Searching…'; }
+            fetch('/chat-ui/widgets/' + encodeURIComponent(widgetIdOf(scope))
+                  + '/lookup?q=' + encodeURIComponent(query),
+                  {credentials: 'same-origin'})
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    // Two keystrokes can be in flight; only the newest may paint.
+                    if (mine !== seq) { return; }
+                    active = -1;
+                    lastCount = renderWidgetResults(scope, (data && data.results) || [], query);
+                })
+                .catch(function () {
+                    if (mine !== seq) { return; }
+                    lastCount = -1;
+                    if (status) { status.textContent = 'Could not search — check your connection.'; }
+                });
+        };
+
+        input.addEventListener('input', function () {
+            clearTimeout(timer);
+            clearWidgetSelection(scope);
+            lastCount = -1;
+            timer = setTimeout(run, LOOKUP_DEBOUNCE_MS);
+        });
+
+        input.addEventListener('keydown', function (e) {
+            var btns = widgetResultButtons(scope);
+            if (e.key === 'ArrowDown' && btns.length) {
+                e.preventDefault();
+                active = Math.min(active + 1, btns.length - 1);
+                highlightWidgetResult(scope, active);
+            } else if (e.key === 'ArrowUp' && btns.length) {
+                e.preventDefault();
+                active = Math.max(active - 1, 0);
+                highlightWidgetResult(scope, active);
+            } else if (e.key === 'Enter') {
+                // Typing a name and pressing Enter must never submit the form.
+                e.preventDefault();
+                if (btns.length) {
+                    btns[active >= 0 ? active : 0].click();
+                } else if (lastCount === 0) {
+                    showWidgetCreateForm(scope);
+                }
+            }
+        });
+
+        var createBtn = scope.querySelector('[data-widget-create-new]');
+        if (createBtn) {
+            createBtn.addEventListener('click', function () { showWidgetCreateForm(scope); });
+        }
+        var changeBtn = scope.querySelector('[data-widget-change]');
+        if (changeBtn) {
+            changeBtn.addEventListener('click', function () {
+                clearWidgetSelection(scope);
+                setWidgetMode(scope, 'search');
+                if (input.focus) { input.focus(); }
+                run();      // the query is still in the box, so search again at once
+            });
+        }
+
+        // A card re-rendered in search mode (a stale-selection error, say) still
+        // has the typed name in the box — show its matches straight away.
+        var modeField = widgetField(scope, 'mode');
+        if (modeField && modeField.value === 'search'
+            && String(input.value || '').trim().length >= LOOKUP_MIN_CHARS) {
+            run();
+        }
+    }
+
     function renderWidget(entry, widget) {
         if (!entry.widgetEl || !widget || !widget.id) { return; }
         var slot = entry.widgetEl;
@@ -684,22 +983,38 @@
         }
         var card = widgetCardEl(scope);
         if (card) { watchWidgetWidth(card); }
+        wireWidgetSearch(scope);
     }
 
-    // Declarative show/hide ("data-show-when=\"line_mode=specific\""), so a
-    // widget's conditional sections need no script of their own — injected HTML
-    // does not execute its <script> tags.
+    // Declarative show/hide: `data-show-when="field=value[,value]"`. Radios match
+    // by which one is checked, anything else by its value — so a hidden field can
+    // drive a whole view (see the supplier card's `mode`). Sections need no script
+    // of their own: injected HTML does not execute its <script> tags.
+    //
+    // Hides with an inline style rather than the `hidden` attribute: a Tailwind
+    // display class (grid, block, …) on the same element outranks [hidden], so
+    // `hidden` would quietly do nothing there.
     function wireShowWhen(target) {
         if (target.dataset.wired === '1') { return; }
         var parts = String(target.dataset.showWhen || '').split('=');
         var field = parts[0];
-        var value = parts[1];
+        var wanted = String(parts[1] || '').split(',')
+            .map(function (v) { return v.trim(); })
+            .filter(function (v) { return v !== ''; });
         var form = target.closest('form');
-        if (!field || !value || !form) { return; }
+        if (!field || !wanted.length || !form) { return; }
         target.dataset.wired = '1';
         var sync = function () {
-            var picked = form.querySelector('input[name="' + field + '"]:checked');
-            target.hidden = !picked || picked.value !== value;
+            var el = form.querySelector('input[name="' + field + '"]:checked');
+            if (!el) {
+                el = form.querySelector('[name="' + field + '"]');
+                // A checkbox/radio group with nothing ticked has no value.
+                if (el && (el.type === 'radio' || el.type === 'checkbox')) { el = null; }
+            }
+            var current = el ? String(el.value || '') : '';
+            var show = wanted.indexOf(current) !== -1;
+            target.hidden = !show;
+            target.style.display = show ? '' : 'none';
         };
         form.addEventListener('change', function (e) {
             if (e.target && e.target.name === field) { sync(); }

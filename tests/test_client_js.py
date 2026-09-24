@@ -33,6 +33,7 @@ CHECKS = [
     "check_sendaction.js",
     "check_ns_supplier.js",
     "check_widget_submit.js",
+    "check_widget_lookup.js",
 ]
 
 pytestmark = pytest.mark.skipif(

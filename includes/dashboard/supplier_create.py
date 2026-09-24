@@ -38,12 +38,16 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "LOOKUP_LIMIT",
+    "MIN_LOOKUP_CHARS",
     "SUPPLIER_FIELDS",
     "DuplicateReport",
     "SupplierField",
     "create_local_supplier",
     "describe_matches",
     "field_options",
+    "lookup_suppliers",
+    "primary_email",
     "validate",
 ]
 
@@ -238,6 +242,101 @@ def find_duplicates(
 
     match = match_supplier(name, url=url, country=country, session=session)
     return describe_matches(match)
+
+
+#: A typeahead query shorter than this matches too much of the table to be
+#: useful (the dashboard's supplier search uses the same floor).
+MIN_LOOKUP_CHARS = 2
+
+#: Results returned to the widget's search view.
+LOOKUP_LIMIT = 8
+
+
+def _jsonb_email(supplier: Any) -> str:
+    """First email in the legacy ``suppliers.contacts`` JSONB, or ""."""
+    contacts = supplier.contacts if isinstance(supplier.contacts, list) else []
+    for contact in contacts:
+        if isinstance(contact, dict) and contact.get("email"):
+            return str(contact["email"])
+    return ""
+
+
+def _primary_emails(session: Any, supplier_ids: list) -> dict[str, str]:
+    """Best contact email per supplier, with one query for the whole page.
+
+    The ``contacts`` table is authoritative — it is what inbound-email matching
+    reads — but ``suppliers.contacts`` is the fallback, because it is what the RFQ
+    and NetSuite forms prefill from and can hold entries the table lacks.
+    """
+    from includes.dashboard.models import Contact
+
+    if not supplier_ids:
+        return {}
+    rows = (
+        session.query(Contact)
+        .filter(Contact.supplier_id.in_(supplier_ids), Contact.isinactive == False)
+        .all()
+    )
+    # "Main" is the label the RFQ flows treat as primary; otherwise first wins.
+    ordered = sorted(rows, key=lambda c: (0 if (c.label or "") == "Main" else 1, str(c.id)))
+    out: dict[str, str] = {}
+    for row in ordered:
+        key = str(row.supplier_id)
+        if row.email and key not in out:
+            out[key] = row.email
+    return out
+
+
+def primary_email(supplier: Any, session: Any) -> str:
+    """Best contact email for one supplier (contacts table, then JSONB fallback).
+
+    ``lookup_suppliers`` batches the same query for a whole page; this is for the
+    single row a submission just acted on.
+    """
+    return _primary_emails(session, [supplier.id]).get(str(supplier.id)) or _jsonb_email(supplier)
+
+
+def lookup_suppliers(
+    query: str, *, limit: int = LOOKUP_LIMIT, session: Any = None
+) -> list[dict[str, str]]:
+    """Ranked typeahead over existing suppliers, for the widget's first screen.
+
+    Goes through ``supplier_lookup`` so "which suppliers are searchable" stays
+    defined in one place — including ``hide_dups=True``, which matters more here
+    than anywhere: this is a *linking* flow, and a merged-away duplicate must
+    never be attached to an RFQ.
+
+    Rows carry country/currency/email because supplier names repeat across
+    countries, and a bare name gives the user nothing to choose between.
+    """
+    from includes.dashboard.database import get_session
+    from includes.dashboard.supplier_dedup import supplier_lookup
+
+    needle = (query or "").strip()
+    if len(needle) < MIN_LOOKUP_CHARS:
+        return []
+
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        rows = supplier_lookup(
+            session, needle, hide_dups=True, limit=limit, rank=True
+        )
+        emails = _primary_emails(session, [row.id for row in rows])
+        return [
+            {
+                "id": str(row.id),
+                "name": row.name,
+                "country": row.country or "",
+                "currency": row.currency or "",
+                "email": emails.get(str(row.id)) or _jsonb_email(row),
+            }
+            for row in rows
+        ]
+    finally:
+        if own_session:
+            session.close()
 
 
 def create_local_supplier(

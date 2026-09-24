@@ -1,25 +1,42 @@
 {#
-  "Add new supplier" widget card — rendered into the chat panel by the client,
-  either when the Tools menu opens it or when the agent calls ctx.widget().
+  Supplier widget card — find a supplier we already have, or add a new one.
 
   Rendered server-side and fetched separately (GET /chat-ui/widgets/{id}/render)
   rather than sent as message text: the panel's markdown sanitiser strips
   <form>, <input> and <button>, so a card sent that way would arrive as labels.
 
-  Two views live here, chosen by widget.status:
-    pending   — the form (values re-filled from widget.data, which is why a
-                failed submit or a reload does not lose what was typed)
-    submitted — the result card
+  Views, all inside ONE form, so `mode` and `supplier_id` travel with whatever the
+  user submits:
 
-  There is no cancelled view: cancelling deletes the step and the client removes
-  the row, so a dismissed card leaves nothing behind to read.
+    search  — company-name typeahead over existing suppliers
+    chosen  — a picked existing supplier, plus the line picker
+    create  — the quick-add form for one we do not have
+
+  Plus the result card. There is no cancelled view: cancelling deletes the step
+  and the client removes the row.
+
+  Inputs are never duplicated across views: two inputs with the same name would
+  both submit, and the handler would receive a list where it expects a string.
+  The shared pieces (the name field, the line targets) are rendered once and
+  shown per mode.
+
+  `vis()` writes each view's initial visibility as an inline style, and
+  wireShowWhen() maintains it from `mode` afterwards. Inline style, not the
+  `hidden` attribute: a Tailwind display class on the same element outranks
+  [hidden], so `hidden` would silently do nothing.
 
   The layout is deliberately chat-width: two columns, optional fields behind a
   disclosure, no NetSuite-only fields (those belong to the promotion step).
 #}
 {% import "partials/_supplier_field.html" as sf %}
+{% macro vis(show) %}{% if not show %}style="display:none"{% endif %}{% endmacro %}
 {% set data = widget.data or {} %}
 {% set errors = widget.errors or {} %}
+{% set result = widget.result or {} %}
+{% set show_search = mode == 'search' %}
+{% set show_chosen = mode == 'chosen' %}
+{% set show_create = mode == 'create' %}
+{% set show_lines = mode in ('chosen', 'create') %}
 {# Every field occupies one grid cell — nothing spans two columns.
 
    Spanning the important fields looked reasonable on paper, but in the panel it
@@ -33,7 +50,7 @@
      {% if rfq %}data-widget-rfq="{{ rfq.id }}"{% endif %}>
 
     <div class="flex items-center justify-between gap-2 mb-2">
-        <span class="text-xs font-semibold text-gray-800 dark:text-neutral-200">Add new supplier</span>
+        <span class="text-xs font-semibold text-gray-800 dark:text-neutral-200">Add supplier</span>
         {% if rfq %}
         <span class="shrink-0 text-[10px] text-gray-400 dark:text-neutral-500">{{ rfq.id }}</span>
         {% endif %}
@@ -47,21 +64,26 @@
             {# Opened in a new tab on purpose: the chat panel lives inside the
                dashboard document, and a same-tab link would reload the whole
                page (and this conversation) just to show a supplier. #}
-            <a href="/suppliers/{{ widget.result.supplier_id }}" target="_blank" rel="noopener"
-               class="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline break-words">{{ widget.result.name }}</a>
-            {% if widget.result.email %}
-            <p class="text-[11px] text-gray-400 dark:text-neutral-500 truncate">{{ widget.result.email }}</p>
+            <a href="/suppliers/{{ result.supplier_id }}" target="_blank" rel="noopener"
+               class="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline break-words">{{ result.name }}</a>
+            {% if result.email %}
+            <p class="text-[11px] text-gray-400 dark:text-neutral-500 truncate">{{ result.email }}</p>
             {% endif %}
         </div>
     </div>
-    {% if widget.result.lines %}
+    {% if result.lines %}
     <p class="mt-1.5 text-[11px] text-gray-600 dark:text-neutral-400">
-        Added as a candidate on line{{ 's' if widget.result.lines | length > 1 }} {{ widget.result.lines | join(', ') }}
+        Added as a candidate on line{{ 's' if result.lines | length > 1 }} {{ result.lines | join(', ') }}
     </p>
     {% endif %}
-    {% if widget.result.line_error %}
+    {% if result.already_on %}
+    <p class="mt-1.5 text-[11px] text-gray-600 dark:text-neutral-400">
+        Already a candidate on line{{ 's' if result.already_on | length > 1 }} {{ result.already_on | join(', ') }}
+    </p>
+    {% endif %}
+    {% if result.line_error %}
     <p class="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
-        Saved, but not added to {{ rfq.id if rfq else 'the RFQ' }} — {{ widget.result.line_error }}
+        Not added to {{ rfq.id if rfq else 'the RFQ' }} — {{ result.line_error }}
     </p>
     {% endif %}
 
@@ -70,8 +92,58 @@
     <form data-widget-form="1" data-action-field="{{ action_field }}"
           action="/chat-ui/widgets/{{ widget.id }}/submit" method="post">
 
-        <div class="widget-form-grid grid grid-cols-2 gap-2">
-            {% for field in fields if field.group == 'main' %}
+        {# Which view the card is in. A hidden field, so the client can move
+           between views without a round trip, and so a re-render after a
+           validation error stays where the user was. #}
+        <input type="hidden" name="mode" value="{{ mode }}">
+        {# Set by the client when an existing supplier is picked. Its presence is
+           what makes the submit take the "add existing" path. #}
+        <input type="hidden" name="supplier_id" value="{{ data.get('supplier_id') or '' }}">
+
+        {# ── Company name — shared by search and create ──────────────────── #}
+        <div {{ vis(show_search or show_create) }} data-show-when="mode=search,create">
+            {{ sf.render(fields | selectattr('key', 'equalto', 'name') | first,
+                         data.get('name'), errors.get('name'), options, searchable=True) }}
+        </div>
+
+        {# ── Search ──────────────────────────────────────────────────────── #}
+        <div {{ vis(show_search) }} data-show-when="mode=search">
+            <p class="mt-1 text-[11px] text-gray-400 dark:text-neutral-500" data-widget-lookup-status>
+                Start typing to find a supplier we already have.
+            </p>
+            {# Capped and scrollable: eight rows is ~300px, which on a short panel
+               pushes the input off the top before the list is even reachable.
+               The client scrolls the card into view as it grows (keeping it out
+               from under the composer). #}
+            <div class="mt-1.5 space-y-0.5 max-h-60 overflow-y-auto" data-widget-results></div>
+            <button type="button" data-widget-create-new
+                    class="mt-2 inline-flex items-center gap-1 py-1.5 px-2 rounded-lg text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-blue-900/50">
+                + Create a new supplier
+            </button>
+        </div>
+
+        {# ── Chosen ──────────────────────────────────────────────────────── #}
+        <div {{ vis(show_chosen) }} data-show-when="mode=chosen">
+            <div class="flex items-start gap-2 rounded-lg border border-gray-200 dark:border-neutral-700 p-2">
+                <div class="min-w-0 flex-1">
+                    <p class="text-xs font-medium text-gray-800 dark:text-neutral-200 break-words"
+                       data-widget-chosen-name>{{ data.get('name') }}</p>
+                    <p class="text-[11px] text-gray-400 dark:text-neutral-500 truncate"
+                       data-widget-chosen-meta></p>
+                </div>
+                {# Back to the typeahead. Also clears supplier_id, so an edited
+                   name can never be submitted against the old pick. #}
+                <button type="button" data-widget-change
+                        class="shrink-0 text-[11px] text-blue-600 dark:text-blue-400 hover:underline">
+                    Change
+                </button>
+            </div>
+        </div>
+
+        {# ── Create ───────────────────────────────────────────────────────── #}
+        <div {{ vis(show_create) }} data-show-when="mode=create">
+        <div class="widget-form-grid grid grid-cols-2 gap-2 mt-2">
+            {% for field in fields if field.group == 'main' and field.key != 'name' %}
                 {{ sf.render(field, data.get(field.key), errors.get(field.key), options) }}
             {% endfor %}
         </div>
@@ -85,6 +157,31 @@
             </div>
         </details>
 
+            {% if widget.duplicates %}
+            <div class="mt-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-2">
+                <p class="text-[11px] font-medium text-amber-800 dark:text-amber-300">
+                    We already have {{ widget.duplicates | length }} supplier{{ 's' if widget.duplicates | length > 1 }} like this:
+                </p>
+                <ul class="mt-1 space-y-0.5">
+                    {% for dup in widget.duplicates %}
+                    <li class="text-[11px] text-amber-800 dark:text-amber-300">
+                        <span class="font-medium">{{ dup.name }}</span>
+                        <span class="text-amber-600 dark:text-amber-500">— {{ dup.reasons | join(', ') }}</span>
+                    </li>
+                    {% endfor %}
+                </ul>
+                <label class="mt-1.5 flex items-start gap-1.5 text-[11px] text-amber-900 dark:text-amber-200">
+                    <input type="checkbox" name="duplicate_checked" value="1" class="mt-0.5 shrink-0"
+                           {% if widget.duplicate_checked %}checked{% endif %}>
+                    <span>I've checked — this is a different supplier</span>
+                </label>
+            </div>
+            {% endif %}
+        </div>
+
+        {# ── Line targets and actions — rendered ONCE, shared by both live
+           views (duplicating the radios would make both submit) ─────────── #}
+        <div {{ vis(show_lines) }} data-show-when="mode=chosen,create">
         {% if rfq and rfq.lines %}
         <fieldset class="mt-2 rounded-lg border border-gray-200 dark:border-neutral-700 p-2">
             <legend class="px-1 text-[11px] font-medium text-gray-600 dark:text-neutral-400">
@@ -117,45 +214,49 @@
                     <input type="checkbox" name="lines" value="{{ line.line }}"
                            {% if line.line in selected_lines %}checked{% endif %}>
                     <span class="shrink-0 font-medium">Line {{ line.line }}</span>
+                    {# The brand is what distinguishes lines on a multi-brand RFQ,
+                       so it stays visible (shrink-0) and the part number and
+                       description truncate around it instead. #}
+                    {% if line.brand %}
+                    <span class="shrink-0 max-w-[8rem] truncate rounded px-1 text-[10px] text-gray-600 dark:text-neutral-300 bg-gray-100 dark:bg-neutral-800"
+                          title="{{ line.brand }}">{{ line.brand }}</span>
+                    {% endif %}
                     <span class="truncate text-gray-400 dark:text-neutral-500">{{ line.part_number }}{% if line.description %} · {{ line.description }}{% endif %}</span>
                 </label>
                 {% endfor %}
             </div>
         </fieldset>
         {% endif %}
-
-        {% if widget.duplicates %}
-        <div class="mt-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-2">
-            <p class="text-[11px] font-medium text-amber-800 dark:text-amber-300">
-                We already have {{ widget.duplicates | length }} supplier{{ 's' if widget.duplicates | length > 1 }} like this:
-            </p>
-            <ul class="mt-1 space-y-0.5">
-                {% for dup in widget.duplicates %}
-                <li class="text-[11px] text-amber-800 dark:text-amber-300">
-                    <span class="font-medium">{{ dup.name }}</span>
-                    <span class="text-amber-600 dark:text-amber-500">— {{ dup.reasons | join(', ') }}</span>
-                </li>
-                {% endfor %}
-            </ul>
-            <label class="mt-1.5 flex items-start gap-1.5 text-[11px] text-amber-900 dark:text-amber-200">
-                <input type="checkbox" name="duplicate_checked" value="1" class="mt-0.5 shrink-0"
-                       {% if widget.duplicate_checked %}checked{% endif %}>
-                <span>I've checked — this is a different supplier</span>
-            </label>
         </div>
-        {% endif %}
-
+        {# ── Actions — outside every view, so they are always on screen ──────
+           Cancel has to be reachable the moment the card opens: nobody should
+           have to pick a supplier (or start creating one) to back out. The
+           message below it is here for the same reason — a refused pick
+           re-renders in the search view, and a complaint nobody can see is
+           worse than none. #}
         {% if widget.error %}
         <p class="mt-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-2 text-[11px] text-red-700 dark:text-red-300">{{ widget.error }}</p>
         {% endif %}
 
         <div class="flex items-center gap-2 mt-3">
+            {# One submit button per view. Both carry the same name/value, which
+               is safe: FormData from a form element excludes submit buttons, and
+               the client sets the action field from the pressed one explicitly.
+
+               data-show-when as well as the inline style: the server writes that
+               style for the view the card *opened* in, and picking a supplier
+               switches view in the browser — so without this the button stays
+               hidden and the card can be filled in but never submitted. #}
             <button type="submit" name="{{ action_field }}" value="submit"
+                    {{ vis(show_chosen) }} data-show-when="mode=chosen"
+                    class="inline-flex justify-center items-center gap-1 py-1.5 px-3 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+                Add to RFQ
+            </button>
+            <button type="submit" name="{{ action_field }}" value="submit"
+                    {{ vis(show_create) }} data-show-when="mode=create"
                     class="inline-flex justify-center items-center gap-1 py-1.5 px-3 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
                 Add supplier
             </button>
-            {# formnovalidate: cancelling must not be blocked by the required
-               fields the user never filled in. #}
             <button type="submit" name="{{ action_field }}" value="cancel" formnovalidate
                     class="py-1.5 px-3 rounded-lg text-xs text-gray-600 dark:text-neutral-300 hover:bg-gray-100 dark:hover:bg-neutral-800">
                 Cancel

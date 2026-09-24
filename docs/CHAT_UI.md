@@ -187,17 +187,18 @@ An action is a **button**; a widget is a **form**. Same idea, different
 transport — which is why they are separate modules (`includes/chat/actions.py`,
 `includes/chat/widgets.py`) rather than one registry with two modes.
 
-A widget is declared as a `WidgetSpec`: a name, a template, a `submit` handler
-and an optional `context` builder.
+A widget is declared as a `WidgetSpec`: a name, a template, a `submit` handler,
+an optional `context` builder, and an optional `lookup` handler.
 
 ```python
 register_widget(
     "add_supplier",
-    label="Add new supplier",
-    description="Create a supplier we don't have yet",
+    label="Add supplier",
+    description="Find a supplier we already have, or add a new one",
     template="chat_ui/widgets/_add_supplier.html",
     submit=_submit,        # (data, state, user_email) -> WidgetOutcome
     context=_context,      # (state) -> extra template context
+    lookup=_lookup,        # (query, state, user_email) -> {"results": [...]}
 )
 ```
 
@@ -222,7 +223,68 @@ Rules worth knowing before adding one:
   the render endpoint, which re-derives its context (e.g. the RFQ's current line
   items) rather than trusting a snapshot.
 - **Conditional sections use `data-show-when`** (`line_mode=specific`). Wired
-  generically, because injected markup does not execute its own `<script>` tags.
+  generically, because injected markup does not execute its own `<script>` tags.  A section can also key off a *hidden* field and list several acceptable
+  values: `data-show-when="mode=search,create"`. That is how one card is three
+  views — see below. Two details matter: the reveal sets an inline
+  `style="display:none"` rather than the `hidden` attribute (a Tailwind display
+  class on the same element outranks `[hidden]`, so the attribute silently does
+  nothing), and setting a field's `.value` in script fires no `change` event, so
+  whatever changes it must dispatch one itself or nothing reveals.
+- **A widget may declare a `lookup`** — the typeahead half of a search-then-pick
+  card. The transport stays ignorant of what is being searched: the handler
+  receives the raw query, and the route
+  (`GET /chat-ui/widgets/{id}/lookup?q=`) only enforces ownership and the
+  pending state machine, like every other widget route. Minimum query length,
+  ranking and relevance all live in the widget's own service, so they can be
+  tested without a browser. The client debounces the keystrokes and keeps a
+  sequence token, discarding any response that a *newer* query has replaced —
+  without it the slower, older result paints last and the user picks from rows
+  for a prefix they have already typed past.
+- **One card, several views.** The `add_supplier` card searches, confirms a
+  pick, and creates — all inside one form so that `mode` and `supplier_id`
+  travel with whatever is submitted. The rules that keep this honest:
+  - **never render a field twice.** Two inputs sharing a name both submit, and
+    the handler gets a list where it expects a string. The name field and the
+    line-target radios are rendered once and shown per view.
+  - **no `required` attributes.** A browser validates every field in the DOM,
+    including the ones inside a hidden view, so a required field would make the
+    visible view unsubmittable.
+  - **anything the user may need at any moment lives outside every view.**
+    Cancel is the obvious one — nobody should have to pick a supplier, or start
+    creating one, to back out — but the same applies to an error message: a
+    refused pick re-renders the card in the search view, so a complaint inside
+    the chosen/create block is a complaint nobody sees. Three controls were
+    wrong this way at once, and all three were invisible until the card was used
+    (`tests/test_chat_ui_widgets.py::TestNothingNeededIsHidden` now renders each
+    view and checks where the controls landed).
+  - **a control whose visibility changes with the view needs `data-show-when`,
+    not just the server's inline style.** That style is written for the view the
+    card *opened* in; picking a supplier switches view in the browser, so a
+    submit button carrying only the style stays hidden and the card can be filled
+    in but never submitted.
+  - **the server decides which view opens**, in `_context()`: a submitted value
+    wins (a validation error re-renders the view the user was in), otherwise
+    `search` when the thread is bound to an RFQ and `create` when it is not —
+    with nothing to attach a supplier to, a lookup could only end in "Don't add".
+  - **`mode` is a label, not a decision.** The submit path is chosen by whether
+    a `supplier_id` arrived, and that id is re-validated (still live, not merged)
+    and its name compared against the submitted one. A client-supplied `mode`
+    must never be able to skip the create path's validation or link a supplier
+    the user did not pick.- **A card that grows must not grow under the composer.** `#embed-messages`
+  scrolls, so anything past its bottom edge sits behind the input bar — which is
+  where a results list ends up, since it appears *after* the card was scrolled
+  into view. `revealWidgetCard()` nudges the box by exactly the overflow (and
+  does nothing when the card already fits, or when the card is not on screen at
+  all). Do the arithmetic rather than calling `scrollIntoView()`: the panel is
+  embedded in the dashboard document, so that call can scroll the page behind it.
+  A list long enough to matter should also be capped (`max-h-60 overflow-y-auto`)
+  rather than left to push the input off the top of a short panel.
+- **A card opened from the Tools menu takes the caret**, via
+  `focusWidgetField()` — the first field the user can actually see, because every
+  view is in the DOM at once and "the first field" would otherwise mean one in a
+  hidden view. Two things it must not do: run on a history load (opening the
+  panel would put the caret in an old card instead of the message box), and steal
+  focus from someone who has started typing while the card was being fetched.
 - **Layout is decided by the card's measured width.** Give a grid the
   `widget-form-grid` class; `wireWidget()` measures the card and records
   `data-widget-narrow`, which `input.css` uses to stack the form into one column
@@ -249,6 +311,7 @@ Endpoints:
 | --- | --- | --- |
 | `POST` | `/chat-ui/threads/{id}/widgets` | Open one from the Tools menu (no agent run) |
 | `GET` | `/chat-ui/widgets/{id}/render` | The card's current markup |
+| `GET` | `/chat-ui/widgets/{id}/lookup?q=` | Typeahead, if the widget declares a `lookup` |
 | `POST` | `/chat-ui/widgets/{id}/submit` | Form submission (form-encoded) |
 
 Two entry points, one step shape: the Tools menu posts to the open route, and
@@ -268,6 +331,16 @@ guards this.
 in `includes/dashboard/supplier_create.py`. Note that the form's field spec,
 option sources and validation are shared with any future dashboard form; only
 the layout is per-context.
+
+It also shows the two ways a widget can act on something that already exists:
+search results come from `supplier_create.lookup_suppliers()` (ranked exact →
+prefix → contains, wildcards escaped, merged and inactive rows excluded, one
+batched Contact query for the whole page), and the line link read back from the
+RFQ before it is reported. Both are there for the same reason: the flow links a
+supplier into email/RFQ matching, so offering a row that must not be linked — or
+claiming a line link that the write did not make — is the failure mode to design
+against. `tests/client/check_widget_lookup.js` drives the card's client half
+against the real template source.
 
 ## Stopping work
 
@@ -299,9 +372,14 @@ while it is still pending — an already-sent attachment is not removable.
 - `tests/test_bridge_dispatch_sse.py` — action dispatch into a thread
 - `tests/chat/test_widgets.py`, `tests/test_chat_ui_widgets.py` — the widget
   framework and its transport (state machine, ownership, notice step)
-- `tests/test_supplier_create.py` — the `add_supplier` service, including the
-  Contact row and match keys that make a new supplier findable
+- `tests/test_supplier_widget.py` — the `add_supplier` handler: line targeting,
+  the report read back from the RFQ, and the search-then-pick path
+- `tests/test_supplier_create.py` — the `add_supplier` service: validation, the
+  typeahead, and the Contact row and match keys that make a new supplier findable
 - `tests/client/check_widget_submit.js` — widget behaviour the Python suite
   cannot see (submit-button identity, button recovery, row identity)
+- `tests/client/check_widget_lookup.js` — the card's search behaviour, driven
+  against the real template source (debounce, stale-response discard, the
+  reveal, Enter not submitting)
 - `tests/test_widget_layout.py` — static guard on the narrow-panel collapse
   (container-query reference, the hook, and the span reset)

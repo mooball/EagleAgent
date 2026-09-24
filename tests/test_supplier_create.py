@@ -19,11 +19,13 @@ from sqlalchemy.orm import sessionmaker
 
 from includes.dashboard.models import Contact, Supplier, SupplierMatchKey
 from includes.dashboard.supplier_create import (
+    LOOKUP_LIMIT,
     SUPPLIER_FIELDS,
     create_local_supplier,
     describe_matches,
     field_options,
     find_duplicates,
+    lookup_suppliers,
     validate,
 )
 
@@ -352,3 +354,110 @@ class TestCreateLocalSupplier:
         )
 
         assert supplier.id is not None
+
+
+class TestLookupSuppliers:
+    """The widget's first screen: type a name, get ranked candidates.
+
+    Goes through ``supplier_lookup`` so "which suppliers are searchable" stays
+    defined in one place. What matters here is the ranking (an alphabetical list
+    is useless as a typeahead), the wildcard escaping, and that the rows carry
+    enough to choose between two suppliers with the same name.
+    """
+
+    def _add(self, session, name, **overrides):
+        row = Supplier(name=name, source="manual", **overrides)
+        session.add(row)
+        session.flush()
+        return row
+
+    def test_a_query_under_the_floor_never_reaches_the_table(self):
+        """One character matches most of the table — a full scan for a list
+        nobody asked for."""
+        assert lookup_suppliers("k") == []
+        assert lookup_suppliers(" ") == []
+        assert lookup_suppliers("") == []
+        assert lookup_suppliers(None) == []
+
+    def test_wildcards_are_literal(self, db_session):
+        """Without escaping, "%" is LIKE's own wildcard: typing it matches every
+        supplier in the table."""
+        self._add(db_session, _unique("Percent Co"))
+
+        assert lookup_suppliers("%", session=db_session) == []
+        assert lookup_suppliers("_", session=db_session) == []
+        assert lookup_suppliers("%%", session=db_session) == []
+
+    def test_an_exact_name_outranks_longer_ones(self, db_session):
+        stem = _unique("Zebra Bearings")
+        exact = self._add(db_session, stem)
+        prefixed = self._add(db_session, f"{stem} Holdings Pty Ltd")
+        contained = self._add(db_session, f"Global {stem}")
+
+        rows = lookup_suppliers(stem, session=db_session)
+
+        assert [row["id"] for row in rows] == [
+            str(exact.id), str(prefixed.id), str(contained.id)
+        ], (
+            "exact, then prefix, then contains — alphabetical ordering is what "
+            "made 'Sydney Tools' unreachable within the limit"
+        )
+
+    def test_rows_carry_what_a_row_needs_to_be_choosable(self, db_session):
+        name = _unique("Kraft Lookup")
+        self._add(db_session, name, country="Australia", currency="AUD")
+
+        row = next(r for r in lookup_suppliers(name, session=db_session)
+                   if r["name"] == name)
+
+        assert row["country"] == "Australia"
+        assert row["currency"] == "AUD"
+        assert row["email"] == "", "no contact yet, and that is a valid state"
+        assert isinstance(row["id"], str), "the id goes straight into a form field"
+
+    def test_the_contact_email_is_resolved(self, db_session):
+        name = _unique("Contacted Co")
+        supplier = self._add(db_session, name)
+        db_session.add(Contact(supplier_id=supplier.id, email="main@contacted.example",
+                               label="Main"))
+        db_session.flush()
+
+        row = next(r for r in lookup_suppliers(name, session=db_session)
+                   if r["name"] == name)
+
+        assert row["email"] == "main@contacted.example"
+
+    def test_the_jsonb_contacts_are_the_fallback(self, db_session):
+        """``suppliers.contacts`` holds entries the Contact table can lack — it is
+        what the RFQ and NetSuite forms prefill from."""
+        name = _unique("Jsonb Co")
+        self._add(db_session, name, contacts=[{"email": "legacy@jsonb.example"}])
+
+        row = next(r for r in lookup_suppliers(name, session=db_session)
+                   if r["name"] == name)
+
+        assert row["email"] == "legacy@jsonb.example"
+
+    def test_an_inactive_supplier_is_not_offered(self, db_session):
+        name = _unique("Retired Co")
+        self._add(db_session, name, isinactive=True)
+
+        assert lookup_suppliers(name, session=db_session) == []
+
+    def test_a_merged_duplicate_is_not_offered(self, db_session):
+        """This is a *linking* flow: a merged-away duplicate must never be
+        attached to an RFQ, which is what linking it would do."""
+        name = _unique("Merged Co")
+        primary = self._add(db_session, _unique("Primary Co"))
+        self._add(db_session, name, use_instead=primary.id)
+
+        assert lookup_suppliers(name, session=db_session) == []
+
+    def test_the_result_count_is_capped(self, db_session):
+        stem = _unique("Capped Co")
+        for index in range(12):
+            self._add(db_session, f"{stem} Branch {index:02d}")
+
+        rows = lookup_suppliers(stem, session=db_session)
+
+        assert len(rows) == LOOKUP_LIMIT

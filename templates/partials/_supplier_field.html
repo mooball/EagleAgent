@@ -11,9 +11,16 @@
 
   The input is wrapped in its own <label> rather than linked by id/for: a thread
   can hold several supplier widgets at once, and sequential ids would collide.
+
+  ``searchable`` marks the input that drives a typeahead (the widget's company
+  name) — the client looks for [data-widget-lookup] rather than a field name.
+
+  Deliberately no ``required`` attribute: the widget hides whole views, and a
+  hidden required input blocks submission with a console error and nothing on
+  screen to explain it. The server validates and renders errors per field.
 #}
 
-{% macro render(field, value, error, options, full_width=False) %}
+{% macro render(field, value, error, options, full_width=False, searchable=False) %}
 <div class="{{ 'col-span-2' if full_width else '' }}">
     <label class="block">
         <span class="block text-[11px] font-medium mb-1 text-gray-700 dark:text-neutral-300">
@@ -40,7 +47,7 @@
         {% else %}
         <input name="{{ field.key }}" type="{{ field.kind }}" value="{{ value or '' }}"
                {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}
-               {% if field.required %}required{% endif %}
+               {% if searchable %}data-widget-lookup="1" autocomplete="off"{% endif %}
                maxlength="{{ field.maxlength }}"
                class="py-1.5 px-2 block w-full rounded-lg text-xs bg-white dark:bg-neutral-900 border {{ 'border-red-400' if error else 'border-gray-200 dark:border-neutral-700' }} text-gray-900 dark:text-neutral-200 placeholder:text-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
         {% endif %}
