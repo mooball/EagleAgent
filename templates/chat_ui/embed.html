@@ -52,7 +52,13 @@
         </div>
         <div id="embed-messages" class="flex-1 overflow-y-auto p-3 space-y-3"></div>
         <div id="embed-error" hidden
-             class="mx-3 mb-1 rounded-lg bg-red-50 border border-red-200 p-2 text-xs text-red-700 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300"></div>
+             class="mx-3 mb-1 flex items-start gap-2 rounded-lg bg-red-50 border border-red-200 p-2 text-xs text-red-700 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300">
+            <span id="embed-error-text" class="flex-1 min-w-0"></span>
+            <button type="button" id="embed-error-dismiss" aria-label="Dismiss error"
+                    class="shrink-0 -mt-0.5 -mr-0.5 p-0.5 rounded opacity-60 hover:opacity-100 focus:outline-hidden focus:ring-2 focus:ring-red-400">
+                <svg class="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round"><path d="M6 18 18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
         <div class="p-2 border-t border-gray-200 dark:border-gray-700">
             <div id="embed-composer-box" class="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-700 rounded-2xl shadow-xs transition-colors focus-within:border-blue-400 dark:focus-within:border-blue-600">
                 <label for="embed-composer" class="sr-only">Message…</label>
@@ -129,6 +135,8 @@
     var stopLabel = document.getElementById('embed-stop-label');
     var renameBtn = document.getElementById('embed-rename-btn');
     var errorEl = document.getElementById('embed-error');
+    var errorTextEl = document.getElementById('embed-error-text');
+    var errorDismissBtn = document.getElementById('embed-error-dismiss');
     var toolsBtn = document.getElementById('embed-tools-btn');
     var toolsMenu = document.getElementById('embed-tools-menu');
     var backBtn = document.getElementById('embed-back-btn');
@@ -547,7 +555,7 @@
         messages.scrollTop = messages.scrollHeight;
     }
 
-    function showError(msg) { errorEl.textContent = msg; errorEl.hidden = false; }
+    function showError(msg) { errorTextEl.textContent = msg; errorEl.hidden = false; }
     function clearError() { errorEl.hidden = true; }
 
     function setRunning(tid, v) {
@@ -762,6 +770,9 @@
             // included) so a running thread's stream can't bleed into this one.
             messages.innerHTML = '';
             rows = {};
+            // The banner belongs to the conversation that raised it — an error
+            // from the thread we are leaving must not follow us to the next one.
+            clearError();
             // One visible stream at a time. Leaving a running thread closes
             // its EventSource — the run continues server-side and its events
             // buffer, then replay when the stream reconnects.
@@ -1191,6 +1202,10 @@
     });
 
     sendBtn.addEventListener('click', send);
+    // Otherwise the banner is only cleared by a new send/action, so an error
+    // raised mid-run ("Still working on the previous message") could sit there
+    // describing a state that had already passed, with no way to dismiss it.
+    errorDismissBtn.addEventListener('click', clearError);
     composer.addEventListener('keydown', function (e) {
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
     });
