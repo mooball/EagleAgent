@@ -422,6 +422,8 @@ llm_targets
   enabled
 ```
 
+No cost column here by design — see "Cost" below.
+
 Resolution returns an **ordered candidate list**, filtered by required
 capabilities. That single abstraction serves runtime switching without restart,
 failover, per-task model choice, future providers, and gives telemetry its key.
@@ -432,6 +434,58 @@ For current Gemini models this filter is a no-op (see §5), but it becomes load
 bearing the moment a non-Gemini provider or a `-tts`/image-only model is added,
 and it makes an accidental bad assignment impossible rather than merely
 unlikely. Seeded from the probe in §5, not hand-typed.
+
+#### Cost — stored and reported, but NOT a selection criterion yet
+
+Cost needs an authoritative home. Today it is hardcoded in the benchmark harness
+(`KNOWN_PRICES`) and written as prose in this document, so it cannot drive
+anything. But it does **not** belong on `llm_targets`:
+
+- Price is a property of the **model**, not the scope.
+- Prices are **date-versioned**, and overwriting one silently rewrites history.
+  3.6/3.7/3.8 all double on 2027-01-01 when the promo ends, so "what did this
+  scope cost in November" must stay answerable afterwards.
+
+Hence a separate table:
+
+```
+llm_prices
+  model           # 'gemini-3.6-flash'
+  effective_from  # date
+  input_price     # USD per 1M tokens, global endpoint
+  output_price
+```
+
+**The trap that makes price a bad selection input: price ≠ cost per call.**
+Thinking tokens bill at the output rate and vary up to **4x between models at
+the same nominal level** (Evidence §7: 3.6-flash 314 vs 3.8-flash 80 on the
+identical task). Those two share *identical* prices ($0.75/$3.75) yet 3.8 costs
+40% less per actual call ($1.34 vs $2.25 per 1k). A resolver ranking by
+price-per-token cannot see the quantity that drives the bill.
+
+**So cost is a reporting dimension in P4, not a resolver rule.** The reason is
+that there is nothing to trade cost against: `llm_targets` has no quality field,
+and `caps` is a no-op for every current model (§5). A cost-minimising resolver
+would therefore silently select the weakest model satisfying an always-true
+filter, with no feedback loop to catch it — and an invisible failure mode is the
+worst kind.
+
+Ordering stays `priority`-driven: cost informs how *we* set priorities at config
+time, with a human in the loop. Automating it is a later step, and its input
+should be **measured cost per call for the scope** (from `llm_call_log`) behind a
+quality floor — not a price table.
+
+**Sizing the prize needs volume, not ratios.** Measured cost ranges from ~$0.54
+per 1k calls (3.5-flash-lite) to ~$5.93 (3.5-flash) on a ~1k-token workload, and
+prod prompts are roughly 10x that size. But a 10x gap on a low-volume scope is
+noise while a 1.5x gap on the busiest scope is real money, so per-scope call
+volume and spend — both from telemetry — are what make "significant difference"
+decidable at all.
+
+**Prerequisite if cost-aware routing is ever wanted: a quality signal per
+scope.** Without one, "cheapest that works" is undefined. Watch
+`RFQ_CREATION_EXTRACT_MODEL` first: the Pro model at $2/$12 on attachment-heavy
+prompts is plausibly the single most expensive call in the system.
 
 ### P2 — Automatic failover
 
