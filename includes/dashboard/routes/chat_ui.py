@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from typing import Any
 
@@ -32,8 +33,51 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat-ui", tags=["chat-ui"])
 
-#: Active runs: thread_id -> {"queue": Queue, "task": Task}
+#: Runs by thread: thread_id -> {"queue": Queue, "task": Task, "finished_at": float}.
+#: A finished run is retained for _FINISHED_RUN_GRACE_SECONDS so a late stream can
+#: still drain it. Every busy check gates on task.done(), so a retained record is
+#: never mistaken for a live run.
 _active_runs: dict[str, dict[str, Any]] = {}
+
+#: How long a finished run stays drainable (see _finish_run).
+_FINISHED_RUN_GRACE_SECONDS = 300
+
+
+def _finish_run(thread_id: str, record: dict[str, Any] | None) -> None:
+    """Retire a finished run, keeping its queue drainable for a grace period.
+
+    A run's events sit in a per-thread queue that is single-consumer and never
+    replays. Popping the record the instant the run finished meant a stream that
+    attached late got ``done`` immediately, and the run's events — including its
+    ``dashboard`` commands — became unreachable. That is how a dashboard action
+    whose stream attached before the run was registered lost both
+    ``dashboard_refresh`` (RFQ page never updated) and ``agent_done`` (working
+    badge spun until its timeout).
+
+    Leaving the record in place lets the stream endpoint's existing "run finished
+    but the queue is non-empty — drain it" path deliver those events.
+    """
+    if record is None:
+        _active_runs.pop(thread_id, None)
+        return
+    record["finished_at"] = time.monotonic()
+    _prune_finished_runs()
+
+
+def _prune_finished_runs() -> None:
+    """Drop finished runs whose grace period has elapsed.
+
+    Retention is bounded lazily rather than by a timer per run: a run finishing
+    and a stream attaching both prune, so the dict drains at least as fast as the
+    activity that fills it. The identity check stops a delayed prune from evicting
+    a newer run that reused the same thread id.
+    """
+    now = time.monotonic()
+    for tid, rec in list(_active_runs.items()):
+        finished_at = rec.get("finished_at")
+        if finished_at is not None and now - finished_at >= _FINISHED_RUN_GRACE_SECONDS:
+            if _active_runs.get(tid) is rec:
+                _active_runs.pop(tid, None)
 
 
 def _cancel_key(thread_id: str) -> str:
@@ -413,7 +457,7 @@ async def _run_task(
         if ctx is not None:
             await ctx.flush_scratch()
         await queue.put({"event": "done", "data": {}})
-        _active_runs.pop(thread_id, None)
+        _finish_run(thread_id, _active_runs.get(thread_id))
         _unregister_current_task(_cancel_key(thread_id))
 
 
@@ -482,7 +526,7 @@ async def _execute_action(
     finally:
         await ctx.flush_scratch()
         await queue.put({"event": "done", "data": {}})
-        _active_runs.pop(ctx.thread_id, None)
+        _finish_run(ctx.thread_id, _active_runs.get(ctx.thread_id))
         _unregister_current_task(_cancel_key(ctx.thread_id))
 
 
@@ -613,6 +657,7 @@ async def set_current_thread(
 
 async def live_threads_for_user(user: dict) -> list[str]:
     """Threads with a live run that belong to ``user`` (ownership checked)."""
+    _prune_finished_runs()
     live = [tid for tid, run in _active_runs.items() if not run["task"].done()]
     if not live:
         return []
@@ -858,6 +903,7 @@ def _embed_data(user: dict, threads: list[dict], thread: dict | None, steps: lis
         "user_email": user["email"],
         "agents": _agent_options(),
         "commands": _command_data(),
+        "widgets": _widget_commands(),
         "current_thread_id": _get_current_thread_id(user["email"]),
         "threads": [_thread_payload(t, bindings, rfq_meta) for t in threads],
         "thread": thread_data,
@@ -1127,6 +1173,188 @@ async def thread_action(
     return JSONResponse(result)
 
 
+# ── Widgets ────────────────────────────────────────────────────────────────
+# An action is a button; a widget is a form. See includes/chat/widgets.py for
+# the contract. These routes are deliberately generic: nothing here knows what
+# "add_supplier" means, so a second widget needs no transport changes.
+
+
+def _widget_commands() -> list[dict]:
+    """Tools-menu entries that open a card instead of prefilling a message.
+
+    Kept separate from ``_command_data()`` on purpose: those entries route to an
+    agent intent, and the other consumer of that helper (the standalone
+    /chat-ui page) has no widget renderer.
+    """
+    from includes.chat.widgets import list_widgets
+
+    return [
+        {
+            "type": "widget",
+            "name": spec.name,
+            "label": spec.label,
+            "description": spec.description,
+            "icon": spec.icon,
+        }
+        for spec in list_widgets()
+    ]
+
+
+async def _widget_or_404(widget_id: str, user: dict) -> tuple[Any, dict, dict, str]:
+    """Load a widget's spec, state and owning thread, checking ownership.
+
+    Widget endpoints are addressed by widget id alone (the card knows its own
+    id), so ownership is established from the step's thread rather than from
+    the URL.
+    """
+    from includes.chat.widgets import get_widget, widget_state_from_metadata
+
+    step = await transcript.get_step(widget_id)
+    thread_id = (step or {}).get("thread_id")
+    if not thread_id:
+        raise HTTPException(status_code=404)
+    await _owned_thread(thread_id, user)
+
+    state = widget_state_from_metadata(step.get("metadata"))
+    if state is None:
+        raise HTTPException(status_code=404)
+    spec = get_widget(state["name"])
+    if spec is None:
+        raise HTTPException(status_code=404)
+    return spec, state, step.get("metadata") or {}, thread_id
+
+
+async def _render_widget(spec: Any, state: dict) -> str:
+    """Render a widget card to an HTML string.
+
+    Rendered here, not sent as message text: the panel's markdown sanitiser
+    strips ``form``/``input``/``button``, so a card that travelled that way would
+    arrive as bare labels.
+    """
+    from ._helpers import templates
+
+    context: dict[str, Any] = {"widget": state}
+    if spec.context is not None:
+        # Widget context builders may read the database (RFQ line targets).
+        extra = await asyncio.to_thread(spec.context, state)
+        context.update(extra or {})
+    return templates.env.get_template(spec.template).render(**context)
+
+
+@router.post("/threads/{thread_id}/widgets")
+async def open_widget(
+    request: Request, thread_id: str, user: dict = Depends(require_user)
+):
+    """Open a widget in a thread — the Tools-menu path, with no agent run."""
+    await _guard(user)
+    await _owned_thread(thread_id, user)
+
+    from includes.chat.widgets import get_widget, open_widget_step
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = str(body.get("name") or "")
+    spec = get_widget(name)
+    if spec is None:
+        return JSONResponse({"error": f"Unknown widget: {name}"}, status_code=404)
+
+    step_id, state = await open_widget_step(thread_id, name)
+    return JSONResponse(
+        {"ok": True, "widget_id": step_id, "html": await _render_widget(spec, state)}
+    )
+
+
+@router.get("/widgets/{widget_id}/render")
+async def render_widget(widget_id: str, user: dict = Depends(require_user)):
+    """The card's current markup — used on transcript load and after a submit."""
+    await _guard(user)
+    spec, state, _metadata, _thread_id = await _widget_or_404(widget_id, user)
+    return JSONResponse(
+        {"ok": True, "status": state.get("status"), "html": await _render_widget(spec, state)}
+    )
+
+
+@router.post("/widgets/{widget_id}/submit")
+async def submit_widget(
+    request: Request, widget_id: str, user: dict = Depends(require_user)
+):
+    """A widget form submission.
+
+    Reads the form as submitted rather than a JSON schema the server would have
+    to publish: the client posts the form element as-is, so a new widget needs no
+    client-side knowledge of its own fields.
+    """
+    await _guard(user)
+    from includes.chat.widgets import (
+        WIDGET_META_KEY,
+        apply_outcome,
+        dispatch_widget,
+        form_to_data,
+    )
+
+    spec, state, metadata, thread_id = await _widget_or_404(widget_id, user)
+
+    # A closed widget accepts nothing: a double click must not create a second
+    # supplier, and a stale tab must not resurrect a finished card.
+    if state.get("status") != "pending":
+        return JSONResponse(
+            {
+                "error": "This form has already been submitted.",
+                "html": await _render_widget(spec, state),
+            },
+            status_code=409,
+        )
+
+    data = form_to_data(await request.form())
+    try:
+        outcome = await asyncio.to_thread(
+            dispatch_widget, state["name"], data, state, user["email"]
+        )
+    except KeyError:
+        return JSONResponse({"error": "Unknown widget"}, status_code=404)
+    except Exception:
+        logger.exception("[chat-ui] widget %s submit failed", widget_id[:8])
+        return JSONResponse(
+            {"error": "Something went wrong — please try again."}, status_code=500
+        )
+
+    new_state = apply_outcome(state, outcome)
+
+    if new_state["status"] == "cancelled":
+        # A cancelled widget leaves nothing behind. Nothing was written, so there
+        # is no history worth keeping — and since the step is what a reload
+        # renders, leaving it would bring back the card the user just dismissed.
+        # The client removes its row on `removed`.
+        await transcript.delete_step(widget_id)
+        return JSONResponse({"ok": True, "status": "cancelled", "removed": True})
+
+    new_metadata = dict(metadata)
+    new_metadata[WIDGET_META_KEY] = new_state
+    await transcript.update_step_metadata(widget_id, new_metadata)
+
+    response: dict[str, Any] = {
+        "ok": True,
+        "status": new_state["status"],
+        "html": await _render_widget(spec, new_state),
+    }
+    if outcome.dashboard:
+        # The shell applies the same scoping (_source_thread) as a run-emitted
+        # command, so this cannot re-render a different RFQ's page.
+        response["dashboard"] = outcome.dashboard
+    if outcome.notice:
+        # The card is the visual record; this step is what a later turn (and the
+        # agent) actually reads, so the transcript stays truthful about what was
+        # created. The client renders it against this id, so a reload does not
+        # produce a second copy.
+        notice_id = await transcript.create_step(
+            thread_id, type_="assistant_message", name="EagleAgent", output=outcome.notice
+        )
+        response["notice"] = {"id": notice_id, "content": outcome.notice}
+    return JSONResponse(response)
+
+
 @router.get("/threads/{thread_id}/stream")
 async def stream(thread_id: str, user: dict = Depends(require_user)):
     await _guard(user)
@@ -1135,6 +1363,9 @@ async def stream(thread_id: str, user: dict = Depends(require_user)):
     async def event_stream():
         # Keep-alive so proxies see an active stream immediately.
         yield ": connected\n\n"
+        # Prune retired runs before the lookup so the grace period is honoured —
+        # a run still inside its window is here and drains below.
+        _prune_finished_runs()
         run = _active_runs.get(thread_id)
         if run is None:
             yield _sse("done", {})

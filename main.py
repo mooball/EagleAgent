@@ -21,6 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.datastructures import MutableHeaders
 
 from config import config
+from includes.llm.context import SYNC, workload
 
 load_dotenv()
 
@@ -51,7 +52,10 @@ async def _gmail_sync_loop():
     await asyncio.sleep(30)  # let app fully start
     while True:
         try:
-            await asyncio.to_thread(_run_gmail_sync)
+            # Mark this as background work so it stops competing with live chat
+            # for the same model/quota (see includes/llm/context.py).
+            with workload(SYNC):
+                await asyncio.to_thread(_run_gmail_sync)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -86,7 +90,8 @@ async def _netsuite_sync_loop():
     await asyncio.sleep(45)  # let app fully start (after gmail sync)
     while True:
         try:
-            await asyncio.to_thread(_run_netsuite_sync)
+            with workload(SYNC):
+                await asyncio.to_thread(_run_netsuite_sync)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -114,7 +119,8 @@ async def _maintenance_loop():
     await asyncio.sleep(120)  # let app fully start
     while True:
         try:
-            await asyncio.to_thread(_run_maintenance)
+            with workload(SYNC):
+                await asyncio.to_thread(_run_maintenance)
         except asyncio.CancelledError:
             break
         except Exception as e:

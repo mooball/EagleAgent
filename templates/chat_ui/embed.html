@@ -52,7 +52,13 @@
         </div>
         <div id="embed-messages" class="flex-1 overflow-y-auto p-3 space-y-3"></div>
         <div id="embed-error" hidden
-             class="mx-3 mb-1 rounded-lg bg-red-50 border border-red-200 p-2 text-xs text-red-700 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300"></div>
+             class="mx-3 mb-1 flex items-start gap-2 rounded-lg bg-red-50 border border-red-200 p-2 text-xs text-red-700 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300">
+            <span id="embed-error-text" class="flex-1 min-w-0"></span>
+            <button type="button" id="embed-error-dismiss" aria-label="Dismiss error"
+                    class="shrink-0 -mt-0.5 -mr-0.5 p-0.5 rounded opacity-60 hover:opacity-100 focus:outline-hidden focus:ring-2 focus:ring-red-400">
+                <svg class="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round"><path d="M6 18 18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
         <div class="p-2 border-t border-gray-200 dark:border-gray-700">
             <div id="embed-composer-box" class="bg-white dark:bg-neutral-900 border border-gray-200 dark:border-neutral-700 rounded-2xl shadow-xs transition-colors focus-within:border-blue-400 dark:focus-within:border-blue-600">
                 <label for="embed-composer" class="sr-only">Message…</label>
@@ -129,6 +135,8 @@
     var stopLabel = document.getElementById('embed-stop-label');
     var renameBtn = document.getElementById('embed-rename-btn');
     var errorEl = document.getElementById('embed-error');
+    var errorTextEl = document.getElementById('embed-error-text');
+    var errorDismissBtn = document.getElementById('embed-error-dismiss');
     var toolsBtn = document.getElementById('embed-tools-btn');
     var toolsMenu = document.getElementById('embed-tools-menu');
     var backBtn = document.getElementById('embed-back-btn');
@@ -269,30 +277,81 @@
         }));
     }
 
+    function menuEntry(icon, label, description, onClick) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'w-full flex items-start gap-x-2.5 py-1.5 px-2 rounded-lg text-start hover:bg-gray-100 dark:hover:bg-neutral-800';
+        var iconEl = document.createElement('span');
+        iconEl.className = 'shrink-0 flex items-center';
+        iconEl.innerHTML = cmdIconSvg(icon);
+        var body = document.createElement('span');
+        var lab = document.createElement('span');
+        lab.className = 'block text-xs font-medium text-gray-800 dark:text-gray-200';
+        lab.textContent = label;
+        var desc = document.createElement('span');
+        desc.className = 'block text-[11px] text-gray-400 dark:text-gray-500';
+        desc.textContent = description;
+        body.appendChild(lab);
+        body.appendChild(desc);
+        btn.appendChild(iconEl);
+        btn.appendChild(body);
+        btn.addEventListener('click', onClick);
+        return btn;
+    }
+
     function renderCommands() {
         toolsMenu.innerHTML = '';
+        // Commands route the next message to an agent; widgets open a card.
+        // Both live in the same menu because that is where the user looks.
         var cmds = DATA.commands || [];
-        if (!cmds.length) { toolsBtn.hidden = true; return; }
+        var widgets = DATA.widgets || [];
+        if (!cmds.length && !widgets.length) { toolsBtn.hidden = true; return; }
         cmds.forEach(function (cmd) {
-            var btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'w-full flex items-start gap-x-2.5 py-1.5 px-2 rounded-lg text-start hover:bg-gray-100 dark:hover:bg-neutral-800';
-        var icon = document.createElement('span');
-        icon.className = 'shrink-0 flex items-center';
-        icon.innerHTML = cmdIconSvg(cmd.icon);
-        var body = document.createElement('span');
-            var lab = document.createElement('span');
-            lab.className = 'block text-xs font-medium text-gray-800 dark:text-gray-200';
-            lab.textContent = cmd.label;
-            var desc = document.createElement('span');
-            desc.className = 'block text-[11px] text-gray-400 dark:text-gray-500';
-            desc.textContent = cmd.description;
-            body.appendChild(lab);
-            body.appendChild(desc);
-            btn.appendChild(icon);
-            btn.appendChild(body);
-            btn.addEventListener('click', function () { useCommand(cmd); });
-            toolsMenu.appendChild(btn);
+            toolsMenu.appendChild(menuEntry(cmd.icon, cmd.label, cmd.description, function () {
+                useCommand(cmd);
+            }));
+        });
+        if (widgets.length && cmds.length) {
+            var divider = document.createElement('div');
+            divider.className = 'my-1 border-t border-gray-100 dark:border-neutral-800';
+            toolsMenu.appendChild(divider);
+        }
+        widgets.forEach(function (widget) {
+            toolsMenu.appendChild(menuEntry(widget.icon, widget.label, widget.description, function () {
+                openWidget(widget);
+            }));
+        });
+    }
+
+    function openWidget(widget) {
+        toolsMenu.hidden = true;
+        if (!active) { return; }
+        if (runs[active.id]) {
+            showError('Still working on the previous message — one moment.');
+            return;
+        }
+        fetch('/chat-ui/threads/' + active.id + '/widgets', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({name: widget.name})
+        }).then(function (r) {
+            return r.json().then(function (data) { return {ok: r.ok, data: data}; });
+        }).then(function (res) {
+            if (!res.ok || !res.data.html) {
+                showError(res.data.error || 'Could not open that form.');
+                return;
+            }
+            // Same rendering path as a streamed widget: keyed on the persisted
+            // step id, so a later history load reuses this row.
+            var id = res.data.widget_id || ('widget-' + Date.now());
+            var entry = widgetRow(id);
+            entry.widgetEl.dataset.loaded = id;
+            entry.widgetEl.innerHTML = res.data.html;
+            wireWidget(entry.widgetEl);
+            messages.scrollTop = messages.scrollHeight;
+        }).catch(function () {
+            showError('Network error — please retry.');
         });
     }
 
@@ -380,8 +439,12 @@
         var div = document.createElement('div');
         var isUser = author === USER_EMAIL;
         if (transient) {
+            // Status rows have no bubble and no action bar, but they must still
+            // come back in the same shape callers expect. Returning the bare
+            // element here made getRow append `undefined` (TypeError) and cache
+            // a malformed entry that message_remove later tripped over.
             div.className = 'text-xs text-gray-400 dark:text-gray-500 italic';
-            return div;
+            return {div: div, inner: null, bubble: null, actionsEl: null, widgetEl: null};
         }
         var inner = document.createElement('div');
         inner.className = 'chat-bubble-inner ' + (isUser ? 'ml-auto' : 'mr-auto');
@@ -393,9 +456,15 @@
         var actionsEl = document.createElement('div');
         actionsEl.className = 'flex flex-wrap gap-1 mt-1.5';
         inner.appendChild(actionsEl);
+        // Widget cards are a SIBLING of the bubble, not a child: paint()
+        // rewrites bubble.innerHTML on every repaint, which would wipe an
+        // injected form mid-typing.
+        var widgetEl = document.createElement('div');
+        widgetEl.className = 'mt-1.5';
+        inner.appendChild(widgetEl);
         div.appendChild(inner);
         div.className = 'flex';
-        return {div: div, bubble: bubble, actionsEl: actionsEl};
+        return {div: div, inner: inner, bubble: bubble, actionsEl: actionsEl, widgetEl: widgetEl};
     }
 
     function renderActions(entry, actions) {
@@ -441,8 +510,10 @@
     function getRow(id, author, transient) {
         if (rows[id]) { return rows[id]; }
         var el = rowEl(id, author, transient);
-        rows[id] = el;
+        // Cache only once the row is actually in the DOM — caching first left a
+        // malformed entry behind whenever the append failed.
         messages.appendChild(el.div);
+        rows[id] = el;
         return el;
     }
 
@@ -505,6 +576,208 @@
         renderAttachments(entry.bubble, files);
     }
 
+    // ── Widgets ────────────────────────────────────────────────────────────
+    // A widget is a form card (see includes/chat/widgets.py). The markup is
+    // FETCHED, never rendered here: the card needs server templates and option
+    // lists, and anything arriving as message text goes through sanitizeHtml(),
+    // which strips exactly the form controls a widget is made of.
+
+    // Every widget card gets its row from here, whichever way it arrived —
+    // Tools menu, SSE event, or transcript reload. Three entry points building
+    // the row separately is how the empty-bubble fix only landed on one of them.
+    function widgetRow(id) {
+        var entry = getRow(id, 'EagleAgent', false);
+        entry._live = false;            // persisted: history owns its position
+        // Tagged so a cancel can remove the whole row (see dropWidgetRow).
+        entry.div.dataset.widgetRow = id;
+        // A card is not a chat bubble. `chat-bubble-inner` is a shrink-to-fit
+        // flex item capped at 85% on a wide panel, so a card inside it was only
+        // as wide as its own max-content — which then also kept it under the
+        // one-column threshold, so the form never reached two columns.
+        if (entry.inner) { entry.inner.className = 'w-full'; }
+        if (entry.bubble) { entry.bubble.hidden = true; }
+        return entry;
+    }
+
+    // Cancelling removes the card outright instead of leaving a "nothing was
+    // saved" note: nothing was written, so there is nothing to report and the
+    // note is just noise in the conversation. Also used to clear out steps saved
+    // before cancel deleted them.
+    function dropWidgetRow(el) {
+        if (!el) { return; }
+        var row = el.closest ? el.closest('[data-widget-row]') : null;
+        var id = row && row.dataset ? row.dataset.widgetRow : null;
+        (row || el).remove();
+        if (id && rows[id]) { delete rows[id]; }
+    }
+
+    //: Below this card width the form stacks to one column.
+    var NARROW_CARD_PX = 400;
+
+    // Widget markup goes through here so its layout is decided by the space the
+    // card really has: measured, not inferred from the viewport or guessed from
+    // the panel. Recorded as an attribute on the element so a re-render, a
+    // submit re-render and a history rebuild all re-sync it for free.
+    function watchWidgetWidth(card) {
+        if (!card || card.dataset.widthWatched === '1') { return; }
+        card.dataset.widthWatched = '1';
+        var apply = function () {
+            // clientWidth is 0 while hidden — don't stack a card nobody can see.
+            var narrow = card.clientWidth > 0 && card.clientWidth < NARROW_CARD_PX;
+            if (narrow) { card.dataset.widgetNarrow = '1'; }
+            else { delete card.dataset.widgetNarrow; }
+        };
+        apply();
+        if (typeof ResizeObserver === 'function') {
+            new ResizeObserver(apply).observe(card);
+        } else {
+            // Ancient fallback: the panel can also be resized by the window.
+            window.addEventListener('resize', apply);
+        }
+    }
+
+    // wireWidget is handed either the card itself (after a submit) or the slot
+    // holding it (after a render).
+    function widgetCardEl(scope) {
+        if (!scope) { return null; }
+        if (scope.dataset && scope.dataset.widget) { return scope; }
+        return scope.querySelector ? scope.querySelector('[data-widget]') : null;
+    }
+
+    function renderWidget(entry, widget) {
+        if (!entry.widgetEl || !widget || !widget.id) { return; }
+        var slot = entry.widgetEl;
+        if (widget.status === 'cancelled') {
+            // Legacy steps: cancel used to save a "cancelled" state, so old
+            // threads still carry the tombstone this now avoids.
+            dropWidgetRow(slot);
+            return;
+        }
+        slot.dataset.widgetId = widget.id;
+        // A history reload rebuilds rows from scratch; skip the refetch when the
+        // same widget is already painted in this slot.
+        if (slot.dataset.loaded === widget.id && slot.firstChild) { return; }
+        slot.dataset.loaded = widget.id;
+        fetch('/chat-ui/widgets/' + encodeURIComponent(widget.id) + '/render',
+              {credentials: 'same-origin'})
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data || !data.html) { return; }
+                slot.innerHTML = data.html;
+                wireWidget(slot);
+            })
+            .catch(function () { /* a card that cannot load leaves the message intact */ });
+    }
+
+    // Attaches behaviour to freshly injected widget markup. Idempotent, because
+    // a submit replaces the card's innerHTML and re-wires the new nodes.
+    function wireWidget(scope) {
+        var forms = scope.querySelectorAll('[data-widget-form]');
+        for (var i = 0; i < forms.length; i++) {
+            if (forms[i].dataset.wired === '1') { continue; }
+            forms[i].dataset.wired = '1';
+            forms[i].addEventListener('submit', onWidgetSubmit);
+        }
+        var toggles = scope.querySelectorAll('[data-show-when]');
+        for (var j = 0; j < toggles.length; j++) {
+            wireShowWhen(toggles[j]);
+        }
+        var card = widgetCardEl(scope);
+        if (card) { watchWidgetWidth(card); }
+    }
+
+    // Declarative show/hide ("data-show-when=\"line_mode=specific\""), so a
+    // widget's conditional sections need no script of their own — injected HTML
+    // does not execute its <script> tags.
+    function wireShowWhen(target) {
+        if (target.dataset.wired === '1') { return; }
+        var parts = String(target.dataset.showWhen || '').split('=');
+        var field = parts[0];
+        var value = parts[1];
+        var form = target.closest('form');
+        if (!field || !value || !form) { return; }
+        target.dataset.wired = '1';
+        var sync = function () {
+            var picked = form.querySelector('input[name="' + field + '"]:checked');
+            target.hidden = !picked || picked.value !== value;
+        };
+        form.addEventListener('change', function (e) {
+            if (e.target && e.target.name === field) { sync(); }
+        });
+        sync();
+    }
+
+    function onWidgetSubmit(ev) {
+        ev.preventDefault();
+        var form = ev.currentTarget;
+        var card = form.closest('[data-widget-id]');
+        if (!card || !card.dataset.widgetId || form.dataset.busy === '1') { return; }
+
+        var fd = new FormData(form);
+        // FormData built from a form element carries no submit button, so the
+        // pressed one is added explicitly — that is how the server tells
+        // "Add supplier" from "Cancel" without a handler per button.
+        var actionField = form.dataset.actionField;
+        if (actionField && ev.submitter && ev.submitter.value) {
+            fd.set(actionField, ev.submitter.value);
+        }
+
+        form.dataset.busy = '1';
+        var buttons = form.querySelectorAll('button');
+        for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = true; }
+
+        fetch(form.action, {method: 'POST', credentials: 'same-origin', body: fd})
+            .then(function (r) {
+                return r.json().then(function (data) { return {ok: r.ok, data: data}; });
+            })
+            .then(function (res) {
+                form.dataset.busy = '';
+                var data = res.data || {};
+                if (data.removed) {
+                    // Cancelled: take the whole card out of the conversation.
+                    dropWidgetRow(card);
+                    return;
+                }
+                if (data.html) {
+                    // Also the 409 path ("already submitted"): its markup is the
+                    // truth about the card's state, so it renders the same way.
+                    card.innerHTML = data.html;
+                    wireWidget(card);
+                } else {
+                    // Nothing to re-render — hand the controls back so the user
+                    // can fix their input and retry.
+                    for (var k = 0; k < buttons.length; k++) { buttons[k].disabled = false; }
+                    showError(data.error || 'That submission failed.');
+                    return;
+                }
+                if (data.notice && data.notice.id) {
+                    // Rendered against the persisted step id, so reloading the
+                    // transcript shows this line once, not twice.
+                    var row = getRow(data.notice.id, 'EagleAgent', false);
+                    row._live = false;
+                    setText(row, data.notice.content);
+                }
+                if (data.dashboard && data.dashboard.command) {
+                    // The page behind the panel is stale, and nothing else will
+                    // say so: this ran outside an agent turn, so there is no run
+                    // to emit the refresh. Same event the run path raises (see
+                    // the 'dashboard' stream listener) so the shell applies its
+                    // usual scoping and cannot refresh another RFQ's page.
+                    document.dispatchEvent(new CustomEvent('dashboard:' + data.dashboard.command, {
+                        detail: {payload: Object.assign({}, data.dashboard.payload || {}, {
+                            _source_thread: active ? active.id : null
+                        })}
+                    }));
+                }
+                messages.scrollTop = messages.scrollHeight;
+            })
+            .catch(function () {
+                form.dataset.busy = '';
+                for (var n = 0; n < buttons.length; n++) { buttons[n].disabled = false; }
+                showError('Network error — please retry.');
+            });
+    }
+
     function renderHistory() {
         // Rows still streaming are reused in place: a history reload mid-run
         // must not drop them, nor reorder them away from their position.
@@ -531,6 +804,13 @@
                     rows[step.id],
                     (step.metadata && step.metadata.actions) || []
                 );
+            } else if (step.type === 'widget') {
+                // Widgets are their own step type so they occupy their original
+                // position in the transcript rather than hanging off a message.
+                renderWidget(
+                    widgetRow(step.id),
+                    (step.metadata && step.metadata.widget) || null
+                );
             }
         });
         // Streaming rows not yet in the transcript belong at the end.
@@ -541,7 +821,7 @@
         messages.scrollTop = messages.scrollHeight;
     }
 
-    function showError(msg) { errorEl.textContent = msg; errorEl.hidden = false; }
+    function showError(msg) { errorTextEl.textContent = msg; errorEl.hidden = false; }
     function clearError() { errorEl.hidden = true; }
 
     function setRunning(tid, v) {
@@ -756,6 +1036,9 @@
             // included) so a running thread's stream can't bleed into this one.
             messages.innerHTML = '';
             rows = {};
+            // The banner belongs to the conversation that raised it — an error
+            // from the thread we are leaving must not follow us to the next one.
+            clearError();
             // One visible stream at a time. Leaving a running thread closes
             // its EventSource — the run continues server-side and its events
             // buffer, then replay when the stream reconnects.
@@ -914,6 +1197,12 @@
                 detail: {payload: Object.assign({}, d.payload || {}, {_source_thread: streamThreadId})}
             }));
         });
+        eventSource.addEventListener('widget', function (e) {
+            var d = JSON.parse(e.data);
+            if (!visible()) { return; }
+            renderWidget(widgetRow(d.id), d.widget || null);
+            messages.scrollTop = messages.scrollHeight;
+        });
         eventSource.addEventListener('error', function (e) {
             var d = {};
             try { d = JSON.parse(e.data); } catch (err) {}
@@ -925,6 +1214,12 @@
             streamThreadId = null;
             setStopping(tid, false);
             setRunning(tid, false);
+            // The stream ending means the run it was watching is over, so this is
+            // a reliable place to clear the shell's working badge. Without it a
+            // lost agent_done left the badge spinning until its safety timeout.
+            document.dispatchEvent(new CustomEvent('dashboard:agent_done', {
+                detail: { payload: { _source_thread: tid } }
+            }));
             if (active && active.id === tid) { loadMessages(tid); }
             refreshActiveRuns();
         });
@@ -1179,6 +1474,10 @@
     });
 
     sendBtn.addEventListener('click', send);
+    // Otherwise the banner is only cleared by a new send/action, so an error
+    // raised mid-run ("Still working on the previous message") could sit there
+    // describing a state that had already passed, with no way to dismiss it.
+    errorDismissBtn.addEventListener('click', clearError);
     composer.addEventListener('keydown', function (e) {
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
     });

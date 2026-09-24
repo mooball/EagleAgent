@@ -1,0 +1,54 @@
+{#
+  One supplier-form field, shared by every renderer of the supplier form.
+
+  The chat widget lays these out in a narrow two-column card; a wider dashboard
+  form would use the same macro in a three-column grid. Labels, option lists and
+  error state live here so the two renderings cannot disagree about them.
+
+  Call:
+    {% import "partials/_supplier_field.html" as sf %}
+    {{ sf.render(field, value, error, options, full_width) }}
+
+  The input is wrapped in its own <label> rather than linked by id/for: a thread
+  can hold several supplier widgets at once, and sequential ids would collide.
+#}
+
+{% macro render(field, value, error, options, full_width=False) %}
+<div class="{{ 'col-span-2' if full_width else '' }}">
+    <label class="block">
+        <span class="block text-[11px] font-medium mb-1 text-gray-700 dark:text-neutral-300">
+            {{ field.label }}{% if field.required %}<span class="text-red-500"> *</span>{% endif %}
+        </span>
+        {% if field.kind == 'select' %}
+        <select name="{{ field.key }}"
+                class="py-1.5 px-2 block w-full rounded-lg text-xs bg-white dark:bg-neutral-900 border {{ 'border-red-400' if error else 'border-gray-200 dark:border-neutral-700' }} text-gray-900 dark:text-neutral-200 focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+            <option value="">—</option>
+            {% if field.options == 'countries' %}
+                {% for group in options.countries %}
+                <optgroup label="{{ group.label }}">
+                    {% for opt in group.options %}
+                    <option value="{{ opt.code }}"{% if value == opt.code %} selected{% endif %}>{{ opt.name }}</option>
+                    {% endfor %}
+                </optgroup>
+                {% endfor %}
+            {% else %}
+                {% for opt in options[field.options] %}
+                <option value="{{ opt.value }}"{% if value == opt.value %} selected{% endif %}>{{ opt.label }}</option>
+                {% endfor %}
+            {% endif %}
+        </select>
+        {% else %}
+        <input name="{{ field.key }}" type="{{ field.kind }}" value="{{ value or '' }}"
+               {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}
+               {% if field.required %}required{% endif %}
+               maxlength="{{ field.maxlength }}"
+               class="py-1.5 px-2 block w-full rounded-lg text-xs bg-white dark:bg-neutral-900 border {{ 'border-red-400' if error else 'border-gray-200 dark:border-neutral-700' }} text-gray-900 dark:text-neutral-200 placeholder:text-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+        {% endif %}
+    </label>
+    {% if error %}
+    <p class="mt-1 text-[11px] text-red-600 dark:text-red-400">{{ error }}</p>
+    {% elif field.hint %}
+    <p class="mt-1 text-[11px] text-gray-400 dark:text-neutral-500">{{ field.hint }}</p>
+    {% endif %}
+</div>
+{% endmacro %}

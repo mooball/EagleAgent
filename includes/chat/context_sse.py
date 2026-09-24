@@ -289,6 +289,38 @@ class SseChatContext:
             }
         )
 
+    async def widget(self, name: str, data: dict | None = None) -> str:
+        """Open an interactive form card (see ``includes/chat/widgets.py``).
+
+        The event names the widget but carries no markup: the client fetches the
+        card from ``/chat-ui/widgets/{id}/render``. Markup must not travel as
+        message text — the client sanitises that channel (stripping ``form``,
+        ``input`` and ``button``), so a card sent that way would arrive as bare
+        labels.
+        """
+        from includes.chat.widgets import (
+            WIDGET_META_KEY,
+            new_widget_state,
+            open_widget_step,
+        )
+
+        try:
+            step_id, state = await open_widget_step(self.thread_id, name, data=data)
+        except Exception as exc:
+            # Mirrors say(): never break a run over persistence. The card still
+            # renders live; only a reload would lose it.
+            logger.warning("[chat-ui] widget step persist failed: %s", exc)
+            widget_id = str(uuid.uuid4())
+            step_id = widget_id
+            state = new_widget_state(name, data=data, widget_id=widget_id)
+        await self._queue.put(
+            {
+                "event": "widget",
+                "data": {"id": step_id, WIDGET_META_KEY: state},
+            }
+        )
+        return step_id
+
     async def rename_thread(self, name: str) -> None:
         try:
             await transcript.rename_thread(self.thread_id, name)

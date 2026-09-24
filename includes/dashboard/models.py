@@ -526,3 +526,55 @@ class EmailTracking(Base):
     def __repr__(self):
         return f"<EmailTracking(id={self.id}, direction='{self.direction}', rfq_id='{self.rfq_id}')>"
 
+
+class LlmCallLog(Base):
+    """One row per LLM call, written best-effort by includes.llm.telemetry.
+
+    Answers "which model is slow / erroring / expensive, for which workload"
+    by SQL rather than by grepping logs.
+
+    Deliberately stores no cost column — prices change, so cost is derived from
+    the token counts when reporting.
+
+    NOTE: ``service_tier`` is the tier we *requested*. Vertex does not report
+    the tier that actually served the call, so a Priority->Standard graceful
+    downgrade is not visible here (see plan-llmObservabilityAndFailover).
+    """
+
+    __tablename__ = 'llm_call_log'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    ts = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    # Workload identity, e.g. 'agent:procurement', 'pipeline:QUOTE/extract',
+    # 'supervisor', 'sync', 'script:categorize_suppliers'
+    scope = Column(String(80), nullable=False, index=True)
+
+    provider = Column(String(32), nullable=False, default='google')
+    model = Column(String(80), nullable=False, index=True)
+    location = Column(String(64), nullable=True)        # requested endpoint
+    service_tier = Column(String(32), nullable=True)    # requested tier
+
+    latency_ms = Column(Integer, nullable=True)
+    ttft_ms = Column(Integer, nullable=True)
+
+    prompt_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
+    thought_tokens = Column(Integer, nullable=True)     # billed at output rate
+    total_tokens = Column(Integer, nullable=True)
+
+    attempt = Column(Integer, nullable=True)            # 1-based
+    fell_back_from = Column(String(80), nullable=True)  # model we retried away from
+
+    status = Column(String(16), nullable=False, index=True)   # 'ok' | 'error'
+    error_class = Column(String(64), nullable=True)           # 'rate_limit', 'not_found', ...
+    http_status = Column(Integer, nullable=True)
+
+    correlation_id = Column(String(128), nullable=True, index=True)  # thread_id / rfq_number
+
+    def __repr__(self):
+        return (
+            f"<LlmCallLog(scope='{self.scope}', model='{self.model}', "
+            f"status='{self.status}', latency_ms={self.latency_ms})>"
+        )
+

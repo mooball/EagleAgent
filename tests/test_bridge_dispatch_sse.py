@@ -5,6 +5,7 @@ happy path, handler errors) and the ``chat_ui`` branch of
 ``handle_bridge_request`` (hint + allowlist routing, fall-through).
 """
 
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -100,7 +101,11 @@ class TestDispatchActionToThread:
         # Handler ran with the payload, thread id and a seeded active_graph.
         assert calls == [({"rfq_id": "RFQ-1"}, "t1", graph)]
         assert run["queue"].get_nowait()["event"] == "done"
-        assert "t1" not in chat_ui._active_runs
+        # The record is deliberately retained so a late stream can still drain
+        # this run (see _finish_run) — but it must no longer count as live.
+        assert chat_ui._active_runs.get("t1") is run
+        assert run["task"].done()
+        assert await chat_ui.live_threads_for_user(USER) == []
 
     async def test_handler_exception_emits_error_then_done(self, monkeypatch):
         monkeypatch.setattr(
@@ -129,6 +134,68 @@ class TestDispatchActionToThread:
         assert first["data"]["command"] == "agent_done"
         assert run["queue"].get_nowait()["event"] == "error"
         assert run["queue"].get_nowait()["event"] == "done"
+        # Retained for a late stream, but no longer live.
+        assert run["task"].done()
+        assert await chat_ui.live_threads_for_user(USER) == []
+
+    async def test_finished_run_stays_drainable_for_a_late_stream(self, monkeypatch):
+        """A late-attaching stream must still collect a finished run's events.
+
+        Popping the record at completion lost them forever — that is how a
+        dashboard action lost its ``dashboard_refresh`` (stale RFQ page) and
+        ``agent_done`` (badge left spinning until its timeout).
+        """
+        monkeypatch.setattr(
+            "includes.chat.transcript.get_thread",
+            AsyncMock(return_value={"id": "t1"}),
+        )
+        _patch_scratch(monkeypatch)
+        _patch_graph(monkeypatch)
+
+        async def fake_handler(payload, ctx):
+            await ctx.notify_dashboard("dashboard_refresh")
+
+        monkeypatch.setattr(
+            chat_ui, "_action_handler", lambda name: (fake_handler, "rfq")
+        )
+
+        await chat_ui.dispatch_action_to_thread(USER, "t1", "x", {})
+        run = chat_ui._active_runs["t1"]
+        await run["task"]  # the run finishes BEFORE any stream attaches
+
+        # The record survives, so the queued events are still collectable.
+        assert chat_ui._active_runs.get("t1") is run
+        drained = []
+        while not run["queue"].empty():
+            drained.append(run["queue"].get_nowait()["event"])
+        assert drained == ["dashboard", "done"]
+
+    async def test_finished_run_is_pruned_once_the_grace_period_elapses(
+        self, monkeypatch
+    ):
+        """Retention is bounded — a stale record is dropped on the next access."""
+        monkeypatch.setattr(
+            "includes.chat.transcript.get_thread",
+            AsyncMock(return_value={"id": "t1"}),
+        )
+        _patch_scratch(monkeypatch)
+        _patch_graph(monkeypatch)
+
+        async def fake_handler(payload, ctx):
+            return None
+
+        monkeypatch.setattr(
+            chat_ui, "_action_handler", lambda name: (fake_handler, "rfq")
+        )
+
+        await chat_ui.dispatch_action_to_thread(USER, "t1", "x", {})
+        run = chat_ui._active_runs["t1"]
+        await run["task"]
+
+        # Pretend the grace period has elapsed.
+        run["finished_at"] = time.monotonic() - chat_ui._FINISHED_RUN_GRACE_SECONDS - 1
+        chat_ui._prune_finished_runs()
+
         assert "t1" not in chat_ui._active_runs
 
     async def test_registry_action_goes_through_permission_check(self, monkeypatch):

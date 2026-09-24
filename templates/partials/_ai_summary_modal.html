@@ -53,12 +53,19 @@
 
         <!-- Footer -->
         <div class="flex items-center justify-between px-5 py-2.5 border-t border-gray-200 dark:border-gray-700 shrink-0 bg-gray-50 dark:bg-gray-800">
-            <span x-show="meta" x-cloak class="text-xs text-gray-400">
-                <span x-text="meta.from_cache ? 'Cached' : 'Generated'"></span>
-                <template x-if="meta.generated_at">
-                    <span> · <span x-text="new Date(meta.generated_at).toLocaleString()"></span></span>
-                </template>
-            </span>
+            {# x-if, not x-show: x-show only toggles CSS, so Alpine still evaluates
+               the descendant x-text/x-if and dereferences a null `meta` — this
+               partial renders on every RFQ detail page even when the modal is
+               never opened. x-if leaves the markup unrendered, so nothing is
+               evaluated until meta is set. #}
+            <template x-if="meta">
+                <span class="text-xs text-gray-400">
+                    <span x-text="meta.from_cache ? 'Cached' : 'Generated'"></span>
+                    <template x-if="meta.generated_at">
+                        <span> · <span x-text="new Date(meta.generated_at).toLocaleString()"></span></span>
+                    </template>
+                </span>
+            </template>
             <span></span>
         </div>
     </div>

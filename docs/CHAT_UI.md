@@ -38,6 +38,7 @@ Every conversation is a row, and a run is keyed by its thread id:
 | Transcript storage | `includes/chat/transcript.py` |
 | Pure streaming helpers | `includes/chat/streaming_logic.py` |
 | Action registry + dispatcher | `includes/chat/actions.py`, `includes/chat/rfq_actions.py` |
+| Widget registry + dispatcher (in-chat forms) | `includes/chat/widgets.py` + `templates/chat_ui/widgets/` |
 | Dashboard → thread dispatch | `includes/agent_bridge.py` |
 | Templates | `templates/chat_ui/{index,thread,embed}.html` |
 | Dashboard shell integration | `templates/base.html` (`#chat-ui-embed` + the DOM bridge) |
@@ -180,6 +181,94 @@ say something, show an image, notify the dashboard, or check whether the user
 asked to stop. That is what makes the same handler usable from a chat button, a
 dashboard button, and an automated trigger.
 
+## Widgets
+
+An action is a **button**; a widget is a **form**. Same idea, different
+transport — which is why they are separate modules (`includes/chat/actions.py`,
+`includes/chat/widgets.py`) rather than one registry with two modes.
+
+A widget is declared as a `WidgetSpec`: a name, a template, a `submit` handler
+and an optional `context` builder.
+
+```python
+register_widget(
+    "add_supplier",
+    label="Add new supplier",
+    description="Create a supplier we don't have yet",
+    template="chat_ui/widgets/_add_supplier.html",
+    submit=_submit,        # (data, state, user_email) -> WidgetOutcome
+    context=_context,      # (state) -> extra template context
+)
+```
+
+Rules worth knowing before adding one:
+
+- **Handlers are synchronous** and run in a worker thread. They never touch HTTP
+  or the DOM, which is what makes them testable without a browser.
+- **The state machine lives in the step's metadata** (`metadata.widget`), not in
+  a table of its own: `pending` → `submitted`. The step is the thing that
+  renders, so state and markup cannot drift apart, and a transcript reload
+  re-renders the same widget in the same position with no bookkeeping.
+- **Cancelling deletes the step and removes the row.** Nothing was written, so a
+  cancelled card is not kept as a "nothing was saved" note — that is just noise
+  in the conversation. The submit response carries `removed: true` and the client
+  drops the row; the client also drops rows for steps saved while cancel still
+  recorded a state, so older threads do not keep the tombstone.
+- **A closed widget accepts no further submissions** (409). A double click must
+  not create a second supplier.
+- **Widget markup is fetched, never sent as message text.** The panel sanitises
+  message text and strips `form`/`input`/`button` — a card sent that way arrives
+  as bare labels. The `widget` SSE event names the widget; the client then calls
+  the render endpoint, which re-derives its context (e.g. the RFQ's current line
+  items) rather than trusting a snapshot.
+- **Conditional sections use `data-show-when`** (`line_mode=specific`). Wired
+  generically, because injected markup does not execute its own `<script>` tags.
+- **Layout is decided by the card's measured width.** Give a grid the
+  `widget-form-grid` class; `wireWidget()` measures the card and records
+  `data-widget-narrow`, which `input.css` uses to stack the form into one column
+  under 400px. Neither the viewport nor the panel is the right reference: a card
+  can be 380px wide on a 1920px screen, and the panel is not what has to fit two
+  inputs. Two traps: keep the `grid-column: auto` reset (a spanned field
+  otherwise forces an implicit second column, so the stack looks like it did
+  nothing), and **never put a widget card inside `chat-bubble-inner`** — that is
+  a shrink-to-fit flex item capped at 85% on wide panels, so the card would be
+  only as wide as its own max-content and the form would never reach two
+  columns. Widget rows get a full-width box instead.
+- **A widget that changes dashboard state must say so.** A submit is a plain
+  HTTP request, not an agent turn, so there is no run to carry
+  `ctx.notify_dashboard`. Return `WidgetOutcome.dashboard`
+  (`{"command": "dashboard_refresh", "payload": {...}}`); the route passes it to
+  the client, which raises the same `dashboard:<command>` DOM event the run path
+  raises. The shell applies its usual `_source_thread` scoping, so a widget
+  cannot refresh an RFQ the user is not looking at. Without this the page behind
+  the panel silently goes stale until the user reloads by hand.
+
+Endpoints:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/chat-ui/threads/{id}/widgets` | Open one from the Tools menu (no agent run) |
+| `GET` | `/chat-ui/widgets/{id}/render` | The card's current markup |
+| `POST` | `/chat-ui/widgets/{id}/submit` | Form submission (form-encoded) |
+
+Two entry points, one step shape: the Tools menu posts to the open route, and
+`ctx.widget(name, data)` (`ChatContext`) does the same thing mid-run for an
+agent — the client is told over SSE. Both go through
+`widgets.open_widget_step()`, so they cannot diverge.
+
+The submit request is the form element posted as-is. The client therefore knows
+nothing about a widget's fields, and the server reads whatever the handler
+declares. The pressed button travels as `__widget_action` (`widgets.ACTION_FIELD`)
+— `new FormData(form)` omits submit buttons, so the client sets it explicitly;
+without that, **Cancel would arrive as a submit**. `tests/client/check_widget_submit.js`
+guards this.
+
+`add_supplier` is the reference implementation
+(`includes/dashboard/supplier_widget.py`), with its service layer kept separate
+in `includes/dashboard/supplier_create.py`. Note that the form's field spec,
+option sources and validation are shared with any future dashboard form; only
+the layout is per-context.
+
 ## Stopping work
 
 Cancellation is cooperative and **per thread**:
@@ -208,3 +297,11 @@ while it is still pending — an already-sent attachment is not removable.
 - `tests/chat/test_context_var.py` — `ChatContext` propagation
 - `tests/chat/test_run_lock.py` — one run per thread
 - `tests/test_bridge_dispatch_sse.py` — action dispatch into a thread
+- `tests/chat/test_widgets.py`, `tests/test_chat_ui_widgets.py` — the widget
+  framework and its transport (state machine, ownership, notice step)
+- `tests/test_supplier_create.py` — the `add_supplier` service, including the
+  Contact row and match keys that make a new supplier findable
+- `tests/client/check_widget_submit.js` — widget behaviour the Python suite
+  cannot see (submit-button identity, button recovery, row identity)
+- `tests/test_widget_layout.py` — static guard on the narrow-panel collapse
+  (container-query reference, the hook, and the span reset)

@@ -442,14 +442,18 @@ async def create_step(
     output: str = "",
     metadata: dict | None = None,
     parent_id: str | None = None,
+    step_id: str | None = None,
 ) -> str:
     """Persist a step; returns the new step id.
 
     Mirrors Chainlit's own ``create_step`` upsert via ``execute_sql`` — the
     public ``dl.create_step`` is wrapped in ``queue_until_user_message`` and
     requires a live Chainlit websocket session, which the beta UI doesn't have.
+
+    ``step_id`` lets a caller that must know the id in advance supply it (widgets
+    do: the card's own submit URL is built from the id before the row exists).
     """
-    step_id = str(uuid.uuid4())
+    step_id = step_id or str(uuid.uuid4())
     step_dict = _step_dict(
         thread_id,
         step_id=step_id,
@@ -487,6 +491,52 @@ async def update_step(step_id: str, output: str) -> None:
     await dl.execute_sql(
         'UPDATE steps SET "output" = :output WHERE "id" = :id',
         {"id": step_id, "output": output},
+    )
+
+
+async def get_step(step_id: str) -> dict | None:
+    """One step with parsed metadata, or ``None`` when it does not exist.
+
+    Returns the owning ``thread_id`` too (``STEP_COLUMNS`` omits it): the widget
+    layer stores its state in step metadata, so it must be able to check that a
+    step id handed back by the client belongs to a thread the caller owns.
+    """
+    dl = await _data_layer()
+    rows = await dl.execute_sql(
+        'SELECT "id","threadId","type","name","output","metadata" FROM steps '
+        'WHERE "id" = :id',
+        {"id": step_id},
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    metadata = row.get("metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except json.JSONDecodeError:
+            metadata = {}
+    return {
+        "id": row.get("id"),
+        "thread_id": row.get("threadId"),
+        "type": row.get("type"),
+        "name": row.get("name"),
+        "output": row.get("output") or "",
+        "metadata": metadata,
+    }
+
+
+async def update_step_metadata(step_id: str, metadata: dict) -> None:
+    """Replace a step's metadata wholesale.
+
+    Widget state lives in step metadata rather than a table of its own: the step
+    is the thing that renders, so state and markup cannot drift apart, and a
+    reload re-renders the same widget in the same position for free.
+    """
+    dl = await _data_layer()
+    await dl.execute_sql(
+        'UPDATE steps SET "metadata" = :metadata WHERE "id" = :id',
+        {"id": step_id, "metadata": json.dumps(metadata)},
     )
 
 

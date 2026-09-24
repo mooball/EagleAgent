@@ -188,7 +188,8 @@ def _build_bundle(
     lines.append(f"RFQ: {rfq_dict.get('rfq_number')}")
     lines.append(f"Customer: {rfq_dict.get('customer')}")
     lines.append(f"RFQ status: {rfq_dict.get('status')}")
-    lines.append(f"RFQ created (UTC): {rfq_dict.get('created_date')}")
+    # created_date is rendered by _rfq_to_dict in config.TIMEZONE, not UTC.
+    lines.append(f"RFQ created ({local_tz}): {rfq_dict.get('created_date')}")
     lines.append(f"Email status: {rfq_extra.get('email_status') or 'unknown'}")
     if rfq_extra.get("last_email_sent_at"):
         lines.append(f"Last email sent (UTC): {rfq_extra['last_email_sent_at']}")
