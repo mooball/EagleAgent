@@ -456,12 +456,18 @@
                     </div>
 
                     <div class="mt-5 flex justify-end items-center gap-x-2">
+                        {# Says WHY a submit would be refused, instead of a disabled
+                           button the user cannot account for. #}
+                        <p x-show="nsSup.duplicates.length && !nsSup.duplicateChecked" x-cloak
+                           class="mr-auto text-xs text-amber-700 dark:text-amber-300">
+                            Tick “I’ve checked — this is not a duplicate” above to continue.
+                        </p>
                         <button type="button" data-hs-overlay="#ns-supplier-modal"
                                 class="py-2 px-3 inline-flex items-center gap-x-2 text-sm font-medium rounded-lg border border-gray-200 bg-white text-gray-800 shadow-sm hover:bg-gray-50 focus:outline-none focus:bg-gray-50 disabled:opacity-50 disabled:pointer-events-none dark:bg-neutral-900 dark:border-neutral-700 dark:text-white dark:hover:bg-neutral-800 dark:focus:bg-neutral-800">
                             Cancel
                         </button>
                         <button type="submit"
-                                :disabled="nsSup.submitting || (nsSup.duplicates.length && !nsSup.duplicateChecked)"
+                                :disabled="nsSup.submitting"
                                 class="py-2 px-4 inline-flex items-center gap-x-2 text-sm font-semibold rounded-lg border border-transparent bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:bg-blue-700 disabled:opacity-50 disabled:pointer-events-none">
                             <span x-show="nsSup.submitting" class="animate-spin inline-block size-4 border-[2px] border-current border-t-transparent rounded-full"></span>
                             <span x-text="nsSup.submitting ? 'Adding…' : 'Add to NetSuite'"></span>

@@ -1942,6 +1942,11 @@
                         duplicates: (sel.near_matches || []).map(function (d) {
                             return { name: d.name, reasons: d.reasons || [] };
                         }),
+                        // Reset on every open. This object replaces nsSup wholesale,
+                        // so the declared default never applies — without this the
+                        // tick state was `undefined` rather than false, and a
+                        // previously-ticked box could carry over to the next supplier.
+                        duplicateChecked: false,
                         submitting: false,
                         error: ''
                     };
@@ -1975,11 +1980,31 @@
                     var cur = map[code];
                     if (cur) { this.nsSup.currency = cur; }
                 },
+                // fetch() resolves for any HTTP status and follows redirects, so a
+                // failed call can look like a success: an expired session lands on
+                // /login as a 200 HTML page, which used to parse to {} and pass the
+                // `!r.ok` check — closing the NetSuite modal claiming the supplier
+                // had been added. Normalise the outcome instead.
+                async _jsonFetch(url, options) {
+                    var resp = await fetch(url, options);
+                    var type = (resp.headers.get('content-type') || '').toLowerCase();
+                    var data = {};
+                    if (type.indexOf('application/json') !== -1) {
+                        data = await resp.json().catch(function () { return {}; });
+                    }
+                    return {ok: resp.ok, redirected: resp.redirected, data: data};
+                },
                 submitNsSupplier() {
                     var self = this;
+                    // Gated here rather than by disabling the button, so the reason
+                    // is always stated instead of leaving a dead control.
+                    if (this.nsSup.duplicates.length && !this.nsSup.duplicateChecked) {
+                        this.nsSup.error = 'Confirm the possible duplicate(s) above before adding this supplier.';
+                        return;
+                    }
                     this.nsSup.submitting = true;
                     this.nsSup.error = '';
-                    fetch('/partial/rfqs/' + this.rfqId + '/supplier-to-netsuite', {
+                    this._jsonFetch('/partial/rfqs/' + this.rfqId + '/supplier-to-netsuite', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         credentials: 'same-origin',
@@ -1995,11 +2020,21 @@
                             currency: this.nsSup.currency || null,
                             duplicate_checked: !!this.nsSup.duplicateChecked
                         })
-                    }).then(async function (r) {
+                    }).then(function (res) {
                         self.nsSup.submitting = false;
-                        var data = await r.json().catch(function () { return {}; });
-                        if (!r.ok) {
-                            self.nsSup.error = data.error || 'Failed to add supplier to NetSuite.';
+                        if (res.redirected) {
+                            self.nsSup.error = 'Your session has expired — reload the page and sign in again.';
+                            return;
+                        }
+                        if (!res.ok) {
+                            // The server can flag a duplicate at submit time that the
+                            // page did not know about. Adopt it so the confirm box
+                            // appears and the user can actually get through.
+                            if (res.data.duplicates && res.data.duplicates.length) {
+                                self.nsSup.duplicates = res.data.duplicates;
+                                self.nsSup.duplicateChecked = false;
+                            }
+                            self.nsSup.error = res.data.error || 'Failed to add supplier to NetSuite.';
                             return;
                         }
                         if (window.HSOverlay) { window.HSOverlay.close('#ns-supplier-modal'); }

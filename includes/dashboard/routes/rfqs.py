@@ -1599,7 +1599,17 @@ async def supplier_to_netsuite(request: Request, rfq_id: str,
         if flagged and not body.get("duplicate_checked"):
             names = ", ".join(f["name"] for f in flagged)
             return JSONResponse(
-                {"error": f"Possible duplicate supplier(s): {names}. Confirm before continuing."},
+                {
+                    "error": f"Possible duplicate supplier(s): {names}. Confirm before continuing.",
+                    # Structured copy so the client can render the confirm step
+                    # even when the page was rendered before the pair existed.
+                    # Otherwise the only remedy (the confirm checkbox) is not on
+                    # screen and the user is blocked with no way through.
+                    "duplicates": [
+                        {"name": f.get("name"), "reasons": f.get("reasons") or []}
+                        for f in flagged
+                    ],
+                },
                 status_code=400,
             )
 
