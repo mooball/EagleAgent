@@ -124,6 +124,20 @@
   .chat-bubble-inner { max-width: 85%; }
 }
 
+/* ---- Widget form layout (chat panel) ------------------------------------ */
+/* A widget form stacks to one column when there is no room for two. The
+   reference is the CARD's own measured width: the panel can be 380px on a wide
+   screen, so a @media rule would never fire, and the panel is not what has to
+   fit two inputs either — the card is (it also appears in wider contexts).
+   ``wireWidget`` measures it and sets data-widget-narrow. */
+[data-widget-narrow="1"] .widget-form-grid { grid-template-columns: 1fr; }
+/* No field spans two columns today (spanning the important ones made them read
+   as twice the width of their neighbours, and meant the layout never looked
+   like the two tidy columns it was meant to be). This reset is for a widget that
+   does span: without it the span forces an implicit second column and the stack
+   looks like it did nothing. */
+[data-widget-narrow="1"] .widget-form-grid > * { grid-column: auto; }
+
 /* ---- Reusable button components ---- */
 /* Small button: inline actions, table rows, summary bars */
 .btn-sm {

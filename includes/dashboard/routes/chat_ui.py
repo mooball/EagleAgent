@@ -903,6 +903,7 @@ def _embed_data(user: dict, threads: list[dict], thread: dict | None, steps: lis
         "user_email": user["email"],
         "agents": _agent_options(),
         "commands": _command_data(),
+        "widgets": _widget_commands(),
         "current_thread_id": _get_current_thread_id(user["email"]),
         "threads": [_thread_payload(t, bindings, rfq_meta) for t in threads],
         "thread": thread_data,
@@ -1170,6 +1171,188 @@ async def thread_action(
     if status_code != 200:
         return JSONResponse(result, status_code=status_code)
     return JSONResponse(result)
+
+
+# ── Widgets ────────────────────────────────────────────────────────────────
+# An action is a button; a widget is a form. See includes/chat/widgets.py for
+# the contract. These routes are deliberately generic: nothing here knows what
+# "add_supplier" means, so a second widget needs no transport changes.
+
+
+def _widget_commands() -> list[dict]:
+    """Tools-menu entries that open a card instead of prefilling a message.
+
+    Kept separate from ``_command_data()`` on purpose: those entries route to an
+    agent intent, and the other consumer of that helper (the standalone
+    /chat-ui page) has no widget renderer.
+    """
+    from includes.chat.widgets import list_widgets
+
+    return [
+        {
+            "type": "widget",
+            "name": spec.name,
+            "label": spec.label,
+            "description": spec.description,
+            "icon": spec.icon,
+        }
+        for spec in list_widgets()
+    ]
+
+
+async def _widget_or_404(widget_id: str, user: dict) -> tuple[Any, dict, dict, str]:
+    """Load a widget's spec, state and owning thread, checking ownership.
+
+    Widget endpoints are addressed by widget id alone (the card knows its own
+    id), so ownership is established from the step's thread rather than from
+    the URL.
+    """
+    from includes.chat.widgets import get_widget, widget_state_from_metadata
+
+    step = await transcript.get_step(widget_id)
+    thread_id = (step or {}).get("thread_id")
+    if not thread_id:
+        raise HTTPException(status_code=404)
+    await _owned_thread(thread_id, user)
+
+    state = widget_state_from_metadata(step.get("metadata"))
+    if state is None:
+        raise HTTPException(status_code=404)
+    spec = get_widget(state["name"])
+    if spec is None:
+        raise HTTPException(status_code=404)
+    return spec, state, step.get("metadata") or {}, thread_id
+
+
+async def _render_widget(spec: Any, state: dict) -> str:
+    """Render a widget card to an HTML string.
+
+    Rendered here, not sent as message text: the panel's markdown sanitiser
+    strips ``form``/``input``/``button``, so a card that travelled that way would
+    arrive as bare labels.
+    """
+    from ._helpers import templates
+
+    context: dict[str, Any] = {"widget": state}
+    if spec.context is not None:
+        # Widget context builders may read the database (RFQ line targets).
+        extra = await asyncio.to_thread(spec.context, state)
+        context.update(extra or {})
+    return templates.env.get_template(spec.template).render(**context)
+
+
+@router.post("/threads/{thread_id}/widgets")
+async def open_widget(
+    request: Request, thread_id: str, user: dict = Depends(require_user)
+):
+    """Open a widget in a thread — the Tools-menu path, with no agent run."""
+    await _guard(user)
+    await _owned_thread(thread_id, user)
+
+    from includes.chat.widgets import get_widget, open_widget_step
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = str(body.get("name") or "")
+    spec = get_widget(name)
+    if spec is None:
+        return JSONResponse({"error": f"Unknown widget: {name}"}, status_code=404)
+
+    step_id, state = await open_widget_step(thread_id, name)
+    return JSONResponse(
+        {"ok": True, "widget_id": step_id, "html": await _render_widget(spec, state)}
+    )
+
+
+@router.get("/widgets/{widget_id}/render")
+async def render_widget(widget_id: str, user: dict = Depends(require_user)):
+    """The card's current markup — used on transcript load and after a submit."""
+    await _guard(user)
+    spec, state, _metadata, _thread_id = await _widget_or_404(widget_id, user)
+    return JSONResponse(
+        {"ok": True, "status": state.get("status"), "html": await _render_widget(spec, state)}
+    )
+
+
+@router.post("/widgets/{widget_id}/submit")
+async def submit_widget(
+    request: Request, widget_id: str, user: dict = Depends(require_user)
+):
+    """A widget form submission.
+
+    Reads the form as submitted rather than a JSON schema the server would have
+    to publish: the client posts the form element as-is, so a new widget needs no
+    client-side knowledge of its own fields.
+    """
+    await _guard(user)
+    from includes.chat.widgets import (
+        WIDGET_META_KEY,
+        apply_outcome,
+        dispatch_widget,
+        form_to_data,
+    )
+
+    spec, state, metadata, thread_id = await _widget_or_404(widget_id, user)
+
+    # A closed widget accepts nothing: a double click must not create a second
+    # supplier, and a stale tab must not resurrect a finished card.
+    if state.get("status") != "pending":
+        return JSONResponse(
+            {
+                "error": "This form has already been submitted.",
+                "html": await _render_widget(spec, state),
+            },
+            status_code=409,
+        )
+
+    data = form_to_data(await request.form())
+    try:
+        outcome = await asyncio.to_thread(
+            dispatch_widget, state["name"], data, state, user["email"]
+        )
+    except KeyError:
+        return JSONResponse({"error": "Unknown widget"}, status_code=404)
+    except Exception:
+        logger.exception("[chat-ui] widget %s submit failed", widget_id[:8])
+        return JSONResponse(
+            {"error": "Something went wrong — please try again."}, status_code=500
+        )
+
+    new_state = apply_outcome(state, outcome)
+
+    if new_state["status"] == "cancelled":
+        # A cancelled widget leaves nothing behind. Nothing was written, so there
+        # is no history worth keeping — and since the step is what a reload
+        # renders, leaving it would bring back the card the user just dismissed.
+        # The client removes its row on `removed`.
+        await transcript.delete_step(widget_id)
+        return JSONResponse({"ok": True, "status": "cancelled", "removed": True})
+
+    new_metadata = dict(metadata)
+    new_metadata[WIDGET_META_KEY] = new_state
+    await transcript.update_step_metadata(widget_id, new_metadata)
+
+    response: dict[str, Any] = {
+        "ok": True,
+        "status": new_state["status"],
+        "html": await _render_widget(spec, new_state),
+    }
+    if outcome.dashboard:
+        # The shell applies the same scoping (_source_thread) as a run-emitted
+        # command, so this cannot re-render a different RFQ's page.
+        response["dashboard"] = outcome.dashboard
+    if outcome.notice:
+        # The card is the visual record; this step is what a later turn (and the
+        # agent) actually reads, so the transcript stays truthful about what was
+        # created. The client renders it against this id, so a reload does not
+        # produce a second copy.
+        notice_id = await transcript.create_step(
+            thread_id, type_="assistant_message", name="EagleAgent", output=outcome.notice
+        )
+        response["notice"] = {"id": notice_id, "content": outcome.notice}
+    return JSONResponse(response)
 
 
 @router.get("/threads/{thread_id}/stream")

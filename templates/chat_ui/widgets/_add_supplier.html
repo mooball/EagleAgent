@@ -1,0 +1,166 @@
+{#
+  "Add new supplier" widget card — rendered into the chat panel by the client,
+  either when the Tools menu opens it or when the agent calls ctx.widget().
+
+  Rendered server-side and fetched separately (GET /chat-ui/widgets/{id}/render)
+  rather than sent as message text: the panel's markdown sanitiser strips
+  <form>, <input> and <button>, so a card sent that way would arrive as labels.
+
+  Two views live here, chosen by widget.status:
+    pending   — the form (values re-filled from widget.data, which is why a
+                failed submit or a reload does not lose what was typed)
+    submitted — the result card
+
+  There is no cancelled view: cancelling deletes the step and the client removes
+  the row, so a dismissed card leaves nothing behind to read.
+
+  The layout is deliberately chat-width: two columns, optional fields behind a
+  disclosure, no NetSuite-only fields (those belong to the promotion step).
+#}
+{% import "partials/_supplier_field.html" as sf %}
+{% set data = widget.data or {} %}
+{% set errors = widget.errors or {} %}
+{# Every field occupies one grid cell — nothing spans two columns.
+
+   Spanning the important fields looked reasonable on paper, but in the panel it
+   reads as broken: Company name and Contact email came out twice the width of
+   their neighbours, and because those two always filled the row, the layout
+   never looked like the two tidy columns it was meant to be. Equal cells pair
+   up (name | contact, email | phone) and stack cleanly when there is no room. #}
+
+<div class="rounded-xl border border-gray-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-3"
+     data-widget="{{ widget.name }}" data-widget-id="{{ widget.id }}"
+     {% if rfq %}data-widget-rfq="{{ rfq.id }}"{% endif %}>
+
+    <div class="flex items-center justify-between gap-2 mb-2">
+        <span class="text-xs font-semibold text-gray-800 dark:text-neutral-200">Add new supplier</span>
+        {% if rfq %}
+        <span class="shrink-0 text-[10px] text-gray-400 dark:text-neutral-500">{{ rfq.id }}</span>
+        {% endif %}
+    </div>
+
+    {% if widget.status == 'submitted' %}
+    {# ── Result ─────────────────────────────────────────────────────────── #}
+    <div class="flex items-start gap-2">
+        <svg class="shrink-0 mt-0.5 size-3.5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.75 6 6 9-13.5"/></svg>
+        <div class="min-w-0 flex-1">
+            {# Opened in a new tab on purpose: the chat panel lives inside the
+               dashboard document, and a same-tab link would reload the whole
+               page (and this conversation) just to show a supplier. #}
+            <a href="/suppliers/{{ widget.result.supplier_id }}" target="_blank" rel="noopener"
+               class="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline break-words">{{ widget.result.name }}</a>
+            {% if widget.result.email %}
+            <p class="text-[11px] text-gray-400 dark:text-neutral-500 truncate">{{ widget.result.email }}</p>
+            {% endif %}
+        </div>
+    </div>
+    {% if widget.result.lines %}
+    <p class="mt-1.5 text-[11px] text-gray-600 dark:text-neutral-400">
+        Added as a candidate on line{{ 's' if widget.result.lines | length > 1 }} {{ widget.result.lines | join(', ') }}
+    </p>
+    {% endif %}
+    {% if widget.result.line_error %}
+    <p class="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+        Saved, but not added to {{ rfq.id if rfq else 'the RFQ' }} — {{ widget.result.line_error }}
+    </p>
+    {% endif %}
+
+    {% else %}
+    {# ── Form ───────────────────────────────────────────────────────────── #}
+    <form data-widget-form="1" data-action-field="{{ action_field }}"
+          action="/chat-ui/widgets/{{ widget.id }}/submit" method="post">
+
+        <div class="widget-form-grid grid grid-cols-2 gap-2">
+            {% for field in fields if field.group == 'main' %}
+                {{ sf.render(field, data.get(field.key), errors.get(field.key), options) }}
+            {% endfor %}
+        </div>
+
+        <details class="mt-2"{% if errors and (errors | reject('equalto', '') | list | length) %} open{% endif %}>
+            <summary class="text-[11px] text-blue-600 dark:text-blue-400 cursor-pointer select-none">More details (optional)</summary>
+            <div class="widget-form-grid grid grid-cols-2 gap-2 mt-2">
+                {% for field in fields if field.group == 'more' %}
+                    {{ sf.render(field, data.get(field.key), errors.get(field.key), options) }}
+                {% endfor %}
+            </div>
+        </details>
+
+        {% if rfq and rfq.lines %}
+        <fieldset class="mt-2 rounded-lg border border-gray-200 dark:border-neutral-700 p-2">
+            <legend class="px-1 text-[11px] font-medium text-gray-600 dark:text-neutral-400">
+                Add to {{ rfq.id }}
+            </legend>
+            <div class="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-700 dark:text-neutral-300">
+                <label class="flex items-center gap-1">
+                    <input type="radio" name="line_mode" value="all"
+                           {% if data.get('line_mode', 'all') == 'all' %}checked{% endif %}>
+                    All lines ({{ rfq.lines | length }})
+                </label>
+                <label class="flex items-center gap-1">
+                    <input type="radio" name="line_mode" value="specific"
+                           {% if data.get('line_mode') == 'specific' %}checked{% endif %}>
+                    Specific lines
+                </label>
+                <label class="flex items-center gap-1">
+                    <input type="radio" name="line_mode" value="none"
+                           {% if data.get('line_mode') == 'none' %}checked{% endif %}>
+                    Don't add
+                </label>
+            </div>
+            {# Toggled by the generic widget client (data-show-when), not by a
+               script in this file — injected HTML does not execute. #}
+            <div class="mt-1.5 space-y-0.5"
+                 data-show-when="line_mode=specific"
+                 {% if data.get('line_mode') != 'specific' %}hidden{% endif %}>
+                {% for line in rfq.lines %}
+                <label class="flex items-center gap-1.5 text-[11px] text-gray-700 dark:text-neutral-300">
+                    <input type="checkbox" name="lines" value="{{ line.line }}"
+                           {% if line.line in selected_lines %}checked{% endif %}>
+                    <span class="shrink-0 font-medium">Line {{ line.line }}</span>
+                    <span class="truncate text-gray-400 dark:text-neutral-500">{{ line.part_number }}{% if line.description %} · {{ line.description }}{% endif %}</span>
+                </label>
+                {% endfor %}
+            </div>
+        </fieldset>
+        {% endif %}
+
+        {% if widget.duplicates %}
+        <div class="mt-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-2">
+            <p class="text-[11px] font-medium text-amber-800 dark:text-amber-300">
+                We already have {{ widget.duplicates | length }} supplier{{ 's' if widget.duplicates | length > 1 }} like this:
+            </p>
+            <ul class="mt-1 space-y-0.5">
+                {% for dup in widget.duplicates %}
+                <li class="text-[11px] text-amber-800 dark:text-amber-300">
+                    <span class="font-medium">{{ dup.name }}</span>
+                    <span class="text-amber-600 dark:text-amber-500">— {{ dup.reasons | join(', ') }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+            <label class="mt-1.5 flex items-start gap-1.5 text-[11px] text-amber-900 dark:text-amber-200">
+                <input type="checkbox" name="duplicate_checked" value="1" class="mt-0.5 shrink-0"
+                       {% if widget.duplicate_checked %}checked{% endif %}>
+                <span>I've checked — this is a different supplier</span>
+            </label>
+        </div>
+        {% endif %}
+
+        {% if widget.error %}
+        <p class="mt-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-2 text-[11px] text-red-700 dark:text-red-300">{{ widget.error }}</p>
+        {% endif %}
+
+        <div class="flex items-center gap-2 mt-3">
+            <button type="submit" name="{{ action_field }}" value="submit"
+                    class="inline-flex justify-center items-center gap-1 py-1.5 px-3 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+                Add supplier
+            </button>
+            {# formnovalidate: cancelling must not be blocked by the required
+               fields the user never filled in. #}
+            <button type="submit" name="{{ action_field }}" value="cancel" formnovalidate
+                    class="py-1.5 px-3 rounded-lg text-xs text-gray-600 dark:text-neutral-300 hover:bg-gray-100 dark:hover:bg-neutral-800">
+                Cancel
+            </button>
+        </div>
+    </form>
+    {% endif %}
+</div>

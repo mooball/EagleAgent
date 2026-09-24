@@ -82,6 +82,7 @@ class FakeChatContext:
         self.images: list[tuple[str, str]] = []
         self.dashboard_calls: list[tuple[str, dict | None]] = []
         self.thread_names: list[str] = []
+        self.widgets: list[dict] = []
 
     async def say(self, text, *, actions=None, author=None, transient=False):
         handle = FakeMessageHandle(text, actions=actions, author=author, transient=transient)
@@ -90,6 +91,11 @@ class FakeChatContext:
 
     async def image(self, path: str, *, name: str) -> None:
         self.images.append((path, name))
+
+    async def widget(self, name: str, data: dict | None = None) -> str:
+        widget_id = f"widget-{len(self.widgets) + 1}"
+        self.widgets.append({"id": widget_id, "name": name, "data": dict(data or {})})
+        return widget_id
 
     async def notify_dashboard(self, command: str, payload: dict | None = None) -> None:
         self.dashboard_calls.append((command, payload))
