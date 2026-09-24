@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from includes.timeutil import to_local
 from includes.tools.product_tools import normalize_part_number
 
 logger = logging.getLogger(__name__)
@@ -233,25 +234,29 @@ def _get_rfq_suppliers(items: list) -> list[dict]:
 def _rfq_to_dict(rfq) -> dict:
     """Convert an RFQ ORM object (with items loaded) to a plain dict
     compatible with the rendering functions."""
-    from datetime import datetime, timezone, date as date_type
+    from datetime import datetime, timezone
     created = rfq.created_date  # DateTime(timezone=True) after migration, Date before
     created_str = ""
     created_display = ""
     if created:
         # Handle migration transition: may be datetime or date
         is_datetime = hasattr(created, 'tzinfo')
-        if is_datetime and created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        created_str = created.strftime("%Y-%m-%d") if is_datetime else str(created)
-        now = datetime.now(timezone.utc)
         if is_datetime:
-            delta = now - created
-            hour = (created.hour % 12) or 12
-            ampm = "am" if created.hour < 12 else "pm"
-            time_str = f"{hour}:{created.minute:02d}{ampm}"
+            # Stored as UTC (timestamptz normalises on write), so the date and
+            # the clock time must both be converted before display — reading
+            # .hour off the stored value showed UTC, which lands on the wrong
+            # calendar day for anything created before 10am AEST.
+            created_local = to_local(created)
+            created_str = created_local.strftime("%Y-%m-%d")
+            hour = (created_local.hour % 12) or 12
+            ampm = "am" if created_local.hour < 12 else "pm"
+            time_str = f"{hour}:{created_local.minute:02d}{ampm}"
+            # Age is a duration — the instant is the same in either zone.
+            delta = datetime.now(timezone.utc) - created_local
         else:
             # Pre-migration: no time component, use midnight as reference
-            delta = now - datetime.combine(created, datetime.min.time(), tzinfo=timezone.utc)
+            created_str = str(created)
+            delta = datetime.now(timezone.utc) - datetime.combine(created, datetime.min.time(), tzinfo=timezone.utc)
             time_str = ""
         hours = int(delta.total_seconds() / 3600)
         age = f"{hours}h"
