@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from typing import Any
 
@@ -32,8 +33,51 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat-ui", tags=["chat-ui"])
 
-#: Active runs: thread_id -> {"queue": Queue, "task": Task}
+#: Runs by thread: thread_id -> {"queue": Queue, "task": Task, "finished_at": float}.
+#: A finished run is retained for _FINISHED_RUN_GRACE_SECONDS so a late stream can
+#: still drain it. Every busy check gates on task.done(), so a retained record is
+#: never mistaken for a live run.
 _active_runs: dict[str, dict[str, Any]] = {}
+
+#: How long a finished run stays drainable (see _finish_run).
+_FINISHED_RUN_GRACE_SECONDS = 300
+
+
+def _finish_run(thread_id: str, record: dict[str, Any] | None) -> None:
+    """Retire a finished run, keeping its queue drainable for a grace period.
+
+    A run's events sit in a per-thread queue that is single-consumer and never
+    replays. Popping the record the instant the run finished meant a stream that
+    attached late got ``done`` immediately, and the run's events — including its
+    ``dashboard`` commands — became unreachable. That is how a dashboard action
+    whose stream attached before the run was registered lost both
+    ``dashboard_refresh`` (RFQ page never updated) and ``agent_done`` (working
+    badge spun until its timeout).
+
+    Leaving the record in place lets the stream endpoint's existing "run finished
+    but the queue is non-empty — drain it" path deliver those events.
+    """
+    if record is None:
+        _active_runs.pop(thread_id, None)
+        return
+    record["finished_at"] = time.monotonic()
+    _prune_finished_runs()
+
+
+def _prune_finished_runs() -> None:
+    """Drop finished runs whose grace period has elapsed.
+
+    Retention is bounded lazily rather than by a timer per run: a run finishing
+    and a stream attaching both prune, so the dict drains at least as fast as the
+    activity that fills it. The identity check stops a delayed prune from evicting
+    a newer run that reused the same thread id.
+    """
+    now = time.monotonic()
+    for tid, rec in list(_active_runs.items()):
+        finished_at = rec.get("finished_at")
+        if finished_at is not None and now - finished_at >= _FINISHED_RUN_GRACE_SECONDS:
+            if _active_runs.get(tid) is rec:
+                _active_runs.pop(tid, None)
 
 
 def _cancel_key(thread_id: str) -> str:
@@ -413,7 +457,7 @@ async def _run_task(
         if ctx is not None:
             await ctx.flush_scratch()
         await queue.put({"event": "done", "data": {}})
-        _active_runs.pop(thread_id, None)
+        _finish_run(thread_id, _active_runs.get(thread_id))
         _unregister_current_task(_cancel_key(thread_id))
 
 
@@ -482,7 +526,7 @@ async def _execute_action(
     finally:
         await ctx.flush_scratch()
         await queue.put({"event": "done", "data": {}})
-        _active_runs.pop(ctx.thread_id, None)
+        _finish_run(ctx.thread_id, _active_runs.get(ctx.thread_id))
         _unregister_current_task(_cancel_key(ctx.thread_id))
 
 
@@ -613,6 +657,7 @@ async def set_current_thread(
 
 async def live_threads_for_user(user: dict) -> list[str]:
     """Threads with a live run that belong to ``user`` (ownership checked)."""
+    _prune_finished_runs()
     live = [tid for tid, run in _active_runs.items() if not run["task"].done()]
     if not live:
         return []
@@ -1135,6 +1180,9 @@ async def stream(thread_id: str, user: dict = Depends(require_user)):
     async def event_stream():
         # Keep-alive so proxies see an active stream immediately.
         yield ": connected\n\n"
+        # Prune retired runs before the lookup so the grace period is honoured —
+        # a run still inside its window is here and drains below.
+        _prune_finished_runs()
         run = _active_runs.get(thread_id)
         if run is None:
             yield _sse("done", {})

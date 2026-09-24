@@ -191,8 +191,11 @@
         var div = document.createElement('div');
         var isUser = author === USER_EMAIL;
         if (transient) {
+            // Must match the {div, bubble} shape callers expect — returning the
+            // bare element made getRow append `undefined` and cache a malformed
+            // row that message_remove later tripped over.
             div.className = 'text-xs text-gray-400 dark:text-gray-500 italic';
-            return div;
+            return {div: div, bubble: null};
         }
         var bubble = document.createElement('div');
         bubble.className = isUser
@@ -206,8 +209,9 @@
     function getRow(id, author, transient) {
         if (rows[id]) { return rows[id]; }
         var el = rowEl(id, author, transient);
-        rows[id] = el;
+        // Cache only once the row is actually in the DOM.
         container.appendChild(el.div);
+        rows[id] = el;
         return el;
     }
 

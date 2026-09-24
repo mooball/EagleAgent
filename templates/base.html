@@ -351,9 +351,12 @@
                     window.addEventListener('agent-working', (e) => {
                         this.agentWorking = true;
                         this.agentWorkingLabel = e.detail?.label || 'Agent working...';
-                        // Safety timeout: auto-clear after 10 minutes in case agent_done is never received
+                        // Last-resort clear, in case agent_done never arrives. The
+                        // stream's own `done` and agent_done normally clear this
+                        // long before; keep it short so a lost event cannot leave
+                        // the badge up for the rest of the session.
                         clearTimeout(this._agentWorkingTimeout);
-                        this._agentWorkingTimeout = setTimeout(() => { this.agentWorking = false; }, 600000);
+                        this._agentWorkingTimeout = setTimeout(() => { this.agentWorking = false; }, 120000);
                     });
 
                     // Safety net: ensure thread is bound before any agent action
@@ -998,7 +1001,7 @@
                         this._agentWorkingTimeout = setTimeout(() => {
                             this.agentWorking = false;
                             this._workingThreads = {};
-                        }, 600000);
+                        }, 120000);
                     } else if (type === 'agent_done') {
                         if (payload._source_thread) {
                             delete this._workingThreads[payload._source_thread];
@@ -1476,6 +1479,23 @@
                         this.editAllSaving = false;
                     }
                 },
+                _actionFailed(msg, isIframe) {
+                    // rfqDetail() is a different Alpine component from
+                    // dashboard(), so it cannot call _handleDashboardCommand().
+                    // Doing so threw a TypeError — which meant a failed action
+                    // showed NO error at all and left the badge spinning. Route
+                    // the clear through the event the shell already listens for.
+                    console.error('[bridge]', msg);
+                    document.dispatchEvent(new CustomEvent('dashboard:agent_done', {
+                        detail: { payload: {} }
+                    }));
+                    window.eaToast('Agent action failed: ' + msg, false);
+                    if (!isIframe) {
+                        document.dispatchEvent(new CustomEvent('chat-ui:action-failed', {
+                            detail: { error: msg }
+                        }));
+                    }
+                },
                 _sendAction(action, refreshAfter) {
                     var rfqId = this.rfqId;
                     var self = this;
@@ -1494,20 +1514,27 @@
                         action.payload = action.payload || {};
                         action.payload._thread_id = dashCtx.thread_id;
                     }
-                    // Signal the dashboard that agent work has started
+                    // Raise the badge optimistically — agent_done, or the stream's
+                    // own `done`, is what clears it.
                     window.dispatchEvent(new CustomEvent('agent-working', { detail: { label: action.label || 'Agent working...' } }));
                     var isIframe = !!document.getElementById('agent-iframe');
                     var body = { action: action };
-                    if (!isIframe) {
-                        // Beta chat UI: tell the bridge to dispatch into the
-                        // SSE chat, and open the panel's stream on that thread.
-                        body.chat_ui = true;
-                        if (dashCtx && dashCtx.thread_id) {
-                            document.dispatchEvent(new CustomEvent('chat-ui:action-started', {
-                                detail: { threadId: dashCtx.thread_id }
-                            }));
-                        }
-                    }
+                    if (!isIframe) { body.chat_ui = true; }
+
+                    // Attach the panel's stream only AFTER the server has
+                    // registered the run. The stream endpoint replies `done`
+                    // immediately when no run is registered yet, and a run's event
+                    // queue is single-consumer with NO replay — so opening the
+                    // EventSource before this POST stranded every event of the
+                    // run: no dashboard_refresh (page never updated) and no
+                    // agent_done (badge spun until its safety timeout).
+                    var attachStream = function(tid) {
+                        if (isIframe || !tid) { return; }
+                        document.dispatchEvent(new CustomEvent('chat-ui:action-started', {
+                            detail: { threadId: tid }
+                        }));
+                    };
+
                     fetch('/api/agent-bridge', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -1516,47 +1543,27 @@
                     }).then(function(resp) {
                         if (!resp.ok) {
                             resp.json().then(function(d) {
-                                var msg = d.error || 'Action failed';
-                                console.error('[bridge]', msg);
-                                // The badge was set optimistically before the POST —
-                                // clear it and surface the error so the user knows
-                                // the action never ran (e.g. stale Chainlit session).
-                                self._handleDashboardCommand('agent_done', {});
-                                window.eaToast('Agent action failed: ' + msg, false);
-                                if (!isIframe) {
-                                    document.dispatchEvent(new CustomEvent('chat-ui:action-failed', {
-                                        detail: { error: msg }
-                                    }));
-                                }
+                                self._actionFailed(d.error || 'Action failed', isIframe);
                             }).catch(function() {
-                                self._handleDashboardCommand('agent_done', {});
-                                window.eaToast('Agent action failed — please reload the chat panel.', false);
+                                self._actionFailed('Agent action failed — please reload the chat panel.', isIframe);
                             });
-                        } else if (refreshAfter && isIframe) {
-                            // Beta: dashboard_refresh events from the run drive
-                            // updates; only the iframe path refreshes here.
-                            htmx.ajax('GET', '/partial/rfqs/' + rfqId, { target: '#main-content' });
-                        } else {
-                            // The server may have opened a thread for this RFQ
-                            // (self-heal when none was bound) — follow it so the
-                            // panel shows that conversation, not whichever one
-                            // happened to be open.
-                            resp.json().then(function(data) {
-                                var tid = data && data.thread_id;
-                                if (!tid || (dashCtx && tid === dashCtx.thread_id)) return;
-                                self._activeThreadId = tid;
-                                self._activeThreadRfqId = rfqId;
-                                self.currentContext.thread_id = tid;
-                                self.pushContext();
-                                document.dispatchEvent(new CustomEvent('chat-ui:action-started', {
-                                    detail: { threadId: tid }
-                                }));
-                            }).catch(function() {});
+                            return;
                         }
+                        if (refreshAfter && isIframe) {
+                            htmx.ajax('GET', '/partial/rfqs/' + rfqId, { target: '#main-content' });
+                        }
+                        resp.json().then(function(data) {
+                            // The server resolves the RFQ's OWN thread when the page
+                            // had none bound (self-heal) — follow that thread, not
+                            // whichever one happened to be open, so the panel shows
+                            // the conversation the run actually used.
+                            attachStream((data && data.thread_id) || (dashCtx && dashCtx.thread_id));
+                        }).catch(function() {
+                            attachStream(dashCtx && dashCtx.thread_id);
+                        });
                     }).catch(function(err) {
                         console.error('[bridge]', err);
-                        self._handleDashboardCommand('agent_done', {});
-                        window.eaToast('Agent action failed — please reload the chat panel.', false);
+                        self._actionFailed('Agent action failed — please reload the chat panel.', isIframe);
                     });
                 },
                 updateSupplier(rfqId, line, supplierName, status) {
