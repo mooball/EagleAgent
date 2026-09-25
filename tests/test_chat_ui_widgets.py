@@ -210,7 +210,7 @@ class HiddenContainers(HTMLParser):
 
 
 def _card(client, widgets_transport, *, mode=None, rfq=None, error="",
-          supplier_id=None, contact_id=None, shortlist=None):
+          supplier_id=None, contact_id=None, shortlist=None, line_mode=None):
     """The card as the server would send it, for a given widget state.
 
     Opened first, then the stored state is adjusted and the card re-rendered:
@@ -221,7 +221,11 @@ def _card(client, widgets_transport, *, mode=None, rfq=None, error="",
                        json={"name": "add_supplier"})
     widget_id = resp.json()["widget_id"]
     _steps, captured = widgets_transport
-    state = captured["created_steps"][0]["metadata"][WIDGET_META_KEY]
+    # The step for the widget just returned. Taking created_steps[0] instead
+    # quietly edits a *previous* card whenever a test opens two of them — the
+    # render then shows untouched default state and the assertions pass against
+    # a card the test never configured.
+    state = captured["created_steps"][-1]["metadata"][WIDGET_META_KEY]
     if rfq is not None:
         state["rfq_id"] = rfq
     if mode is not None:
@@ -232,6 +236,8 @@ def _card(client, widgets_transport, *, mode=None, rfq=None, error="",
         state.setdefault("data", {})["contact_id"] = contact_id
     if shortlist is not None:
         state.setdefault("data", {})["shortlist"] = shortlist
+    if line_mode is not None:
+        state.setdefault("data", {})["line_mode"] = line_mode
     if error:
         state["error"] = error
     rendered = client.get(f"/chat-ui/widgets/{widget_id}/render")
@@ -889,6 +895,86 @@ class TestTheShortlistBox:
         html = _card(client, widgets_transport, mode="create")
 
         assert 'name="shortlist"' not in html
+
+    @staticmethod
+    def _label(html):
+        """The opening tag of the label wrapping the Shortlist checkbox."""
+        at = html.index('name="shortlist"')
+        start = html.rindex("<label", 0, at)
+        return html[start:html.index(">", start)]
+
+    def test_it_is_withdrawn_when_nothing_is_being_linked(
+        self, client, widgets_transport
+    ):
+        """Ticking the box writes no link on its own — the status goes on the
+        entry the line link creates — so "Don't add" leaves nothing to
+        shortlist, and a box that appears to do it would be a lie."""
+        html = _card(client, widgets_transport, mode="create", rfq="RFQ-2026-9",
+                     line_mode="none")
+
+        tag = self._label(html)
+        assert "display:none" in tag, tag
+        assert 'data-show-when="line_mode=all,specific"' in tag, (
+            "the client has to restore it the moment a line option is chosen, "
+            "and the inline style alone cannot do that: " + tag
+        )
+
+    def test_it_comes_back_for_either_line_option(self, client, widgets_transport):
+        for option in ("all", "specific"):
+            html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9",
+                         line_mode=option)
+            tag = self._label(html)
+            assert "display:none" not in tag, f"line_mode={option}: {tag}"
+
+
+class TestDontAddIsOnlyForNewSuppliers:
+    """"Don't add" belongs to the create path, not to a picked supplier.
+
+    Filing a brand-new supplier with no line link is a real outcome: we want the
+    record without attaching it to the RFQ. Repeating that for one we already
+    have is not — the supplier exists either way, so picking them and then
+    declining to link them is a card that did nothing.
+
+    The radio stays in the DOM (the three radios are one group, rendered once and
+    shown per view), so these check where it is *shown*.
+    """
+
+    @staticmethod
+    def _label(html):
+        """The opening tag of the label wrapping the "Don't add" radio."""
+        at = html.index('value="none"')
+        start = html.rindex("<label", 0, at)
+        return html[start:html.index(">", start)]
+
+    def test_it_is_offered_while_creating(self, client, widgets_transport):
+        html = _card(client, widgets_transport, mode="create", rfq="RFQ-2026-9")
+
+        tag = self._label(html)
+        assert "display:none" not in tag, tag
+        assert 'data-show-when="mode=create"' in tag, (
+            "with the inline style alone the client could not reveal it when the "
+            "user switches to the create view: " + tag
+        )
+
+    def test_it_is_withdrawn_once_a_supplier_is_picked(
+        self, client, widgets_transport
+    ):
+        html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9")
+
+        tag = self._label(html)
+        assert "display:none" in tag, (
+            "a picked supplier has to be linked to something — the card has "
+            "nothing to do without the link: " + tag
+        )
+        assert 'data-show-when="mode=create"' in tag, tag
+
+    def test_the_link_options_themselves_stay(self, client, widgets_transport):
+        """Withdrawing "Don't add" must not take the line targets with it."""
+        html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9")
+
+        assert html.count('name="line_mode"') == 3
+        assert "All lines" in html and "Specific lines" in html
+        assert 'value="all"' in html and 'value="specific"' in html
 
     def test_an_unticked_box_comes_back_unticked(self, client, widgets_transport):
         """The handler records the tick, because a checkbox submits nothing at all

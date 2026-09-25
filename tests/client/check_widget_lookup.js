@@ -20,6 +20,10 @@
  *     text input submits implicitly on Enter — so the box must swallow it.
  *  6. Editing the name after picking must drop the picked id: the server rejects
  *     a mismatched {id, name} pair, so a stale one is a guaranteed failed submit.
+ *  7. "Don't add" belongs to the create path alone — it is how a new supplier is
+ *     filed without a link — and must be withdrawn once one is picked, because
+ *     there is nothing left for the card to do. It carries the rule, not just
+ *     the server's inline style, or the create view would never get it back.
  *
  * The checks extract the real functions from the template by brace-matching and
  * drive them against a small DOM stub, so a template reshuffle fails here rather
@@ -242,12 +246,25 @@ function buildCard(opts) {
   const contact = node('input', {name: 'contact_name'});
   createBlock.appendChild(contact);
 
-  [nameBlock, searchBlock, chosenBlock, createBlock].forEach((b) => form.appendChild(b));
+  // The line targets: one radio group shared by the two views that can link a
+  // supplier. "Don't add" is create-only, so it nests inside them carrying a
+  // rule of its own.
+  const linesBlock = node('div', {'data-show-when': 'mode=chosen,create'});
+  const allRadio = node('input', {name: 'line_mode', value: 'all', type: 'radio'});
+  const specificRadio = node('input', {name: 'line_mode', value: 'specific', type: 'radio'});
+  const dontAdd = node('label', {'data-show-when': 'mode=create'});
+  const noneRadio = node('input', {name: 'line_mode', value: 'none', type: 'radio'});
+  dontAdd.appendChild(noneRadio);
+  [allRadio, specificRadio, dontAdd].forEach((n) => linesBlock.appendChild(n));
+
+  [nameBlock, searchBlock, chosenBlock, createBlock, linesBlock]
+    .forEach((b) => form.appendChild(b));
 
   return {
     card, form, mode, supplierId, nameInput, status, results, createBtn,
     nameBlock, searchBlock, chosenBlock, createBlock, chosenName, chosenMeta,
-    chosenContacts, changeBtn, contact,
+    chosenContacts, changeBtn, contact, linesBlock, dontAdd,
+    allRadio, specificRadio, noneRadio,
   };
 }
 
@@ -354,8 +371,11 @@ function buildRunner(src, deps) {
 
 /** Wires the card the way production does: reveal first, then behaviour. */
 function wire(runner, card) {
-  [card.nameBlock, card.searchBlock, card.chosenBlock, card.createBlock]
-    .forEach(runner.wireShowWhen);
+  [card.nameBlock, card.searchBlock, card.chosenBlock, card.createBlock,
+    card.linesBlock].forEach(runner.wireShowWhen);
+  // Nested inside the line targets, so wired separately rather than appended
+  // again (a second appendChild would re-parent it out of its own block).
+  runner.wireShowWhen(card.dontAdd);
   runner.wireWidgetSearch(card.card);
 }
 
@@ -418,6 +438,30 @@ const ROW = {
       + 'must accept both values');
     r.setWidgetMode(card.card, 'chosen');
     eq(card.nameBlock.style.display, 'none', 'but not the chosen view');
+  });
+
+  await check('"Don\'t add" is offered only while creating', () => {
+    const card = buildCard({mode: 'search'});
+    const r = buildRunner(src);
+    wire(r, card);
+
+    eq(card.linesBlock.style.display, 'none', 'no line targets while searching');
+    eq(card.dontAdd.style.display, 'none', 'and no "Don\'t add" either');
+
+    r.setWidgetMode(card.card, 'chosen');
+
+    eq(card.linesBlock.style.display, '',
+      'a picked supplier still gets the line targets');
+    eq(card.dontAdd.style.display, 'none',
+      'picking a supplier we already have must withdraw "Don\'t add": the row '
+      + 'exists either way, so declining to link it is a card that did nothing');
+
+    r.setWidgetMode(card.card, 'create');
+
+    eq(card.dontAdd.style.display, '',
+      'filing a NEW supplier without a link is a real outcome, so the create '
+      + 'view keeps the option — and getting it back here proves the element '
+      + 'carries data-show-when rather than only the server-rendered style');
   });
 
   await check('typing searches and a pick fills the card', async () => {

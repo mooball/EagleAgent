@@ -262,6 +262,15 @@ Rules worth knowing before adding one:
     card *opened* in; picking a supplier switches view in the browser, so a
     submit button carrying only the style stays hidden and the card can be filled
     in but never submitted.
+  - **an option that cannot do anything is not offered.** "Don't add" is how the
+    create path files a new supplier without attaching it to the RFQ, which is a
+    real outcome. For a supplier we already have it is not: the record exists
+    either way, so picking them and then declining to link them is a card that
+    did nothing. The radio is withdrawn from the chosen view
+    (`data-show-when="mode=create"`) — still rendered, because the three radios
+    are one group. The same test catches a box that only acts *through* another
+    control: Shortlist writes nothing by itself, since the status rides on the
+    line link, so it is hidden while `line_mode=none`.
   - **the server decides which view opens**, in `_context()`: a submitted value
     wins (a validation error re-renders the view the user was in), otherwise
     `search` when the thread is bound to an RFQ and `create` when it is not —
@@ -295,6 +304,15 @@ Rules worth knowing before adding one:
   hidden view. Two things it must not do: run on a history load (opening the
   panel would put the caret in an old card instead of the message box), and steal
   focus from someone who has started typing while the card was being fetched.
+- **A widget card is a surface, not a bubble.** It carries `bg-slate-100` with a
+  `border-slate-300` edge and a small shadow (`dark:bg-gray-800`,
+  `dark:border-gray-600`). The tint is grey-blue on purpose: on the panel's
+  white, a white card had a single `#e5e7eb` hairline separating it, and dark
+  mode put `neutral-900` on `gray-900` — the same fault inverted. Boxes *inside*
+  a card are white fields on that tint, with an edge a step lighter
+  (`border-slate-200`) than the card's own, so the hierarchy reads. Anything
+  inside a card that needs a hover or highlight state must use the same scale:
+  `bg-gray-100` is invisible against `slate-100`.
 - **Layout is decided by the card's measured width.** Give a grid the
   `widget-form-grid` class; `wireWidget()` measures the card and records
   `data-widget-narrow`, which `input.css` uses to stack the form into one column

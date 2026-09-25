@@ -45,14 +45,21 @@
    never looked like the two tidy columns it was meant to be. Equal cells pair
    up (name | contact, email | phone) and stack cleanly when there is no room. #}
 
-<div class="rounded-xl border border-gray-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-3"
+{# The card is a surface, not a bubble. On the panel's white a white card was
+   separated by one #e5e7eb hairline, so it had no edge at all; the tint is
+   grey-blue on purpose — distinct from the panel behind it and from the neutral
+   grey of an agent bubble (gray-100). Dark mode had the same fault inverted
+   (neutral-900 on gray-900), which is why it moves to gray-800 here.
+   A new widget card should copy this line: the surface is what makes a card
+   read as a card. #}
+<div class="rounded-xl border border-slate-300 bg-slate-100 p-3 shadow-sm dark:border-gray-600 dark:bg-gray-800"
      data-widget="{{ widget.name }}" data-widget-id="{{ widget.id }}"
      {% if rfq %}data-widget-rfq="{{ rfq.id }}"{% endif %}>
 
     <div class="flex items-center justify-between gap-2 mb-2">
         <span class="text-xs font-semibold text-gray-800 dark:text-neutral-200">Add supplier</span>
         {% if rfq %}
-        <span class="shrink-0 text-[10px] text-gray-400 dark:text-neutral-500">{{ rfq.id }}</span>
+        <span class="shrink-0 text-[10px] text-gray-500 dark:text-neutral-400">{{ rfq.id }}</span>
         {% endif %}
     </div>
 
@@ -67,7 +74,7 @@
             <a href="/suppliers/{{ result.supplier_id }}" target="_blank" rel="noopener"
                class="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline break-words">{{ result.name }}</a>
             {% if result.email %}
-            <p class="text-[11px] text-gray-400 dark:text-neutral-500 truncate">{{ result.email }}</p>
+            <p class="text-[11px] text-gray-500 dark:text-neutral-400 truncate">{{ result.email }}</p>
             {% endif %}
         </div>
     </div>
@@ -108,7 +115,7 @@
 
         {# ── Search ──────────────────────────────────────────────────────── #}
         <div {{ vis(show_search) }} data-show-when="mode=search">
-            <p class="mt-1 text-[11px] text-gray-400 dark:text-neutral-500" data-widget-lookup-status>
+            <p class="mt-1 text-[11px] text-gray-500 dark:text-neutral-400" data-widget-lookup-status>
                 Start typing to find a supplier we already have.
             </p>
             {# Capped and scrollable: eight rows is ~300px, which on a short panel
@@ -124,11 +131,11 @@
 
         {# ── Chosen ──────────────────────────────────────────────────────── #}
         <div {{ vis(show_chosen) }} data-show-when="mode=chosen">
-            <div class="flex items-start gap-2 rounded-lg border border-gray-200 dark:border-neutral-700 p-2">
+            <div class="flex items-start gap-2 rounded-lg border border-slate-200 bg-white p-2 dark:border-gray-700 dark:bg-neutral-900">
                 <div class="min-w-0 flex-1">
                     <p class="text-xs font-medium text-gray-800 dark:text-neutral-200 break-words"
                        data-widget-chosen-name>{{ data.get('name') }}</p>
-                    <p class="text-[11px] text-gray-400 dark:text-neutral-500 truncate"
+                    <p class="text-[11px] text-gray-500 dark:text-neutral-400 truncate"
                        data-widget-chosen-meta></p>
                     {# Filled by the client when the picked supplier has several
                        contacts. It has to be built there rather than here: the
@@ -189,7 +196,7 @@
            views (duplicating the radios would make both submit) ─────────── #}
         <div {{ vis(show_lines) }} data-show-when="mode=chosen,create">
         {% if rfq and rfq.lines %}
-        <fieldset class="mt-2 rounded-lg border border-gray-200 dark:border-neutral-700 p-2">
+        <fieldset class="mt-2 rounded-lg border border-slate-200 bg-white p-2 dark:border-gray-700 dark:bg-neutral-900">
             <legend class="px-1 text-[11px] font-medium text-gray-600 dark:text-neutral-400">
                 Add to {{ rfq.id }}
             </legend>
@@ -204,7 +211,11 @@
                            {% if data.get('line_mode') == 'specific' %}checked{% endif %}>
                     Specific lines
                 </label>
-                <label class="flex items-center gap-1">
+                {# Only the create path can leave the supplier unattached. Picking
+                   one we already have and then not linking them files nothing:
+                   the record exists either way, so the option is withdrawn. #}
+                <label {{ vis(show_create) }} data-show-when="mode=create"
+                       class="flex items-center gap-1">
                     <input type="radio" name="line_mode" value="none"
                            {% if data.get('line_mode') == 'none' %}checked{% endif %}>
                     Don't add
@@ -227,19 +238,23 @@
                     <span class="shrink-0 max-w-[8rem] truncate rounded px-1 text-[10px] text-gray-600 dark:text-neutral-300 bg-gray-100 dark:bg-neutral-800"
                           title="{{ line.brand }}">{{ line.brand }}</span>
                     {% endif %}
-                    <span class="truncate text-gray-400 dark:text-neutral-500">{{ line.part_number }}{% if line.description %} · {{ line.description }}{% endif %}</span>
+                    <span class="truncate text-gray-500 dark:text-neutral-400">{{ line.part_number }}{% if line.description %} · {{ line.description }}{% endif %}</span>
                 </label>
                 {% endfor %}
             </div>
         </fieldset>
         {# Shortlisting by default: a supplier added here is nearly always one the
            RFQ gets sent to, and "shortlisted" is the set the Suppliers tab emails.
-           Unticking leaves the status alone rather than setting "candidate". #}
-        <label class="mt-2 flex items-center gap-1.5 text-[11px] text-gray-700 dark:text-neutral-300">
+           Unticking leaves the status alone rather than setting "candidate".
+           Hidden while "Don't add" is chosen: the status rides on the line link,
+           so a tick there would write nothing. #}
+        <label class="mt-2 flex items-center gap-1.5 text-[11px] text-gray-700 dark:text-neutral-300"
+               data-show-when="line_mode=all,specific"
+               {% if data.get('line_mode') == 'none' %}style="display:none"{% endif %}>
             <input type="checkbox" name="shortlist" value="1"
                    {% if data.get('shortlist', '1') == '1' %}checked{% endif %}>
             <span>Shortlist
-                <span class="text-gray-400 dark:text-neutral-500">— show them on the Suppliers tab, ready to email</span>
+                <span class="text-gray-500 dark:text-neutral-400">— show them on the Suppliers tab, ready to email</span>
             </span>
         </label>
         {% endif %}

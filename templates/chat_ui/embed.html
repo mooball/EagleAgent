@@ -743,7 +743,7 @@
         if (meta) { meta.hidden = true; meta.style.display = 'none'; }
 
         var label = document.createElement('label');
-        label.className = 'mt-1 flex items-center gap-1.5 text-[11px] text-gray-400 dark:text-neutral-500';
+        label.className = 'mt-1 flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-neutral-400';
         var caption = document.createElement('span');
         caption.className = 'shrink-0';
         caption.textContent = 'Send to';
@@ -845,8 +845,10 @@
         var btns = widgetResultButtons(scope);
         for (var i = 0; i < btns.length; i++) {
             if (!btns[i].classList) { continue; }
-            btns[i].classList.toggle('bg-gray-100', i === index);
-            btns[i].classList.toggle('dark:bg-neutral-800', i === index);
+            // Same scale as the row hover above — this is the keyboard's version
+            // of it, and it has to stay visible on the card's tint.
+            btns[i].classList.toggle('bg-slate-200', i === index);
+            btns[i].classList.toggle('dark:bg-gray-700', i === index);
         }
         // The list is capped and scrolls internally, so arrowing past the fold has
         // to bring the highlighted row along with it — inside the list only.
@@ -879,7 +881,9 @@
         results.forEach(function (row) {
             var btn = document.createElement('button');
             btn.type = 'button';       // a bare <button> would submit the form
-            btn.className = 'w-full text-start px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-neutral-800';
+            // slate/gray-700, not gray-100: the card is tinted slate-100 now, so a
+            // neutral gray-100 hover would be invisible against it.
+            btn.className = 'w-full text-start px-2 py-1 rounded-lg hover:bg-slate-200 dark:hover:bg-gray-700';
             btn.dataset.widgetResult = row.id;
             var name = document.createElement('span');
             name.className = 'block text-xs text-gray-800 dark:text-neutral-200 truncate';
@@ -887,7 +891,7 @@
             // Country/currency/email because supplier names repeat across
             // countries and a bare name gives nothing to choose between.
             var meta = document.createElement('span');
-            meta.className = 'block text-[11px] text-gray-400 dark:text-neutral-500 truncate';
+            meta.className = 'block text-[11px] text-gray-500 dark:text-neutral-400 truncate';
             meta.textContent = [row.country, row.currency, row.email].filter(Boolean).join(' · ');
             btn.appendChild(name);
             btn.appendChild(meta);
