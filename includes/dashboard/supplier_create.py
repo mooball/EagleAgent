@@ -35,6 +35,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from includes.dashboard.supplier_contacts import best_from, rank_contacts
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -253,22 +255,22 @@ LOOKUP_LIMIT = 8
 
 
 def _jsonb_email(supplier: Any) -> str:
-    """First email in the legacy ``suppliers.contacts`` JSONB, or ""."""
+    """Best email in the legacy ``suppliers.contacts`` JSONB, or ""."""
     contacts = supplier.contacts if isinstance(supplier.contacts, list) else []
-    for contact in contacts:
-        if isinstance(contact, dict) and contact.get("email"):
-            return str(contact["email"])
-    return ""
+    return (best_from(None, contacts) or {}).get("email", "")
 
 
-def _primary_emails(session: Any, supplier_ids: list) -> dict[str, str]:
-    """Best contact email per supplier, with one query for the whole page.
+def _contact_lists(session: Any, supplier_ids: list) -> dict[str, list[dict[str, str]]]:
+    """Ranked contacts per supplier, with one query for the whole page.
 
     The ``contacts`` table is authoritative — it is what inbound-email matching
-    reads — but ``suppliers.contacts`` is the fallback, because it is what the RFQ
-    and NetSuite forms prefill from and can hold entries the table lacks.
+    reads — and the ranking is the same one the RFQ email and the NetSuite
+    prefill use, so the first entry is the address a send would use. The card
+    offers the rest when there is more than one, which is why the list is worth
+    returning rather than only its head.
     """
     from includes.dashboard.models import Contact
+    from includes.dashboard.supplier_contacts import rank_contacts
 
     if not supplier_ids:
         return {}
@@ -277,14 +279,19 @@ def _primary_emails(session: Any, supplier_ids: list) -> dict[str, str]:
         .filter(Contact.supplier_id.in_(supplier_ids), Contact.isinactive == False)
         .all()
     )
-    # "Main" is the label the RFQ flows treat as primary; otherwise first wins.
-    ordered = sorted(rows, key=lambda c: (0 if (c.label or "") == "Main" else 1, str(c.id)))
-    out: dict[str, str] = {}
-    for row in ordered:
-        key = str(row.supplier_id)
-        if row.email and key not in out:
-            out[key] = row.email
-    return out
+    grouped: dict[str, list[Any]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.supplier_id), []).append(row)
+    return {supplier_id: rank_contacts(contacts) for supplier_id, contacts in grouped.items()}
+
+
+def _primary_emails(session: Any, supplier_ids: list) -> dict[str, str]:
+    """Best contact email per supplier — the head of its ranked list."""
+    return {
+        supplier_id: options[0]["email"]
+        for supplier_id, options in _contact_lists(session, supplier_ids).items()
+        if options
+    }
 
 
 def primary_email(supplier: Any, session: Any) -> str:
@@ -293,7 +300,8 @@ def primary_email(supplier: Any, session: Any) -> str:
     ``lookup_suppliers`` batches the same query for a whole page; this is for the
     single row a submission just acted on.
     """
-    return _primary_emails(session, [supplier.id]).get(str(supplier.id)) or _jsonb_email(supplier)
+    return _primary_emails(session, [supplier.id]).get(str(supplier.id), "") \
+        or _jsonb_email(supplier)
 
 
 def lookup_suppliers(
@@ -323,14 +331,22 @@ def lookup_suppliers(
         rows = supplier_lookup(
             session, needle, hide_dups=True, limit=limit, rank=True
         )
-        emails = _primary_emails(session, [row.id for row in rows])
+        lists = _contact_lists(session, [row.id for row in rows])
         return [
             {
                 "id": str(row.id),
                 "name": row.name,
                 "country": row.country or "",
                 "currency": row.currency or "",
-                "email": emails.get(str(row.id)) or _jsonb_email(row),
+                "email": (lists.get(str(row.id)) or [{}])[0].get("email")
+                or _jsonb_email(row),
+                # The alternatives, so the card can ask which contact to write to
+                # when there is more than one. The pick happens in the browser, so
+                # they have to travel with the result — nothing server-rendered
+                # can know who the user is about to choose.
+                "contacts": lists.get(str(row.id)) or rank_contacts(
+                    row.contacts if isinstance(row.contacts, list) else []
+                ),
             }
             for row in rows
         ]

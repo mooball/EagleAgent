@@ -35,6 +35,9 @@
     "name": {{ sup.name | tojson }},
     "email": {{ (sup.email or "") | tojson }},
     "contact_name": {{ (sup.contact_name or "") | tojson }},
+    "contact_id": {{ (sup.contact_id or "") | tojson }},
+    {# Offered so the compose modal can change the recipient without a reload. #}
+    "contact_options": {{ (sup.contact_options or []) | tojson }},
     "salutation_name": {{ (sup.salutation_name or "") | tojson }},
     "supplier_id": {{ (sup.supplier_id or "") | tojson }},
     "line_items": {{ sup.line_items | tojson }}
@@ -141,7 +144,29 @@ Eagle Exports<br>
 </div>
     {%- endset -%}
     <script type="application/json" id="sup-body-{{ sup_id }}">{{ body_html | tojson }}</script>
-    <div x-data='{ open: false, editing: false, editEmail: {{ (sup.email or "") | tojson }}, editName: {{ (sup.contact_name or "") | tojson }}, supplierName: {{ sup.name | tojson }}, supplierId: {{ (sup.supplier_id or "") | tojson }}, rfqId: {{ rfq.id | tojson }}, saving: false, saveError: null }' class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+    <div x-data='{ open: false, editing: false, editEmail: {{ (sup.email or "") | tojson }}, editName: {{ (sup.contact_name or "") | tojson }}, contactId: {{ (sup.contact_id or "") | tojson }}, supplierName: {{ sup.name | tojson }}, supplierId: {{ (sup.supplier_id or "") | tojson }}, rfqId: {{ rfq.id | tojson }}, saving: false, saveError: null,
+        {# One save path for both the picker and the free-text edit: the endpoint
+           takes a contact id when there is one and the address otherwise, and
+           records the choice on the RFQ so the next send does not ask again. #}
+        saveContact(email, name, contactId) {
+            this.saving = true; this.saveError = null;
+            fetch(`/api/rfqs/${this.rfqId}/supplier-contact`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: this.supplierName,
+                    supplier_id: this.supplierId || null,
+                    email: email,
+                    contact_name: name || "",
+                    contact_id: contactId || "",
+                }),
+            }).then(r => r.json()).then(data => {
+                if (data.status !== "ok") throw new Error(data.message || "Save failed");
+                this.editing = false;
+                htmx.ajax("GET", `/partial/rfqs/${this.rfqId}/email-suppliers`, { target: "#email-suppliers-panel", swap: "innerHTML" });
+            }).catch(err => { this.saveError = err.message; }).finally(() => { this.saving = false; });
+        }
+    }' class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
         <!-- Supplier row -->
         <div @click="if (!editing) open = !open"
              class="flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors"
@@ -165,7 +190,30 @@ Eagle Exports<br>
                 {# Read-only email display #}
                 <span x-show="!editing" class="flex items-center gap-2">
                     {% if sup.email %}
+                    {% if sup.contact_options | length > 1 %}
+                    {# More than one person on file. The address is the thing being
+                       chosen, and this is the last screen before the send. #}
+                    <select title="Which contact to email for this supplier"
+                            @click.stop
+                            @change="let o = $event.target.selectedOptions[0]; saveContact(o.dataset.email, o.dataset.name, $event.target.value)"
+                            :disabled="saving"
+                            class="max-w-[20rem] text-xs px-1.5 py-0.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 disabled:opacity-50">
+                        {% for contact in sup.contact_options %}
+                        {# The value is the id when the row has one and the address
+                           otherwise; the endpoint accepts either. #}
+                        <option value="{{ contact.id or contact.email }}"
+                                data-email="{{ contact.email }}"
+                                data-name="{{ contact.name or '' }}"
+                                {% if (sup.contact_id and sup.contact_id in (contact.id, contact.email)) or (not sup.contact_id and loop.first) %}selected{% endif %}>
+                            {# Role, person, address — the name is what says who this
+                               is. A row with no name simply skips it. #}
+                            {{ [contact.label, contact.name, contact.email] | select | join(' — ') }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    {% else %}
                     <span class="text-xs text-blue-600 dark:text-blue-400" x-text="editName ? editName + ' (' + editEmail + ')' : editEmail" :class="editName ? '' : 'font-mono'"></span>
+                    {% endif %}
                     <button @click.stop="navigator.clipboard.writeText(editEmail); let s=$el.querySelector('svg'); s.classList.add('text-green-500'); setTimeout(() => s.classList.remove('text-green-500'), 1000)"
                             class="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600" title="Copy email">
                         <svg class="w-3.5 h-3.5 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
@@ -190,25 +238,9 @@ Eagle Exports<br>
                     <input type="text" x-model="editName" placeholder="Contact name"
                            class="w-40 text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 focus:outline-hidden focus:ring-1 focus:ring-blue-500">
                     <button @click.stop="
-                        saving = true; saveError = null;
                         const email = editEmail.trim();
-                        if (!email || !email.includes('@')) { saveError = 'Valid email required'; saving = false; return; }
-                        fetch(`/api/rfqs/${rfqId}/supplier-contact`, {
-                            method: 'PATCH',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                name: supplierName,
-                                supplier_id: supplierId || null,
-                                email: email,
-                                contact_name: editName.trim(),
-                            }),
-                        }).then(r => r.json()).then(data => {
-                            if (data.status !== 'ok') throw new Error(data.message || 'Save failed');
-                            editing = false;
-                            htmx.ajax('GET', `/partial/rfqs/${rfqId}/email-suppliers`, { target: '#email-suppliers-panel', swap: 'innerHTML' });
-                        }).catch(err => {
-                            saveError = err.message;
-                        }).finally(() => { saving = false; });
+                        if (!email || !email.includes('@')) { saveError = 'Valid email required'; return; }
+                        saveContact(email, editName.trim(), '');
                     " :disabled="saving"
                             class="text-xs px-2 py-1 rounded font-medium bg-green-600 hover:bg-green-700 text-white transition-colors disabled:opacity-50"
                             x-text="saving ? 'Saving...' : 'Save'"></button>

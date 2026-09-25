@@ -12,23 +12,39 @@ from ._helpers import router, templates, require_user, _render, PAGE_SIZE
 
 
 def _load_contacts(session, supplier_id) -> list[dict]:
-    """Load contacts from the contacts table for a supplier."""
+    """Load contacts from the contacts table for a supplier, best first.
+
+    Ordered by the same rule the RFQ emails use — the Go Source contact first —
+    so the person the page leads with is the person an RFQ goes to. The old order
+    was ``label nullsfirst, fullname``, which is alphabetical: it put "Main"
+    before "Source" (M before S) by luck rather than by intent, and would have put
+    any label starting with A-L ahead of both.
+    """
+    from includes.dashboard.supplier_contacts import SUPPLIER_LABELS, rank_contacts
+
     rows = (
         session.query(Contact)
         .filter(Contact.supplier_id == supplier_id, Contact.isinactive == False)
-        .order_by(Contact.label.nullsfirst(), Contact.fullname)
         .all()
     )
-    return [
+    ranked = rank_contacts(rows, labels=SUPPLIER_LABELS)
+    # Contacts with no usable address are still listed (they may exist only as a
+    # phone number), after the ones that can be emailed.
+    ranked_ids = {c["id"] for c in ranked}
+    rest = [
         {
-            "id": str(c.id),
-            "name": c.fullname or "",
-            "email": c.email or "",
-            "phone": c.phone or "",
-            "label": c.label or "",
+            "id": str(c.id), "name": c.fullname or "", "email": c.email or "",
+            "phone": c.phone or "", "label": c.label or "",
         }
-        for c in rows
+        for c in sorted(rows, key=lambda c: (c.label or "", c.fullname or ""))
+        if str(c.id) not in ranked_ids
     ]
+    listed = [
+        {"id": c["id"], "name": c["name"], "email": c["email"],
+         "phone": c["phone"], "label": c["label"]}
+        for c in ranked
+    ]
+    return listed + rest
 
 
 # ---------------------------------------------------------------------------

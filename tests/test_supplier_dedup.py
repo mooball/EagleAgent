@@ -216,7 +216,10 @@ def _product(session):
 
 def _rfq_with_item(session, supplier_a, supplier_b):
     rfq = RFQ(
-        rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+        # "T" prefix, 6 hex digits: real numbers are RFQ-2026-NNNN (all valid
+        # hex) and rfq_number is UNIQUE, so a bare 4-hex suffix collides with a
+        # live row about once in 300 numbers.
+        rfq_number=f"RFQ-2026-T{uuid.uuid4().hex[:6].upper()}",
         customer="Test Customer",
         created_by="tester",
         created_date=datetime.now(timezone.utc),

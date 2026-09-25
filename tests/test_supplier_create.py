@@ -453,6 +453,56 @@ class TestLookupSuppliers:
 
         assert lookup_suppliers(name, session=db_session) == []
 
+    def test_rows_carry_the_alternatives(self, db_session):
+        """The card asks which contact to use when there is more than one, and the
+        pick happens in the browser — so the options have to be in the result the
+        user clicked, not fetched separately."""
+        name = _unique("Multi Contact Co")
+        supplier = self._add(db_session, name)
+        db_session.add_all([
+            Contact(supplier_id=supplier.id, label="Main", email="info@multi.example"),
+            Contact(supplier_id=supplier.id, label="Source", fullname="Corey",
+                    email="corey@multi.example"),
+        ])
+        db_session.flush()
+
+        row = next(r for r in lookup_suppliers(name, session=db_session)
+                   if r["name"] == name)
+
+        assert [c["email"] for c in row["contacts"]] == [
+            "corey@multi.example", "info@multi.example"
+        ], "the Go Source contact leads, as it does everywhere else"
+        assert row["email"] == "corey@multi.example", (
+            "the email is the head of the list, so what the card shows and what an "
+            "email would use cannot drift"
+        )
+        assert all(c["id"] for c in row["contacts"]), (
+            "ids are what let the choice be recorded against the contact"
+        )
+
+    def test_a_jsonb_only_supplier_still_offers_contacts(self, db_session):
+        """A web-discovered supplier can have contacts only in the legacy JSONB,
+        and those rows have no ids — the picker's value is then the address."""
+        name = _unique("Jsonb Contacts Co")
+        self._add(db_session, name, contacts=[{"label": "Source",
+                                               "email": "sales@jsonbonly.example"}])
+
+        row = next(r for r in lookup_suppliers(name, session=db_session)
+                   if r["name"] == name)
+
+        assert [c["email"] for c in row["contacts"]] == ["sales@jsonbonly.example"]
+        assert row["contacts"][0]["id"] == ""
+
+    def test_a_supplier_with_no_contacts_offers_none(self, db_session):
+        name = _unique("No Contacts Co")
+        self._add(db_session, name)
+
+        row = next(r for r in lookup_suppliers(name, session=db_session)
+                   if r["name"] == name)
+
+        assert row["contacts"] == []
+        assert row["email"] == ""
+
     def test_the_result_count_is_capped(self, db_session):
         stem = _unique("Capped Co")
         for index in range(12):

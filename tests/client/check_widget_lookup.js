@@ -228,9 +228,14 @@ function buildCard(opts) {
   const chosenBlock = node('div', {'data-show-when': 'mode=chosen'});
   const chosenName = node('span', {'data-widget-chosen-name': '1'});
   const chosenMeta = node('span', {'data-widget-chosen-meta': '1'});
+  // Where the client puts a contact picker when the picked supplier has several
+  // contacts — the options arrive with the search result, so it cannot be
+  // rendered by the server.
+  const chosenContacts = node('div', {'data-widget-contacts': '1'});
   const changeBtn = node('button', {'data-widget-change': '1', type: 'button'});
   chosenBlock.appendChild(chosenName);
   chosenBlock.appendChild(chosenMeta);
+  chosenBlock.appendChild(chosenContacts);
   chosenBlock.appendChild(changeBtn);
 
   const createBlock = node('div', {'data-show-when': 'mode=create'});
@@ -242,7 +247,7 @@ function buildCard(opts) {
   return {
     card, form, mode, supplierId, nameInput, status, results, createBtn,
     nameBlock, searchBlock, chosenBlock, createBlock, chosenName, chosenMeta,
-    changeBtn, contact,
+    chosenContacts, changeBtn, contact,
   };
 }
 
@@ -309,6 +314,7 @@ function buildRunner(src, deps) {
     + '\n' + extract(src, 'function clearWidgetSelection(scope) {')
     + '\n' + extract(src, 'function showWidgetCreateForm(scope) {')
     + '\n' + extract(src, 'function selectExistingSupplier(scope, row) {')
+    + '\n' + extract(src, 'function renderWidgetContacts(scope, row) {')
     + '\n' + extract(src, 'function widgetResultButtons(scope) {')
     + '\n' + extract(src, 'function isFocusableWidgetField(el) {')
     + '\n' + extract(src, 'function focusWidgetField(scope, within) {')
@@ -767,6 +773,116 @@ const ROW = {
     eq(card.contact.focused, true, 'the create button continues at the next field');
     eq(card.nameInput.focused, false, 'and does not go back to the name');
     assert(r.isFocusableWidgetField(card.mode) === false, 'a hidden input is not a field');
+  });
+
+  await check('a supplier with several contacts is asked about', async () => {
+    const card = buildCard({mode: 'search'});
+    const f = makeFetch();
+    const clock = makeClock();
+    const r = buildRunner(src, {fetch: f, setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout});
+    wire(r, card);
+
+    // The options travel with the search result: the pick happens in the browser,
+    // so nothing the server rendered could know who to offer.
+    const multi = Object.assign({}, ROW, {
+      contacts: [
+        {id: 'c-source', label: 'Source', name: 'Corey', email: 'corey@iveco.example'},
+        {id: 'c-parts', label: 'Main', name: '', email: 'parts@iveco.example'},
+      ],
+    });
+    type(card, 'iveco');
+    clock.flush();
+    await tick();
+    f.reply(0, {ok: true, results: [multi]});
+    await tick();
+    r.widgetResultButtons(card.card)[0].click();
+
+    const select = card.chosenContacts.querySelector('select');
+    assert(select, 'the picker must be built where the card can show it');
+    eq(select.name, 'contact_id', 'so the choice submits with the form');
+    eq(select.children.map((o) => o.value), ['c-source', 'c-parts'],
+      'the Go Source contact leads, as it does everywhere else');
+    eq(select.children[0].selected, true, 'and is what the card would have used');
+    eq(select.children[0].textContent, 'Source — Corey — corey@iveco.example',
+      'role, then the person, then the address: the name is how you know who you '
+      + 'are writing to, and two addresses at one supplier look alike without it');
+    eq(select.children[1].textContent, 'Main — parts@iveco.example',
+      'a contact with no name skips it rather than showing a blank');
+    eq(card.chosenMeta.style.display, 'none',
+      'the summary line steps aside: one place has to say who this goes to');
+  });
+
+  await check('one contact is not a question', async () => {
+    const card = buildCard({mode: 'search'});
+    const f = makeFetch();
+    const clock = makeClock();
+    const r = buildRunner(src, {fetch: f, setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout});
+    wire(r, card);
+
+    const single = Object.assign({}, ROW, {
+      contacts: [{id: 'c1', label: 'Source', email: 'sales@kraft.example'}],
+    });
+    type(card, 'kraft');
+    clock.flush();
+    await tick();
+    f.reply(0, {ok: true, results: [single]});
+    await tick();
+    r.widgetResultButtons(card.card)[0].click();
+
+    assert(!card.chosenContacts.querySelector('select'),
+      'a picker with one option is a fake choice');
+    eq(card.chosenMeta.style.display, '',
+      'so the summary line stays, and it is the address that an email would use');
+    assert(card.chosenMeta.textContent.indexOf('sales@kraft.example') !== -1,
+      card.chosenMeta.textContent);
+  });
+
+  await check('re-picking replaces the question rather than stacking it', async () => {
+    const card = buildCard({mode: 'search'});
+    const f = makeFetch();
+    const clock = makeClock();
+    const r = buildRunner(src, {fetch: f, setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout});
+    wire(r, card);
+
+    const two = [
+      Object.assign({}, ROW, {
+        name: 'First Co',
+        contacts: [{id: 'a1', email: 'one@a.example'}, {id: 'a2', email: 'two@a.example'}],
+      }),
+      Object.assign({}, ROW, {
+        id: 8, name: 'Second Co',
+        contacts: [{id: 'b1', email: 'one@b.example'}, {id: 'b2', email: 'two@b.example'}],
+      }),
+    ];
+    type(card, 'co');
+    clock.flush();
+    await tick();
+    f.reply(0, {ok: true, results: two});
+    await tick();
+
+    const rows = r.widgetResultButtons(card.card);
+    rows[0].click();
+    rows[1].click();
+
+    const selects = card.chosenContacts.querySelectorAll('select');
+    eq(selects.length, 1, 'two picks must not leave two pickers submitting two ids');
+    eq(selects[0].children[0].value, 'b1', 'and it belongs to the supplier picked last');
+
+    // A supplier with one contact afterwards: the picker must go, not linger.
+    type(card, 'co');
+    clock.flush();
+    await tick();
+    f.reply(1, {ok: true, results: [Object.assign({}, ROW, {id: 9, name: 'Solo Co',
+      contacts: [{id: 'c9', email: 'solo@c.example'}]})]});
+    await tick();
+    r.widgetResultButtons(card.card)[0].click();
+
+    eq(card.chosenContacts.querySelectorAll('select').length, 0,
+      'the previous supplier\'s picker must not be left behind submitting its id');
+    eq(card.chosenMeta.style.display, '');
   });
 
   await check('wireWidget is what actually attaches the search', async () => {

@@ -209,7 +209,8 @@ class HiddenContainers(HTMLParser):
             self.texts.setdefault(text, self._depth())
 
 
-def _card(client, widgets_transport, *, mode=None, rfq=None, error=""):
+def _card(client, widgets_transport, *, mode=None, rfq=None, error="",
+          supplier_id=None, contact_id=None, shortlist=None):
     """The card as the server would send it, for a given widget state.
 
     Opened first, then the stored state is adjusted and the card re-rendered:
@@ -225,6 +226,12 @@ def _card(client, widgets_transport, *, mode=None, rfq=None, error=""):
         state["rfq_id"] = rfq
     if mode is not None:
         state.setdefault("data", {})["mode"] = mode
+    if supplier_id is not None:
+        state.setdefault("data", {})["supplier_id"] = supplier_id
+    if contact_id is not None:
+        state.setdefault("data", {})["contact_id"] = contact_id
+    if shortlist is not None:
+        state.setdefault("data", {})["shortlist"] = shortlist
     if error:
         state["error"] = error
     rendered = client.get(f"/chat-ui/widgets/{widget_id}/render")
@@ -447,6 +454,27 @@ class TestNothingNeededIsHidden:
         assert depth == 0, (
             f"the error is {depth} containers deep in hidden markup (or absent): "
             f"it must be outside every view"
+        )
+
+
+class TestContactPicker:
+    """A supplier with several contacts needs an answer, but not from here.
+
+    The supplier is chosen in the browser, so a server render never knows who to
+    offer — the options travel with the search result that was clicked and the
+    client builds the picker. What the server owes is somewhere to put it, and
+    that the choice it sends back is validated.
+    """
+
+    def test_the_chosen_view_has_somewhere_to_put_a_picker(
+        self, client, widgets_transport
+    ):
+        html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9")
+
+        assert "data-widget-contacts" in html
+        assert 'name="contact_id"' not in html, (
+            "the server cannot know which supplier was picked, so it must not "
+            "render a picker of its own"
         )
 
 
@@ -828,3 +856,45 @@ class TestToolsMenu:
         names = [entry["name"] for entry in payload["widgets"]]
         assert names == ["add_supplier"]
         assert "commands" in payload      # unchanged for the standalone UI
+
+
+class TestTheShortlistBox:
+    """Shortlisting is the default, not a separate trip to the RFQ page.
+
+    It sits with the line targets because that is the decision it belongs to, and
+    only when there is an RFQ to shortlist them on.
+    """
+
+    def test_it_is_offered_and_ticked_by_default(self, client, widgets_transport):
+        html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9")
+
+        box = re.search(r'<input type="checkbox"[^>]*name="shortlist"[^>]*>', html)
+        assert box, "the card must offer to shortlist the supplier it links"
+        assert "checked" in box.group(0), (
+            "a supplier added from the chat is nearly always one the RFQ is sent "
+            "to, so this is the default: " + box.group(0)
+        )
+        assert "Suppliers tab" in html, "and it says what ticking it does"
+
+    def test_it_sits_with_the_line_targets(self, client, widgets_transport):
+        """Just below them: the two decisions travel together, and both belong to
+        the views that actually link something."""
+        html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9")
+
+        assert html.index("line_mode") < html.index('name="shortlist"')
+        assert 'data-show-when="mode=chosen,create"' in html
+
+    def test_a_thread_with_no_rfq_is_not_asked(self, client, widgets_transport):
+        """There is nowhere to shortlist them to."""
+        html = _card(client, widgets_transport, mode="create")
+
+        assert 'name="shortlist"' not in html
+
+    def test_an_unticked_box_comes_back_unticked(self, client, widgets_transport):
+        """The handler records the tick, because a checkbox submits nothing at all
+        when it is not ticked."""
+        html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9",
+                     shortlist="0")
+
+        box = re.search(r'<input type="checkbox"[^>]*name="shortlist"[^>]*>', html)
+        assert "checked" not in box.group(0), box.group(0)

@@ -3323,6 +3323,31 @@
             this._recalc();
         },
 
+        // The compose modal's last chance to fix a recipient: a supplier with
+        // several contacts can be pointed at another one, and the choice is saved
+        // so the next RFQ does not ask the same question again.
+        applyRecipientContact(recipient) {
+            const options = recipient.contact_options || [];
+            const option = options.find(c => c.email === recipient.email);
+            if (!option) return;
+            recipient.contact_name = option.name || '';
+            recipient.contact_id = option.id || '';
+            // The greeting follows the recipient, and it is resolved at send time.
+            recipient.salutation_name = option.name ? option.name.split(' ')[0] : null;
+            if (!this.rfqId) return;
+            fetch(`/api/rfqs/${this.rfqId}/supplier-contact`, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    name: recipient.name,
+                    supplier_id: recipient.supplier_id || null,
+                    email: option.email,
+                    contact_name: option.name || '',
+                    contact_id: option.id || '',
+                }),
+            }).catch(() => { /* the send still goes to what is on screen */ });
+        },
+
         composeSelected() {
             const withEmail = this.selected.filter(k => this.emailMap[k]);
             if (!withEmail.length) return;

@@ -163,7 +163,7 @@ class TestEnrichBogusSupplierIds:
             "includes.dashboard.database.match_suppliers_by_names",
             return_value={"porter equipment australia": matched},
         ), patch(
-            "includes.dashboard.database.merge_supplier_contacts",
+            "includes.dashboard.supplier_contacts.merge_ordered",
         ):
             _enrich_rfq_supplier_contacts(rfq)
 

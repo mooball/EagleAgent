@@ -717,7 +717,56 @@
             chosenMeta.textContent = [row.country, row.currency, row.email]
                 .filter(Boolean).join(' · ');
         }
+        renderWidgetContacts(scope, row);
         setWidgetMode(scope, 'chosen');
+    }
+
+    // A supplier with more than one contact needs an answer, and only the client
+    // can ask for it: the supplier is chosen here, so a server render never knows
+    // who to offer. The options therefore travel with the search result that was
+    // clicked, and the picker is built from them — inside the form, so `contact_id`
+    // submits with everything else and no round trip is needed to choose.
+    function renderWidgetContacts(scope, row) {
+        var card = widgetCardEl(scope);
+        var box = card ? card.querySelector('[data-widget-contacts]') : null;
+        if (!box) { return; }
+        var options = (row && row.contacts) || [];
+        box.innerHTML = '';
+        var meta = card.querySelector('[data-widget-chosen-meta]');
+        // One contact is not a question, and the summary line already names the
+        // address. With a picker, the picker is the one place that says who this
+        // goes to — a summary above it would disagree the moment it changed.
+        if (options.length < 2) {
+            if (meta) { meta.hidden = false; meta.style.display = ''; }
+            return;
+        }
+        if (meta) { meta.hidden = true; meta.style.display = 'none'; }
+
+        var label = document.createElement('label');
+        label.className = 'mt-1 flex items-center gap-1.5 text-[11px] text-gray-400 dark:text-neutral-500';
+        var caption = document.createElement('span');
+        caption.className = 'shrink-0';
+        caption.textContent = 'Send to';
+        var select = document.createElement('select');
+        select.name = 'contact_id';
+        select.dataset.widgetContact = '1';
+        select.className = 'min-w-0 flex-1 py-0.5 px-1 rounded border border-gray-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-[11px] text-gray-700 dark:text-neutral-300';
+        options.forEach(function (contact, index) {
+            var option = document.createElement('option');
+            // The id when the contact has one (the contacts table), the address
+            // otherwise (the legacy JSONB has no ids). The server accepts either.
+            option.value = contact.id || contact.email;
+            // Role, then the person, then the address: the name is what says who
+            // this is, and half of these rows have no name at all — so it is
+            // dropped rather than shown as a blank.
+            option.textContent = [contact.label, contact.name, contact.email]
+                .filter(Boolean).join(' — ');
+            if (index === 0) { option.selected = true; }
+            select.appendChild(option);
+        });
+        label.appendChild(caption);
+        label.appendChild(select);
+        box.appendChild(label);
     }
 
     function widgetResultButtons(scope) {

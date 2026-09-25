@@ -130,6 +130,12 @@
                        data-widget-chosen-name>{{ data.get('name') }}</p>
                     <p class="text-[11px] text-gray-400 dark:text-neutral-500 truncate"
                        data-widget-chosen-meta></p>
+                    {# Filled by the client when the picked supplier has several
+                       contacts. It has to be built there rather than here: the
+                       supplier is chosen in the browser, so a server render never
+                       knows who to offer — the options arrive with the search
+                       result the user clicked. #}
+                    <div data-widget-contacts></div>
                 </div>
                 {# Back to the typeahead. Also clears supplier_id, so an edited
                    name can never be submitted against the old pick. #}
@@ -226,6 +232,16 @@
                 {% endfor %}
             </div>
         </fieldset>
+        {# Shortlisting by default: a supplier added here is nearly always one the
+           RFQ gets sent to, and "shortlisted" is the set the Suppliers tab emails.
+           Unticking leaves the status alone rather than setting "candidate". #}
+        <label class="mt-2 flex items-center gap-1.5 text-[11px] text-gray-700 dark:text-neutral-300">
+            <input type="checkbox" name="shortlist" value="1"
+                   {% if data.get('shortlist', '1') == '1' %}checked{% endif %}>
+            <span>Shortlist
+                <span class="text-gray-400 dark:text-neutral-500">— show them on the Suppliers tab, ready to email</span>
+            </span>
+        </label>
         {% endif %}
         </div>
         {# ── Actions — outside every view, so they are always on screen ──────

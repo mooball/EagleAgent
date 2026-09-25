@@ -270,7 +270,17 @@ Rules worth knowing before adding one:
     a `supplier_id` arrived, and that id is re-validated (still live, not merged)
     and its name compared against the submitted one. A client-supplied `mode`
     must never be able to skip the create path's validation or link a supplier
-    the user did not pick.- **A card that grows must not grow under the composer.** `#embed-messages`
+    the user did not pick.
+- **A card can ask a question the server cannot.** The `add_supplier` card offers
+  the supplier's other contacts once one is picked, and that picker is built in
+  the browser from the search result that was clicked: the supplier is chosen
+  client-side, so a server render never knows who to offer (the chosen view is in
+  the DOM from the start, but empty of contacts). The options therefore travel
+  with the lookup result, and the choice submits as `contact_id` — inside the
+  form, so no round trip is needed to make it. Recording it is what makes the
+  answer worth asking for: the handler re-reads the contacts and writes the chosen
+  one onto the RFQ line, which is what the email flow then uses.
+- **A card that grows must not grow under the composer.** `#embed-messages`
   scrolls, so anything past its bottom edge sits behind the input bar — which is
   where a results list ends up, since it appears *after* the card was scrolled
   into view. `revealWidgetCard()` nudges the box by exactly the overflow (and

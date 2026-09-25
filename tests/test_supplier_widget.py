@@ -676,3 +676,288 @@ class TestContext:
 
         unbound = {"id": "w1", "rfq_id": None, "data": {"mode": "wat"}}
         assert sw._context(unbound)["mode"] == "create"
+
+
+# ---------------------------------------------------------------------------
+# Contacts — which person the card records for this supplier
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def db_session():
+    """Session with a SAVEPOINT, for the parts that read the contacts table."""
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+
+    from includes.dashboard.database import _sync_url
+
+    engine = create_engine(_sync_url(), pool_pre_ping=True)
+    connection = engine.connect()
+    transaction = connection.begin()
+    Session = sessionmaker(bind=connection)
+    session = Session(bind=connection)
+    session.begin_nested()
+
+    @event.listens_for(session, "after_transaction_end")
+    def restart_savepoint(sess, trans):
+        if trans.nested and not trans._parent.nested:
+            sess.begin_nested()
+
+    session.close = lambda: None
+    yield session
+    transaction.rollback()
+    connection.close()
+
+
+def _supplier_with_contacts(db_session, contacts, jsonb=None):
+    """A supplier whose contacts live in the table (and optionally the JSONB)."""
+    import uuid
+
+    from includes.dashboard.models import Contact, Supplier
+
+    supplier = Supplier(id=uuid.uuid4(), name="Iveco Brisbane", source="netsuite",
+                        contacts=jsonb)
+    db_session.add(supplier)
+    db_session.flush()
+    for label, email, name in contacts:
+        db_session.add(Contact(supplier_id=supplier.id, label=label, email=email,
+                               fullname=name))
+    db_session.flush()
+    return supplier
+
+
+class TestContactOptions:
+    """What the card's contact picker offers, and in what order."""
+
+    def test_the_go_source_contact_comes_first(self, db_session, monkeypatch):
+        import includes.dashboard.database as database
+
+        monkeypatch.setattr(database, "get_session", lambda: db_session)
+        supplier = _supplier_with_contacts(db_session, [
+            ("Main", "parts@iveco.example", None),
+            ("Source", "corey@iveco.example", "Corey Halloran"),
+        ])
+
+        options = sw._contact_options(supplier.id)
+
+        assert [c["email"] for c in options] == ["corey@iveco.example",
+                                                "parts@iveco.example"]
+        assert options[0]["name"] == "Corey Halloran"
+        assert options[0]["label"] == "Source"
+
+    def test_the_jsonb_is_the_fallback_when_the_table_is_empty(
+        self, db_session, monkeypatch
+    ):
+        """A web-discovered supplier can have contacts only in the legacy JSONB."""
+        import includes.dashboard.database as database
+
+        monkeypatch.setattr(database, "get_session", lambda: db_session)
+        supplier = _supplier_with_contacts(
+            db_session, [],
+            jsonb=[{"label": "Source", "email": "sales@webco.example"}],
+        )
+
+        assert [c["email"] for c in sw._contact_options(supplier.id)] == [
+            "sales@webco.example"
+        ]
+
+    def test_junk_and_addressless_rows_are_not_offered(self, db_session, monkeypatch):
+        import includes.dashboard.database as database
+
+        monkeypatch.setattr(database, "get_session", lambda: db_session)
+        supplier = _supplier_with_contacts(db_session, [
+            ("Main", "None", None),
+            ("Source", "Daniel", "daniel@sensatek.example"),
+            ("Source CC", None, "Phone Only"),
+        ])
+
+        options = sw._contact_options(supplier.id)
+
+        assert [c["email"] for c in options] == ["daniel@sensatek.example"], (
+            "the swapped columns are recovered, and the literal 'None' is not an "
+            "address to offer"
+        )
+
+    def test_a_malformed_id_asks_nothing(self, monkeypatch):
+        import includes.dashboard.database as database
+
+        def _boom():
+            raise AssertionError("a junk id must not reach the database")
+
+        monkeypatch.setattr(database, "get_session", _boom)
+
+        assert sw._contact_options("sup_1597") == []
+        assert sw._contact_options("") == []
+
+
+class TestContactOnTheLine:
+    """The chosen contact travels with the link.
+
+    Otherwise the next RFQ email re-derives it from the labels and the user's
+    choice is lost — which is exactly the "fix the same supplier every time"
+    problem the picker exists to end.
+    """
+
+    OPTIONS = [
+        {"id": "c-source", "label": "Source", "name": "Corey", "email": "corey@x.com",
+         "phone": ""},
+        {"id": "c-main", "label": "Main", "name": "", "email": "parts@x.com",
+         "phone": ""},
+    ]
+
+    def _entries(self, lines_and_writes):
+        return lines_and_writes["calls"][0]["data"]["entries"]
+
+    def test_a_chosen_contact_is_written_onto_every_entry(
+        self, lines_and_writes, monkeypatch
+    ):
+        monkeypatch.setattr(sw, "_contact_options", lambda sid: list(self.OPTIONS))
+
+        sw._link_to_lines(
+            _state(), FakeSupplier(), {"line_mode": "all", "contact_id": "c-main"},
+            "tom@x.com",
+        )
+
+        for entry in self._entries(lines_and_writes):
+            assert entry["contact_id"] == "c-main"
+            assert entry["contact_email"] == "parts@x.com"
+            assert "contact_name" not in entry, (
+                "the chosen contact has no name; an empty one must not be recorded"
+            )
+
+    def test_an_address_can_be_the_choice(self, lines_and_writes, monkeypatch):
+        """JSONB rows have no id, so the picker's value is the address itself."""
+        monkeypatch.setattr(sw, "_contact_options", lambda sid: list(self.OPTIONS))
+
+        sw._link_to_lines(
+            _state(), FakeSupplier(),
+            {"line_mode": "all", "contact_id": "corey@x.com"}, "tom@x.com",
+        )
+
+        assert self._entries(lines_and_writes)[0]["contact_email"] == "corey@x.com"
+        assert self._entries(lines_and_writes)[0]["contact_name"] == "Corey"
+
+    def test_no_choice_records_the_ranked_answer(self, lines_and_writes, monkeypatch):
+        """Nobody was asked (one contact, or a card from before the picker), so
+        the link records what an email would have used."""
+        monkeypatch.setattr(sw, "_contact_options", lambda sid: list(self.OPTIONS))
+
+        sw._link_to_lines(_state(), FakeSupplier(), {"line_mode": "all"}, "tom@x.com")
+
+        assert self._entries(lines_and_writes)[0]["contact_id"] == "c-source"
+
+    def test_a_choice_that_no_longer_exists_falls_back(
+        self, lines_and_writes, monkeypatch
+    ):
+        """The contact may have been deleted, or the id may belong to another
+        supplier — either way the link still has to happen."""
+        monkeypatch.setattr(sw, "_contact_options", lambda sid: list(self.OPTIONS))
+
+        sw._link_to_lines(
+            _state(), FakeSupplier(),
+            {"line_mode": "all", "contact_id": "someone-elses-contact"}, "tom@x.com",
+        )
+
+        assert self._entries(lines_and_writes)[0]["contact_id"] == "c-source"
+
+    def test_a_supplier_with_no_contacts_records_none(
+        self, lines_and_writes, monkeypatch
+    ):
+        monkeypatch.setattr(sw, "_contact_options", lambda sid: [])
+
+        sw._link_to_lines(_state(), FakeSupplier(), {"line_mode": "all"}, "tom@x.com")
+
+        entry = self._entries(lines_and_writes)[0]
+        assert "contact_id" not in entry and "contact_email" not in entry
+
+
+class TestShortlistOnLink:
+    """Adding a supplier from the chat almost always means the RFQ goes to them.
+
+    "Shortlisted" is the set the Suppliers tab emails, so the box is ticked to
+    begin with — and unticking it leaves the status alone rather than writing
+    "candidate" over whatever the RFQ already said.
+    """
+
+    def _entries(self, lines_and_writes):
+        return lines_and_writes["calls"][0]["data"]["entries"]
+
+    def test_the_default_shortlists_them(self, lines_and_writes, monkeypatch):
+        monkeypatch.setattr(sw, "_contact_options", lambda sid: [])
+
+        sw._link_to_lines(_state(), FakeSupplier(),
+                          {"line_mode": "all", "shortlist": "1"}, "tom@x.com")
+
+        for entry in self._entries(lines_and_writes):
+            assert entry["status"] == "shortlisted"
+
+    def test_unticking_sends_no_status_at_all(self, lines_and_writes, monkeypatch):
+        """Not \"candidate\": sending that would overwrite a supplier the RFQ had
+        already shortlisted or quoted from."""
+        monkeypatch.setattr(sw, "_contact_options", lambda sid: [])
+
+        sw._link_to_lines(_state(), FakeSupplier(), {"line_mode": "all"}, "tom@x.com")
+
+        assert "status" not in self._entries(lines_and_writes)[0]
+
+    def test_the_notice_says_what_the_rfq_now_says(self, lines_and_writes, monkeypatch):
+        monkeypatch.setattr(sw, "_contact_options", lambda sid: [])
+
+        sw._link_to_lines(_state(), FakeSupplier(),
+                          {"line_mode": "all", "shortlist": "1"}, "tom@x.com")
+
+        linked = lambda **extra: {  # noqa: E731 - a tiny fixture for four calls
+            "name": "Acme", "lines": [1], "already_on": [], "line_error": "",
+            "existing": True, **extra,
+        }
+
+        assert sw._notice(linked(shortlisted=True)) == (
+            "✅ Added **Acme** as a shortlisted supplier on line 1."
+        )
+        assert sw._notice(linked()) == "✅ Added **Acme** as a candidate on line 1."
+
+        # The create path says it too, in its own words.
+        created = {"name": "Acme", "lines": [1], "already_on": [], "line_error": "",
+                   "existing": False, "shortlisted": True}
+        assert sw._notice(created) == (
+            "✅ Created supplier **Acme**. Added it as a shortlisted supplier on line 1."
+        )
+
+    def test_a_write_that_did_not_happen_does_not_claim_shortlisting(
+        self, lines_and_writes, monkeypatch
+    ):
+        """No lines chosen means no status was set, whatever the box said."""
+        monkeypatch.setattr(sw, "_contact_options", lambda sid: [])
+
+        assert sw._link_status_fields(
+            {"lines": [], "already_on": [], "error": ""}, {"shortlist": "1"}
+        ) == {"shortlisted": False}
+        assert sw._link_status_fields(
+            {"lines": [], "already_on": [], "error": "rejected"}, {"shortlist": "1"}
+        ) == {"shortlisted": False}
+        assert sw._link_status_fields(
+            {"lines": [1], "already_on": [], "error": ""}, {"shortlist": "1"}
+        ) == {"shortlisted": True}
+        assert sw._link_status_fields(
+            {"lines": [], "already_on": [1], "error": ""}, {"shortlist": "1"}
+        ) == {"shortlisted": True}
+
+
+class TestTheTickSurvivesARerender:
+    def test_an_unticked_box_is_recorded(self, monkeypatch):
+        """A checkbox submits nothing when it is not ticked, so a rejected
+        submission has to record the tick — otherwise unticking \"Shortlist\" and
+        then hitting a validation error would quietly re-tick it."""
+        monkeypatch.setattr(sw, "validate", lambda data: ({}, {"name": "required"}))
+
+        outcome = sw._submit({"mode": "create", "name": ""}, _state(), "tom@x.com")
+
+        assert outcome.status == "pending"
+        assert outcome.data["shortlist"] == "0"
+
+    def test_a_ticked_box_is_recorded(self, monkeypatch):
+        monkeypatch.setattr(sw, "validate", lambda data: ({}, {"name": "required"}))
+
+        outcome = sw._submit({"mode": "create", "name": "", "shortlist": "1"},
+                             _state(), "tom@x.com")
+
+        assert outcome.data["shortlist"] == "1"

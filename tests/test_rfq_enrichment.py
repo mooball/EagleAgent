@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from includes.dashboard.models import Base, Supplier, Transaction, Product
+from includes.dashboard.models import Base, Contact, Supplier, Transaction, Product
 from includes.dashboard.routes import _normalize_rfq_suppliers, _enrich_rfq_supplier_contacts
 
 
@@ -117,6 +117,88 @@ class TestNormalizeRfqSuppliers:
         rfq = {"items": []}
         _normalize_rfq_suppliers(rfq)
         assert rfq["items"] == []
+
+
+# ============================================================================
+# _enrich_rfq_supplier_contacts — contact order
+# ============================================================================
+
+class TestEnrichContactOrder:
+    """The contacts table's rows come first.
+
+    Both lists can hold a ``Source`` row — 1,060 stored snapshot rows are
+    labelled that way — and the recipient rule resolves a label tie by list
+    order. Appending the table's rows (what this did) therefore let the
+    snapshot's older address keep the default, which is how a supplier ended up
+defaulting to a generic ``parts@`` while the table held the named buyer.
+    """
+
+    def _enrich(self, db_session, snapshot):
+        sup = Supplier(id=uuid.uuid4(), name="Iveco Brisbane", source="netsuite")
+        db_session.add(sup)
+        db_session.flush()
+        db_session.add(Contact(
+            supplier_id=sup.id, label="Source", fullname="Corey Halloran",
+            email="corey.halloran@iveco.example",
+        ))
+        db_session.flush()
+
+        rfq = {"items": [{"suppliers": [{
+            "name": "Iveco Brisbane",
+            "supplier_id": str(sup.id),
+            "contacts": list(snapshot),
+        }]}]}
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=db_session):
+            _enrich_rfq_supplier_contacts(rfq)
+        return rfq["items"][0]["suppliers"][0]["contacts"]
+
+    def test_the_tables_row_comes_first(self, db_session):
+        contacts = self._enrich(db_session, [
+            {"label": "Source", "email": "parts.ivecobrisbane@iveco.example"},
+        ])
+
+        assert contacts[0]["email"] == "corey.halloran@iveco.example", (
+            "the stored snapshot's Source row must not outrank the live one: "
+            "both carry the same label, so list order decides"
+        )
+        assert any(c["email"] == "parts.ivecobrisbane@iveco.example" for c in contacts), (
+            "the snapshot row is still kept — it may be the only place an "
+            "address appears for a supplier with no table rows"
+        )
+
+    def test_snapshot_rows_survive_when_the_table_has_none(self, db_session):
+        sup = Supplier(id=uuid.uuid4(), name="Web Co", source="web")
+        db_session.add(sup)
+        db_session.flush()
+
+        rfq = {"items": [{"suppliers": [{
+            "name": "Web Co",
+            "supplier_id": str(sup.id),
+            "contacts": [{"label": "Main", "email": "sales@webco.example"}],
+        }]}]}
+        with patch("includes.dashboard.routes._helpers.get_session", return_value=db_session):
+            _enrich_rfq_supplier_contacts(rfq)
+
+        contacts = rfq["items"][0]["suppliers"][0]["contacts"]
+        assert [c["email"] for c in contacts] == ["sales@webco.example"]
+
+    def test_a_snapshot_row_the_table_cannot_replace_is_kept(self, db_session):
+        """Different addresses are different contacts — enrichment adds, it does
+        not cull."""
+        contacts = self._enrich(db_session, [
+            {"label": "Main", "email": "info@iveco.example"},
+        ])
+
+        assert {c["email"] for c in contacts} == {
+            "corey.halloran@iveco.example", "info@iveco.example",
+        }
+
+    def test_the_same_address_is_not_added_twice(self, db_session):
+        contacts = self._enrich(db_session, [
+            {"label": "Source", "email": "corey.halloran@iveco.example"},
+        ])
+
+        assert len(contacts) == 1
 
 
 # ============================================================================
