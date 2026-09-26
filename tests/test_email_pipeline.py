@@ -1,6 +1,7 @@
 """Tests for includes/email_pipeline.py — shared email pipeline infrastructure."""
 
 import io
+import logging
 import os
 from unittest.mock import MagicMock, patch
 
@@ -205,35 +206,91 @@ class TestLlmCallWithRetry:
             mock_response,
         ]
 
-        with patch("includes.email_pipeline.get_pipeline_model", return_value="primary"), \
-             patch("google.genai.Client", return_value=mock_client), \
-             patch("time.sleep"):
+        with patch(
+            "includes.email_pipeline.get_pipeline_model",
+            return_value="gemini-3.8-flash",
+        ), patch("google.genai.Client", return_value=mock_client), patch("time.sleep"):
             result = llm_call_with_retry("QUOTE", "classify", ["test"])
             assert result.text == "fallback ok"
             models = [
                 call[1]["model"]
                 for call in mock_client.models.generate_content.call_args_list
             ]
-            assert models[0] == "primary"
+            assert models[0] == "gemini-3.8-flash"
             assert len(models) == len(set(models)), f"a model was retried: {models}"
 
-    def test_candidates_always_include_a_distinct_fallback(self):
-        """A fallback identical to the primary is not a fallback.
+    def test_candidates_are_the_ladder_below_the_primary(self):
+        """Failover steps down the ladder from wherever the primary sits.
 
-        Not hypothetical: with our .env the QUOTE pipeline's primary model *is*
-        FALLBACK_MODEL, so a naive implementation yields a one-element candidate
-        list and silently has no failover at all.
+        The old design appended a *flat* FALLBACK_CHAIN, so a Pro model fell
+        straight to flash-lite and a flash-lite primary fell *up* to a slower,
+        more expensive model.
         """
-        from includes.email_pipeline import FALLBACK_MODEL, get_pipeline_candidates
+        from config.settings import Config
+        from includes.email_pipeline import get_pipeline_candidates
 
-        with patch(
-            "includes.email_pipeline.get_pipeline_model", return_value=FALLBACK_MODEL
+        ladder = [
+            "gemini-3.1-pro-preview",
+            "gemini-3.8-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+        ]
+        with patch.object(Config, "MODEL_LADDER", ladder):
+            for primary, expected in {
+                "gemini-3.1-pro-preview": ladder,
+                "gemini-3.8-flash": ladder[1:],
+                "gemini-3.6-flash": ladder[2:],
+                "gemini-3.5-flash-lite": ladder[3:],
+            }.items():
+                with patch(
+                    "includes.email_pipeline.get_pipeline_model", return_value=primary
+                ):
+                    candidates = get_pipeline_candidates("QUOTE", "classify")
+                assert candidates == expected, primary
+                assert candidates[0] == primary
+                assert len(candidates) == len(set(candidates))
+
+    def test_bottom_of_ladder_has_no_fallback(self):
+        """flash-lite is the floor, so a 429 there is terminal by design.
+
+        There is nothing cheaper to step down to, and retrying the same
+        overloaded model is the anti-pattern this whole function exists to
+        avoid. Accepted for now; service-tier Priority is the mitigation.
+        """
+        from config.settings import Config
+        from includes.email_pipeline import get_pipeline_candidates
+
+        ladder = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
+        with patch.object(Config, "MODEL_LADDER", ladder), patch(
+            "includes.email_pipeline.get_pipeline_model",
+            return_value="gemini-3.5-flash-lite",
         ):
+            assert get_pipeline_candidates("QUOTE", "classify") == [
+                "gemini-3.5-flash-lite"
+            ]
+
+    def test_unranked_primary_falls_back_only_to_the_cheapest_rung(self, caplog):
+        """An unranked model must never fail over to something costlier.
+
+        We cannot know where an unranked model belongs on the ladder, so the
+        only safe direction is down.
+        """
+        from config.settings import Config
+        from includes.email_pipeline import get_pipeline_candidates
+
+        ladder = [
+            "gemini-3.1-pro-preview",
+            "gemini-3.8-flash",
+            "gemini-3.5-flash-lite",
+        ]
+        with patch.object(Config, "MODEL_LADDER", ladder), patch(
+            "includes.email_pipeline.get_pipeline_model",
+            return_value="gemini-3-flash-preview",
+        ), caplog.at_level(logging.WARNING, logger="includes.email_pipeline"):
             candidates = get_pipeline_candidates("QUOTE", "classify")
 
-        assert candidates[0] == FALLBACK_MODEL
-        assert len(candidates) > 1, "no distinct fallback available"
-        assert len(candidates) == len(set(candidates))
+        assert candidates == ["gemini-3-flash-preview", "gemini-3.5-flash-lite"]
+        assert "not on MODEL_LADDER" in caplog.text
 
     def test_not_found_is_not_retried(self):
         """A 404 must fail immediately.
@@ -268,17 +325,69 @@ class TestLlmCallWithRetry:
             assert mock_client.models.generate_content.call_count == 1
 
     def test_all_retries_exhausted(self):
+        """All three rungs below the primary are tried, then it raises."""
         from includes.email_pipeline import llm_call_with_retry
 
         mock_client = MagicMock()
         mock_client.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
 
-        with patch("includes.email_pipeline.get_pipeline_model", return_value="test-model"), \
-             patch("google.genai.Client", return_value=mock_client), \
-             patch("time.sleep"):
+        with patch(
+            "includes.email_pipeline.get_pipeline_model",
+            return_value="gemini-3.8-flash",
+        ), patch("google.genai.Client", return_value=mock_client), patch("time.sleep"):
             with pytest.raises(Exception, match="503"):
                 llm_call_with_retry("QUOTE", "classify", ["test"])
+            # 3.8-flash -> 3.6-flash -> 3.5-flash-lite
             assert mock_client.models.generate_content.call_count == 3
+
+    def test_attempt_timeout_is_bounded_by_remaining_budget(self):
+        """A single attempt must not outlive the whole call budget.
+
+        The budget used to be checked only *between* attempts, so one call could
+        run to the full per-request timeout — prod logged a 91.4s attempt
+        against a nominal 45s budget.
+        """
+        from includes.email_pipeline import llm_call_with_retry
+
+        mock_response = MagicMock()
+        mock_response.text = "ok"
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = mock_response
+
+        with patch(
+            "includes.email_pipeline.get_pipeline_model",
+            return_value="gemini-3.8-flash",
+        ), patch("includes.email_pipeline.Config.LLM_MAX_ATTEMPT_SECONDS", 5.0), patch(
+            "includes.email_pipeline._http_options"
+        ) as mock_http_options, patch(
+            "google.genai.Client", return_value=mock_client
+        ):
+            llm_call_with_retry("QUOTE", "classify", ["test"])
+
+        timeout_ms = mock_http_options.call_args[0][0]
+        assert timeout_ms <= 5000, f"attempt timeout {timeout_ms}ms exceeds the 5s budget"
+
+    def test_gives_up_when_budget_is_exhausted(self):
+        """Once the budget is gone, no further attempt is started."""
+        from includes.email_pipeline import llm_call_with_retry
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
+
+        # deadline calc -> 0.0, first attempt -> 0.0, then the clock jumps past
+        # the 5s budget so no second attempt may start.
+        clock = iter([0.0, 0.0, 10.0, 10.0, 10.0])
+        with patch(
+            "includes.email_pipeline.get_pipeline_model",
+            return_value="gemini-3.8-flash",
+        ), patch("includes.email_pipeline.Config.LLM_MAX_ATTEMPT_SECONDS", 5.0), patch(
+            "includes.email_pipeline.time.monotonic",
+            side_effect=lambda: next(clock),
+        ), patch("google.genai.Client", return_value=mock_client), patch("time.sleep"):
+            with pytest.raises(Exception, match="503"):
+                llm_call_with_retry("QUOTE", "classify", ["test"])
+
+        assert mock_client.models.generate_content.call_count == 1
 
 
 # ---------------------------------------------------------------------------
