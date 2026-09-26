@@ -1,7 +1,9 @@
 # Plan: LLM Observability, Model Registry & Failover
 
 **Created:** 2026-09-24
-**Status:** 🟡 Scoped — P0 targeted for production tonight
+**Status:** � P0.1 + P0.2 + P0.4 shipped to prod 2026-09-24 — first-day results in
+[plan-llmTelemetryFindings.prompt.md](plan-llmTelemetryFindings.prompt.md).
+P0.3 still blocked (see that doc, A9). P1+ not started.
 **Branch:** `llm-benchmarks`
 **Related:** `plan-agentTurnLatency.prompt.md`, `scripts/bench_gemini_flash.py`
 
