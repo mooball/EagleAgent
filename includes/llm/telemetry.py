@@ -23,6 +23,18 @@ Usage::
 Latency is measured around the block; usage is read from the response. On an
 exception the call is recorded as an error (with a classified error type) and
 re-raised unchanged.
+
+Token columns carry one invariant::
+
+    total_tokens == prompt_tokens + output_tokens + thought_tokens
+
+It holds for **both** call paths, which matters because they report usage
+differently: the raw SDK excludes thinking from ``candidates_token_count``,
+while LangChain's ``output_tokens`` already includes it. The LangChain adapter
+subtracts thinking so both agree (see ``_tokens_from_usage``), and
+``_apply_token_invariant`` fills in a component the provider omitted rather than
+leaving a NULL that silently nulls out every derivation. Derive cost from
+``total_tokens``, or from the components — not both.
 """
 
 from __future__ import annotations
@@ -177,15 +189,70 @@ _COLUMNS = (
 )
 
 
+_TOKEN_FIELDS = ("prompt_tokens", "output_tokens", "thought_tokens")
+
+
+def _apply_token_invariant(row: dict) -> None:
+    """Force ``total_tokens == prompt + output + thought`` when a total is known.
+
+    Providers omit zero-valued fields, so a component can legitimately arrive as
+    None. Left alone that NULLs out every derivation: in production a single row
+    with ``output_tokens`` missing made ``total - prompt - thought`` NULL, which
+    is how this was found.
+
+    Only acts when ``total_tokens`` is present. Without a total there is no
+    invariant to satisfy, and filling blanks with zeros would be inventing data.
+    """
+    total = row.get("total_tokens")
+    if not isinstance(total, int) or isinstance(total, bool):
+        return
+
+    missing = [k for k in _TOKEN_FIELDS if not isinstance(row.get(k), int)]
+    if not missing:
+        return
+
+    if len(missing) == 1:
+        key = missing[0]
+        known = sum(row[k] for k in _TOKEN_FIELDS if k != key)
+        derived = total - known
+        if derived < 0:
+            # The provider's numbers do not reconcile. Write 0 rather than a
+            # negative count so the row still satisfies "no NULLs" and is
+            # caught by a reconciliation query instead of silently poisoning one.
+            logger.debug(
+                "llm telemetry: %s does not reconcile (total=%s, others=%s); "
+                "recording 0",
+                key, total, known,
+            )
+            derived = 0
+        row[key] = derived
+        return
+
+    # More than one unknown: the total cannot be attributed, so treat the absent
+    # buckets as the empty buckets the provider omitted.
+    for key in missing:
+        row[key] = 0
+
+
 def _normalise(fields: dict) -> dict:
-    row = {k: fields.get(k) for k in _COLUMNS if k in fields}
-    row.setdefault("ts", datetime.now(timezone.utc))
-    row.setdefault("provider", "google")
-    row.setdefault("status", "ok")
+    # Emit *every* column, not just the keys the caller passed.
+    # `_apply_token_invariant` writes a derived value back into the row, so a
+    # sparse row could gain a key its batch-mates do not have. One fixed shape
+    # avoids that and makes the NULL-vs-zero story identical for every row.
+    # (Verified against the real table 2026-09-26: SQLAlchemy tolerates a
+    # heterogeneous executemany, so this is about consistency, not a crash.)
+    row = {k: fields.get(k) for k in _COLUMNS}
+    if not row.get("ts"):
+        row["ts"] = datetime.now(timezone.utc)
+    if not row.get("provider"):
+        row["provider"] = "google"
+    if not row.get("status"):
+        row["status"] = "ok"
     if not row.get("scope"):
         row["scope"] = "unknown"
     if not row.get("model"):
         row["model"] = "unknown"
+    _apply_token_invariant(row)
     # Truncate to the column widths so a long model/location string cannot
     # silently fail the whole batch.
     for key, width in (("scope", 80), ("model", 80), ("location", 64),
@@ -434,41 +501,82 @@ except Exception:  # noqa: BLE001
         """Fallback so importing this module never fails."""
 
 
+def _tokens_from_usage(usage: dict) -> dict:
+    """Map a LangChain ``usage_metadata`` dict onto our token columns.
+
+    **Why this subtracts.** LangChain's own identity is
+    ``total = input + output`` with ``output_tokens`` *inclusive* of reasoning,
+    and ``output_token_details.reasoning`` as a breakdown of that same output.
+    We store thinking in its own column and expect
+    ``total = prompt + output + thought``, so leaving the reasoning inside output
+    makes ``output + thought`` double-count. Measured in production at +73% on
+    agent rows (49,070 thoughts against 67,171 output). Subtracting here is what
+    makes the raw-SDK and LangChain paths agree.
+
+    Also accepts the older ``prompt_tokens`` / ``completion_tokens`` key names.
+    """
+    def _int(value: Any) -> int | None:
+        # bool is an int subclass; a stray True must not become a token count.
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value
+
+    details = usage.get("output_token_details")
+    thinking = _int(details.get("reasoning")) if isinstance(details, dict) else None
+
+    prompt = _int(usage.get("input_tokens"))
+    if prompt is None:
+        prompt = _int(usage.get("prompt_tokens"))
+
+    output = _int(usage.get("output_tokens"))
+    if output is None:
+        output = _int(usage.get("completion_tokens"))
+
+    total = _int(usage.get("total_tokens"))
+
+    if thinking is not None and output is not None:
+        # reasoning is a subset of output, not an addition to it
+        output = max(0, output - thinking)
+
+    return {
+        "prompt_tokens": prompt,
+        "output_tokens": output,
+        "thought_tokens": thinking,
+        "total_tokens": total,
+    }
+
+
 def _usage_from_langchain(response: Any) -> dict:
     """Pull token counts out of a LangChain LLMResult.
 
-    LangChain has moved this around across versions, so try, in order:
-    ``llm_output['usage_metadata']``, then the first generation's message
-    ``usage_metadata``. Returns whatever it finds; missing keys stay None
-    rather than being guessed at.
+    LangChain has moved this around across versions, so collect every candidate
+    location and prefer whichever one actually reports a total. Returns ``{}``
+    when nothing is found, so absent data stays absent instead of becoming a
+    false zero.
     """
-    found: dict = {}
+    candidates: list[dict] = []
 
     llm_output = getattr(response, "llm_output", None) or {}
-    usage = llm_output.get("usage_metadata") or llm_output.get("token_usage") or {}
-    if isinstance(usage, dict) and usage:
-        found = {
-            "prompt_tokens": usage.get("input_tokens") or usage.get("prompt_tokens"),
-            "output_tokens": usage.get("output_tokens") or usage.get("completion_tokens"),
-            "total_tokens": usage.get("total_tokens"),
-        }
+    for key in ("usage_metadata", "token_usage"):
+        value = llm_output.get(key)
+        if isinstance(value, dict) and value:
+            candidates.append(value)
 
-    if found.get("total_tokens") is None:
-        try:
-            message = response.generations[0][0].message
-            usage = getattr(message, "usage_metadata", None) or {}
-            if isinstance(usage, dict) and usage:
-                details = usage.get("output_token_details") or {}
-                found = {
-                    "prompt_tokens": usage.get("input_tokens"),
-                    "output_tokens": usage.get("output_tokens"),
-                    "total_tokens": usage.get("total_tokens"),
-                    "thought_tokens": details.get("reasoning"),
-                }
-        except (AttributeError, IndexError, TypeError):
-            pass
+    try:
+        message = response.generations[0][0].message
+        value = getattr(message, "usage_metadata", None)
+        if isinstance(value, dict) and value:
+            candidates.append(value)
+    except (AttributeError, IndexError, TypeError):
+        pass
 
-    return found
+    if not candidates:
+        return {}
+
+    chosen = next(
+        (c for c in candidates if c.get("total_tokens") is not None), candidates[0]
+    )
+    return _tokens_from_usage(chosen)
 
 
 class LangChainTelemetryHandler(BaseCallbackHandler):
