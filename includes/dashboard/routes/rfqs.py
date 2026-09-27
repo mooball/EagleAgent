@@ -137,7 +137,7 @@ def _normalize_rfq_suppliers(rfq: dict) -> None:
 def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
     """Back-fill missing supplier contacts, terms, and tier from the DB."""
     from includes.dashboard.database import match_suppliers_by_names
-    from includes.dashboard.supplier_contacts import merge_ordered
+    from includes.dashboard.supplier_contacts import attach_contact_ids, merge_ordered
 
     _normalize_rfq_suppliers(rfq)
 
@@ -177,6 +177,11 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
             for c in contact_rows:
                 sid = str(c.supplier_id)
                 contacts_by_supplier.setdefault(sid, []).append({
+                    # The id is what lets a saved contact_id be honoured and the
+                    # picker mark the chosen row; without it best_contact()
+                    # matched nothing and the panel fell back to the label
+                    # default every time (2026-09-27).
+                    "id": str(c.id),
                     "name": c.fullname,
                     "email": c.email,
                     "phone": c.phone,
@@ -194,7 +199,13 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                             # can hold a 'Source' row (1,060 stored snapshot rows
                             # are labelled that way), and ranking resolves a tie
                             # by list order. A stale snapshot must not win it.
-                            sup["contacts"] = merge_ordered(ct_contacts, sup.get("contacts"))
+                            # The id is re-attached afterwards: a snapshot row that
+                            # wins an address on label has no id, and without one
+                            # a saved choice cannot be resolved at all.
+                            sup["contacts"] = attach_contact_ids(
+                                merge_ordered(ct_contacts, sup.get("contacts")),
+                                ct_contacts,
+                            )
                         if scp.get("tier") and not sup.get("tier"):
                             sup["tier"] = scp["tier"]
                         if scp.get("category") and not sup.get("category"):
@@ -235,6 +246,8 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                 ).all()
                 for c in contact_rows:
                     contacts_by_sid.setdefault(str(c.supplier_id), []).append({
+                        # Idem: keep the id so a recorded choice can be matched.
+                        "id": str(c.id),
                         "name": c.fullname,
                         "email": c.email,
                         "phone": c.phone,
@@ -258,7 +271,10 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                     matched_contacts = contacts_by_sid.get(str(matched.id), [])
                     for sup in sup_list:
                         if matched_contacts:
-                            sup["contacts"] = merge_ordered(matched_contacts, sup.get("contacts"))
+                            sup["contacts"] = attach_contact_ids(
+                                merge_ordered(matched_contacts, sup.get("contacts")),
+                                matched_contacts,
+                            )
                         if not _is_valid_uuid(sup.get("supplier_id")):
                             sup["supplier_id"] = str(matched.id)
                         if scp.get("tier") and not sup.get("tier"):
@@ -392,6 +408,9 @@ def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
     )
 
     supplier_map: dict[str, dict] = {}
+    #: Whether the entry we kept for a supplier was built from a line that
+    #: actually recorded a contact choice (see the displacement rule below).
+    choice_recorded: dict[str, bool] = {}
     for item in rfq.get("items", []):
         for sup in item.get("suppliers", []):
             if sup.get("status") != "shortlisted":
@@ -400,7 +419,17 @@ def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
             if not name:
                 continue
             key = name.lower()
-            if key not in supplier_map:
+            has_choice = bool(sup.get("contact_id") or sup.get("contact_email"))
+            # One supplier can appear on several lines and only some of those
+            # entries carry a contact choice — the widget records one when it
+            # links the supplier, an earlier agent add may not. The first line
+            # walked is not necessarily the one that knows who to email, so an
+            # entry that has a choice displaces one that only has a default.
+            if key not in supplier_map or (has_choice and not choice_recorded[key]):
+                # Rebuilding the entry must not lose the lines already collected
+                # for this supplier.
+                line_items = supplier_map[key]["line_items"] if key in supplier_map else []
+                choice_recorded[key] = has_choice
                 url = None
                 supplier_id = sup.get("supplier_id")
                 contacts = sup.get("contacts") or []
@@ -414,8 +443,13 @@ def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
                 # email and the first row with a name — two scans, so the address
                 # and the person could come from different contacts, and a stale
                 # snapshot row beat the supplier's live one 28% of the time.
+                # The address is matched as well as the id: a line's stored
+                # contact_id is a contacts-table id, but its contacts snapshot
+                # was written without ids, so an id-only match ignored the choice.
                 chosen = best_contact(
-                    contacts, preferred_id=str(sup.get("contact_id") or "")
+                    contacts,
+                    preferred_id=str(sup.get("contact_id") or ""),
+                    preferred_email=str(sup.get("contact_email") or ""),
                 ) or {}
                 supplier_map[key] = {
                     "name": name,
@@ -433,7 +467,7 @@ def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
                     # The greeting follows the recipient: naming somebody else
                     # while emailing a generic mailbox is worse than no name.
                     "salutation_name": salutation_name(chosen),
-                    "line_items": [],
+                    "line_items": line_items,
                 }
             supplier_map[key]["line_items"].append({
                 "line": item.get("line"),
@@ -3896,6 +3930,17 @@ async def api_update_supplier_contact(
                                  and normalise_contact(c)["email"].lower() == contact_id.lower()),
                                 None,
                             )
+                    if target is None and new_email:
+                        # The picker sends a contacts-table id, but the snapshot it
+                        # was built from was written without ids — so the id matches
+                        # nothing here. Match on the address that travelled with the
+                        # id instead. Without this the resolver below picked the
+                        # label default and overwrote the wrong row (2026-09-27).
+                        target = next(
+                            (c for c in contacts if isinstance(c, dict)
+                             and normalise_contact(c)["email"].lower() == new_email.lower()),
+                            None,
+                        )
                     if target is None:
                         chosen = best_contact(contacts)
                         if chosen is not None:
@@ -3924,6 +3969,12 @@ async def api_update_supplier_contact(
                     # rather than re-deriving it from the label order.
                     if target.get("id"):
                         sup["contact_id"] = str(target["id"])
+                    elif contact_id and "@" not in contact_id:
+                        # The picker picked a real contacts-table row, but the
+                        # snapshot carries no ids, so record the id the picker sent
+                        # — otherwise the next render cannot resolve the choice and
+                        # reverts to the label default.
+                        sup["contact_id"] = contact_id
                     sup["contact_email"] = new_email
                     sup["contact_name"] = contact_name or (target.get("name") or "")
                     changed = True

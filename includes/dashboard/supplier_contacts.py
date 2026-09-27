@@ -187,6 +187,7 @@ def best_contact(
     contacts: Optional[Iterable[Any]],
     *,
     preferred_id: str = "",
+    preferred_email: str = "",
     labels: tuple[str, ...] = SUPPLIER_LABELS,
 ) -> Optional[dict[str, str]]:
     """The contact to use, or ``None`` when nothing is reachable.
@@ -195,6 +196,14 @@ def best_contact(
     RFQ — it wins over the labels, because a decision beats a default. An id
     that no longer exists (the contact was deleted or merged) falls through to
     the labels rather than being an error: the RFQ still has to be emailed.
+
+    ``preferred_email`` is the same decision when only the address was recorded.
+    That is not a rare shape: an RFQ line stores the chosen address as
+    ``contact_email`` and a snapshot of the supplier's contacts that was written
+    without ids, so matching on the id alone silently discards the choice and
+    falls back to the label default (Sydney Tools reverted from joshuac@ to
+    nickg@ every time, 2026-09-27). Tried after the id, so a recorded id still
+    wins when both are present.
     """
     ranked = rank_contacts(contacts, labels=labels)
     if preferred_id:
@@ -202,6 +211,12 @@ def best_contact(
         for contact in ranked:
             if contact["id"] and contact["id"] == wanted:
                 return contact
+    if preferred_email:
+        wanted = normalise_email(preferred_email).lower()
+        if wanted:
+            for contact in ranked:
+                if contact["email"].lower() == wanted:
+                    return contact
     return ranked[0] if ranked else None
 
 
@@ -210,6 +225,7 @@ def best_from(
     snapshot: Optional[Iterable[Any]] = None,
     *,
     preferred_id: str = "",
+    preferred_email: str = "",
     labels: tuple[str, ...] = SUPPLIER_LABELS,
 ) -> Optional[dict[str, str]]:
     """The contacts table wins; the stored snapshot is the fallback.
@@ -220,7 +236,12 @@ def best_from(
     web-discovered row, or one not yet promoted to the contacts table).
     """
     for source in (db_contacts, snapshot):
-        contact = best_contact(source, preferred_id=preferred_id, labels=labels)
+        contact = best_contact(
+            source,
+            preferred_id=preferred_id,
+            preferred_email=preferred_email,
+            labels=labels,
+        )
         if contact:
             return contact
     return None
@@ -295,6 +316,39 @@ def merge_ordered(
             ):
                 best[key] = contact
     return [best[key] for key in order]
+
+
+def attach_contact_ids(
+    contacts: Optional[Iterable[Any]],
+    live: Optional[Iterable[Any]],
+) -> list[Any]:
+    """Give rows the id of the live row that holds the same address.
+
+    :func:`merge_ordered` ranks by label, so a stale snapshot row carrying a
+    better label can win an address the contacts table also holds — and a
+    snapshot was written without ids. The lost id is what made a saved
+    ``contact_id`` unresolvable (the Suppliers tab reverted to the label default
+    every time) and left the picker unable to mark the chosen row (Sydney Tools,
+    2026-09-27). The address is the identity here, so the live row's id is grafted
+    onto whatever row won it. Rows are copied rather than mutated, because the
+    originals may still belong to a loaded session.
+    """
+    by_email: dict[str, str] = {}
+    for contact in (live or []):
+        if not isinstance(contact, dict) or not contact.get("id"):
+            continue
+        email = normalise_email(contact.get("email")).lower()
+        if email:
+            by_email.setdefault(email, str(contact["id"]))
+
+    out: list[Any] = []
+    for contact in (contacts or []):
+        if isinstance(contact, dict) and not contact.get("id"):
+            email = normalise_email(contact.get("email")).lower()
+            if email in by_email:
+                contact = {**contact, "id": by_email[email]}
+        out.append(contact)
+    return out
 
 
 def best_contacts_for(

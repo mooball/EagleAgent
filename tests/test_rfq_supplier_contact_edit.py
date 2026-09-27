@@ -224,6 +224,93 @@ class TestChoosingAContact:
         assert rows["Main"].email == "info@sydneytools.example"
 
 
+class TestAPickAgainstAnIdlessSnapshot:
+    """The shape the Suppliers tab really sends.
+
+    A line's ``contacts`` snapshot is written without ids (it is a copy of the
+    JSONB), so the picker's value — a contacts-table id — matches no row in it, and
+    the address that travelled with the id is the only thing that identifies the
+    choice. Resolving on the label default instead picked Nick G and overwrote his
+    address with Joshua's, then re-rendered still pointing at Nick G
+    (2026-09-27).
+    """
+
+    @pytest.fixture
+    def idless(self, db_session):
+        supplier = Supplier(id=uuid.uuid4(), name="Sydney Tools Pty Ltd", source="netsuite")
+        db_session.add(supplier)
+        db_session.flush()
+
+        nickg = Contact(supplier_id=supplier.id, label="Source", fullname="Nick G",
+                        email="nickg@sydneytools.example")
+        josh = Contact(supplier_id=supplier.id, label="Main",
+                       email="joshuac@sydneytools.example")
+        db_session.add_all([nickg, josh])
+        db_session.flush()
+
+        rfq = _rfq(db_session)
+        item = RFQItem(
+            rfq_id=rfq.id, line=2, input_description="DRILL", part_number="D-1",
+            suppliers=[{
+                "supplier_id": str(supplier.id),
+                "name": supplier.name,
+                "status": "shortlisted",
+                "contact_id": None,
+                "contact_email": "joshuac@sydneytools.example",
+                # No ids — exactly what the widget and the enrichment write.
+                "contacts": [
+                    {"label": "Source", "name": "Nick G",
+                     "email": "nickg@sydneytools.example"},
+                    {"label": "Main", "email": "joshuac@sydneytools.example"},
+                ],
+            }],
+        )
+        db_session.add(item)
+        db_session.flush()
+        return {"supplier": supplier, "nickg": nickg, "josh": josh,
+                "item": item, "rfq": rfq}
+
+    @pytest.mark.asyncio
+    async def test_the_picked_row_is_updated_not_the_label_default(
+        self, db_session, idless, endpoint
+    ):
+        c = idless
+
+        resp = await _update(endpoint, {
+            "supplier_id": str(c["supplier"].id),
+            "name": c["supplier"].name,
+            "contact_id": str(c["josh"].id),
+            "email": "joshuac@sydneytools.example",
+            "contact_name": "",
+        })
+
+        assert resp.status_code == 200, resp.body
+        sup = c["item"].suppliers[0]
+        by_email = {row["email"]: row for row in sup["contacts"]}
+        assert "nickg@sydneytools.example" in by_email, (
+            "the Go Source contact keeps its own address; the pick was Joshua's"
+        )
+        assert by_email["joshuac@sydneytools.example"]["label"] == "Main"
+
+    @pytest.mark.asyncio
+    async def test_the_id_the_picker_sent_is_recorded(
+        self, db_session, idless, endpoint
+    ):
+        """Without it the next render cannot resolve the choice and the tab
+        reverts to the label default."""
+        c = idless
+
+        await _update(endpoint, {
+            "supplier_id": str(c["supplier"].id),
+            "name": c["supplier"].name,
+            "contact_id": str(c["josh"].id),
+            "email": "joshuac@sydneytools.example",
+        })
+
+        assert c["item"].suppliers[0]["contact_id"] == str(c["josh"].id)
+        assert c["item"].suppliers[0]["contact_email"] == "joshuac@sydneytools.example"
+
+
 class TestWithoutAPick:
     @pytest.mark.asyncio
     async def test_a_retyped_address_updates_the_contact_we_would_have_emailed(
