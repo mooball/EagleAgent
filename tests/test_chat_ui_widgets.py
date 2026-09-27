@@ -7,6 +7,7 @@ persistence, the transcript notice). Handler behaviour is covered by
 """
 
 import re
+from html.parser import HTMLParser
 
 import pytest
 from fastapi import FastAPI, Request
@@ -125,8 +126,8 @@ def widgets_transport(monkeypatch):
 
     # Keep the card render off the database: the RFQ line picker reads it.
     monkeypatch.setattr(supplier_widget, "rfq_lines", lambda rfq_id: [
-        {"line": 1, "part_number": "ABC-1", "description": ""},
-        {"line": 2, "part_number": "ABC-2", "description": ""},
+        {"line": 1, "part_number": "ABC-1", "brand": "Bahco", "description": ""},
+        {"line": 2, "part_number": "ABC-2", "brand": "Milwaukee", "description": ""},
     ])
     return steps, captured
 
@@ -143,6 +144,107 @@ def _dispatch_stub(monkeypatch, outcome, captured):
     monkeypatch.setattr(widgets, "dispatch_widget", _fake)
 
 
+_VOID_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+    "meta", "param", "source", "track", "wbr",
+}
+
+
+class HiddenContainers(HTMLParser):
+    """Per control: is it hidden itself, and is it buried in a hidden view?
+
+    The card holds three views at once and hides the two it is not in, so a
+    control can be unreachable two ways: its own ``display:none`` (the server
+    wrote this view's visibility wrong) or an ancestor's (it lives in the wrong
+    view entirely). They read the same in the rendered string, and neither is
+    visible to a template read-through.
+    """
+
+    def __init__(self, texts=()):
+        super().__init__(convert_charrefs=True)
+        self._hidden = []          # one flag per open container
+        self._button = None
+        self._wanted = list(texts)
+        self.controls = {}         # button label -> {"hidden": bool, "buried": int}
+        self.texts = {}            # wanted text -> hidden-ancestor count
+
+    @staticmethod
+    def _is_hidden(attrs):
+        if "hidden" in attrs:
+            return True
+        style = re.sub(r"\s+", "", attrs.get("style", ""))
+        return style.rstrip(";") == "display:none"
+
+    def _depth(self):
+        return sum(1 for flag in self._hidden if flag)
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == "button":
+            self._button = {
+                "hidden": self._is_hidden(attributes),
+                "buried": self._depth(),
+                "label": "",
+            }
+        if tag not in _VOID_TAGS:
+            self._hidden.append(self._is_hidden(attributes))
+
+    def handle_endtag(self, tag):
+        if tag == "button" and self._button:
+            label = self._button["label"] or "?"
+            self.controls[label] = {
+                "hidden": self._button["hidden"], "buried": self._button["buried"],
+            }
+            self._button = None
+        if tag not in _VOID_TAGS and self._hidden:
+            self._hidden.pop()
+
+    def handle_data(self, data):
+        text = data.strip()
+        if not text:
+            return
+        if self._button is not None:
+            self._button["label"] += text
+        if text in self._wanted:
+            self.texts.setdefault(text, self._depth())
+
+
+def _card(client, widgets_transport, *, mode=None, rfq=None, error="",
+          supplier_id=None, contact_id=None, shortlist=None, line_mode=None):
+    """The card as the server would send it, for a given widget state.
+
+    Opened first, then the stored state is adjusted and the card re-rendered:
+    that is also how a real re-render happens (after a submit, or on a reload).
+    """
+    _login(client)
+    resp = client.post("/chat-ui/threads/thread-1/widgets",
+                       json={"name": "add_supplier"})
+    widget_id = resp.json()["widget_id"]
+    _steps, captured = widgets_transport
+    # The step for the widget just returned. Taking created_steps[0] instead
+    # quietly edits a *previous* card whenever a test opens two of them — the
+    # render then shows untouched default state and the assertions pass against
+    # a card the test never configured.
+    state = captured["created_steps"][-1]["metadata"][WIDGET_META_KEY]
+    if rfq is not None:
+        state["rfq_id"] = rfq
+    if mode is not None:
+        state.setdefault("data", {})["mode"] = mode
+    if supplier_id is not None:
+        state.setdefault("data", {})["supplier_id"] = supplier_id
+    if contact_id is not None:
+        state.setdefault("data", {})["contact_id"] = contact_id
+    if shortlist is not None:
+        state.setdefault("data", {})["shortlist"] = shortlist
+    if line_mode is not None:
+        state.setdefault("data", {})["line_mode"] = line_mode
+    if error:
+        state["error"] = error
+    rendered = client.get(f"/chat-ui/widgets/{widget_id}/render")
+    assert rendered.status_code == 200, rendered.text
+    return rendered.json()["html"]
+
+
 class TestOpen:
     def test_creates_a_widget_step_and_returns_the_card(self, client, widgets_transport):
         _login(client)
@@ -155,7 +257,7 @@ class TestOpen:
         body = resp.json()
         assert body["widget_id"] == captured["created_steps"][0]["id"]
         assert 'data-widget-form="1"' in body["html"]
-        assert "Add new supplier" in body["html"]
+        assert "Add supplier" in body["html"]
         assert captured["created_steps"][0]["type_"] == "widget"
         assert captured["created_steps"][0]["metadata"][WIDGET_META_KEY]["status"] == "pending"
 
@@ -188,19 +290,60 @@ class TestRender:
     def test_the_rfq_line_picker_only_appears_when_locked_to_an_rfq(
         self, client, widgets_transport
     ):
+        """The picker belongs to a locked RFQ — and so does the search view: with
+        no RFQ there is nothing to attach a supplier to, so the card opens on the
+        create form rather than offering a lookup that can only end in "Don't
+        add"."""
         _login(client)
         _steps, captured = widgets_transport
         resp = client.post("/chat-ui/threads/thread-1/widgets",
                            json={"name": "add_supplier"})
         widget_id = resp.json()["widget_id"]
-        assert "Add to RFQ" not in resp.json()["html"]
+        html = resp.json()["html"]
+        assert 'name="mode" value="create"' in html
+        assert "line_mode" not in html
 
-        # A bound thread gets the picker, with the RFQ's real lines.
+        # A bound thread gets the search view, the picker, and the RFQ's real lines.
         captured["created_steps"][0]["metadata"][WIDGET_META_KEY]["rfq_id"] = "RFQ-2026-9"
         rendered = client.get(f"/chat-ui/widgets/{widget_id}/render")
         html = rendered.json()["html"]
+        assert 'name="mode" value="search"' in html
         assert "RFQ-2026-9" in html and 'name="line_mode"' in html
         assert "Line 1" in html and "Line 2" in html
+        assert "Bahco" in html and "Milwaukee" in html, (
+            "the picker must show each line's brand — it is what tells the lines "
+            "apart when an RFQ spans several brands"
+        )
+
+    def test_the_shared_pieces_are_rendered_once(self, client, widgets_transport):
+        """Every view lives in one form, so nothing may be duplicated: two inputs
+        sharing a name would both submit, and form_to_data would hand the handler a
+        list where it expects a string."""
+        _login(client)
+        _steps, captured = widgets_transport
+        resp = client.post("/chat-ui/threads/thread-1/widgets",
+                           json={"name": "add_supplier"})
+        widget_id = resp.json()["widget_id"]
+        captured["created_steps"][0]["metadata"][WIDGET_META_KEY]["rfq_id"] = "RFQ-2026-9"
+
+        html = client.get(f"/chat-ui/widgets/{widget_id}/render").json()["html"]
+
+        assert html.count('name="name"') == 1, (
+            "the name field is shared by the search and create views"
+        )
+        assert html.count('name="line_mode"') == 3, "one radio group, not one per view"
+        assert html.count('name="supplier_id"') == 1
+        assert html.count('name="mode"') == 1
+
+    def test_no_field_claims_a_required_attribute(self, client, widgets_transport):
+        """The card shows one view at a time, and a browser validates every field
+        in the DOM — a required field inside a hidden view would make the visible
+        one unsubmittable."""
+        _login(client)
+        html = client.post("/chat-ui/threads/thread-1/widgets",
+                           json={"name": "add_supplier"}).json()["html"]
+
+        assert "required" not in html
 
     @pytest.mark.asyncio
     async def test_a_step_that_is_not_a_widget_is_404(self, client, widgets_transport):
@@ -217,6 +360,221 @@ class TestRender:
     def test_an_unknown_step_is_404(self, client, widgets_transport):
         _login(client)
         assert client.get("/chat-ui/widgets/nope/render").status_code == 404
+
+
+class TestNothingNeededIsHidden:
+    """Guard on *which view* a control belongs to.
+
+    Three of these were wrong at once (2026-09-25) and none were visible: the
+    submit button, Cancel, and the error message all sat inside the
+    ``mode=chosen,create`` block. A card opened on a bound thread starts in
+    ``search`` mode, so it offered no way to submit and no way to cancel — you
+    had to pick a supplier before either appeared — and it hid the explanation
+    when a pick was refused.
+    """
+
+    def _controls(self, html, texts=()):
+        tracker = HiddenContainers(texts=texts)
+        tracker.feed(html)
+        return tracker
+
+    @staticmethod
+    def _reachable(tracker, label):
+        control = tracker.controls.get(label)
+        assert control, f"no {label!r} button in the card at all: {tracker.controls}"
+        assert control["buried"] == 0, (
+            f"{label!r} is {control['buried']} containers deep in hidden markup — it "
+            f"belongs to a view that is not showing"
+        )
+        assert control["hidden"] is False, (
+            f"{label!r} carries display:none for this view — the server wrote it "
+            f"for a view the card is not in"
+        )
+
+    def test_cancel_is_reachable_from_every_view(self, client, widgets_transport):
+        for mode in ("search", "chosen", "create"):
+            html = _card(client, widgets_transport, mode=mode, rfq="RFQ-2026-9")
+            self._reachable(self._controls(html), "Cancel")
+
+    def test_no_way_to_submit_before_anything_is_chosen(
+        self, client, widgets_transport
+    ):
+        """Search mode has nothing to submit yet, and a visible button that did
+        nothing would be worse than none."""
+        controls = self._controls(
+            _card(client, widgets_transport, mode="search", rfq="RFQ-2026-9")
+        ).controls
+
+        for label in ("Add to RFQ", "Add supplier"):
+            assert controls[label]["hidden"] is True, (
+                f"{label!r} is visible in search mode — there is nothing to add yet"
+            )
+
+    def test_the_submit_button_belonging_to_the_view_is_reachable(
+        self, client, widgets_transport
+    ):
+        chosen = self._controls(
+            _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9")
+        )
+        self._reachable(chosen, "Add to RFQ")
+        assert chosen.controls["Add supplier"]["hidden"] is True, (
+            "the create button stays out of the way of a picked supplier"
+        )
+
+        create = self._controls(
+            _card(client, widgets_transport, mode="create", rfq="RFQ-2026-9")
+        )
+        self._reachable(create, "Add supplier")
+
+    def test_a_view_switch_in_the_browser_reveals_the_submit_button(
+        self, client, widgets_transport
+    ):
+        """Both buttons need ``data-show-when``, not just the inline style.
+
+        The server writes that style for the view the card *opened* in — search,
+        on a bound thread. Picking a supplier switches view without a round trip,
+        so a button carrying only the style stays hidden and the form can be
+        filled in but never submitted.
+        """
+        html = _card(client, widgets_transport, mode="search", rfq="RFQ-2026-9")
+
+        buttons = re.findall(r"<button[^>]*value=\"submit\"[^>]*>", html, re.S)
+        assert len(buttons) == 2, f"expected one submit button per live view: {buttons}"
+        for button in buttons:
+            assert 'data-show-when="mode=' in button, (
+                "a submit button without data-show-when cannot be revealed by a "
+                "client-side view switch: " + button
+            )
+
+    def test_a_refused_pick_says_so_in_the_view_it_happened_in(
+        self, client, widgets_transport
+    ):
+        """A stale pick re-renders the card in ``search`` mode, so the message has
+        to be reachable there — otherwise the user sees the card reset with no
+        reason given."""
+        text = "That selection went stale — please pick the supplier again."
+        html = _card(client, widgets_transport, mode="search", rfq="RFQ-2026-9",
+                     error=text)
+
+        depth = self._controls(html, texts=[text]).texts.get(text)
+        assert depth == 0, (
+            f"the error is {depth} containers deep in hidden markup (or absent): "
+            f"it must be outside every view"
+        )
+
+
+class TestContactPicker:
+    """A supplier with several contacts needs an answer, but not from here.
+
+    The supplier is chosen in the browser, so a server render never knows who to
+    offer — the options travel with the search result that was clicked and the
+    client builds the picker. What the server owes is somewhere to put it, and
+    that the choice it sends back is validated.
+    """
+
+    def test_the_chosen_view_has_somewhere_to_put_a_picker(
+        self, client, widgets_transport
+    ):
+        html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9")
+
+        assert "data-widget-contacts" in html
+        assert 'name="contact_id"' not in html, (
+            "the server cannot know which supplier was picked, so it must not "
+            "render a picker of its own"
+        )
+
+
+class TestLookup:
+    """The typeahead route.
+
+    Deliberately thin: the widget supplies the search, so the transport only has
+    to hold the same ownership and state-machine rules as every other widget
+    route. What is being searched is not its business.
+    """
+
+    @pytest.fixture
+    def wired_lookup(self, monkeypatch):
+        import includes.dashboard.supplier_widget as supplier_widget
+
+        seen: list[str] = []
+
+        def _fake(query, **kwargs):
+            seen.append(query)
+            return [{
+                "id": "s1", "name": f"Result for {query}",
+                "country": "Australia", "currency": "AUD",
+                "email": "sales@example.com",
+            }]
+
+        monkeypatch.setattr(supplier_widget, "lookup_suppliers", _fake)
+        return seen
+
+    def _open(self, client):
+        resp = client.post("/chat-ui/threads/thread-1/widgets",
+                           json={"name": "add_supplier"})
+        return resp.json()["widget_id"]
+
+    def test_returns_what_the_widget_found(self, client, widgets_transport, wired_lookup):
+        _login(client)
+        widget_id = self._open(client)
+
+        resp = client.get(f"/chat-ui/widgets/{widget_id}/lookup?q=kraft")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["results"][0]["name"] == "Result for kraft"
+        assert wired_lookup == ["kraft"], "the query must reach the widget in one piece"
+
+    def test_a_widget_owned_by_someone_else_is_404(
+        self, client, widgets_transport, wired_lookup
+    ):
+        _login(client)
+        widget_id = self._open(client)
+        _login(client, "someone@else.com")
+
+        resp = client.get(f"/chat-ui/widgets/{widget_id}/lookup?q=kraft")
+
+        assert resp.status_code == 404
+        assert wired_lookup == [], "no search may run for a widget you do not own"
+
+    def test_an_unknown_widget_is_404(self, client, widgets_transport, wired_lookup):
+        _login(client)
+
+        assert client.get("/chat-ui/widgets/nope/lookup?q=kraft").status_code == 404
+        assert wired_lookup == []
+
+    def test_a_closed_card_is_409(self, client, widgets_transport, wired_lookup):
+        """The card's state decides what is live: a form already submitted must
+        not keep answering searches."""
+        _login(client)
+        _steps, captured = widgets_transport
+        widget_id = self._open(client)
+        captured["created_steps"][0]["metadata"][WIDGET_META_KEY]["status"] = "submitted"
+
+        resp = client.get(f"/chat-ui/widgets/{widget_id}/lookup?q=kraft")
+
+        assert resp.status_code == 409
+        assert wired_lookup == []
+
+    def test_a_failing_search_is_reported_rather_than_raised(
+        self, client, widgets_transport, monkeypatch
+    ):
+        """A search that throws must not take the route down with it: the box has
+        to stay usable and say so."""
+        import includes.dashboard.supplier_widget as supplier_widget
+
+        def _boom(query, **kwargs):
+            raise RuntimeError("connection lost")
+
+        monkeypatch.setattr(supplier_widget, "lookup_suppliers", _boom)
+        _login(client)
+        widget_id = self._open(client)
+
+        resp = client.get(f"/chat-ui/widgets/{widget_id}/lookup?q=kraft")
+
+        assert resp.status_code == 500
+        assert "Search failed" in resp.json()["error"]
 
 
 class TestSubmit:
@@ -504,3 +862,125 @@ class TestToolsMenu:
         names = [entry["name"] for entry in payload["widgets"]]
         assert names == ["add_supplier"]
         assert "commands" in payload      # unchanged for the standalone UI
+
+
+class TestTheShortlistBox:
+    """Shortlisting is the default, not a separate trip to the RFQ page.
+
+    It sits with the line targets because that is the decision it belongs to, and
+    only when there is an RFQ to shortlist them on.
+    """
+
+    def test_it_is_offered_and_ticked_by_default(self, client, widgets_transport):
+        html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9")
+
+        box = re.search(r'<input type="checkbox"[^>]*name="shortlist"[^>]*>', html)
+        assert box, "the card must offer to shortlist the supplier it links"
+        assert "checked" in box.group(0), (
+            "a supplier added from the chat is nearly always one the RFQ is sent "
+            "to, so this is the default: " + box.group(0)
+        )
+        assert "Suppliers tab" in html, "and it says what ticking it does"
+
+    def test_it_sits_with_the_line_targets(self, client, widgets_transport):
+        """Just below them: the two decisions travel together, and both belong to
+        the views that actually link something."""
+        html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9")
+
+        assert html.index("line_mode") < html.index('name="shortlist"')
+        assert 'data-show-when="mode=chosen,create"' in html
+
+    def test_a_thread_with_no_rfq_is_not_asked(self, client, widgets_transport):
+        """There is nowhere to shortlist them to."""
+        html = _card(client, widgets_transport, mode="create")
+
+        assert 'name="shortlist"' not in html
+
+    @staticmethod
+    def _label(html):
+        """The opening tag of the label wrapping the Shortlist checkbox."""
+        at = html.index('name="shortlist"')
+        start = html.rindex("<label", 0, at)
+        return html[start:html.index(">", start)]
+
+    def test_it_is_withdrawn_when_nothing_is_being_linked(
+        self, client, widgets_transport
+    ):
+        """Ticking the box writes no link on its own — the status goes on the
+        entry the line link creates — so "Don't add" leaves nothing to
+        shortlist, and a box that appears to do it would be a lie."""
+        html = _card(client, widgets_transport, mode="create", rfq="RFQ-2026-9",
+                     line_mode="none")
+
+        tag = self._label(html)
+        assert "display:none" in tag, tag
+        assert 'data-show-when="line_mode=all,specific"' in tag, (
+            "the client has to restore it the moment a line option is chosen, "
+            "and the inline style alone cannot do that: " + tag
+        )
+
+    def test_it_comes_back_for_either_line_option(self, client, widgets_transport):
+        for option in ("all", "specific"):
+            html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9",
+                         line_mode=option)
+            tag = self._label(html)
+            assert "display:none" not in tag, f"line_mode={option}: {tag}"
+
+
+class TestDontAddIsOnlyForNewSuppliers:
+    """"Don't add" belongs to the create path, not to a picked supplier.
+
+    Filing a brand-new supplier with no line link is a real outcome: we want the
+    record without attaching it to the RFQ. Repeating that for one we already
+    have is not — the supplier exists either way, so picking them and then
+    declining to link them is a card that did nothing.
+
+    The radio stays in the DOM (the three radios are one group, rendered once and
+    shown per view), so these check where it is *shown*.
+    """
+
+    @staticmethod
+    def _label(html):
+        """The opening tag of the label wrapping the "Don't add" radio."""
+        at = html.index('value="none"')
+        start = html.rindex("<label", 0, at)
+        return html[start:html.index(">", start)]
+
+    def test_it_is_offered_while_creating(self, client, widgets_transport):
+        html = _card(client, widgets_transport, mode="create", rfq="RFQ-2026-9")
+
+        tag = self._label(html)
+        assert "display:none" not in tag, tag
+        assert 'data-show-when="mode=create"' in tag, (
+            "with the inline style alone the client could not reveal it when the "
+            "user switches to the create view: " + tag
+        )
+
+    def test_it_is_withdrawn_once_a_supplier_is_picked(
+        self, client, widgets_transport
+    ):
+        html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9")
+
+        tag = self._label(html)
+        assert "display:none" in tag, (
+            "a picked supplier has to be linked to something — the card has "
+            "nothing to do without the link: " + tag
+        )
+        assert 'data-show-when="mode=create"' in tag, tag
+
+    def test_the_link_options_themselves_stay(self, client, widgets_transport):
+        """Withdrawing "Don't add" must not take the line targets with it."""
+        html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9")
+
+        assert html.count('name="line_mode"') == 3
+        assert "All lines" in html and "Specific lines" in html
+        assert 'value="all"' in html and 'value="specific"' in html
+
+    def test_an_unticked_box_comes_back_unticked(self, client, widgets_transport):
+        """The handler records the tick, because a checkbox submits nothing at all
+        when it is not ticked."""
+        html = _card(client, widgets_transport, mode="chosen", rfq="RFQ-2026-9",
+                     shortlist="0")
+
+        box = re.search(r'<input type="checkbox"[^>]*name="shortlist"[^>]*>', html)
+        assert "checked" not in box.group(0), box.group(0)

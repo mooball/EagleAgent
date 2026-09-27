@@ -22,12 +22,6 @@ from config.settings import Config
 
 logger = logging.getLogger(__name__)
 
-# Model to try when the primary fails. This was hardcoded to
-# "gemini-2.0-flash", which now returns 404 NOT_FOUND — so the "fallback" was a
-# dead end that turned a recoverable 429 into a hard failure. Sourced from
-# config so it changes without a code edit.
-FALLBACK_MODEL = Config.FALLBACK_MODEL
-
 # Error classes worth trying another model for. Anything else (bad request,
 # auth, not-found) is a permanent condition that retrying cannot fix.
 _RETRYABLE_ERRORS = frozenset(
@@ -35,6 +29,12 @@ _RETRYABLE_ERRORS = frozenset(
 )
 
 _RETRY_HINT_RE = re.compile(r"retry in ([0-9.]+)\s*(s|seconds)?", re.IGNORECASE)
+
+# Floor for a single attempt's HTTP timeout. The budget bounds the whole call,
+# but we never hand the SDK a sub-second timeout: a tiny or misconfigured budget
+# should still make one real attempt rather than fail with a confusing
+# "no model candidates available" error.
+_MIN_ATTEMPT_TIMEOUT_MS = 1000
 
 
 # ---------------------------------------------------------------------------
@@ -88,27 +88,55 @@ def get_pipeline_model(pipeline: str, step: str) -> str:
 # ---------------------------------------------------------------------------
 
 def get_pipeline_candidates(pipeline: str, step: str) -> list[str]:
-    """Ordered, de-duplicated models to try for a pipeline step.
+    """Ordered models to try for a pipeline step: the primary, then everything
+    *below* it on ``Config.MODEL_LADDER``.
 
-    The old code tried ``[primary, primary, FALLBACK_MODEL]`` — i.e. it burned
-    both its retries on the *same* model that was already overloaded, then fell
-    back to one that 404s. Trying distinct models is the whole point of having a
-    fallback.
+    Every failover is therefore an incremental step down in capability rather
+    than a cliff::
 
-    Candidates are the primary first, then the configured ladder with anything
-    equal to the primary removed. That removal matters: with our current .env
-    the single FALLBACK_MODEL *is* the primary for the QUOTE pipeline, so a
-    naive implementation would produce a one-element list and quietly have no
-    failover.
+        primary gemini-3.8-flash      -> 3.6-flash -> 3.5-flash-lite
+        primary gemini-3.1-pro-preview -> 3.8-flash -> 3.6-flash -> flash-lite
+        primary gemini-3.5-flash-lite  -> (none; it is the floor)
+
+    Two earlier bugs are removed by construction:
+
+    * The old design was ``[primary] + FALLBACK_CHAIN``, a *flat* ladder, so any
+      primary that was not the chain's first entry fell all the way to the
+      cheapest model — a Pro model fell straight to flash-lite, and
+      ``QUOTE/classify`` (primary flash-lite) fell *up* to a slower and more
+      expensive model.
+    * De-duplication is no longer needed: the primary is always position 0 of
+      its own list, so it can never reappear as a fallback. That also kills the
+      "fallback equal to the primary" case that used to leave a one-element
+      list with no failover at all.
+
+    Deliberate consequence: the bottom rung has **no** fallback. A 429 on
+    ``gemini-3.5-flash-lite`` is terminal, because there is nothing cheaper to
+    step down to and retrying the same overloaded model is the anti-pattern
+    this function exists to avoid. Accepted for now; service-tier Priority is
+    the intended mitigation.
     """
     primary = get_pipeline_model(pipeline, step)
-    ladder = list(Config.FALLBACK_CHAIN)
-    if FALLBACK_MODEL and FALLBACK_MODEL not in ladder:
-        ladder.insert(0, FALLBACK_MODEL)
+    ladder = Config.MODEL_LADDER
 
-    candidates = [primary]
-    candidates.extend(m for m in ladder if m and m != primary)
-    return candidates
+    if primary in ladder:
+        return ladder[ladder.index(primary):]
+
+    # Not on the ladder (e.g. DEFAULT_MODEL's gemini-3-flash-preview default,
+    # or any value we have not ranked). We cannot know where it belongs, so fail
+    # *down* only: give it the single cheapest rung, which guarantees a failover
+    # can never end up costing more than the primary did.
+    logger.warning(
+        "[email-pipeline] model %r (pipeline=%s step=%s) is not on "
+        "MODEL_LADDER; falling back to the cheapest rung only",
+        primary,
+        pipeline,
+        step,
+    )
+    if not ladder:
+        return [primary]
+    cheapest = ladder[-1]
+    return [primary] if cheapest == primary else [primary, cheapest]
 
 
 def _retry_after_seconds(exc: BaseException) -> float | None:
@@ -172,9 +200,11 @@ def llm_call_with_retry(
     Strategy:
       1. Try the pipeline/step's primary model.
       2. On a *retryable* error, wait (honouring ``Retry-After`` when the API
-         sends one) and try the next distinct candidate.
+         sends one) and try the next model down the ladder.
       3. Give up at ``Config.LLM_MAX_ATTEMPT_SECONDS`` or when candidates run
-         out, whichever comes first.
+         out, whichever comes first. The budget covers the *whole* call: each
+         attempt's HTTP timeout is the lesser of the remaining budget and
+         ``LLM_REQUEST_TIMEOUT_MS``, so no single attempt can outlive it.
 
     Permanent errors (400/401/403/404) raise immediately — retrying them just
     wastes the user's time.
@@ -214,12 +244,20 @@ def llm_call_with_retry(
     previous_model: str | None = None
 
     for index, model in enumerate(candidates):
-        if time.monotonic() >= deadline:
+        # Bound this attempt by what is left of the budget. Checking only at the
+        # top of the loop (as this did originally) let a single call run to the
+        # full per-request timeout and outlive its budget — observed in prod as
+        # a 91.4s attempt against a nominal 45s budget.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             logger.warning(
                 f"[email-pipeline] {pipeline}/{step}: giving up after "
                 f"{Config.LLM_MAX_ATTEMPT_SECONDS}s budget"
             )
             break
+        attempt_timeout = int(
+            min(timeout, max(remaining * 1000, _MIN_ATTEMPT_TIMEOUT_MS))
+        )
         try:
             with instrument_call(
                 scope=scope,
@@ -231,7 +269,7 @@ def llm_call_with_retry(
                 correlation_id=correlation_id,
             ) as record:
                 client = _genai.Client(
-                    http_options=_http_options(timeout, service_tier)
+                    http_options=_http_options(attempt_timeout, service_tier)
                 )
                 response = client.models.generate_content(
                     model=model,

@@ -20,6 +20,17 @@ from includes.dashboard.models import Brand, Product, RFQ, RFQItem
 from includes.tools.rfq_crud import _rfq_write_lock, _serialized_rfq_write
 
 
+def unique_rfq_number() -> str:
+    """A test RFQ number that cannot collide with a live row.
+
+    ``rfq_number`` is UNIQUE and every real number is ``RFQ-2026-NNNN`` — all
+    digits, hence all valid hex — so a bare ``{uuid4().hex[:4]}`` suffix lands on
+    a live row about once in 300 numbers and the test dies with UniqueViolation.
+    The leading "T" can never be all-digit.
+    """
+    return f"RFQ-2026-T{uuid.uuid4().hex[:6].upper()}"
+
+
 class TestRfqWriteLock:
     def test_same_rfq_shares_lock(self):
         assert _rfq_write_lock("RFQ-1") is _rfq_write_lock("RFQ-1")
@@ -105,7 +116,7 @@ class TestMergeRfqSuppliers:
     def _make_rfq(self, session, items_suppliers, supplier_meta=None) -> RFQ:
         """items_suppliers: list of list-of-supplier-dicts per line."""
         rfq = RFQ(
-            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            rfq_number=unique_rfq_number(),
             customer="Test Customer",
             created_by="tester",
             created_date=datetime.now(timezone.utc),
@@ -280,7 +291,7 @@ class TestQuoteBrand:
 
     def _make_rfq(self, session) -> RFQ:
         rfq = RFQ(
-            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            rfq_number=unique_rfq_number(),
             customer="Test Customer",
             created_by="tester",
             created_date=datetime.now(timezone.utc),
@@ -507,7 +518,7 @@ class TestAutoQuoteBrand:
 
     def _make_rfq_with_items(self, session, brands: list[str], **rfq_overrides) -> RFQ:
         rfq = RFQ(
-            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            rfq_number=unique_rfq_number(),
             customer="Test Customer",
             created_by="tester",
             created_date=datetime.now(timezone.utc),
@@ -710,7 +721,7 @@ class TestItemDepartment:
 
     def _make_rfq(self, session, with_items=1) -> RFQ:
         rfq = RFQ(
-            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            rfq_number=unique_rfq_number(),
             customer="Test Customer",
             created_by="tester",
             created_date=datetime.now(timezone.utc),
@@ -956,7 +967,7 @@ class TestItemDepartmentAutoSet:
     def _make_rfq_with_products(self, session, specs) -> RFQ:
         """specs: list of {product_id, department_id} per line."""
         rfq = RFQ(
-            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            rfq_number=unique_rfq_number(),
             customer="Test Customer",
             created_by="tester",
             created_date=datetime.now(timezone.utc),
@@ -1163,7 +1174,7 @@ class TestSwapSupplier:
     def _setup(self, db_session):
         from includes.dashboard.models import RFQ, RFQItem, Supplier, Contact
         rfq = RFQ(
-            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            rfq_number=unique_rfq_number(),
             customer="Test Customer", created_by="tester",
             created_date=datetime.now(timezone.utc),
         )
@@ -1299,7 +1310,7 @@ class TestAddSuppliersIdGuard:
 
     def _make_rfq(self, session):
         rfq = RFQ(
-            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            rfq_number=unique_rfq_number(),
             customer="Test Customer",
             created_by="tester",
             created_date=datetime.now(timezone.utc),
@@ -1413,7 +1424,7 @@ class TestClassifyRfqItemsOrchestrator:
     def _rfq(self, session, items: list[dict]) -> RFQ:
         """items: [{"match": ..., "part_number": ..., "brand": ...}, ...]"""
         rfq = RFQ(
-            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            rfq_number=unique_rfq_number(),
             customer="Test Customer",
             created_by="tester",
             created_date=datetime.now(timezone.utc),
@@ -1699,7 +1710,7 @@ class TestProductIdPreservation:
 
     def _item(self, session, part_number="PN-1", product_id=None):
         rfq = RFQ(
-            rfq_number=f"RFQ-2026-{uuid.uuid4().hex[:4].upper()}",
+            rfq_number=unique_rfq_number(),
             customer="Test Customer",
             created_by="tester",
             created_date=datetime.now(timezone.utc),
@@ -1755,3 +1766,102 @@ class TestProductIdPreservation:
 
 
 
+
+
+class TestAddSupplierStatusMerge:
+    """Adding a supplier must not walk their status backwards.
+
+    The chat widget's "link a supplier" now sends ``status="shortlisted"`` (the
+    default box), and the same supplier can already be on that line — including as
+    ``selected``, which is the set the quotation tab quotes from. Before this
+    guard, re-adding them quietly un-selected them.
+    """
+
+    @pytest.fixture
+    def db_session(self):
+        from includes.dashboard.database import _sync_url
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        from sqlalchemy import event
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _line_with(self, session, supplier, status):
+        rfq = RFQ(
+            rfq_number=unique_rfq_number(),
+            customer="Test Customer", created_by="tester",
+            created_date=datetime.now(timezone.utc),
+        )
+        session.add(rfq)
+        session.flush()
+        item = RFQItem(
+            rfq_id=rfq.id, line=1, input_description="desc",
+            suppliers=[{
+                "supplier_id": str(supplier.id), "name": supplier.name,
+                "status": status,
+            }],
+        )
+        session.add(item)
+        session.flush()
+        return rfq, item
+
+    def _add(self, session, rfq, item, status):
+        from includes.tools.rfq_crud import _add_suppliers_to_line_core
+
+        with patch("includes.tools.quote_tools._match_suppliers_to_db"), \
+             patch("includes.tools.quote_tools._enrich_supplier_pricing"):
+            _add_suppliers_to_line_core(session, rfq, item, {
+                "suppliers": [{
+                    "name": item.suppliers[0]["name"],
+                    "supplier_id": item.suppliers[0]["supplier_id"],
+                    "status": status,
+                }]
+            })
+        return item.suppliers[0]["status"]
+
+    def test_a_selected_supplier_is_not_demoted(self, db_session):
+        from includes.dashboard.models import Supplier
+
+        supplier = Supplier(name="Quoted Co", source="test")
+        db_session.add(supplier)
+        db_session.flush()
+        rfq, item = self._line_with(db_session, supplier, "selected")
+
+        assert self._add(db_session, rfq, item, "shortlisted") == "selected", (
+            "the widget links with 'shortlisted'; that must not un-select a "
+            "supplier the RFQ is already quoting from"
+        )
+
+    def test_a_candidate_becomes_shortlisted(self, db_session):
+        from includes.dashboard.models import Supplier
+
+        supplier = Supplier(name="Newly Added Co", source="test")
+        db_session.add(supplier)
+        db_session.flush()
+        rfq, item = self._line_with(db_session, supplier, "candidate")
+
+        assert self._add(db_session, rfq, item, "shortlisted") == "shortlisted"
+
+    def test_the_default_still_leaves_a_shortlisted_supplier_alone(self, db_session):
+        """No status sent (the box unticked) means no status change — sending
+        'candidate' would have overwritten it."""
+        from includes.dashboard.models import Supplier
+
+        supplier = Supplier(name="Already Shortlisted Co", source="test")
+        db_session.add(supplier)
+        db_session.flush()
+        rfq, item = self._line_with(db_session, supplier, "shortlisted")
+
+        assert self._add(db_session, rfq, item, "candidate") == "shortlisted"

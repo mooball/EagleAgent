@@ -136,10 +136,8 @@ def _normalize_rfq_suppliers(rfq: dict) -> None:
 
 def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
     """Back-fill missing supplier contacts, terms, and tier from the DB."""
-    from includes.dashboard.database import (
-        match_suppliers_by_names,
-        merge_supplier_contacts,
-    )
+    from includes.dashboard.database import match_suppliers_by_names
+    from includes.dashboard.supplier_contacts import merge_ordered
 
     _normalize_rfq_suppliers(rfq)
 
@@ -192,7 +190,11 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                     for sup in by_id[sid]:
                         ct_contacts = contacts_by_supplier.get(sid)
                         if ct_contacts:
-                            merge_supplier_contacts(sup, ct_contacts)
+                            # The table's rows go FIRST, not appended: both lists
+                            # can hold a 'Source' row (1,060 stored snapshot rows
+                            # are labelled that way), and ranking resolves a tie
+                            # by list order. A stale snapshot must not win it.
+                            sup["contacts"] = merge_ordered(ct_contacts, sup.get("contacts"))
                         if scp.get("tier") and not sup.get("tier"):
                             sup["tier"] = scp["tier"]
                         if scp.get("category") and not sup.get("category"):
@@ -256,7 +258,7 @@ def _enrich_rfq_supplier_contacts(rfq: dict) -> None:
                     matched_contacts = contacts_by_sid.get(str(matched.id), [])
                     for sup in sup_list:
                         if matched_contacts:
-                            merge_supplier_contacts(sup, matched_contacts)
+                            sup["contacts"] = merge_ordered(matched_contacts, sup.get("contacts"))
                         if not _is_valid_uuid(sup.get("supplier_id")):
                             sup["supplier_id"] = str(matched.id)
                         if scp.get("tier") and not sup.get("tier"):
@@ -341,53 +343,6 @@ def _infer_rfq_tab_from_request(request: Request, default: str = "items") -> str
     return _normalize_rfq_tab(default)
 
 
-def _resolve_salutation_name(contacts: list[dict], entity_type: str = "supplier") -> str | None:
-    """Return a contact's first name for email salutations.
-
-    Contacts are already loaded into the entity dict by the enrichment step.
-    This just picks the best name from the list — no DB query needed.
-
-    Args:
-        contacts: List of contact dicts from the Contact table.
-                  Keys: name, email, phone, label.
-        entity_type: 'supplier' or 'customer'.
-
-    Priority:
-    1. Preferred label for entity type:
-       - supplier  → 'Source'
-       - customer  → 'Main'
-    2. Any contact with a real name.
-    3. None — caller/template uses fallback text.
-    """
-    if not contacts:
-        return None
-
-    def _is_real(name: str) -> bool:
-        name = name.strip()
-        if not name or len(name) < 2:
-            return False
-        if "@" in name:       # email stored in the name field (data quality)
-            return False
-        low = name.lower()
-        if low in ("unknown", "n/a", "na", "none", "-", "null", "test", "undefined"):
-            return False
-        return True
-
-    preferred = "Source" if entity_type == "supplier" else "Main"
-
-    for label_priority in (preferred, None):
-        for c in contacts:
-            if isinstance(c, dict) and c.get("label") == label_priority:
-                full = (c.get("name") or "").strip()
-                if not full:
-                    continue
-                first = full.split()[0]
-                if _is_real(first):
-                    return first
-
-    return None
-
-
 def _build_rfq_link_targets(rfq: dict) -> dict:
     """Customer + shortlisted suppliers on this RFQ, for the comms-tab link modal.
 
@@ -430,6 +385,12 @@ def _build_rfq_link_targets(rfq: dict) -> dict:
 
 def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
     """Group shortlisted suppliers with their line items for email template rendering."""
+    from includes.dashboard.supplier_contacts import (
+        best_contact,
+        rank_contacts,
+        salutation_name,
+    )
+
     supplier_map: dict[str, dict] = {}
     for item in rfq.get("items", []):
         for sup in item.get("suppliers", []):
@@ -440,28 +401,38 @@ def _build_rfq_supplier_email_data(rfq: dict) -> list[dict]:
                 continue
             key = name.lower()
             if key not in supplier_map:
-                email = None
-                contact_name = None
                 url = None
                 supplier_id = sup.get("supplier_id")
                 contacts = sup.get("contacts") or []
                 for c in contacts:
-                    if isinstance(c, dict):
-                        if c.get("email") and not email:
-                            email = c["email"]
-                        if c.get("name") and not contact_name:
-                            contact_name = c["name"]
-                        if c.get("url") and not url:
-                            url = c["url"]
+                    if isinstance(c, dict) and c.get("url"):
+                        url = c["url"]
+                        break
+                # Which contact this goes to, by the shared rule: an explicit
+                # choice for this line first, then the Go Source contact, then
+                # the recorded mailbox. The old code took the first row with an
+                # email and the first row with a name — two scans, so the address
+                # and the person could come from different contacts, and a stale
+                # snapshot row beat the supplier's live one 28% of the time.
+                chosen = best_contact(
+                    contacts, preferred_id=str(sup.get("contact_id") or "")
+                ) or {}
                 supplier_map[key] = {
                     "name": name,
-                    "email": email,
-                    "contact_name": contact_name,
+                    "email": chosen.get("email") or None,
+                    "contact_name": chosen.get("name") or None,
+                    "contact_id": chosen.get("id") or "",
+                    "contact_label": chosen.get("label") or "",
+                    # Everything else on offer, so correcting a wrong default is
+                    # one click rather than a retyped address.
+                    "contact_options": rank_contacts(contacts),
                     "url": url,
                     "supplier_id": supplier_id,
                     "country": sup.get("country"),
                     "currency": sup.get("currency"),
-                    "salutation_name": _resolve_salutation_name(contacts, entity_type="supplier"),
+                    # The greeting follows the recipient: naming somebody else
+                    # while emailing a generic mailbox is worse than no name.
+                    "salutation_name": salutation_name(chosen),
                     "line_items": [],
                 }
             supplier_map[key]["line_items"].append({
@@ -598,6 +569,20 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             rows = session.query(Supplier).filter(Supplier.id.in_(supplier_ids)).all()
             suppliers = {str(s.id): s for s in rows}
 
+        # The Go Source contact per supplier, resolved the same way the RFQ email
+        # and the widget resolve it (and from the same source: the contacts
+        # table). This used to read the first entry of the ``suppliers.contacts``
+        # JSONB, which prefilled NetSuite with a stale generic mailbox and then
+        # wrote it back as the vendor's Go Source contact.
+        from includes.dashboard.supplier_contacts import best_contacts_for, first_phone
+
+        go_source_contacts = best_contacts_for(
+            session,
+            supplier_ids,
+            snapshots={sid: (row.contacts if isinstance(row.contacts, list) else [])
+                       for sid, row in suppliers.items()},
+        )
+
         # Brand NetSuite linkage — exact local-DB matches only; near-misses
         # and unknown brands are treated as not-in-NetSuite. "Other" is a
         # formal NetSuite brand record (how the business tracks no-brand),
@@ -692,12 +677,13 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                     selected["supplier_addr2"] = sup.address_2 or ""
                     selected["supplier_terms"] = sup.terms or ""
                     selected["supplier_currency"] = sup.currency or ""
-                    contact = {}
-                    if isinstance(sup.contacts, list) and sup.contacts:
-                        contact = sup.contacts[0] or {}
-                    selected["supplier_phone"] = (contact.get("phone") or "").strip()
+                    contact = go_source_contacts.get(str(selected["supplier_id"])) or {}
                     selected["supplier_email"] = (contact.get("email") or "").strip()
                     selected["supplier_contact"] = (contact.get("name") or "").strip()
+                    # A phone-only contact is not a recipient, so the resolver
+                    # skips it — but the number is still the supplier's.
+                    selected["supplier_phone"] = (contact.get("phone") or "").strip() \
+                        or first_phone((sup.contacts if isinstance(sup.contacts, list) else []))
                 elif selected["supplier_missing"]:
                     # Dangling id: render with empty prefill + a warning rather
                     # than crashing every tab of the RFQ detail page.
@@ -3807,23 +3793,32 @@ async def api_update_supplier_contact(
     rfq_id: str,
     user: dict = Depends(require_user),
 ):
-    """Update email and contact name for a supplier on an RFQ.
+    """Set the contact this RFQ emails for one supplier.
 
     Request body (JSON):
     {
         "supplier_id": "uuid-string",    # optional if name is provided
         "name": "Acme Corp",             # supplier name (to locate the supplier in RFQ items)
         "email": "new@example.com",
-        "contact_name": "John Smith"
+        "contact_name": "John Smith",
+        "contact_id": "uuid-string"      # optional: the contact that was picked
     }
 
-    Updates the RFQ item's suppliers JSONB and upserts the Contact table.
+    An address is always accepted, because the supplier's email may genuinely have
+    changed. ``contact_id`` is the better form — it records *which* contact the
+    user chose, which is what a supplier with several needs.
+
+    This used to write the new address onto **every** contact of that supplier on
+    the RFQ and then deactivate all but one row in the contacts table, so a
+    one-off correction silently hid the supplier's other contacts everywhere.
+    Now it edits the contact being chosen (or adds one) and leaves the rest alone.
     """
     try:
         body = await request.json()
         supplier_name = (body.get("name") or "").strip()
         new_email = (body.get("email") or "").strip()
         contact_name = (body.get("contact_name") or "").strip()
+        contact_id = (body.get("contact_id") or "").strip()
         supplier_id = body.get("supplier_id")
 
         if not supplier_name:
@@ -3878,17 +3873,59 @@ async def api_update_supplier_contact(
                     contacts = sup.get("contacts") or []
                     if not isinstance(contacts, list):
                         contacts = []
-                    updated = False
-                    for c in contacts:
-                        if isinstance(c, dict):
-                            c["email"] = new_email
-                            if contact_name:
-                                c["name"] = contact_name
-                            updated = True
-                    if not updated:
-                        # No contacts list existed — create one
-                        contacts = [{"name": contact_name or supplier_name, "email": new_email}]
+                    # Edit ONE contact. Which one: the id the user picked, else the
+                    # contact they would have emailed (the resolver's answer), else
+                    # the row already holding the address they typed.
+                    from includes.dashboard.supplier_contacts import (
+                        best_contact,
+                        normalise_contact,
+                    )
+
+                    target = None
+                    if contact_id:
+                        target = next(
+                            (c for c in contacts
+                             if isinstance(c, dict) and str(c.get("id") or "") == contact_id),
+                            None,
+                        )
+                        if target is None and "@" in contact_id:
+                            # Rows from the legacy JSONB have no id, so the picker's
+                            # value is the address itself.
+                            target = next(
+                                (c for c in contacts if isinstance(c, dict)
+                                 and normalise_contact(c)["email"].lower() == contact_id.lower()),
+                                None,
+                            )
+                    if target is None:
+                        chosen = best_contact(contacts)
+                        if chosen is not None:
+                            # best_contact returns a normalised copy; find the real
+                            # entry it came from. Matched on the normalised address,
+                            # because that is also what a swapped row reports.
+                            target = next(
+                                (c for c in contacts if isinstance(c, dict)
+                                 and normalise_contact(c)["email"] == chosen["email"]),
+                                None,
+                            )
+                    if target is None:
+                        # Nothing usable on this supplier yet — add the contact.
+                        contacts = list(contacts) + [{
+                            "label": "Source",
+                            "email": new_email,
+                            "name": contact_name or supplier_name,
+                        }]
+                        target = contacts[-1]
+                    else:
+                        target["email"] = new_email
+                        if contact_name:
+                            target["name"] = contact_name
                     sup["contacts"] = contacts
+                    # Record the choice: the next send uses what was just set
+                    # rather than re-deriving it from the label order.
+                    if target.get("id"):
+                        sup["contact_id"] = str(target["id"])
+                    sup["contact_email"] = new_email
+                    sup["contact_name"] = contact_name or (target.get("name") or "")
                     changed = True
 
                 if changed:
@@ -3904,28 +3941,45 @@ async def api_update_supplier_contact(
                     status_code=404,
                 )
 
-            # Also upsert the Contact table if we have a supplier_id
+            # Also update the Contact table, so the choice sticks for every flow
+            # that reads it (the widget, the supplier page, inbound matching).
             if supplier_id:
                 try:
-                    from sqlalchemy.orm.attributes import flag_modified
                     sid_uuid = _uuid.UUID(str(supplier_id))
-                    # Find active contacts for this supplier (NOT by email —
-                    # email may have changed, and matching by new_email would
-                    # miss the old row and create a duplicate).
                     existing = session.query(Contact).filter(
                         Contact.supplier_id == sid_uuid,
                         Contact.isinactive == False,
                     ).all()
-                    if existing:
-                        # Update the first active contact; deactivate extras to
-                        # prevent stale rows from being re-merged on refresh.
-                        primary = existing[0]
-                        primary.email = new_email
+                    row = None
+                    if contact_id:
+                        row = next((c for c in existing if str(c.id) == contact_id), None)
+                        if row is None and "@" in contact_id:
+                            # The picker's value is the address for rows with no id.
+                            from includes.dashboard.supplier_contacts import normalise_email
+
+                            row = next(
+                                (c for c in existing
+                                 if normalise_email(c.email).lower() == contact_id.lower()),
+                                None,
+                            )
+                    if row is None and existing:
+                        # The contact the user would have emailed — not "the first
+                        # row the database happens to return", which may be a
+                        # provenance row. And never the others: this edit used to
+                        # deactivate them, hiding a supplier's contacts everywhere.
+                        from includes.dashboard.supplier_contacts import (
+                            SUPPLIER_LABELS,
+                            rank_contacts,
+                        )
+
+                        ranked = rank_contacts(existing, labels=SUPPLIER_LABELS)
+                        if ranked:
+                            row = next((c for c in existing if str(c.id) == ranked[0]["id"]), None)
+                    if row is not None:
+                        row.email = new_email
                         if contact_name:
-                            primary.fullname = contact_name
-                            primary.firstname = contact_name.split()[0] if contact_name else None
-                        for stale in existing[1:]:
-                            stale.isinactive = True
+                            row.fullname = contact_name
+                            row.firstname = contact_name.split()[0]
                     else:
                         new_contact = Contact(
                             supplier_id=sid_uuid,

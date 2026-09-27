@@ -30,6 +30,9 @@ function stubEl(tag) {
   return {
     tag: tag || 'div',
     dataset: {},
+    // wireShowWhen hides with an inline display style, because a Tailwind display
+    // class outranks the `hidden` attribute on the sections that use one.
+    style: {},
     hidden: false,
     innerHTML: '',
     className: '',
@@ -83,6 +86,16 @@ function buildRunner(src, deps) {
   if (!threshold) throw new Error('NARROW_CARD_PX not found in the template');
 
   const code = 'var NARROW_CARD_PX = ' + threshold[1] + ';\n'
+    // wireWidget also attaches the lookup behaviour. That is exercised on its own
+    // in check_widget_lookup.js, so here it only has to exist as a value — but it
+    // records its calls, so dropping the wiring still fails a check.
+    + 'var wireWidgetSearch = function (scope) { wireWidgetSearch.seen.push(scope); };\n'
+    + 'wireWidgetSearch.seen = [];\n'
+    // Same seam for the focus helper: its own behaviour is covered in
+    // check_widget_lookup.js, but "opening a card puts the caret in it" only
+    // holds if openWidget actually reaches for it.
+    + 'var focusWidgetField = function (scope) { focusWidgetField.seen.push(scope); return true; };\n'
+    + 'focusWidgetField.seen = [];\n'
     + extract(src, 'function wireWidget(scope) {')
     + '\n' + extract(src, 'function wireShowWhen(target) {')
     + '\n' + extract(src, 'function onWidgetSubmit(ev) {')
@@ -97,6 +110,8 @@ function buildRunner(src, deps) {
     'toolsMenu', 'active', 'runs', 'rows', 'CustomEvent', 'ResizeObserver', 'window',
     code
       + '\nreturn {wireWidget: wireWidget, wireShowWhen: wireShowWhen, '
+      + 'wireWidgetSearch: wireWidgetSearch, '
+      + 'focusWidgetField: focusWidgetField, '
       + 'onWidgetSubmit: onWidgetSubmit, widgetRow: widgetRow, '
       + 'dropWidgetRow: dropWidgetRow, watchWidgetWidth: watchWidgetWidth, '
       + 'widgetCardEl: widgetCardEl, renderWidget: renderWidget, '
@@ -135,6 +150,9 @@ function deps(overrides) {
     document: {
       createElement: stubEl,
       dispatchEvent: (e) => events.push(e),
+      // openWidget() checks who holds focus before putting the caret in the card.
+      activeElement: null,
+      body: {contains: () => true},
     },
     events: events,
     fetch: o.fetch || (() => Promise.resolve({ok: true, json: () => Promise.resolve({})})),
@@ -488,6 +506,11 @@ function submitEvent(form, submitter) {
     assert(card.dataset.widgetNarrow === '1',
       'the slot path must find the card inside it, or a card opened from the '
       + 'Tools menu never stacks');
+    eq(r.wireWidgetSearch.seen.length, 1,
+      'wireWidget must also hand the scope to the lookup wiring — a card that '
+      + 'renders but never searches is the same failure the framework was built '
+      + 'to stop, just quieter');
+    assert(r.wireWidgetSearch.seen[0] === slot, 'and it must be the scope it was given');
   });
 
   await check('cancelling removes the card from the conversation', async () => {
@@ -534,6 +557,72 @@ function submitEvent(form, submitter) {
 
     assert(row.removed === true, 'an old tombstone must go too');
     eq(fetches, 0, 'no point fetching a card that will never be shown');
+  });
+
+  /** The Tools-menu open path, with the card arriving from a fetch. */
+  function opening() {
+    const toolsMenu = stubEl('div');
+    toolsMenu.hidden = false;
+    const entry = stubEl('div');
+    entry.div = stubEl('div');
+    entry.widgetEl = stubEl('div');
+    entry.bubble = stubEl('div');
+    const d = deps({
+      toolsMenu: toolsMenu,
+      getRow: () => entry,
+      fetch: () => new Promise((resolve) => {
+        d.resolve = () => resolve({
+          ok: true,
+          json: () => Promise.resolve({ok: true, widget_id: 'step-9', html: '<div>card</div>'}),
+        });
+      }),
+    });
+    return {d: d, entry: entry, r: buildRunner(src, d)};
+  }
+
+  await check('opening a card puts the caret in it', async () => {
+    const o = opening();
+
+    o.r.openWidget({name: 'add_supplier', label: 'Add supplier'});
+    o.d.resolve();
+    await tick();
+
+    eq(o.r.focusWidgetField.seen.length, 1,
+      'a card opened to be filled in must take the caret — otherwise the user '
+      + 'has to click into it every time');
+    assert(o.r.focusWidgetField.seen[0] === o.entry.widgetEl,
+      'and it must be the card that was just rendered');
+  });
+
+  await check('a slow response does not steal focus from the composer', async () => {
+    const o = opening();
+    const composer = {id: 'embed-composer'};
+
+    // The user clicks Tools (the menu entry holds focus), then starts typing in
+    // the composer while the card is still loading.
+    o.d.document.activeElement = {id: 'menu-entry'};
+    o.r.openWidget({name: 'add_supplier', label: 'Add supplier'});
+    o.d.document.activeElement = composer;
+    o.d.resolve();
+    await tick();
+
+    eq(o.r.focusWidgetField.seen.length, 0,
+      'putting the caret in the card when the fetch lands would rip it out of a '
+      + 'message the user has started typing');
+  });
+
+  await check('closing the menu is enough to focus a card', async () => {
+    const o = opening();
+    // Hiding the menu blurs its entry, which is the ordinary case: focus has
+    // gone nowhere in particular, so the card may take it.
+    o.d.document.activeElement = o.d.document.body;
+
+    o.r.openWidget({name: 'add_supplier', label: 'Add supplier'});
+    o.d.resolve();
+    await tick();
+
+    eq(o.r.focusWidgetField.seen.length, 1,
+      'the menu entry that had focus is hidden by the time the card lands');
   });
 
   finish();

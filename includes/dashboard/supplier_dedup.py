@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm.attributes import flag_modified
 
 from includes.dashboard.database import _extract_domain
@@ -445,7 +445,28 @@ def active_suppliers(session):
     )
 
 
-def supplier_lookup(session, name: str, hide_dups: bool = True, limit: int = 10):
+def _like_escape(value: str) -> str:
+    """Neutralise LIKE wildcards in user input.
+
+    Without this, typing ``%`` into a typeahead matches every supplier in the
+    table — a full scan and a useless result list. ``\\`` is Postgres's default
+    LIKE escape character.
+    """
+    return (
+        (value or "")
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
+def supplier_lookup(
+    session,
+    name: str,
+    hide_dups: bool = True,
+    limit: int = 10,
+    rank: bool = False,
+):
     """Case-insensitive name lookup for supplier pickers.
 
     hide_dups=True  — linking flows: flagged duplicates are excluded, because
@@ -453,12 +474,31 @@ def supplier_lookup(session, name: str, hide_dups: bool = True, limit: int = 10)
     hide_dups=False — management views: all rows returned; callers should show
                      the duplicate flag (sup.use_instead) so duplicates stay
                      visible and identifiable.
+
+    rank=True orders by how well the name matches instead of alphabetically:
+    exact match, then prefix, then anything containing it, each group by name
+    length. Alphabetical ordering makes a typeahead useless — searching
+    "sydney" returned "City Hino & Iveco Sydney", "Hemmes Slip Inn - Sydney", …
+    and never surfaced "Sydney Tools" within the limit.
     """
-    query = session.query(Supplier).filter(Supplier.name.ilike(f"%{name}%"))
+    needle = (name or "").strip()
+    query = session.query(Supplier).filter(
+        Supplier.name.ilike(f"%{_like_escape(needle)}%", escape="\\")
+    )
     query = query.filter(Supplier.isinactive == False)
     if hide_dups:
         query = query.filter(Supplier.use_instead.is_(None))
-    return query.order_by(Supplier.name).limit(limit).all()
+    if rank and needle:
+        lowered = needle.lower()
+        relevance = case(
+            (func.lower(Supplier.name) == lowered, 0),
+            (func.lower(Supplier.name).like(f"{_like_escape(lowered)}%"), 1),
+            else_=2,
+        )
+        query = query.order_by(relevance, func.length(Supplier.name), Supplier.name)
+    else:
+        query = query.order_by(Supplier.name)
+    return query.limit(limit).all()
 
 
 def nominate_near_misses(session, new_supplier, near_misses: list[dict]) -> int:

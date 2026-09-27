@@ -1,26 +1,36 @@
-"""The "Add new supplier" chat widget.
+"""The supplier chat widget — find one we already have, or add a new one.
 
-Two jobs in one card, because they are one thought to the user: *create* a
-supplier we don't have, and — when the conversation is about an RFQ — *put it on
-the lines in front of them*. Splitting those into two steps is what makes people
-add the supplier and then forget to use it.
+One card, because it is one thought to the user: *get this supplier onto the
+RFQ*. Splitting it into "find" and "create" is what makes people add a supplier
+and then forget to use it.
 
-Scope notes (decided with the user, 2026-09-24):
+The card opens in one of three views (``mode``):
 
-* **Local only.** No NetSuite fields, no vendor creation. The RFQ quotation tab's
-  NS+ flow already promotes a local row, and ``_rfq_sync_readiness`` treats "not
-  in NetSuite" as a warning rather than a blocker, so nothing downstream waits on
-  it. See ``includes/dashboard/supplier_create.py``.
-* **Quick add.** Name and email are required; everything else is optional and
-  sits behind a disclosure. Most of the time this is a two-field form.
+* ``search`` — company-name typeahead over existing suppliers (no RFQ bound →
+  there is nothing to attach an existing supplier to, so the card skips straight
+  to ``create`` instead of offering a dead end),
+* ``chosen`` — a picked existing supplier plus the line picker,
+* ``create`` — the quick-add form for one we do not have.
+
+Scope notes (decided with the user):
+
+* **Local only.** No NetSuite fields, no vendor creation. The RFQ quotation
+  tab's NS+ flow already promotes a local row, and ``_rfq_sync_readiness``
+  treats "not in NetSuite" as a warning rather than a blocker. See
+  ``includes/dashboard/supplier_create.py``.
+* **Quick add.** Name and email are required on the create path; everything else
+  is optional and behind a disclosure.
 * **Not agent-initiated yet.** The agent asking "is this a new supplier?" and
-  then opening this card is the planned phase 2; the framework already supports
-  it (``ctx.widget()``), only the agent-side prompt does not exist.
+  then opening this card is phase 2; the framework already supports it
+  (``ctx.widget()``), only the agent-side prompt does not exist.
+* **Contact selection** (which of a supplier's contacts to use) is phase 3.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from includes.chat.widgets import (
@@ -33,6 +43,8 @@ from includes.dashboard.supplier_create import (
     create_local_supplier,
     field_options,
     find_duplicates,
+    lookup_suppliers,
+    primary_email,
     validate,
 )
 
@@ -47,6 +59,31 @@ _LINE_ALL = "all"
 _LINE_SPECIFIC = "specific"
 _LINE_NONE = "none"
 
+#: What a linked supplier is marked as when the card's "Shortlist" box is ticked.
+_STATUS_SHORTLISTED = "shortlisted"
+#: The ticked/unticked values recorded back into the form data (see _submit).
+_SHORTLIST_ON = "1"
+_SHORTLIST_OFF = "0"
+
+#: The card's views. ``mode`` is a form field, so a re-render after a validation
+#: error lands in the view the user was actually in.
+_MODE_SEARCH = "search"
+_MODE_CHOSEN = "chosen"
+_MODE_CREATE = "create"
+_MODES = (_MODE_SEARCH, _MODE_CHOSEN, _MODE_CREATE)
+
+
+@dataclass(frozen=True)
+class _ExistingSupplier:
+    """The parts of a Supplier row the link path needs.
+
+    A detached copy, so the link (which opens its own sessions and can run long)
+    never touches a row from a closed session.
+    """
+
+    id: str
+    name: str
+
 
 # ---------------------------------------------------------------------------
 # RFQ line targets
@@ -57,6 +94,14 @@ def rfq_lines(rfq_id: str) -> list[dict[str, Any]]:
 
     Read live at render time rather than cached with the widget: a form can sit
     open while lines are added, edited or removed on the RFQ page.
+
+    Each line carries its current supplier ids, so the submit path can tell
+    "added to line 1" from "was already on line 1" without a second read.
+
+    The brand is included because it is what tells lines apart on a multi-brand
+    RFQ (line 1 Bahco, lines 2-6 Milwaukee): a part number and a truncated
+    description do not, and picking the wrong line links a supplier to the wrong
+    hardware. About half of all lines have one, so it is optional.
     """
     from includes.tools.quote_tools import _get_rfq_dict_sync
 
@@ -74,7 +119,13 @@ def rfq_lines(rfq_id: str) -> list[dict[str, Any]]:
         lines.append({
             "line": int(line),
             "part_number": (item.get("part_number") or "").strip(),
+            "brand": (item.get("brand") or "").strip(),
             "description": (item.get("input_description") or "").strip()[:60],
+            "supplier_ids": [
+                str(sup.get("supplier_id"))
+                for sup in (item.get("suppliers") or [])
+                if sup.get("supplier_id")
+            ],
         })
     return sorted(lines, key=lambda entry: entry["line"])
 
@@ -96,17 +147,89 @@ def _selected_lines(state: dict[str, Any]) -> list[int]:
     return _line_numbers((state.get("data") or {}).get("lines"))
 
 
+def _contact_options(supplier_id: Any) -> list[dict[str, str]]:
+    """Ranked contacts for one supplier, for the card's contact picker.
+
+    The contacts table first, the legacy ``suppliers.contacts`` JSONB as the
+    fallback, ranked by the same rule the RFQ email uses — so the address the
+    card offers first is the address an email would go to.
+    """
+    from includes.dashboard.database import get_session
+    from includes.dashboard.models import Contact, Supplier
+    from includes.dashboard.supplier_contacts import rank_contacts
+
+    try:
+        wanted = uuid.UUID(str(supplier_id))
+    except (ValueError, AttributeError, TypeError):
+        return []
+
+    session = get_session()
+    try:
+        rows = (
+            session.query(Contact)
+            .filter(Contact.supplier_id == wanted, Contact.isinactive == False)
+            .all()
+        )
+        options = rank_contacts(rows)
+        if not options:
+            supplier = session.query(Supplier).filter(Supplier.id == wanted).first()
+            raw = supplier.contacts if supplier and isinstance(supplier.contacts, list) else []
+            options = rank_contacts(raw)
+        return options
+    finally:
+        session.close()
+
+
+def _contact_for_link(
+    supplier_id: Any, preferred: Any
+) -> dict[str, str]:
+    """The contact to record on the lines this supplier is linked to.
+
+    ``preferred`` is whatever the card sent: a contact id when the row came from
+    the contacts table, or the address itself when it came from the JSONB, which
+    has no ids. Anything unrecognised falls back to the ranked answer rather than
+    failing the link — a choice is a preference, and the supplier still has to be
+    added. That also covers the honest case of a contact deleted between the
+    render and the submit.
+    """
+    options = _contact_options(supplier_id)
+    if not options:
+        return {}
+    wanted = str(preferred or "").strip()
+    if wanted:
+        for option in options:
+            if wanted in (option["id"], option["email"]):
+                return option
+    return options[0]
+
+
 def _context(state: dict[str, Any]) -> dict[str, Any]:
     """Extra template context — the framework stays generic, the widget supplies
     its own field spec, option lists and line targets."""
     rfq_id = state.get("rfq_id")
+    data = state.get("data") or {}
+    # A submitted value wins, so a validation error or duplicate confirm
+    # re-renders the view the user was in rather than snapping back to search.
+    mode = str(data.get("mode") or "").strip()
+    if mode not in _MODES:
+        # Without an RFQ there is nothing to attach an existing supplier to, so
+        # the lookup would be a dead end — open in the create form instead.
+        mode = _MODE_SEARCH if rfq_id else _MODE_CREATE
+    # Only the chosen view has a supplier to pick a contact for, and only a
+    # supplier with somewhere to write to has options.
     return {
         "fields": SUPPLIER_FIELDS,
         "options": field_options(),
         "rfq": {"id": rfq_id, "lines": rfq_lines(rfq_id)} if rfq_id else None,
         "action_field": ACTION_FIELD,
         "selected_lines": _selected_lines(state),
+        "mode": mode,
     }
+
+
+def _lookup(query: str, state: dict[str, Any], user_email: str) -> dict[str, Any]:
+    """Typeahead for the search view — see ``supplier_create.lookup_suppliers``."""
+    return {"results": lookup_suppliers(query)}
 
 
 # ---------------------------------------------------------------------------
@@ -147,28 +270,85 @@ def _lines_carrying_supplier(
     return sorted(found)
 
 
+def _lines_already_on(
+    lines_now: list[dict[str, Any]], supplier_id: Any, targets: list[int]
+) -> list[int]:
+    """Target lines that already carry this supplier, from a prior line read."""
+    wanted = set(targets)
+    return sorted(
+        line["line"]
+        for line in lines_now
+        if line["line"] in wanted
+        and str(supplier_id) in (line.get("supplier_ids") or ())
+    )
+
+
+def _existing_or_none(supplier_id: str) -> Any:
+    """The supplier row for a client-supplied id, or ``None``.
+
+    Merged (``use_instead``) and inactive rows count as missing: attaching one to
+    an RFQ is exactly what the linking rule in ``supplier_lookup`` exists to
+    prevent, so the widget must not do it through the back door either.
+    """
+    from includes.dashboard.database import get_session
+    from includes.dashboard.models import Supplier
+
+    try:
+        wanted = uuid.UUID(supplier_id)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+    session = get_session()
+    try:
+        row = session.query(Supplier).filter(Supplier.id == wanted).first()
+        if row is None or row.isinactive or row.use_instead is not None:
+            return None
+        return {
+            "supplier": _ExistingSupplier(id=str(row.id), name=row.name),
+            "email": primary_email(row, session),
+        }
+    finally:
+        session.close()
+
+
+def _link_status_fields(link: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    """What the link did to the supplier's status, for the transcript.
+
+    True only when the write went through *and* the box was ticked. With no lines
+    chosen, or a rejected write, no status was ever set — and the notice is what a
+    later turn (and the agent) reads, so claiming it there would be a falsehood
+    rather than a detail.
+    """
+    wrote = bool(link["lines"] or link["already_on"]) and not link["error"]
+    return {"shortlisted": wrote and _truthy(data.get("shortlist"))}
+
+
 def _link_to_lines(
     state: dict[str, Any], supplier: Any, data: dict[str, Any], user_email: str
 ) -> dict[str, Any]:
-    """Put the new supplier on the chosen RFQ lines.
+    """Put a supplier on the chosen RFQ lines.
 
-    Runs *after* the supplier is committed and never rolls it back — the row is
-    what the user asked for, and losing it because a line number went stale would
-    be a worse outcome than a half-done link. The result reports the two
-    separately so the card can say so.
+    Runs *after* the supplier exists and never rolls it back — the row is what
+    the user asked for, and losing it because a line number went stale would be a
+    worse outcome than a half-done link. The result reports the two separately so
+    the card can say so.
 
     Entries carry the supplier's id, which routes them through the ``db_linked``
     branch of ``_add_suppliers_to_line_core``: no name matching, no web search,
     and no contact URL required (an unknown name is what gets skipped there).
+
+    Every path returns ``lines`` (newly linked), ``already_on`` (were already
+    there) and ``error``.
     """
     rfq_id = state.get("rfq_id")
     mode = str(data.get("line_mode") or _LINE_NONE).strip().lower()
     if not rfq_id or mode == _LINE_NONE:
-        return {"lines": [], "error": ""}
+        return {"lines": [], "already_on": [], "error": ""}
 
-    available = [line["line"] for line in rfq_lines(rfq_id)]
+    lines_now = rfq_lines(rfq_id)
+    available = [line["line"] for line in lines_now]
     if not available:
-        return {"lines": [], "error": f"{rfq_id} has no line items."}
+        return {"lines": [], "already_on": [], "error": f"{rfq_id} has no line items."}
 
     if mode == _LINE_ALL:
         targets = available
@@ -176,7 +356,36 @@ def _link_to_lines(
         wanted = set(_line_numbers(data.get("lines")))
         targets = [line for line in available if line in wanted]
         if not targets:
-            return {"lines": [], "error": "No matching lines were selected."}
+            return {
+                "lines": [], "already_on": [],
+                "error": "No matching lines were selected.",
+            }
+
+    # A supplier already on a line is merged into that entry rather than added,
+    # so "Added to line 1" for one that was already there would be a lie. Read the
+    # pre-write state from the same fetch that produced the line list.
+    before = _lines_already_on(lines_now, supplier.id, targets)
+
+    # Which contact the lines record, so the RFQ email that follows knows who to
+    # write to without asking again. Read here rather than trusting the card: the
+    # id is client-supplied like the supplier id is.
+    contact = _contact_for_link(supplier.id, data.get("contact_id"))
+    contact_fields: dict[str, Any] = {}
+    if contact.get("id"):
+        contact_fields["contact_id"] = contact["id"]
+    if contact.get("email"):
+        contact_fields["contact_email"] = contact["email"]
+    if contact.get("name"):
+        contact_fields["contact_name"] = contact["name"]
+
+    # Shortlisting by default: a supplier found and added from the chat is almost
+    # always one the RFQ is going to be sent to, and "shortlisted" is the set the
+    # Suppliers tab emails. Unticked sends no status at all, which leaves the
+    # entry as it stands — never demoting one that is already shortlisted or
+    # quoted from.
+    status_fields: dict[str, Any] = (
+        {"status": _STATUS_SHORTLISTED} if _truthy(data.get("shortlist")) else {}
+    )
 
     from includes.tools.rfq_crud import _add_suppliers_bulk_sync
 
@@ -187,16 +396,17 @@ def _link_to_lines(
     # looking like a success, so the card claimed a line link that never
     # happened (RFQ-2026-1231, 2026-09-24).
     entries = [
-        {"line": line, "supplier_id": str(supplier.id), "name": supplier.name}
+        {"line": line, "supplier_id": str(supplier.id), "name": supplier.name,
+         **status_fields, **contact_fields}
         for line in targets
     ]
     try:
         outcome = _add_suppliers_bulk_sync(rfq_id, {"entries": entries}, user_email)
     except Exception as exc:
         logger.exception("[add-supplier] line link failed for %s", rfq_id)
-        return {"lines": [], "error": str(exc)}
+        return {"lines": [], "already_on": [], "error": str(exc)}
     if isinstance(outcome, str):          # error string, not the RFQ dict
-        return {"lines": [], "error": outcome}
+        return {"lines": [], "already_on": [], "error": outcome}
 
     # Read the result back rather than trusting the return value: the helper
     # returns the RFQ dict whether or not it accepted anything, so a rejected
@@ -206,15 +416,31 @@ def _link_to_lines(
     if linked is None:
         # Could not read the RFQ back. The write did not error, so report what
         # was asked for rather than inventing a failure.
-        return {"lines": targets, "error": ""}
+        return {
+            "lines": [line for line in targets if line not in before],
+            "already_on": before,
+            "error": "",
+        }
     if not linked:
         plural = "s" if len(targets) > 1 else ""
         joined = ", ".join(str(line) for line in targets)
         return {
-            "lines": [],
+            "lines": [], "already_on": [],
             "error": f"{rfq_id} did not accept the supplier on line{plural} {joined}.",
         }
-    return {"lines": linked, "error": ""}
+    return {
+        "lines": [line for line in linked if line not in before],
+        "already_on": [line for line in linked if line in before],
+        "error": "",
+    }
+
+
+def _csv(values: list[Any]) -> str:
+    return ", ".join(str(value) for value in values)
+
+
+def _line_word(lines: list[Any]) -> str:
+    return "line" if len(lines) == 1 else "lines"
 
 
 def _notice(result: dict[str, Any]) -> str:
@@ -223,11 +449,31 @@ def _notice(result: dict[str, Any]) -> str:
     The card alone would leave the agent unaware — this step is what a later
     turn (and phase 2's agent-initiated flow) actually reads.
     """
-    parts = [f"✅ Created supplier **{result['name']}**."]
-    if result["lines"]:
-        plural = "s" if len(result["lines"]) > 1 else ""
-        joined = ", ".join(str(line) for line in result["lines"])
-        parts.append(f"Added it as a candidate on line{plural} {joined}.")
+    name = result["name"]
+    lines = list(result.get("lines") or [])
+    already = list(result.get("already_on") or [])
+    # What the link did with the status, so the transcript says the same thing the
+    # RFQ now shows. "candidate" is the default the entry would have had.
+    how = "as a shortlisted supplier" if result.get("shortlisted") else "as a candidate"
+
+    if result.get("existing"):
+        if lines:
+            head = f"✅ Added **{name}** {how} on {_line_word(lines)} {_csv(lines)}."
+        elif already:
+            head = (
+                f"✅ **{name}** was already a candidate on "
+                f"{_line_word(already)} {_csv(already)}."
+            )
+        else:
+            head = f"✅ Selected **{name}**."
+    else:
+        head = f"✅ Created supplier **{name}**."
+        if lines:
+            head += f" Added it {how} on {_line_word(lines)} {_csv(lines)}."
+
+    parts = [head]
+    if lines and already:
+        parts.append(f"(already on {_line_word(already)} {_csv(already)})")
     if result["line_error"]:
         parts.append(f"Could not add it to the RFQ: {result['line_error']}")
     return " ".join(parts)
@@ -236,10 +482,93 @@ def _notice(result: dict[str, Any]) -> str:
 def _submit(
     data: dict[str, Any], state: dict[str, Any], user_email: str
 ) -> WidgetOutcome:
+    """Cancel, or one of the two paths.
+
+    The path is decided by whether a supplier was *picked*, not by the client's
+    ``mode`` label: a picked id is the thing that changes the behaviour, and a
+    client-supplied label is not something to trust with a write.
+    """
     action = str(data.get(ACTION_FIELD) or _ACTION_SUBMIT).strip().lower()
     if action == _ACTION_CANCEL:
         return WidgetOutcome(status="cancelled", data=data)
 
+    supplier_id = str(data.get("supplier_id") or "").strip()
+    if supplier_id:
+        outcome = _submit_existing(supplier_id, data, state, user_email)
+    else:
+        outcome = _submit_new(data, state, user_email)
+
+    # A ticked box submits "1" and an unticked one submits nothing at all, so a
+    # rejected submission has to record the tick for the card that comes back.
+    # Without this, unticking "Shortlist" and then hitting a validation error
+    # would quietly re-tick it.
+    if outcome.status == "pending" and isinstance(outcome.data, dict):
+        outcome.data["shortlist"] = (
+            _SHORTLIST_ON if _truthy(data.get("shortlist")) else _SHORTLIST_OFF
+        )
+    return outcome
+
+
+def _submit_existing(
+    supplier_id: str, data: dict[str, Any], state: dict[str, Any], user_email: str
+) -> WidgetOutcome:
+    """Add a supplier we already have to the RFQ's lines.
+
+    Nothing is created and no duplicate check runs — the only write is the line
+    link. The id arrives from the client, so it is re-validated rather than
+    trusted: a stale pick (the user edited the name after selecting one) would
+    otherwise put the *wrong supplier* on an RFQ.
+    """
+    from includes.dashboard.supplier_matching import normalize_supplier_name
+
+    found = _existing_or_none(supplier_id)
+    if found is None:
+        return WidgetOutcome(
+            status="pending",
+            data={**data, "mode": _MODE_SEARCH, "supplier_id": ""},
+            error="That supplier is no longer available — please search again.",
+        )
+
+    supplier = found["supplier"]
+    submitted_name = str(data.get("name") or "").strip()
+    if not submitted_name or (
+        normalize_supplier_name(submitted_name)
+        != normalize_supplier_name(supplier.name)
+    ):
+        # The name and the id disagree: a stale selection, not a submission.
+        return WidgetOutcome(
+            status="pending",
+            data={**data, "mode": _MODE_SEARCH, "supplier_id": ""},
+            error="That selection went stale — please pick the supplier again.",
+        )
+
+    link = _link_to_lines(state, supplier, data, user_email)
+    result = {
+        "supplier_id": supplier.id,
+        "name": supplier.name,
+        "email": found["email"],
+        "lines": link["lines"],
+        "already_on": link["already_on"],
+        "line_error": link["error"],
+        "existing": True,
+        **_link_status_fields(link, data),
+    }
+    # Only a real change leaves the page behind the panel stale.
+    changed_rfq = state.get("rfq_id") if link["lines"] else None
+    dashboard = (
+        {"command": "dashboard_refresh", "payload": {"rfq_id": changed_rfq}}
+        if changed_rfq
+        else None
+    )
+    return WidgetOutcome(
+        status="submitted", result=result, notice=_notice(result), dashboard=dashboard
+    )
+
+
+def _submit_new(
+    data: dict[str, Any], state: dict[str, Any], user_email: str
+) -> WidgetOutcome:
+    """Create the supplier, then put it on the chosen lines."""
     clean, errors = validate(data)
     if errors:
         return WidgetOutcome(
@@ -275,7 +604,10 @@ def _submit(
         "country": clean.get("country") or "",
         "currency": clean.get("currency") or "",
         "lines": link["lines"],
+        "already_on": link["already_on"],
         "line_error": link["error"],
+        "existing": False,
+        **_link_status_fields(link, data),
     }
     # The RFQ page behind the panel is now stale (a new supplier is on its
     # lines), and nothing else will tell it: this ran outside an agent turn, so
@@ -293,10 +625,11 @@ def _submit(
 
 register_widget(
     WIDGET_NAME,
-    label="Add new supplier",
-    description="Create a supplier we don't have yet",
+    label="Add supplier",
+    description="Find a supplier we already have, or add a new one",
     template="chat_ui/widgets/_add_supplier.html",
     submit=_submit,
     context=_context,
+    lookup=_lookup,
     icon="➕",
 )

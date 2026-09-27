@@ -1276,6 +1276,37 @@ async def render_widget(widget_id: str, user: dict = Depends(require_user)):
     )
 
 
+@router.get("/widgets/{widget_id}/lookup")
+async def lookup_widget(
+    widget_id: str, q: str = "", user: dict = Depends(require_user)
+):
+    """Typeahead for a widget that declares a lookup handler.
+
+    Deliberately thin — the widget supplies the search, so the transport stays
+    ignorant of what is being searched (the same split as render/context).
+    """
+    await _guard(user)
+    from includes.chat.widgets import dispatch_lookup
+
+    _spec, state, _metadata, _thread_id = await _widget_or_404(widget_id, user)
+    if state.get("status") != "pending":
+        return JSONResponse({"error": "This form is closed."}, status_code=409)
+
+    try:
+        result = await asyncio.to_thread(
+            dispatch_lookup, state["name"], q, state, user["email"]
+        )
+    except KeyError:
+        return JSONResponse({"error": "Unknown widget"}, status_code=404)
+    except Exception:
+        logger.exception("[chat-ui] widget %s lookup failed", widget_id[:8])
+        return JSONResponse(
+            {"error": "Search failed — please try again."}, status_code=500
+        )
+
+    return JSONResponse({"ok": True, **(result or {})})
+
+
 @router.post("/widgets/{widget_id}/submit")
 async def submit_widget(
     request: Request, widget_id: str, user: dict = Depends(require_user)

@@ -127,6 +127,49 @@ The one thing worth knowing: the dashboard tells the server which **RFQ** a clic
 | `templates/partials/_rfq_items_table.html` | Per-item line table with per-item action buttons. |
 | `templates/base.html` | Alpine.js `rfqDetail()` — button handlers, `_sendAction()`, `agentBusy` flag. |
 
+## Which contact an RFQ emails
+
+A supplier usually has one contact, but ~500 have more than one, and they are not
+interchangeable. `includes/dashboard/supplier_contacts.py` is the single rule,
+used by the Suppliers tab, the compose modal, the NetSuite “Go Source” prefill
+and the chat widget:
+
+1. **an explicit choice** (the picker below), or the contact recorded on the line;
+2. **`Source`** — the Go Source contact: the purchasing person, held in NetSuite;
+3. **`Main`** — the mailbox the supplier is recorded under;
+4. **`Source CC`** — somebody who was copied on that person's email;
+5. then any other row that has a reachable address.
+
+Values are normalised first, because the data needs it: the literal string
+`"None"` sits in email columns, several fields hold two addresses
+(`"qld@exedy.com.au; GWilson@exedy.com.au"`), provenance rows sometimes carry the
+address in the name column and vice versa, and the same address can appear on two
+rows. An address is always taken from the **same row** as the person's name.
+
+**The contacts table wins over the stored snapshot.** `rfq_items.suppliers[].contacts`
+is written when a supplier is linked and goes stale; the enrichment step merges
+the live rows in **first**, so a stale `Source` row cannot win the tie. Over 1,357
+line entries with more than one contact the old “first row with an email” rule
+disagreed with the live table 37% of the time — usually a generic `info@`/`sales@`
+against the branch, export or named contact actually being dealt with.
+
+**A choice is recorded, not just displayed.** Picking a contact writes
+`contact_id` / `contact_email` / `contact_name` onto the line's supplier entry via
+`PATCH /api/rfqs/{id}/supplier-contact`, so the next send uses it without asking
+again:
+
+- the **chat widget** offers the contacts when the supplier it found has more than
+  one, built client-side from the search result — the options have to travel with
+  it, because the supplier is chosen in the browser and no server render knows who
+  to offer;
+- the **Suppliers tab** and the **compose modal** offer the same list, which is the
+  last screen before the email is sent.
+
+That endpoint edits **one** contact. It used to write the new address onto every
+contact on the RFQ and then deactivate all but one row in the contacts table, so a
+one-off correction for one RFQ silently retired the supplier's other contacts
+everywhere.
+
 ## Data Model
 
 ```

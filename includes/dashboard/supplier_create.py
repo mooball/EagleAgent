@@ -35,15 +35,21 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from includes.dashboard.supplier_contacts import best_from, rank_contacts
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "LOOKUP_LIMIT",
+    "MIN_LOOKUP_CHARS",
     "SUPPLIER_FIELDS",
     "DuplicateReport",
     "SupplierField",
     "create_local_supplier",
     "describe_matches",
     "field_options",
+    "lookup_suppliers",
+    "primary_email",
     "validate",
 ]
 
@@ -238,6 +244,115 @@ def find_duplicates(
 
     match = match_supplier(name, url=url, country=country, session=session)
     return describe_matches(match)
+
+
+#: A typeahead query shorter than this matches too much of the table to be
+#: useful (the dashboard's supplier search uses the same floor).
+MIN_LOOKUP_CHARS = 2
+
+#: Results returned to the widget's search view.
+LOOKUP_LIMIT = 8
+
+
+def _jsonb_email(supplier: Any) -> str:
+    """Best email in the legacy ``suppliers.contacts`` JSONB, or ""."""
+    contacts = supplier.contacts if isinstance(supplier.contacts, list) else []
+    return (best_from(None, contacts) or {}).get("email", "")
+
+
+def _contact_lists(session: Any, supplier_ids: list) -> dict[str, list[dict[str, str]]]:
+    """Ranked contacts per supplier, with one query for the whole page.
+
+    The ``contacts`` table is authoritative — it is what inbound-email matching
+    reads — and the ranking is the same one the RFQ email and the NetSuite
+    prefill use, so the first entry is the address a send would use. The card
+    offers the rest when there is more than one, which is why the list is worth
+    returning rather than only its head.
+    """
+    from includes.dashboard.models import Contact
+    from includes.dashboard.supplier_contacts import rank_contacts
+
+    if not supplier_ids:
+        return {}
+    rows = (
+        session.query(Contact)
+        .filter(Contact.supplier_id.in_(supplier_ids), Contact.isinactive == False)
+        .all()
+    )
+    grouped: dict[str, list[Any]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.supplier_id), []).append(row)
+    return {supplier_id: rank_contacts(contacts) for supplier_id, contacts in grouped.items()}
+
+
+def _primary_emails(session: Any, supplier_ids: list) -> dict[str, str]:
+    """Best contact email per supplier — the head of its ranked list."""
+    return {
+        supplier_id: options[0]["email"]
+        for supplier_id, options in _contact_lists(session, supplier_ids).items()
+        if options
+    }
+
+
+def primary_email(supplier: Any, session: Any) -> str:
+    """Best contact email for one supplier (contacts table, then JSONB fallback).
+
+    ``lookup_suppliers`` batches the same query for a whole page; this is for the
+    single row a submission just acted on.
+    """
+    return _primary_emails(session, [supplier.id]).get(str(supplier.id), "") \
+        or _jsonb_email(supplier)
+
+
+def lookup_suppliers(
+    query: str, *, limit: int = LOOKUP_LIMIT, session: Any = None
+) -> list[dict[str, str]]:
+    """Ranked typeahead over existing suppliers, for the widget's first screen.
+
+    Goes through ``supplier_lookup`` so "which suppliers are searchable" stays
+    defined in one place — including ``hide_dups=True``, which matters more here
+    than anywhere: this is a *linking* flow, and a merged-away duplicate must
+    never be attached to an RFQ.
+
+    Rows carry country/currency/email because supplier names repeat across
+    countries, and a bare name gives the user nothing to choose between.
+    """
+    from includes.dashboard.database import get_session
+    from includes.dashboard.supplier_dedup import supplier_lookup
+
+    needle = (query or "").strip()
+    if len(needle) < MIN_LOOKUP_CHARS:
+        return []
+
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        rows = supplier_lookup(
+            session, needle, hide_dups=True, limit=limit, rank=True
+        )
+        lists = _contact_lists(session, [row.id for row in rows])
+        return [
+            {
+                "id": str(row.id),
+                "name": row.name,
+                "country": row.country or "",
+                "currency": row.currency or "",
+                "email": (lists.get(str(row.id)) or [{}])[0].get("email")
+                or _jsonb_email(row),
+                # The alternatives, so the card can ask which contact to write to
+                # when there is more than one. The pick happens in the browser, so
+                # they have to travel with the result — nothing server-rendered
+                # can know who the user is about to choose.
+                "contacts": lists.get(str(row.id)) or rank_contacts(
+                    row.contacts if isinstance(row.contacts, list) else []
+                ),
+            }
+            for row in rows
+        ]
+    finally:
+        if own_session:
+            session.close()
 
 
 def create_local_supplier(

@@ -1291,7 +1291,8 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
         name = sup.get("name", "Unknown")
         existing = existing_by_name.get(name.lower())
         if existing:
-            for key in ["supplier_id", "contacts", "price", "price_type",
+            for key in ["supplier_id", "contacts", "contact_id", "contact_email",
+                        "contact_name", "price", "price_type",
                         "lead_time", "notes", "purchase_ref",
                         "cost_price", "cost_price_aud", "sale_price",
                         "cost_currency",
@@ -1304,7 +1305,12 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
                 if val is not None and val != "" and val != []:
                     existing[key] = val
             new_status = sup.get("status", "candidate")
-            if new_status != "candidate" or existing.get("status") in ("candidate", "dropped"):
+            if existing.get("status") == "selected" and new_status != "selected":
+                # Adding a supplier we already selected must not quietly un-select
+                # them: the quotation tab quotes from the selected set, and a
+                # second link from the chat widget carries only "shortlisted".
+                pass
+            elif new_status != "candidate" or existing.get("status") in ("candidate", "dropped"):
                 existing["status"] = new_status
             updated_names.append(name)
         else:
@@ -1312,6 +1318,12 @@ def _add_suppliers_to_line_core(session, rfq, line_item, data):
                 "supplier_id": sup.get("supplier_id"),
                 "name": name,
                 "contacts": sup.get("contacts", []),
+                # Whose address this line's supplier is contacted at. Recorded when
+                # the supplier is linked (the widget's contact picker) or when the
+                # Suppliers tab changes it, so the next send does not re-derive it.
+                "contact_id": sup.get("contact_id"),
+                "contact_email": sup.get("contact_email"),
+                "contact_name": sup.get("contact_name"),
                 "status": sup.get("status", "candidate"),
                 "price": sup.get("price"),
                 "price_type": sup.get("price_type"),

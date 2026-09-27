@@ -207,6 +207,8 @@ class TestLangChainAdapter:
         assert usage["prompt_tokens"] == 5
         assert usage["total_tokens"] == 11
         assert usage["thought_tokens"] == 2
+        # LangChain's output_tokens is inclusive of reasoning, so 6 -> 6 - 2.
+        assert usage["output_tokens"] == 4
 
     def test_missing_usage_is_none_not_zero(self):
         """Absent data must stay absent so we never report a false zero."""
@@ -257,3 +259,125 @@ class TestLangChainAdapter:
         handler.on_llm_start({}, [])
         handler.on_llm_end(SimpleNamespace(llm_output={}, generations=[]))
         handler.on_llm_error(ValueError("nope"))
+
+
+# ---------------------------------------------------------------------------
+# The token invariant: total = prompt + output + thought, on both paths
+# ---------------------------------------------------------------------------
+
+class TestTokenInvariant:
+    def test_raw_sdk_and_langchain_agree_on_the_same_call(self):
+        """One call, two adapters, identical token columns.
+
+        This is the regression that let the original mismatch through: the raw
+        SDK excludes thinking from `candidates_token_count`, LangChain's
+        `output_tokens` includes it, and nothing ever compared the two. The
+        production consequence was `output + thought` double-counting at +73%
+        on agent rows.
+        """
+        # One call: 100 prompt, 50 output of which 20 was thinking, 150 total.
+        sdk_record = telemetry.CallRecord(scope="pipeline:X/y", model="gemini-x")
+        sdk_record.set_response(
+            SimpleNamespace(
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=100,
+                    candidates_token_count=30,  # thinking is excluded here
+                    thoughts_token_count=20,
+                    total_token_count=150,
+                )
+            )
+        )
+        sdk = {
+            "prompt_tokens": sdk_record.prompt_tokens,
+            "output_tokens": sdk_record.output_tokens,
+            "thought_tokens": sdk_record.thought_tokens,
+            "total_tokens": sdk_record.total_tokens,
+        }
+
+        lc = telemetry._usage_from_langchain(
+            SimpleNamespace(
+                llm_output={
+                    "usage_metadata": {
+                        "input_tokens": 100,
+                        "output_tokens": 50,  # thinking is included here
+                        "total_tokens": 150,
+                        "output_token_details": {"reasoning": 20},
+                    }
+                },
+                generations=[],
+            )
+        )
+
+        assert sdk == lc, f"adapters disagree: sdk={sdk} langchain={lc}"
+        for label, tokens in (("raw-sdk", sdk), ("langchain", lc)):
+            assert tokens["prompt_tokens"] + tokens["output_tokens"] + tokens[
+                "thought_tokens"
+            ] == tokens["total_tokens"], label
+
+    def test_langchain_reasoning_is_not_reported_twice(self):
+        usage = telemetry._tokens_from_usage(
+            {
+                "input_tokens": 10,
+                "output_tokens": 40,
+                "total_tokens": 50,
+                "output_token_details": {"reasoning": 25},
+            }
+        )
+        assert usage["thought_tokens"] == 25
+        assert usage["output_tokens"] == 15
+        assert (
+            usage["prompt_tokens"] + usage["output_tokens"] + usage["thought_tokens"]
+            == usage["total_tokens"]
+        )
+
+    def test_invariant_fills_a_component_the_provider_omitted(self):
+        """The production row: a missing output_tokens nulled every derivation.
+
+        2026-09-24 21:09:48 pipeline:QUOTE/extract had prompt=1099, output=NULL,
+        thought=109, total=1208 — so `total - prompt - thought` was NULL.
+        """
+        row = telemetry._normalise(
+            {
+                "scope": "pipeline:QUOTE/extract",
+                "model": "gemini-3.8-flash",
+                "prompt_tokens": 1099,
+                "output_tokens": None,
+                "thought_tokens": 109,
+                "total_tokens": 1208,
+            }
+        )
+        assert row["output_tokens"] == 0
+        assert (
+            row["prompt_tokens"] + row["output_tokens"] + row["thought_tokens"]
+            == row["total_tokens"]
+        )
+
+    def test_invariant_does_not_invent_tokens_without_a_total(self):
+        """No total means no invariant to satisfy — absent must stay absent."""
+        row = telemetry._normalise(
+            {"scope": "s", "model": "m", "prompt_tokens": 10}
+        )
+        assert row["output_tokens"] is None
+        assert row["thought_tokens"] is None
+
+    def test_every_row_carries_the_same_columns(self):
+        """Every row must have an identical shape.
+
+        `_apply_token_invariant` writes into the row, so a sparse row could gain
+        a key its batch-mates lack. SQLAlchemy tolerates that (verified against
+        the real table), but one fixed shape keeps the NULL-vs-zero story
+        uniform and the invariant check meaningful.
+        """
+        sparse = telemetry._normalise({"scope": "s", "model": "m"})
+        full = telemetry._normalise(
+            {
+                "scope": "s",
+                "model": "m",
+                "latency_ms": 1,
+                "prompt_tokens": 1,
+                "output_tokens": 2,
+                "thought_tokens": 0,
+                "total_tokens": 3,
+            }
+        )
+        assert set(sparse) == set(full) == set(telemetry._COLUMNS)

@@ -9,11 +9,14 @@ and GitHub Secrets, NOT in this file.
 
 Configuration can be overridden by environment variables if needed.
 """
+import logging
 import os
 from dotenv import load_dotenv
 
 # Load environment variables early so class-level os.getenv calls work
 load_dotenv()
+
+_log = logging.getLogger(__name__)
 
 class Config:
     """Application configuration settings"""
@@ -83,22 +86,46 @@ class Config:
     # Defaults to empty — falls back to DEFAULT_MODEL (same as chat agent).
     VISION_EXTRACTION_MODEL = os.getenv("VISION_EXTRACTION_MODEL", "")
 
-    # Model used when the primary fails. Must be a model that actually exists:
-    # it was hardcoded to gemini-2.0-flash, which now 404s, making the whole
-    # failover path a dead end.
-    FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "gemini-3.5-flash-lite")
-    # Ordered fallback ladder, tried after the primary in this order, skipping
-    # any entry equal to the primary. Without this a single FALLBACK_MODEL can
-    # silently be the same model as the primary (which is exactly what our
-    # .env does for QUOTE_* today), leaving no failover at all.
-    # Defaults are the fastest and cheapest Flash models measured on 2026-09-23.
-    FALLBACK_CHAIN = [
+    # Ordered model ladder, most capable first. A model's fallbacks are the
+    # entries *below* it, so every failover is an incremental step down in
+    # capability instead of a cliff. The previous design was "primary, then a
+    # flat FALLBACK_CHAIN", which meant anything that was not the first choice
+    # fell all the way to the cheapest model — a Pro model fell straight to
+    # flash-lite.
+    #
+    # The ordering is deliberate and is NOT generation order:
+    #   - 3.1-pro-preview leads so nothing can ever fall *up* into the most
+    #     expensive model.
+    #   - 3.7-flash is omitted on purpose: it is a measured regression (7.01s
+    #     mean wall vs 3.10s for 3.6-flash, bench_gemini_flash.py 2026-09-23)
+    #     with no measured quality gain — all five models scored 10/10 on the
+    #     only task we grade. Add it back only if a quality eval earns it.
+    #   - 3.5-flash-lite is the floor: fastest AND cheapest measured.
+    # 3.6/3.7/3.8 share identical per-token pricing until 2026-12-31, so this
+    # is a capability ladder, not a price ladder.
+    # See .github/prompts/plan-llmTelemetryFindings.prompt.md.
+    MODEL_LADDER = [
         m.strip()
         for m in os.getenv(
-            "FALLBACK_CHAIN", "gemini-3.5-flash-lite,gemini-3.6-flash"
+            "MODEL_LADDER",
+            "gemini-3.1-pro-preview,gemini-3.8-flash,gemini-3.6-flash,"
+            "gemini-3.5-flash-lite",
         ).split(",")
         if m.strip()
     ]
+
+    # Deprecated 2026-09-26, replaced by MODEL_LADDER. Still read so that a
+    # stale Railway variable announces itself instead of silently doing
+    # nothing. Do not add new code that reads these.
+    _legacy_fallback_model = os.getenv("FALLBACK_MODEL")
+    _legacy_fallback_chain = os.getenv("FALLBACK_CHAIN")
+    if _legacy_fallback_model or _legacy_fallback_chain:
+        _log.warning(
+            "FALLBACK_MODEL/FALLBACK_CHAIN are deprecated and IGNORED. "
+            "Use MODEL_LADDER instead (see .env.example). Found: %s%s",
+            f"FALLBACK_MODEL={_legacy_fallback_model} " if _legacy_fallback_model else "",
+            f"FALLBACK_CHAIN={_legacy_fallback_chain}" if _legacy_fallback_chain else "",
+        )
     # Background sync loops (Gmail / NetSuite / maintenance) run on this model
     # and tier, so our own bulk work cannot contend with interactive chat turns
     # for the same quota.
@@ -128,9 +155,20 @@ class Config:
     LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
     # Raw-SDK equivalent (google-genai HttpRetryOptions.attempts).
     LLM_SDK_RETRY_ATTEMPTS = int(os.getenv("LLM_SDK_RETRY_ATTEMPTS", "2"))
-    # Overall wall-clock budget for one pipeline call across all candidates,
-    # so a retry storm cannot stall a background job indefinitely.
-    LLM_MAX_ATTEMPT_SECONDS = float(os.getenv("LLM_MAX_ATTEMPT_SECONDS", "45"))
+    # Overall wall-clock budget for one pipeline call *across all candidates*,
+    # so a retry storm cannot stall a background job indefinitely. This is
+    # enforced as a per-attempt HTTP timeout of min(remaining, request
+    # timeout), so a single attempt can no longer outlive the whole budget.
+    #
+    # 90s, not 45s: the budget must be able to accommodate one legitimately slow
+    # call, or enforcing it would turn today's successes into failures. The
+    # slowest *successful* call observed in prod telemetry was 62.6s
+    # (gemini-3.8-flash, pipeline:QUOTE/extract, 2026-09-24), and
+    # pipeline:RFQ_CREATION/extract runs p99 ≈ 44.7s. At 45s those calls would
+    # have been cut off. Before this was enforced the real worst case was
+    # n_candidates × LLM_REQUEST_TIMEOUT_MS (240s for two candidates) — 90s is
+    # both tighter and truthful.
+    LLM_MAX_ATTEMPT_SECONDS = float(os.getenv("LLM_MAX_ATTEMPT_SECONDS", "90"))
     LLM_REQUEST_TIMEOUT_MS = int(os.getenv("LLM_REQUEST_TIMEOUT_MS", "120000"))
 
     # ==================== LLM telemetry ====================
