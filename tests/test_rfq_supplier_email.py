@@ -132,6 +132,34 @@ class TestPersistedChoice:
 
         assert supplier["email"] == "accounts@example.com"
 
+    def test_a_choice_recorded_as_an_address_is_used(self):
+        """An RFQ line stores the chosen address as ``contact_email`` and a
+        contacts snapshot written without ids, so an id-only match discarded the
+        choice and the tab kept showing the label default (Sydney Tools,
+        2026-09-27)."""
+        supplier = _only(_rfq(
+            contacts=[
+                {"label": "Source", "name": "Nick G",
+                 "email": "nickg@sydneytools.com.au"},
+                {"label": "Main", "email": "joshuac@sydneytools.com.au"},
+            ],
+            contact_email="joshuac@sydneytools.com.au",
+        ))
+
+        assert supplier["email"] == "joshuac@sydneytools.com.au"
+
+    def test_an_id_still_beats_the_address(self):
+        supplier = _only(_rfq(
+            contacts=[
+                {"id": "c1", "label": "Source", "email": "nickg@sydneytools.com.au"},
+                {"id": "c2", "label": "Main", "email": "joshuac@sydneytools.com.au"},
+            ],
+            contact_id="c2",
+            contact_email="nickg@sydneytools.com.au",
+        ))
+
+        assert supplier["email"] == "joshuac@sydneytools.com.au"
+
     def test_a_choice_that_no_longer_exists_falls_back(self):
         supplier = _only(_rfq(
             contacts=[{"id": "c1", "label": "Source", "email": "buyer@example.com"}],
@@ -213,6 +241,40 @@ class TestGrouping:
                    contacts=[{"label": "Source", "email": "buyer@example.com"}])
 
         assert _build_rfq_supplier_email_data(rfq) == []
+
+    def test_the_line_that_knows_the_contact_wins(self):
+        """A supplier can be on several lines and only some entries carry a
+        choice — the widget records one when it links the supplier, an earlier
+        agent add may not. The first line walked is not necessarily the one that
+        knows who to email."""
+        supplier_id = "11111111-1111-1111-1111-111111111111"
+        rfq = {
+            "id": "RFQ-2026-1",
+            "items": [
+                {"line": 1, "input_description": "DRILL", "part_number": "D-1",
+                 "suppliers": [{
+                     "name": "Sydney Tools Pty Ltd", "supplier_id": supplier_id,
+                     "status": "shortlisted",
+                     "contacts": [{"label": "Source",
+                                   "email": "nickg@sydneytools.com.au"}],
+                 }]},
+                {"line": 2, "input_description": "SAW", "part_number": "S-1",
+                 "suppliers": [{
+                     "name": "Sydney Tools Pty Ltd", "supplier_id": supplier_id,
+                     "status": "shortlisted",
+                     "contacts": [{"label": "Main",
+                                   "email": "joshuac@sydneytools.com.au"}],
+                     "contact_email": "joshuac@sydneytools.com.au",
+                 }]},
+            ],
+        }
+
+        supplier = _only(rfq)
+
+        assert supplier["email"] == "joshuac@sydneytools.com.au"
+        assert [item["line"] for item in supplier["line_items"]] == [1, 2], (
+            "displacing the entry must not lose the lines already collected"
+        )
 
 
 # ============================================================================

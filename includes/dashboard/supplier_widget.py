@@ -543,10 +543,16 @@ def _submit_existing(
         )
 
     link = _link_to_lines(state, supplier, data, user_email)
+    # The email shown is the contact the user picked, not the supplier's
+    # label-ranked default: a card that echoed somebody else made the choice look
+    # ignored (Sydney Tools showed nickg@ after joshuac@ was picked, 2026-09-27).
+    # Resolved independently of the link so the card is right even when the line
+    # write failed; falls back to the ranked default only when nothing resolves.
+    chosen_contact = _contact_for_link(supplier.id, data.get("contact_id"))
     result = {
         "supplier_id": supplier.id,
         "name": supplier.name,
-        "email": found["email"],
+        "email": chosen_contact.get("email") or found["email"],
         "lines": link["lines"],
         "already_on": link["already_on"],
         "line_error": link["error"],

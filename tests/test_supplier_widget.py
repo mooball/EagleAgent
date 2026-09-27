@@ -584,6 +584,29 @@ class TestSubmitExisting:
         )
         assert "was already a candidate" in outcome.notice
 
+    def test_the_card_shows_the_contact_that_was_picked(self, picked):
+        """The result email is the chosen contact, not the label-ranked default.
+
+        Regression (2026-09-27): picking joshuac@ still showed nickg@, because the
+        card echoed the supplier's default rather than the pick.
+        """
+        picked.setattr(sw, "_contact_options", lambda sid: [
+            {"id": "c-source", "label": "Source", "name": "Nick G",
+             "email": "nickg@sydneytools.com.au", "phone": ""},
+            {"id": "c-main", "label": "Main", "name": "",
+             "email": "joshuac@sydneytools.com.au", "phone": ""},
+        ])
+        picked.setattr(sw, "_link_to_lines", lambda *a, **k: {
+            "lines": [7], "already_on": [], "error": ""})
+
+        outcome = sw._submit(
+            {"supplier_id": FakeSupplier.id, "name": FakeSupplier.name,
+             "contact_id": "c-main", "line_mode": "all"},
+            _state(), "tom@x.com",
+        )
+
+        assert outcome.result["email"] == "joshuac@sydneytools.com.au"
+
 
 class TestRfqLines:
     """What the line picker gets to show."""

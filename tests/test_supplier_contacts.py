@@ -21,6 +21,7 @@ from includes.dashboard.supplier_contacts import (
     MAIN,
     SOURCE,
     SOURCE_CC,
+    attach_contact_ids,
     best_contact,
     best_from,
     merge_ordered,
@@ -211,6 +212,80 @@ class TestBestContact:
     def test_a_preference_with_no_id_never_matches_by_accident(self):
         contacts = [{"label": SOURCE, "email": "buyer@example.com"}]
         assert best_contact(contacts, preferred_id="")["email"] == "buyer@example.com"
+
+    def test_a_choice_recorded_as_an_address_is_honoured(self):
+        """An RFQ line stores the chosen address as ``contact_email`` and a
+        contacts snapshot written without ids, so an id-only match discards the
+        choice and falls back to the label default.
+
+        Sydney Tools: the user picked joshuac@ and the tab kept showing nickg@
+        (2026-09-27).
+        """
+        contacts = [
+            {"label": SOURCE, "email": "nickg@sydneytools.com.au", "name": "Nick G"},
+            {"label": MAIN, "email": "joshuac@sydneytools.com.au"},
+        ]
+        chosen = best_contact(
+            contacts, preferred_email="joshuac@sydneytools.com.au"
+        )
+        assert chosen["email"] == "joshuac@sydneytools.com.au"
+
+    def test_an_id_still_beats_the_address(self):
+        """Both are the same decision; the id is the stronger record."""
+        contacts = [
+            {"id": "c1", "label": SOURCE, "email": "nickg@sydneytools.com.au"},
+            {"id": "c2", "label": MAIN, "email": "joshuac@sydneytools.com.au"},
+        ]
+        chosen = best_contact(
+            contacts,
+            preferred_id="c2",
+            preferred_email="nickg@sydneytools.com.au",
+        )
+        assert chosen["email"] == "joshuac@sydneytools.com.au"
+
+    def test_a_falling_through_id_still_tries_the_address(self):
+        """The id may be one the snapshot never carried; the address travels with
+        it from the picker."""
+        contacts = [
+            {"label": SOURCE, "email": "nickg@sydneytools.com.au"},
+            {"label": MAIN, "email": "joshuac@sydneytools.com.au"},
+        ]
+        chosen = best_contact(
+            contacts,
+            preferred_id="befaf4a2-0000-0000-0000-000000000000",
+            preferred_email="joshuac@sydneytools.com.au",
+        )
+        assert chosen["email"] == "joshuac@sydneytools.com.au"
+
+
+class TestAttachContactIds:
+    def test_the_live_id_is_grafted_onto_the_row_that_won(self):
+        """merge_ordered ranks by label, so a stale snapshot row with a better
+        label can win an address the table also holds — and it has no id. The
+        lost id is what made the saved choice unresolvable."""
+        merged = [
+            {"label": SOURCE, "name": "Sydney Tools",
+             "email": "joshuac@sydneytools.com.au"},          # snapshot row, no id
+            {"id": "n1", "label": SOURCE, "email": "nickg@sydneytools.com.au"},
+        ]
+        live = [
+            {"id": "j1", "label": MAIN, "email": "joshuac@sydneytools.com.au"},
+            {"id": "n1", "label": SOURCE, "email": "nickg@sydneytools.com.au"},
+        ]
+
+        out = attach_contact_ids(merged, live)
+
+        assert [c.get("id") for c in out] == ["j1", "n1"]
+        assert merged[0].get("id") is None, "originals are copied, not mutated"
+
+    def test_an_id_already_present_is_left_alone(self):
+        merged = [{"id": "keep", "label": SOURCE, "email": "a@x.com"}]
+        live = [{"id": "other", "label": SOURCE, "email": "a@x.com"}]
+        assert attach_contact_ids(merged, live)[0]["id"] == "keep"
+
+    def test_an_address_the_table_does_not_know_is_untouched(self):
+        merged = [{"label": SOURCE, "email": "new@x.com"}]
+        assert attach_contact_ids(merged, [])[0].get("id") is None
 
 
 class TestBestFrom:
