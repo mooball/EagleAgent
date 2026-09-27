@@ -11,9 +11,8 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - eagleagent_postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
 volumes:
-  eagleagent_postgres_data:
-    external: true
+  postgres_data:
