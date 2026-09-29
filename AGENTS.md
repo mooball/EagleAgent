@@ -391,7 +391,7 @@ The FastAPI dashboard serves HTML pages for managing suppliers, products, RFQs, 
 - **Never mix Alpine and Preline JS on the same element tree** — a dropdown is either Alpine's or Preline's, not both.
 - `@tailwindcss/forms` is intentionally omitted (legacy plugin; the standalone v4 CLI cannot load it vendored) — style form controls with utilities as today.
 - Custom component CSS lives at the bottom of `input.css` (`.btn`, `.tip`, etc.).
-- Rebuild CSS after any class/template change with the standalone v4 CLI: `tailwindcss -i input.css -o public/tailwind.min.css --minify` (binary at `/tmp/tailwindcss4` locally; the Dockerfile downloads the same version at deploy). `public/tailwind.min.css` is untracked.
+- Rebuild CSS after any class/template change with the standalone v4 CLI: `tailwindcss -i input.css -o public/tailwind.min.css --minify` (the standalone binary is installed globally and on PATH — e.g. `~/.local/bin/tailwindcss`; `run.sh` fails fast if it is missing. The Dockerfile downloads the same version at deploy). `public/tailwind.min.css` is untracked.
 - Preline kitchen-sink probe: `/public/probe.html` (with its `@source` line in `input.css` — remove both together when retiring it).
 - v4 gotchas: `flex-shrink-0`→`shrink-0`, `outline-none`→`outline-hidden`, `shadow-sm`→`shadow-xs`; bare `ring` is 1px/currentColor; Preflight no longer gives buttons `cursor: pointer` (restored in `input.css` base layer).
 
