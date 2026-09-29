@@ -641,6 +641,24 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
         snapshot = sync_state.get("snapshot") or {}
         synced_lines = {int(l) for l in snapshot.keys()}
         from includes.tools.product_tools import normalize_part_number
+
+        # Near-miss candidates for every selected supplier, in one query. This
+        # used to run once per selected line item — an N+1 that dominated large
+        # quotation renders.
+        from includes.dashboard.supplier_dedup import open_near_miss_pairs_batch
+        selected_supplier_ids = {
+            str(sup["supplier_id"])
+            for item in items
+            for sup in (item.get("suppliers") or [])
+            if sup.get("quote_status") == "selected"
+            and _is_valid_uuid(sup.get("supplier_id"))
+        }
+        near_miss_map = (
+            open_near_miss_pairs_batch(session, selected_supplier_ids)
+            if selected_supplier_ids
+            else {}
+        )
+
         for item in items:
             item["ns_synced"] = item["line"] in synced_lines
             product = None
@@ -689,8 +707,7 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
                     if sup is not None:
                         selected["netsuite_id"] = sup.netsuite_id
                         selected["ns_linked"] = bool(sup.netsuite_id)
-                    from includes.dashboard.supplier_dedup import open_near_miss_pairs
-                    flagged = open_near_miss_pairs(session, selected["supplier_id"])
+                    flagged = near_miss_map.get(str(selected["supplier_id"]), [])
                     selected["near_matches"] = [
                         {
                             "name": f["name"],
@@ -1228,20 +1245,33 @@ def _add_pipeline_flags(ctx: dict, rfq: dict) -> dict:
 
 
 def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
+    tab = _normalize_rfq_tab(active_tab)
     ctx = {
         "user": user,
         "rfq": rfq,
         "rfq_thread_id": _lookup_rfq_thread_id(rfq["id"], user.get("email", "")),
-        "active_tab": _normalize_rfq_tab(active_tab),
+        "active_tab": tab,
         "all_users": _get_all_user_emails(),
         "departments": _department_options(),
     }
-    ctx.update(_rfq_sync_readiness(rfq))
-    _annotate_brand_db_status(rfq)
     _add_pipeline_flags(ctx, rfq)
-    if ctx["active_tab"] == "selection":
+
+    # Each tab only pays for the enrichment it actually renders. Previously every
+    # tab ran the full NetSuite readiness pass plus the brand scan — sequential
+    # scans of products/brands that dominated large-RFQ renders (the Selection
+    # tab's star click, in particular).
+    if tab == "quotation":
+        ctx.update(_rfq_sync_readiness(rfq))
+    elif tab == "items":
+        _annotate_brand_db_status(rfq)
+    elif tab == "selection":
+        _annotate_selection_state(rfq)
         _annotate_last_sale(rfq)
-    if ctx["active_tab"] == "quotation":
+        _items = rfq.get("items") or []
+        ctx["supplier_names"] = _selection_supplier_names(_items)
+        ctx["supplier_quotable_counts"] = _selection_supplier_quotable_counts(_items)
+
+    if tab == "quotation":
         from includes.netsuite.records.vendor import TERM_OPTIONS, CURRENCY_OPTIONS
         from includes.netsuite.countries import country_option_groups, AU_STATES, COUNTRY_CURRENCY
         ctx["ns_terms_options"] = [
@@ -1253,9 +1283,9 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
         ctx["ns_country_options"] = country_option_groups()
         ctx["ns_au_states"] = list(AU_STATES)
         ctx["ns_country_currency"] = COUNTRY_CURRENCY
-    if ctx["active_tab"] == "suppliers":
+    if tab == "suppliers":
         ctx["suppliers"] = _build_rfq_supplier_email_data(rfq)
-    if ctx["active_tab"] == "communications":
+    if tab == "communications":
         ctx.update(_rfq_comms_context(rfq))
     return ctx
 
@@ -1286,6 +1316,159 @@ def _annotate_last_sale(rfq: dict) -> None:
         return
     for item in items:
         item["last_sale"] = lookup.get((item.get("part_number") or "").strip())
+
+
+def _annotate_selection_state(rfq: dict) -> None:
+    """Set the two fields the Selection tab needs — and nothing more.
+
+    - ``item["selected_supplier"]`` — supplier with ``quote_status == "selected"``
+    - ``sup["link_broken"]`` — the supplier's ``supplier_id`` is not a live DB row
+
+    Mirrors that subset of :func:`_rfq_sync_readiness` so the two tabs agree, but
+    skips product/brand lookups, contacts, near-miss detail, per-item issue lists
+    and the NetSuite sync snapshot — none of which the Selection matrix renders.
+    The Quotation tab still runs the full readiness pass.
+    """
+    items = rfq.get("items") or []
+    if not items:
+        return
+
+    supplier_ids = {
+        str(sup["supplier_id"])
+        for item in items
+        for sup in (item.get("suppliers") or [])
+        if _is_valid_uuid(sup.get("supplier_id"))
+    }
+    existing_ids: set[str] = set()
+    if supplier_ids:
+        session = _helpers.get_session()
+        try:
+            existing_ids = {
+                str(row[0])
+                for row in session.query(Supplier.id)
+                .filter(Supplier.id.in_(list(supplier_ids)))
+                .all()
+            }
+        finally:
+            session.close()
+
+    for item in items:
+        for sup in (item.get("suppliers") or []):
+            _sid = sup.get("supplier_id")
+            sup["link_broken"] = bool(_sid) and str(_sid) not in existing_ids
+        item["selected_supplier"] = next(
+            (s for s in (item.get("suppliers") or []) if s.get("quote_status") == "selected"),
+            None,
+        )
+
+
+def _selection_supplier_names(items: list) -> list:
+    """Ordered unique suppliers shown as columns on the Selection matrix.
+
+    Mirrors the matrix's previous Jinja computation: suppliers whose sourcing
+    status is 'shortlisted'/'selected', in first-seen order across the items.
+    Centralised here so the full-matrix render and the single-row refresh agree.
+    """
+    names: list = []
+    for item in items:
+        for sup in (item.get("suppliers") or []):
+            if sup.get("status") in ("shortlisted", "selected"):
+                name = sup.get("name")
+                if name not in names:
+                    names.append(name)
+    return names
+
+
+def _selection_supplier_quotable_counts(items: list) -> dict:
+    """Per-supplier count of lines where the supplier has a usable quote.
+
+    Drives the "Select all" control: a supplier with no quotable line gets no
+    button. "Usable" mirrors the single-star guard — sourcing status
+    shortlisted/selected, not declined, and a quote_cost present.
+    """
+    counts: dict = {}
+    for item in items:
+        for sup in (item.get("suppliers") or []):
+            if sup.get("status") not in ("shortlisted", "selected"):
+                continue
+            if sup.get("quote_status") == "declined" or sup.get("quote_cost") is None:
+                continue
+            name = sup.get("name")
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def _select_supplier_on_item(item, name_lower: str) -> str:
+    """Select a supplier on one RFQItem using the single-star semantics.
+
+    Returns "changed", "already", "skipped" (present but declined / no quote) or
+    "absent". Mutates ``item`` in place; the caller is responsible for flagging
+    the JSONB column (``flag_modified``) when the result is "changed".
+    """
+    from decimal import Decimal, InvalidOperation
+    from includes.tools.rfq_crud import _is_empty_part_number
+
+    suppliers = list(item.suppliers or [])
+    target = next(
+        (s for s in suppliers if (s.get("name") or "").lower() == name_lower),
+        None,
+    )
+    if target is None:
+        return "absent"
+    if target.get("quote_status") == "declined" or target.get("quote_cost") is None:
+        return "skipped"
+    if target.get("quote_status") == "selected":
+        return "already"
+
+    for sup in suppliers:
+        if sup.get("quote_status") == "selected":
+            sup["quote_status"] = "quoted"
+    target["quote_status"] = "selected"
+    try:
+        item.cost_price = Decimal(str(target.get("quote_cost")))
+    except (InvalidOperation, ValueError):
+        pass
+    if _is_empty_part_number(item.part_number):
+        supplier_pn = target.get("quote_part_number")
+        if supplier_pn:
+            item.part_number = str(supplier_pn)
+    item.suppliers = suppliers
+    return "changed"
+
+
+def _render_selection_row(rfq: dict, item: dict, supplier_names: list) -> str:
+    return templates.env.get_template("partials/_rfq_selection_row.html").render(
+        rfq=rfq, item=item, supplier_names=supplier_names
+    )
+
+
+def _render_selection_totals(rfq: dict, supplier_names: list) -> str:
+    return templates.env.get_template("partials/_rfq_selection_totals.html").render(
+        rfq=rfq, items=rfq.get("items") or [], supplier_names=supplier_names
+    )
+
+
+def _selection_row_json(rfq: dict, line: int) -> JSONResponse | None:
+    """JSON payload with the refreshed Selection row + totals for ``line``.
+
+    Returns None when the line is absent. Annotates **only the rendered row**
+    (selection state + last-sale); the totals read raw item fields, so the click
+    does not scan every part number on the RFQ. Used by the select-supplier POST
+    and the selection-row GET, so a one-line change never re-renders the whole
+    RFQ detail page.
+    """
+    items = rfq.get("items") or []
+    item = next((i for i in items if i.get("line") == line), None)
+    if item is None:
+        return None
+    _annotate_selection_state({"items": [item]})
+    _annotate_last_sale({"items": [item]})
+    supplier_names = _selection_supplier_names(items)
+    return JSONResponse({
+        "row": _render_selection_row(rfq, item, supplier_names),
+        "totals": _render_selection_totals(rfq, supplier_names),
+    })
 
 
 def _annotate_brand_db_status(rfq: dict) -> None:
@@ -3045,7 +3228,12 @@ async def quotation_select_supplier(
     request: Request, rfq_id: str, line: int,
     user: dict = Depends(require_user),
 ):
-    """Select a winning supplier for a line item. Toggles off if already selected."""
+    """Select a winning supplier for a line item. Toggles off if already selected.
+
+    Responds with JSON ``{"row": ..., "totals": ...}`` — the refreshed Selection
+    row and totals row — so the client swaps just that line instead of
+    re-rendering the whole RFQ detail page.
+    """
     body = await request.json()
     supplier_name = (body.get("supplier_name") or "").strip()
     if not supplier_name:
@@ -3053,7 +3241,7 @@ async def quotation_select_supplier(
 
     from includes.dashboard.models import RFQ, RFQItem
     from sqlalchemy.orm.attributes import flag_modified
-    from starlette.responses import Response
+    from includes.tools.rfq_crud import _rfq_to_dict
 
     session = _helpers.get_session()
     try:
@@ -3103,12 +3291,130 @@ async def quotation_select_supplier(
         line_item.suppliers = suppliers
         flag_modified(line_item, "suppliers")
         session.commit()
-        return Response(status_code=204)
+        rfq_dict = _rfq_to_dict(rfq)
     except Exception:
         session.rollback()
         raise
     finally:
         session.close()
+
+    payload = _selection_row_json(rfq_dict, line)
+    if payload is None:
+        return JSONResponse({"status": "error", "message": f"Line {line} not found"}, status_code=404)
+    return payload
+
+
+@router.get("/partial/rfqs/{rfq_id}/selection-row/{line}")
+async def partial_rfq_selection_row(
+    request: Request, rfq_id: str, line: int,
+    user: dict = Depends(require_user),
+):
+    """Return one Selection-matrix row + the totals row as JSON.
+
+    Lets client-side mutations that have no HTML response of their own (decline
+    toggle, supplier-quote edits) refresh only the affected line.
+    """
+    from includes.tools.rfq_crud import _get_rfq_dict_sync
+
+    rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
+    if not rfq:
+        return JSONResponse({"status": "error", "message": "RFQ not found"}, status_code=404)
+    payload = _selection_row_json(rfq, line)
+    if payload is None:
+        return JSONResponse({"status": "error", "message": f"Line {line} not found"}, status_code=404)
+    return payload
+
+
+# Above this many changed lines, return a full-refresh hint instead of one row
+# fragment per line — the payload is then the size of the matrix anyway, and a
+# single tab refresh is simpler for the browser than N row swaps.
+_SELECT_ALL_INLINE_ROW_LIMIT = 25
+
+
+@router.post("/partial/rfqs/{rfq_id}/items/select-supplier-all")
+async def quotation_select_supplier_all(
+    request: Request, rfq_id: str,
+    user: dict = Depends(require_user),
+):
+    """Select one supplier on every line where it has a usable quote.
+
+    Per-line semantics match the single star: deselect any other selected
+    supplier, select this one, copy ``quote_cost -> cost_price`` and (when the
+    part number is empty) ``quote_part_number -> part_number``.
+
+    Returns JSON. For a handful of changed lines it includes the rendered rows +
+    totals for a targeted swap; for a large change it returns ``refresh: "full"``
+    so the client refreshes the tab in one request. ``skipped`` counts lines where
+    the supplier is present but has no usable quote (declined or no cost).
+    """
+    body = await request.json()
+    supplier_name = (body.get("supplier_name") or "").strip()
+    if not supplier_name:
+        return JSONResponse({"status": "error", "message": "Missing supplier_name"}, status_code=400)
+
+    act = await asyncio.to_thread(_rfq_pipeline_activity_for, rfq_id)
+    if act:
+        return JSONResponse(
+            {"status": "error", "message": _pipeline_lock_message(act)}, status_code=409
+        )
+
+    from includes.dashboard.models import RFQ, RFQItem
+    from sqlalchemy.orm.attributes import flag_modified
+    from includes.tools.rfq_crud import _rfq_to_dict
+
+    name_lower = supplier_name.lower()
+    changed_lines: list[int] = []
+    skipped = 0
+
+    session = _helpers.get_session()
+    try:
+        rfq = session.query(RFQ).filter(RFQ.rfq_number == rfq_id).first()
+        if not rfq:
+            return JSONResponse({"status": "error", "message": f"RFQ '{rfq_id}' not found"}, status_code=404)
+
+        def _apply():
+            nonlocal skipped
+            items = (
+                session.query(RFQItem)
+                .filter(RFQItem.rfq_id == rfq.id)
+                .order_by(RFQItem.id)
+                .all()
+            )
+            for item in items:
+                outcome = _select_supplier_on_item(item, name_lower)
+                if outcome == "changed":
+                    flag_modified(item, "suppliers")
+                    changed_lines.append(item.line)
+                elif outcome == "skipped":
+                    skipped += 1
+
+        await _commit_bulk_with_retry(session, _apply)
+        rfq_dict = _rfq_to_dict(rfq)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    result = {"status": "ok", "changed": len(changed_lines), "skipped": skipped}
+    if not changed_lines:
+        return JSONResponse(result)
+    if len(changed_lines) > _SELECT_ALL_INLINE_ROW_LIMIT:
+        result["refresh"] = "full"
+        return JSONResponse(result)
+
+    # Annotate the changed rows once, then render just those rows.
+    _annotate_selection_state(rfq_dict)
+    _annotate_last_sale(rfq_dict)
+    supplier_names = _selection_supplier_names(rfq_dict.get("items") or [])
+    by_line = {i.get("line"): i for i in (rfq_dict.get("items") or [])}
+    result["rows"] = {
+        str(line): _render_selection_row(rfq_dict, by_line[line], supplier_names)
+        for line in changed_lines
+        if line in by_line
+    }
+    result["totals"] = _render_selection_totals(rfq_dict, supplier_names)
+    return JSONResponse(result)
 
 
 @router.patch("/partial/rfqs/{rfq_id}/supplier-meta")

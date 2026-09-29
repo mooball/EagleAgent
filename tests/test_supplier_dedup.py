@@ -544,3 +544,53 @@ class TestPickKeepRemove:
         b = self._sup(netsuite_id="NS-2")
         keep, _remove = pick_keep_remove(a, b, None)
         assert keep is a
+
+
+class TestOpenNearMissPairsBatch:
+    """The batched helper must return the same pairs as the single-id version."""
+
+    def test_batch_matches_single(self, db_session):
+        from includes.dashboard.supplier_dedup import (
+            open_near_miss_pairs,
+            open_near_miss_pairs_batch,
+        )
+
+        primary = _supplier(db_session, name="Batch Primary", netsuite_id="NS-BP")
+        dupe = _supplier(db_session, name="Batch Dupe", netsuite_id=False)
+        other = _supplier(db_session, name="Batch Other", netsuite_id="NS-BO")
+        db_session.add(SupplierDuplicateCandidate(
+            primary_id=primary.id, duplicate_id=dupe.id, status="proposed",
+            confidence=0.8, reasons=["name"],
+        ))
+        db_session.add(SupplierDuplicateCandidate(
+            primary_id=other.id, duplicate_id=primary.id, status="proposed",
+            confidence=0.5, reasons=["domain"],
+        ))
+        db_session.flush()
+
+        ids = [primary.id, dupe.id, other.id]
+        batch = open_near_miss_pairs_batch(db_session, ids)
+
+        for sid in ids:
+            single = {r["id"] for r in open_near_miss_pairs(db_session, sid)}
+            got = {r["id"] for r in batch.get(str(sid), [])}
+            assert got == single
+            assert got  # each id in this fixture has at least one pair
+
+    def test_rejected_pairs_excluded(self, db_session):
+        from includes.dashboard.supplier_dedup import open_near_miss_pairs_batch
+
+        primary = _supplier(db_session, name="Rejected Primary", netsuite_id="NS-RP")
+        dupe = _supplier(db_session, name="Rejected Dupe", netsuite_id=False)
+        db_session.add(SupplierDuplicateCandidate(
+            primary_id=primary.id, duplicate_id=dupe.id, status="rejected",
+        ))
+        db_session.flush()
+
+        assert open_near_miss_pairs_batch(db_session, [primary.id]) == {}
+
+    def test_ignores_non_uuid_and_empty(self, db_session):
+        from includes.dashboard.supplier_dedup import open_near_miss_pairs_batch
+
+        assert open_near_miss_pairs_batch(db_session, []) == {}
+        assert open_near_miss_pairs_batch(db_session, ["sup_123", "not-a-uuid"]) == {}

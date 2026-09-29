@@ -604,3 +604,66 @@ def open_near_miss_pairs(session, supplier_id) -> list[dict]:
                 "reasons": r.reasons or [],
             })
     return out
+
+
+def open_near_miss_pairs_batch(session, supplier_ids) -> dict[str, list[dict]]:
+    """Batched :func:`open_near_miss_pairs` — one query for many suppliers.
+
+    Returns ``{str(supplier_id): [{"id","name","confidence","reasons"}, ...]}``
+    for every requested id (empty list when it has no proposed candidate rows).
+    Non-UUID ids are ignored, matching the single-id helper.
+
+    Exists because the RFQ Quotation tab called the single-id version once per
+    selected line item — an N+1 that dominated the render on large RFQs.
+    """
+    from includes.dashboard.models import SupplierDuplicateCandidate
+
+    ids: list = []
+    for supplier_id in supplier_ids or []:
+        try:
+            ids.append(uuid.UUID(str(supplier_id)))
+        except (ValueError, TypeError):
+            continue
+    if not ids:
+        return {}
+
+    rows = (
+        session.query(SupplierDuplicateCandidate)
+        .filter(
+            SupplierDuplicateCandidate.status == "proposed",
+            or_(
+                SupplierDuplicateCandidate.primary_id.in_(ids),
+                SupplierDuplicateCandidate.duplicate_id.in_(ids),
+            ),
+        )
+        .all()
+    )
+    if not rows:
+        return {}
+
+    id_set = set(ids)
+    other_ids = set()
+    for r in rows:
+        if r.primary_id in id_set:
+            other_ids.add(r.duplicate_id)
+        if r.duplicate_id in id_set:
+            other_ids.add(r.primary_id)
+    others = {
+        s.id: s
+        for s in session.query(Supplier).filter(Supplier.id.in_(list(other_ids))).all()
+    }
+
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        for wanted, other_id in ((r.primary_id, r.duplicate_id), (r.duplicate_id, r.primary_id)):
+            if wanted not in id_set:
+                continue
+            other = others.get(other_id)
+            if other:
+                out.setdefault(str(wanted), []).append({
+                    "id": str(other.id),
+                    "name": other.name,
+                    "confidence": r.confidence,
+                    "reasons": r.reasons or [],
+                })
+    return out

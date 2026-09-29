@@ -717,3 +717,111 @@ def test_norm_key_matches_sql_expression_semantics():
     assert _norm_key(None) == ""
     assert _norm_key("  ") == ""
 
+
+class TestLastSaleForPartNumbers:
+    """The index-friendly rewrite (CI equality) must match the old behaviour.
+
+    Every part number uses a random token so the test cannot collide with the
+    real rows in the dev database.
+    """
+
+    @pytest.fixture
+    def db_session(self):
+        from sqlalchemy import create_engine, event
+        from sqlalchemy.orm import sessionmaker
+        from includes.dashboard.database import _sync_url
+
+        engine = create_engine(_sync_url(), pool_pre_ping=True)
+        connection = engine.connect()
+        transaction = connection.begin()
+        Session = sessionmaker(bind=connection)
+        session = Session(bind=connection)
+        session.begin_nested()
+
+        @event.listens_for(session, "after_transaction_end")
+        def restart_savepoint(sess, trans):
+            if trans.nested and not trans._parent.nested:
+                sess.begin_nested()
+
+        session.close = lambda: None
+        yield session
+        transaction.rollback()
+        connection.close()
+
+    def _supplier(self, session, name):
+        import uuid as _uuid
+        sup = Supplier(name=name, netsuite_id=f"NS-{_uuid.uuid4().hex[:8]}")
+        session.add(sup)
+        session.flush()
+        return sup
+
+    def _product(self, session, part_number, supplier_code=None):
+        import uuid as _uuid
+        prod = Product(
+            part_number=part_number,
+            supplier_code=supplier_code,
+            netsuite_id=f"NS-{_uuid.uuid4().hex[:8]}",
+        )
+        session.add(prod)
+        session.flush()
+        return prod
+
+    def _txn(self, session, product, supplier, price, when, doc_type="Quote", doc_number=None):
+        import uuid as _uuid
+        txn = Transaction(
+            product_id=product.id,
+            supplier_id=supplier.id,
+            price=price,
+            date=when,
+            doc_type=doc_type,
+            doc_number=doc_number or f"DOC-{_uuid.uuid4().hex[:8]}",
+        )
+        session.add(txn)
+        session.flush()
+        return txn
+
+    def test_latest_sale_wins_case_and_punctuation_insensitive(self, db_session):
+        import uuid as _uuid
+        from includes.tools.product_tools import last_sale_for_part_numbers
+
+        token = _uuid.uuid4().hex[:10]
+        vendor = self._supplier(db_session, "Sale Vendor Co")
+        prod = self._product(db_session, f"C50LR-BR24-{token}")
+        self._txn(db_session, product=prod, supplier=vendor, price=10.0, when=date(2024, 1, 1))
+        self._txn(db_session, product=prod, supplier=vendor, price=22.5, when=date(2025, 6, 1),
+                  doc_type="SalesOrder", doc_number=f"SO-{token}")
+
+        queried = f"c50lrbr24{token}"  # lower-case, separators stripped
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            res = last_sale_for_part_numbers([queried])
+
+        assert res[queried]["price"] == 22.5
+        assert res[queried]["doc_label"] == "Sale"
+        assert res[queried]["doc_number"] == f"SO-{token}"
+        assert res[queried]["vendor"] == "Sale Vendor Co"
+
+    def test_matches_supplier_code(self, db_session):
+        import uuid as _uuid
+        from includes.tools.product_tools import last_sale_for_part_numbers
+
+        token = _uuid.uuid4().hex[:10]
+        vendor = self._supplier(db_session, "Code Vendor")
+        prod = self._product(db_session, f"PN-{token}", supplier_code=f"SUPCODE-{token}")
+        self._txn(db_session, product=prod, supplier=vendor, price=7.0, when=date(2025, 2, 2))
+
+        queried = f"supcode{token}"
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            res = last_sale_for_part_numbers([queried])
+
+        assert res[queried]["price"] == 7.0
+
+    def test_no_sales_and_empty_input_return_empty(self, db_session):
+        import uuid as _uuid
+        from includes.tools.product_tools import last_sale_for_part_numbers
+
+        token = _uuid.uuid4().hex[:10]
+        self._product(db_session, f"PN-NOSALE-{token}")
+        with patch("includes.tools.product_tools.get_session", return_value=db_session):
+            assert last_sale_for_part_numbers([f"PN-NOSALE-{token}"]) == {}
+        assert last_sale_for_part_numbers([]) == {}
+
