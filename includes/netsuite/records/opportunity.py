@@ -23,11 +23,18 @@ logger = logging.getLogger(__name__)
 # Verified live 2026-09-22 against a test opportunity (OP73207): a payload of
 # item/quantity/rate plus any of our custom or cost-estimate fields recalculates
 # `amount` correctly; adding `grossAmt` back suppresses the recalculation.
+#
+# `rateSchedule` is the item price book's quantity schedule serialised onto the
+# line (e.g. "0\x05558.00"). We now write `price` = Custom (id -1) so `rate` is
+# treated as a manual price; echoing the old schedule back would drag the line's
+# original price level with it and let NetSuite re-source the rate on an edit
+# (production bug on OP73642), so it is dropped too.
 _COMPUTED_LINE_FIELDS = frozenset({
     "line",                    # sublist identity - must not be echoed
     "links",                   # HATEOAS links
     "amount",                  # derived: quantity x rate
     "grossAmt",                # derived - echoing it suppresses recalculation
+    "rateSchedule",            # derived from the line's price level
     "quantityOnHand",          # read-only inventory snapshot
     "quantityAvailable",       # read-only inventory snapshot
     "estGrossProfit",          # derived

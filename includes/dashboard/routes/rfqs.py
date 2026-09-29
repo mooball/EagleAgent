@@ -1097,6 +1097,15 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
             "item": {"id": str(ns_item_id)},
             "quantity": int(item.get("quantity") or 0),
             "rate": float(sale_rate),
+            # Force the Price Level to "Custom" (internal id -1) so NetSuite
+            # treats `rate` as a manual price and never re-sources it from the
+            # item's own price book. Leaving the default price level (Base
+            # Price) means an edit in the NetSuite UI — e.g. a quantity change —
+            # re-applies the item's price schedule and silently overwrites the
+            # RFQ's sale price. Observed in production on OP73642: the line
+            # synced at 6 × 620, then a quantity edit snapped it to the item's
+            # 558 base price (3 × 558 = 1674).
+            "price": {"id": "-1"},
             # amount is intentionally omitted — NetSuite ignores it on REST
             # writes; upsert_opportunity_lines re-adds lines fresh so the
             # computed amount = quantity × rate is recalculated.

@@ -219,6 +219,7 @@ class TestOpportunityRecordHelpers:
                         "rate": 10.0,
                         "amount": 160.0,
                         "grossAmt": 160.0,
+                        "rateSchedule": "0\x0512.84",
                         "quantityOnHand": 3,
                         "quantityAvailable": 3,
                         "custcol_po_rate": 9.0,
@@ -236,7 +237,7 @@ class TestOpportunityRecordHelpers:
             {"item": {"id": "111"}, "quantity": 5, "rate": 12.0},
         ])
         sent = fake_client.update_record.call_args.args[2]["item"]["items"][0]
-        for computed in ("line", "links", "amount", "grossAmt",
+        for computed in ("line", "links", "amount", "grossAmt", "rateSchedule",
                          "quantityOnHand", "quantityAvailable"):
             assert computed not in sent, f"{computed} must not be echoed back"
         assert sent["quantity"] == 5
@@ -417,6 +418,10 @@ class TestSyncOpportunityItems:
         assert sent["item"] == {"id": "555"}
         assert sent["quantity"] == 4
         assert sent["rate"] == 22.0
+        # Price Level is forced to "Custom" so NetSuite treats the rate as a
+        # manual price and never re-sources it from the item's price book when
+        # a line is edited (regression: OP73642 snapped 620 -> 558 on a qty edit).
+        assert sent["price"] == {"id": "-1"}
         assert sent["custcol_po_rate"] == 10.5
         assert sent["custcol_po_vendor"] == {"id": "77"}
         assert sent["department"] == {"id": "8"}
