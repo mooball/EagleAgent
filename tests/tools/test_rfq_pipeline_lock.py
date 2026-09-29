@@ -427,6 +427,15 @@ class TestMutationGuards:
                                data={"input_description": "Sneaky new row"})
         assert resp.status_code == 409
 
+    def test_select_supplier_all_blocked(self, client):
+        with self._locked():
+            resp = client.post(
+                f"/partial/rfqs/{RFQ_NUMBER}/items/select-supplier-all",
+                json={"supplier_name": "Acme"},
+            )
+        assert resp.status_code == 409
+        assert resp.json()["status"] == "error"
+
     def test_header_update_blocked(self, client):
         """Stage 3 writes title/notes — the header must be locked too."""
         with self._locked(), \

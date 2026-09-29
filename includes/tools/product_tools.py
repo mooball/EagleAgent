@@ -1098,15 +1098,20 @@ def last_sale_for_part_numbers(part_numbers: list[str]) -> dict[str, dict]:
     if not pns:
         return {}
 
+    # Compare the lower-cased normalised expression with equality so the planner
+    # can use idx_products_part_number_norm_ci / idx_products_supplier_code_norm_ci.
+    # The old regexp_replace(...) ILIKE form forced a full sequential scan of
+    # products (~1.4s for 31 part numbers), which is why the Selection tab was
+    # slow — this annotates every item on every render.
     norms: dict[str, str] = {}
     conds = []
     for pn in pns:
-        norm = normalize_part_number(pn)
+        norm = _norm_key(pn)
         if not norm:
             continue
         norms[pn] = norm
-        conds.append(_norm_expr(Product.part_number).ilike(norm))
-        conds.append(_norm_expr(Product.supplier_code).ilike(norm))
+        conds.append(_norm_expr_ci(Product.part_number) == norm)
+        conds.append(_norm_expr_ci(Product.supplier_code) == norm)
     if not conds:
         return {}
 
@@ -1140,8 +1145,8 @@ def last_sale_for_part_numbers(part_numbers: list[str]) -> dict[str, dict]:
         # Rows are globally date-ordered, so the first hit per part number
         # is that part number's latest sale.
         for pn, norm in norms.items():
-            pn_norm = normalize_part_number(r.part_number or "")
-            sc_norm = normalize_part_number(r.supplier_code or "")
+            pn_norm = _norm_key(r.part_number)
+            sc_norm = _norm_key(r.supplier_code)
             if pn_norm != norm and sc_norm != norm:
                 continue
             if pn in result:
@@ -1187,54 +1192,62 @@ def match_brands(names: list[str], limit: int = 10) -> dict[str, dict]:
     """
     session = get_session()
     try:
-        norms: dict[str, str] = {}
+        # Group input names by their lower-cased normalised key so each distinct
+        # key costs one lookup, while the returned dict still carries an entry
+        # for every name the caller passed in (case/punctuation variants of the
+        # same name share a result).
+        key_to_names: dict[str, list[str]] = {}
         for name in names:
-            norm = normalize_part_number(name)
-            if norm and norm not in norms:
-                norms[norm] = name
-        if not norms:
+            key = _norm_key(name)
+            if key:
+                key_to_names.setdefault(key, []).append(name)
+        if not key_to_names:
             return {}
 
-        norm_list = list(norms.keys())
-        # ilike (case-insensitive) keeps parity with the single-name matcher;
-        # normalised names are alphanumeric only so no wildcard injection.
+        norm_list = list(key_to_names.keys())
+        # Equality against the lower-cased normalised expression is index-usable
+        # (idx_brands_name_norm_ci); the substring pass is served by the pg_trgm
+        # GIN index (idx_brands_name_norm_trgm). Normalised names are
+        # alphanumeric only, so there is no wildcard-injection risk.
         exact_rows = (
             session.query(Brand)
             .filter(
                 Brand.duplicate_of.is_(None),
                 Brand.isinactive == False,
-                or_(*[_norm_expr(Brand.name).ilike(n) for n in norm_list]),
+                or_(*[_norm_expr_ci(Brand.name) == n for n in norm_list]),
             )
             .order_by(Brand.name)
             .all()
         )
-        conds = [_norm_expr(Brand.name).ilike(f"%{n}%") for n in norm_list]
         near_rows = (
             session.query(Brand)
-            .filter(Brand.duplicate_of.is_(None), Brand.isinactive == False, or_(*conds))
+            .filter(
+                Brand.duplicate_of.is_(None),
+                Brand.isinactive == False,
+                or_(*[_norm_expr_ci(Brand.name).like(f"%{n}%") for n in norm_list]),
+            )
             .order_by(Brand.name)
             .limit(max(limit, 1) * len(norm_list))
             .all()
         )
 
         def _nkey(b) -> str:
-            return normalize_part_number(b.name).lower()
+            return _norm_key(b.name)
 
         results: dict[str, dict] = {}
-        for norm, name in norms.items():
-            key = norm.lower()
+        for key, names_for_key in key_to_names.items():
             exact_matches = [b for b in exact_rows if _nkey(b) == key]
             near_matches = [b for b in near_rows if key in _nkey(b)]
             if exact_matches:
                 chosen = exact_matches[0]
                 alternatives = [b.name for b in near_matches if b.id != chosen.id][: limit - 1]
-                results[name] = _brand_result("exact", chosen, alternatives)
+                res = _brand_result("exact", chosen, alternatives)
             elif near_matches:
-                results[name] = _brand_result(
-                    "near", None, [b.name for b in near_matches[:limit]]
-                )
+                res = _brand_result("near", None, [b.name for b in near_matches[:limit]])
             else:
-                results[name] = _brand_result("none")
+                res = _brand_result("none")
+            for name in names_for_key:
+                results[name] = res
         return results
     finally:
         session.close()

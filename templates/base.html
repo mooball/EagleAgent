@@ -1280,8 +1280,7 @@
             };
         }
 
-        function rfqDetail() {
-            return {
+        function rfqDetail() {            return {
                 expanded: {},
                 allExpanded: false,
                 openPopover: null,
@@ -1307,6 +1306,11 @@
                 },
                 copySupplierModal: { open: false, sourceLine: null, supplierName: '', items: [] },
                 brandSuppliersModal: { open: false, line: null, brand: '', suppliers: [] },
+                selectAll: { name: '', count: 0, busy: false },
+                // Persisted on `window` so it survives the htmx re-render after a
+                // large bulk select (which swaps #main-content and re-inits this
+                // component); resets on a hard page load.
+                gridFullscreen: (window.__eaGridFullscreen === true),
                 rfqId: '',
                 trackingId: '',
                 userEmail: '',
@@ -2059,31 +2063,28 @@
                     var self = this;
                     var body = {supplier_name: supplierName};
                     body[field] = field === 'quote_cost' ? (parseFloat(value) || null) : value;
-                    var wrapper = document.querySelector('#quotation-container .overflow-x-auto');
-                    var sx = wrapper ? wrapper.scrollLeft : 0;
                     fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/supplier-quote', {
                         method: 'PATCH',
                         headers: {'Content-Type': 'application/json'},
                         credentials: 'same-origin',
                         body: JSON.stringify(body)
-                    }).then(function() {
+                    }).then(function(resp) {
+                        if (!resp.ok) { self._refreshSelectionFull(); return; }
+                        if (field !== 'quote_cost') { return; }
                         // If this is a selected supplier, also update the item's cost_price
-                        if (field === 'quote_cost' && isSelected) {
+                        if (isSelected) {
                             fetch('/partial/rfqs/' + self.rfqId + '/items/' + line + '/pricing', {
                                 method: 'PATCH',
                                 headers: {'Content-Type': 'application/json'},
                                 credentials: 'same-origin',
                                 body: JSON.stringify({cost_price: parseFloat(value) || null})
-                            }).then(function() {
-                                htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/selection',
-                                    {target: '#main-content'});
-                                self._restoreScroll(sx);
-                            });
-                        } else if (field === 'quote_cost') {
-                            htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/selection',
-                                {target: '#main-content'});
-                            self._restoreScroll(sx);
+                            }).then(function() { self._refreshSelectionRow(line); });
+                        } else {
+                            self._refreshSelectionRow(line);
                         }
+                    }).catch(function(err) {
+                        console.error('[supplier-quote]', err);
+                        self._refreshSelectionFull();
                     });
                 },
 
@@ -2105,20 +2106,107 @@
                     });
                 },
 
-                selectSupplier(line, supplierName) {
-                    var self = this;
-                    // Save scroll before refresh
+                // Targeted selection-row refresh: a one-line change swaps just that
+                // <tr> and the totals row instead of re-rendering the whole RFQ
+                // detail page. Anything unexpected falls back to a full refresh so
+                // other callers (e.g. the legacy quotation table) keep working.
+                _applySelectionRow(line, data) {
+                    if (!data || !data.row) { this._refreshSelectionFull(); return; }
+                    var row = document.querySelector('#selection-table tr[data-line="' + line + '"]');
+                    if (!row) { this._refreshSelectionFull(); return; }
+                    row.outerHTML = data.row;
+                    var totals = document.querySelector('#selection-table tr[data-selection-totals]');
+                    if (totals && data.totals) { totals.outerHTML = data.totals; }
+                    // The swapped row carries Preline tooltips; autoInit is
+                    // idempotent and only creates instances for the new nodes.
+                    if (window.HSStaticMethods) { window.HSStaticMethods.autoInit(); }
+                },
+                _refreshSelectionFull() {
                     var wrapper = document.querySelector('#quotation-container .overflow-x-auto');
                     var sx = wrapper ? wrapper.scrollLeft : 0;
+                    htmx.ajax('GET', '/partial/rfqs/' + this.rfqId + '/selection',
+                        {target: '#main-content'});
+                    this._restoreScroll(sx);
+                },
+                _refreshSelectionRow(line) {
+                    var self = this;
+                    fetch('/partial/rfqs/' + this.rfqId + '/selection-row/' + line, {
+                        credentials: 'same-origin'
+                    }).then(function(resp) {
+                        if (!resp.ok) return null;
+                        return resp.json();
+                    }).then(function(data) {
+                        self._applySelectionRow(line, data);
+                    }).catch(function(err) {
+                        console.error('[selection-row]', err);
+                        self._refreshSelectionFull();
+                    });
+                },
+
+                selectSupplier(line, supplierName) {
+                    var self = this;
                     fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/select-supplier', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         credentials: 'same-origin',
                         body: JSON.stringify({supplier_name: supplierName})
-                    }).then(function() {
-                        htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/selection',
-                            {target: '#main-content'});
-                        self._restoreScroll(sx);
+                    }).then(function(resp) {
+                        if (!resp.ok) return null;
+                        return resp.json();
+                    }).then(function(data) {
+                        self._applySelectionRow(line, data);
+                    }).catch(function(err) {
+                        console.error('[select-supplier]', err);
+                        self._refreshSelectionFull();
+                    });
+                },
+
+                // ── Select all lines for one supplier (Preline overlay) ──
+                prepareSelectAllSupplier(supplierName, count) {
+                    this.selectAll = { name: supplierName, count: count, busy: false };
+                },
+                confirmSelectAllSupplier() {
+                    var self = this;
+                    if (!this.selectAll.name || this.selectAll.busy) return;
+                    this.selectAll.busy = true;
+                    fetch('/partial/rfqs/' + this.rfqId + '/items/select-supplier-all', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'same-origin',
+                        body: JSON.stringify({supplier_name: this.selectAll.name})
+                    }).then(function(resp) {
+                        if (!resp.ok) {
+                            return resp.json().catch(function () { return {}; }).then(function (d) {
+                                self.selectAll.busy = false;
+                                if (window.eaToast && d && d.message) { window.eaToast('✕ ' + d.message, false); }
+                                self._refreshSelectionFull();
+                            });
+                        }
+                        return resp.json().then(function (data) {
+                            self.selectAll.busy = false;
+                            if (!data || data.status !== 'ok') { self._refreshSelectionFull(); return; }
+                            if (window.HSOverlay) { window.HSOverlay.close('#select-all-supplier-modal'); }
+                            if (data.refresh === 'full') {
+                                self._refreshSelectionFull();
+                            } else if (data.rows) {
+                                Object.keys(data.rows).forEach(function (lineStr) {
+                                    var row = document.querySelector('#selection-table tr[data-line="' + lineStr + '"]');
+                                    if (row) { row.outerHTML = data.rows[lineStr]; }
+                                });
+                                var totals = document.querySelector('#selection-table tr[data-selection-totals]');
+                                if (totals && data.totals) { totals.outerHTML = data.totals; }
+                                if (window.HSStaticMethods) { window.HSStaticMethods.autoInit(); }
+                            }
+                            if (window.eaToast) {
+                                var msg = '✓ Selected on ' + data.changed + ' line(s)';
+                                if (data.skipped) { msg += ' — ' + data.skipped + ' with no usable quote'; }
+                                window.eaToast(msg, true);
+                            }
+                        });
+                    }).catch(function (err) {
+                        console.error('[select-supplier-all]', err);
+                        self.selectAll.busy = false;
+                        self._refreshSelectionFull();
                     });
                 },
 
@@ -2129,17 +2217,17 @@
                     if (!isDeclined) {
                         body.quote_cost = null;
                     }
-                    var wrapper = document.querySelector('#quotation-container .overflow-x-auto');
-                    var sx = wrapper ? wrapper.scrollLeft : 0;
                     fetch('/partial/rfqs/' + this.rfqId + '/items/' + line + '/supplier-quote', {
                         method: 'PATCH',
                         headers: {'Content-Type': 'application/json'},
                         credentials: 'same-origin',
                         body: JSON.stringify(body)
-                    }).then(function() {
-                        htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/selection',
-                            {target: '#main-content'});
-                        self._restoreScroll(sx);
+                    }).then(function(resp) {
+                        if (!resp.ok) { self._refreshSelectionFull(); return; }
+                        self._refreshSelectionRow(line);
+                    }).catch(function(err) {
+                        console.error('[toggle-declined]', err);
+                        self._refreshSelectionFull();
                     });
                 },
 
