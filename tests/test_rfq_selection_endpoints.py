@@ -167,6 +167,24 @@ class TestSingleSelectEndpoint:
 
         assert resp.status_code == 404
 
+    async def test_rejects_non_shortlisted_supplier(self, db_session):
+        """A direct/stale request must not select a candidate the matrix never
+        offers."""
+        from includes.dashboard.routes.rfqs import quotation_select_supplier
+
+        rfq = _make_rfq(db_session, {1: [
+            {"name": "Acme", "status": "candidate",
+             "quote_status": "quoted", "quote_cost": 5.0},
+        ]})
+        with patch(SESSION_PATCH, return_value=db_session):
+            resp = await quotation_select_supplier(
+                await _json_request({"supplier_name": "Acme"}),
+                rfq.rfq_number, 1, {"email": "t@test"},
+            )
+
+        assert resp.status_code == 400
+        assert _stored_item(db_session, rfq, 1).suppliers[0]["quote_status"] == "quoted"
+
 
 class TestSelectAllEndpoint:
     async def test_selects_quoted_lines_and_reports_skipped(self, db_session):
@@ -245,3 +263,53 @@ class TestSelectAllEndpoint:
 
         assert resp.status_code == 409
         assert json.loads(resp.body)["status"] == "error"
+
+    async def test_retry_does_not_double_count(self, db_session):
+        """_commit_bulk_with_retry re-runs _apply after a deadlock. The retry must
+        reset the accumulators, or changed/skipped are counted twice."""
+        from includes.dashboard.routes import rfqs as rfq_mod
+
+        rfq = _make_rfq(db_session, {
+            1: [_sup("Acme", "quoted", 5.0)],
+            2: [_sup("Acme", "quoted", 6.0)],
+            3: [_sup("Acme", "declined", None)],
+        })
+
+        async def retrying_commit(session, apply_fn, attempts=3):
+            apply_fn()
+            session.expire_all()  # retry re-reads state (as after a rollback)
+            apply_fn()
+            session.commit()
+
+        with patch(SESSION_PATCH, return_value=db_session), \
+             patch.object(rfq_mod, "_rfq_pipeline_activity_for", return_value=None), \
+             patch.object(rfq_mod, "_commit_bulk_with_retry", new=retrying_commit):
+            resp = await rfq_mod.quotation_select_supplier_all(
+                await _json_request({"supplier_name": "Acme"}),
+                rfq.rfq_number, {"email": "t@test"},
+            )
+
+        data = json.loads(resp.body)
+        assert data["changed"] == 2
+        assert data["skipped"] == 1
+        assert set(data["rows"]) == {"1", "2"}
+
+    async def test_skips_non_shortlisted_supplier(self, db_session):
+        from includes.dashboard.routes.rfqs import quotation_select_supplier_all
+
+        rfq = _make_rfq(db_session, {1: [
+            {"name": "Acme", "status": "candidate",
+             "quote_status": "quoted", "quote_cost": 5.0},
+        ]})
+        with patch(SESSION_PATCH, return_value=db_session), \
+             patch("includes.dashboard.routes.rfqs._rfq_pipeline_activity_for",
+                   return_value=None):
+            resp = await quotation_select_supplier_all(
+                await _json_request({"supplier_name": "Acme"}),
+                rfq.rfq_number, {"email": "t@test"},
+            )
+
+        data = json.loads(resp.body)
+        assert data["changed"] == 0
+        assert data["skipped"] == 1
+        assert _stored_item(db_session, rfq, 1).suppliers[0]["quote_status"] == "quoted"

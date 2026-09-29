@@ -92,7 +92,8 @@
                                                class="hidden w-16 rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0 text-sm focus:ring-1 focus:ring-blue-500"
                                                value="{{ sup.quote_currency or '' }}"
                                                placeholder="AUD"
-                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value.trim() || '—'; updateSupplierQuote({{ item.line }}, '{{ sup.name|e }}', 'quote_currency', $el.value.trim())"
+                                               data-supplier-name="{{ sup.name }}"
+                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value.trim() || '—'; updateSupplierQuote({{ item.line }}, $el.dataset.supplierName, 'quote_currency', $el.value.trim())"
                                                @keydown.enter="$el.blur()"
                                                @keydown.escape="$el.blur()">
                                     </td>
@@ -104,7 +105,8 @@
                                                class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500"
                                                value="{{ sup.quote_cost if sup.quote_cost is not none else '' }}"
                                                placeholder="0.00"
-                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierQuote({{ item.line }}, '{{ sup.name|e }}', 'quote_cost', $el.value)"
+                                               data-supplier-name="{{ sup.name }}"
+                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierQuote({{ item.line }}, $el.dataset.supplierName, 'quote_cost', $el.value)"
                                                @keydown.enter="$el.blur()"
                                                @keydown.escape="$el.blur()">
                                     </td>
@@ -115,13 +117,15 @@
                                                class="hidden w-28 rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0 text-sm focus:ring-1 focus:ring-blue-500"
                                                value="{{ sup.quote_leadtime or '' }}"
                                                placeholder="e.g. 2 weeks"
-                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value.trim() || '—'; updateSupplierQuote({{ item.line }}, '{{ sup.name|e }}', 'quote_leadtime', $el.value.trim())"
+                                               data-supplier-name="{{ sup.name }}"
+                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value.trim() || '—'; updateSupplierQuote({{ item.line }}, $el.dataset.supplierName, 'quote_leadtime', $el.value.trim())"
                                                @keydown.enter="$el.blur()"
                                                @keydown.escape="$el.blur()">
                                     </td>
                                     <td class="py-1.5 px-2 text-center">
                                         {% set display_qs = 'quoted' if qs == 'selected' else qs %}
-                                        <button type="button" @click.stop="cycleQuoteStatus({{ item.line }}, '{{ sup.name|e }}', '{{ display_qs }}')"
+                                        <button type="button" data-supplier-name="{{ sup.name }}"
+                                                @click.stop="cycleQuoteStatus({{ item.line }}, $el.dataset.supplierName, '{{ display_qs }}')"
                                                 class="text-xs px-2 py-0.5 rounded-full cursor-pointer transition-colors
                                                        {% if display_qs == 'unquoted' %}bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300
                                                        {% elif display_qs == 'quoted' %}bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-300
@@ -132,15 +136,15 @@
                                     <td class="py-1.5 pl-2 text-center">
                                         {% if qs != 'declined' %}
                                         {% if qs == 'selected' %}
-                                        <button type="button"
-                                                @click.stop="selectSupplier({{ item.line }}, '{{ sup.name|e }}')"
+                                        <button type="button" data-supplier-name="{{ sup.name }}"
+                                                @click.stop="selectSupplier({{ item.line }}, $el.dataset.supplierName)"
                                                 class="text-xs px-2 py-0 rounded border border-green-400 bg-green-50 text-green-700 hover:bg-green-100 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700"
                                                 title="Click to deselect">
                                             Selected
                                         </button>
                                         {% else %}
-                                        <button type="button"
-                                                @click.stop="selectSupplier({{ item.line }}, '{{ sup.name|e }}')"
+                                        <button type="button" data-supplier-name="{{ sup.name }}"
+                                                @click.stop="selectSupplier({{ item.line }}, $el.dataset.supplierName)"
                                                 class="text-xs px-2 py-0 rounded border border-gray-300 dark:border-gray-600 text-gray-600 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-400 dark:text-gray-400 dark:hover:text-blue-400 dark:hover:border-blue-500"
                                                 title="Select as winning quote">
                                             Select

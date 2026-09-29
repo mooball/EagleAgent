@@ -610,8 +610,8 @@ def open_near_miss_pairs_batch(session, supplier_ids) -> dict[str, list[dict]]:
     """Batched :func:`open_near_miss_pairs` — one query for many suppliers.
 
     Returns ``{str(supplier_id): [{"id","name","confidence","reasons"}, ...]}``
-    for every requested id (empty list when it has no proposed candidate rows).
-    Non-UUID ids are ignored, matching the single-id helper.
+    for each requested id that has at least one proposed candidate row. Ids with
+    no pairs — and non-UUID ids, matching the single-id helper — are omitted.
 
     Exists because the RFQ Quotation tab called the single-id version once per
     selected line item — an N+1 that dominated the render on large RFQs.

@@ -26,6 +26,11 @@ def _department_options() -> list[dict]:
 RFQ_PAGE_SIZE = 25
 RFQ_ALLOWED_TABS = {"items", "suppliers", "communications", "selection", "quotation", "quotation-old"}
 
+# Tabs whose templates render the fields _enrich_rfq_supplier_contacts back-fills
+# (supplier contacts, terms, tier, country, currency, source). Selection and
+# Communications do not render them, so they skip the enrichment entirely.
+_ENRICHED_TABS = {"items", "suppliers", "quotation", "quotation-old"}
+
 logger = logging.getLogger(__name__)
 
 
@@ -1411,9 +1416,9 @@ def _selection_supplier_quotable_counts(items: list) -> dict:
 def _select_supplier_on_item(item, name_lower: str) -> str:
     """Select a supplier on one RFQItem using the single-star semantics.
 
-    Returns "changed", "already", "skipped" (present but declined / no quote) or
-    "absent". Mutates ``item`` in place; the caller is responsible for flagging
-    the JSONB column (``flag_modified``) when the result is "changed".
+    Returns "changed", "already", "skipped" (not shortlisted, declined, or no
+    quote) or "absent". Mutates ``item`` in place; the caller is responsible for
+    flagging the JSONB column (``flag_modified``) when the result is "changed".
     """
     from decimal import Decimal, InvalidOperation
     from includes.tools.rfq_crud import _is_empty_part_number
@@ -1425,6 +1430,11 @@ def _select_supplier_on_item(item, name_lower: str) -> str:
     )
     if target is None:
         return "absent"
+    # Only shortlisted/selected suppliers are offered by the Selection matrix
+    # (see _selection_supplier_names / _selection_supplier_quotable_counts), so a
+    # direct or stale request must not select a candidate the UI never shows.
+    if target.get("status") not in ("shortlisted", "selected"):
+        return "skipped"
     if target.get("quote_status") == "declined" or target.get("quote_cost") is None:
         return "skipped"
     if target.get("quote_status") == "selected":
@@ -3277,6 +3287,14 @@ async def quotation_select_supplier(
             # Deselect: revert to "quoted"
             target_supplier["quote_status"] = "quoted"
         else:
+            # Same guard as the bulk helper: only shortlisted/selected suppliers
+            # are offerable by the Selection matrix.
+            if target_supplier.get("status") not in ("shortlisted", "selected"):
+                return JSONResponse(
+                    {"status": "error",
+                     "message": f"Supplier '{supplier_name}' is not shortlisted"},
+                    status_code=400,
+                )
             # Select this one, deselect any previous selection
             for sup in suppliers:
                 if sup.get("quote_status") == "selected":
@@ -3383,6 +3401,11 @@ async def quotation_select_supplier_all(
 
         def _apply():
             nonlocal skipped
+            # _commit_bulk_with_retry may call this again after a deadlock. Each
+            # attempt must start from a clean slate, or the previous attempt's
+            # appends/counters leak into the retry (doubling changed/skipped).
+            changed_lines.clear()
+            skipped = 0
             items = (
                 session.query(RFQItem)
                 .filter(RFQItem.rfq_id == rfq.id)
@@ -3689,7 +3712,10 @@ async def partial_rfq_detail_tab(request: Request, rfq_id: str, tab: str,
     rfq = await asyncio.to_thread(_get_rfq_dict_sync, rfq_id)
     if not rfq:
         return HTMLResponse("<p>RFQ not found.</p>")
-    _enrich_rfq_supplier_contacts(rfq)
+    # Only the tabs that actually render the enriched fields pay for the
+    # contact/terms/tier back-fill. Selection and Communications do not.
+    if _normalize_rfq_tab(tab) in _ENRICHED_TABS:
+        _enrich_rfq_supplier_contacts(rfq)
 
     return _render_rfq_detail_partial_response(request, user, rfq, default_tab=tab)
 

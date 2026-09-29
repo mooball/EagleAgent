@@ -2,7 +2,9 @@
 <div class="mt-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden max-h-64 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
     {% for s in results %}
     <button type="button"
-            @click="$dispatch('pick-supplier', { id: '{{ s.id }}', name: '{{ s.name | replace("'", "\\'") }}' })"
+            data-supplier-id="{{ s.id }}"
+            data-supplier-name="{{ s.name }}"
+            @click="$dispatch('pick-supplier', { id: $el.dataset.supplierId, name: $el.dataset.supplierName })"
             class="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center justify-between gap-2">
         <span class="text-sm text-gray-900 dark:text-gray-100">{{ s.name }}</span>
         <span class="text-[10px] shrink-0 px-1.5 py-0.5 rounded

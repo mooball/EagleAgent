@@ -38,7 +38,11 @@
     <td class="px-3 py-2.5 text-right font-mono whitespace-nowrap cost-sale-col">
         {% if last_sale %}
         <span x-data="{ t: null }" class="inline-block min-w-[60px] text-right cursor-default"
-              @mouseenter="clearTimeout(t); $dispatch('show-last-sale', {price: '{{ (last_sale.price | currency) | replace("'", "\\'") }}', date: '{{ (last_sale.date or '') | replace("'", "\\'") }}', vendor: '{{ (last_sale.vendor or 'Unknown vendor') | replace("'", "\\'") }}', doc: '{{ (last_sale.doc_label ~ ((' ' ~ last_sale.doc_number) if last_sale.doc_number else '')) | replace("'", "\\'") }}', rect: JSON.stringify($el.getBoundingClientRect())})"
+              data-last-sale-price="{{ last_sale.price | currency }}"
+              data-last-sale-date="{{ last_sale.date or '' }}"
+              data-last-sale-vendor="{{ last_sale.vendor or 'Unknown vendor' }}"
+              data-last-sale-doc="{{ last_sale.doc_label ~ ((' ' ~ last_sale.doc_number) if last_sale.doc_number else '') }}"
+              @mouseenter="clearTimeout(t); $dispatch('show-last-sale', {price: $el.dataset.lastSalePrice, date: $el.dataset.lastSaleDate, vendor: $el.dataset.lastSaleVendor, doc: $el.dataset.lastSaleDoc, rect: JSON.stringify($el.getBoundingClientRect())})"
               @mouseleave="t = setTimeout(() => { t = null; $dispatch('hide-last-sale') }, 150)"
               @keep-last-sale.window="clearTimeout(t)">{{ last_sale.price | currency }}</span>
         {% else %}
@@ -86,7 +90,8 @@
             <span class="hs-tooltip inline-flex [--placement:left]">
                 <span class="shrink-0 cursor-pointer text-yellow-500 text-base leading-none hover:text-yellow-600 inline-block"
                       style="transform: scale(1.6)"
-                      @click.stop="selectSupplier({{ item.line }}, '{{ name | replace("'", "\\'") }}')">★</span>
+                      data-supplier-name="{{ name }}"
+                      @click.stop="selectSupplier({{ item.line }}, $el.dataset.supplierName)">★</span>
                 <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-xs dark:bg-neutral-700 whitespace-nowrap" role="tooltip">Deselect supplier</span>
             </span>
             {% if ns.link_broken %}
@@ -100,7 +105,8 @@
             <span class="hs-tooltip inline-flex [--placement:left]">
                 <span class="shrink-0 cursor-pointer opacity-0 group-hover:opacity-100 text-gray-300 dark:text-gray-500 text-base leading-none hover:text-yellow-500 transition-opacity inline-block"
                       style="transform: scale(1.6)"
-                      @click.stop="selectSupplier({{ item.line }}, '{{ name | replace("'", "\\'") }}')">☆</span>
+                      data-supplier-name="{{ name }}"
+                      @click.stop="selectSupplier({{ item.line }}, $el.dataset.supplierName)">☆</span>
                 <span class="hs-tooltip-content hidden z-50 py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-xs dark:bg-neutral-700 whitespace-nowrap" role="tooltip">Select supplier</span>
             </span>
             {% endif %}
@@ -116,7 +122,8 @@
                        class="hidden w-24 text-right rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                        value="{{ ns.quote_cost if ns.quote_cost is not none else '' }}"
                        placeholder="0.00"
-                       @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierQuote({{ item.line }}, '{{ name | replace("'", "\\'") }}', 'quote_cost', $el.value, {{ 'true' if ns.quote_status == 'selected' else 'false' }})"
+                       data-supplier-name="{{ name }}"
+                       @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value ? ('$' + parseFloat($el.value).toFixed(2)) : '—'; updateSupplierQuote({{ item.line }}, $el.dataset.supplierName, 'quote_cost', $el.value, {{ 'true' if ns.quote_status == 'selected' else 'false' }})"
                        @keydown.enter="$el.blur()" @keydown.escape="$el.blur()">
                 {% endif %}
             </span>
@@ -124,11 +131,13 @@
             {% if ns.quote_status == 'declined' %}
             <span class="shrink-0 cursor-pointer text-red-500 hover:text-red-400 text-base leading-none inline-block"
                   style="transform: scale(1.6)"
-                  @click.stop="toggleDeclined({{ item.line }}, '{{ name | replace("'", "\\'") }}', true)" title="Undo decline">✕</span>
+                  data-supplier-name="{{ name }}"
+                  @click.stop="toggleDeclined({{ item.line }}, $el.dataset.supplierName, true)" title="Undo decline">✕</span>
             {% else %}
             <span class="shrink-0 cursor-pointer opacity-0 group-hover:opacity-100 text-gray-300 dark:text-gray-500 hover:text-red-400 text-base leading-none transition-opacity inline-block"
                   style="transform: scale(1.6)"
-                  @click.stop="toggleDeclined({{ item.line }}, '{{ name | replace("'", "\\'") }}', false)" title="Mark as declined">✕</span>
+                  data-supplier-name="{{ name }}"
+                  @click.stop="toggleDeclined({{ item.line }}, $el.dataset.supplierName, false)" title="Mark as declined">✕</span>
             {% endif %}
         </div>
     </td>

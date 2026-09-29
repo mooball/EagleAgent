@@ -440,7 +440,10 @@ Admin users can run registered scripts from the chat. See `docs/SERVER_SCRIPTS.m
 ## Testing
 - Run tests: `uv run pytest tests/ -v`. If that fails to spawn `pytest`, see the
   **Migrated `.venv`** note under "Language & Tooling".
-- Tests use **mocks and in-memory stores** — no database required.
+- Most tests use **mocks and in-memory stores**. A subset are **DB-backed** and
+  require a local Postgres via `DATABASE_URL` — e.g. `tests/test_supplier_dedup.py`,
+  `tests/test_rfq_selection_endpoints.py`, `tests/test_supplier_matching.py`, and
+  the postgres fixtures in `tests/conftest.py`.
 - `pytest-asyncio` with `asyncio_mode = "auto"` (no manual `@pytest.mark.asyncio` needed for async tests).
 - 30-second timeout per test.
 - Test structure mirrors source: `tests/agents/`, `tests/tools/`.
