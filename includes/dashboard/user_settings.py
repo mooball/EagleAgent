@@ -27,6 +27,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from includes.dashboard.database import get_session
@@ -68,15 +69,32 @@ def save_settings(session: Session, email: str, patch: dict) -> dict:
 
     Merges against the *raw stored* blob (not the defaults), so the row holds
     only overrides.
+
+    The read/modify/write is serialised per user to avoid a lost update: rapid
+    filter changes (or two tabs) could otherwise both read the same blob and
+    the later commit overwrite the earlier one. We first ensure the row exists
+    with ``ON CONFLICT DO NOTHING`` (so two concurrent *first* writes can't
+    collide on the primary key and lose one), then take a ``FOR UPDATE`` row
+    lock before reading and merging. The lock is released on commit.
     """
-    row = session.query(UserSetting).filter(UserSetting.user_email == email).first()
-    stored = row.settings if row is not None and isinstance(row.settings, dict) else {}
+    session.execute(
+        text(
+            'INSERT INTO user_settings ("user_email", "settings", "updated_at") '
+            "VALUES (:email, '{}'::jsonb, now()) "
+            'ON CONFLICT ("user_email") DO NOTHING'
+        ),
+        {"email": email},
+    )
+    row = (
+        session.query(UserSetting)
+        .filter(UserSetting.user_email == email)
+        .with_for_update()
+        .one()
+    )
+    stored = row.settings if isinstance(row.settings, dict) else {}
     merged = _deep_merge(stored, patch)
-    if row is None:
-        session.add(UserSetting(user_email=email, settings=merged))
-    else:
-        row.settings = merged
-        row.updated_at = datetime.now(timezone.utc)
+    row.settings = merged
+    row.updated_at = datetime.now(timezone.utc)
     session.commit()
     return _deep_merge(DEFAULT_SETTINGS, merged)
 

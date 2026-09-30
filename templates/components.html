@@ -46,14 +46,13 @@
 
 {# ── Search Form ─────────────────────────────────────────────── #}
 {% macro search_form(action, placeholder="Search…", q="", extra_params={}) %}
-{% set push_url = action | replace("/partial", "", 1) %}
-{% if extra_params %}
-  {% set sep = "?" if "?" not in push_url else "&" %}
-  {% for k, v in extra_params.items() %}
-    {% set push_url = push_url + sep + k + "=" + (v | string) %}
-    {% set sep = "&" %}
-  {% endfor %}
-{% endif %}
+{# The pushed URL must mirror the submitted query — q plus every hidden filter
+   field. (Jinja `{% set %}` inside a for loop does not escape the loop scope,
+   so the old accumulation silently produced a bare URL.) #}
+{% set params = extra_params.copy() %}
+{% if q %}{% set _ = params.update({"q": q}) %}{% endif %}
+{% set query = params | urlencode %}
+{% set push_url = (action | replace("/partial", "", 1)) + ("?" + query if query else "") %}
 <form hx-get="{{ action }}" hx-target="#main-content" hx-push-url="{{ push_url }}"
       class="flex items-center gap-2">
     <input type="text" name="q" value="{{ q }}"

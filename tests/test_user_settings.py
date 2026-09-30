@@ -72,6 +72,46 @@ class TestStorage:
             session.commit()
             session.close()
 
+    def test_concurrent_writes_do_not_lose_updates(self):
+        """Writers touching different groups must all survive.
+
+        Regression guard for the FOR UPDATE serialisation + ON CONFLICT upsert:
+        without them the read/modify/write can drop a concurrent writer's
+        group, and two concurrent *first* writes collide on the primary key.
+        """
+        import threading
+
+        email = f"pytest-us-race-{uuid.uuid4()}@example.com"
+        groups = [f"g{i}" for i in range(8)]
+        errors: list[BaseException] = []
+
+        def writer(group: str) -> None:
+            session = user_settings.get_session()
+            try:
+                save_settings(session, email, {group: {"value": group}})
+            except BaseException as exc:  # pragma: no cover - diagnostic
+                errors.append(exc)
+            finally:
+                session.close()
+
+        threads = [threading.Thread(target=writer, args=(g,)) for g in groups]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert not errors, f"concurrent save raised: {errors!r}"
+
+        session = user_settings.get_session()
+        try:
+            settings = get_settings(session, email)
+            for group in groups:
+                assert settings[group] == {"value": group}, f"lost update for {group}"
+        finally:
+            session.query(UserSetting).filter(UserSetting.user_email == email).delete()
+            session.commit()
+            session.close()
+
 
 # ============================================================================
 # Async wrappers degrade gracefully
