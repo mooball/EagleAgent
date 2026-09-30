@@ -315,6 +315,23 @@ class SystemSetting(Base):
         return f"<SystemSetting(key='{self.key}')>"
 
 
+class UserSetting(Base):
+    """Per-user dashboard settings — one JSON blob per user, keyed by email.
+
+    Grouped by feature so new preferences can be added without a migration,
+    e.g. ``{"rfq_filters": {...}, "ui": {"chat_open": false}}``. Stored values
+    are merged on top of :data:`includes.dashboard.user_settings.DEFAULT_SETTINGS`.
+    """
+    __tablename__ = 'user_settings'
+
+    user_email = Column(String, primary_key=True)
+    settings = Column(JSONB, nullable=False, default=dict)
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    def __repr__(self):
+        return f"<UserSetting(user_email='{self.user_email}')>"
+
+
 class RFQ(Base):
     __tablename__ = 'rfqs'
 

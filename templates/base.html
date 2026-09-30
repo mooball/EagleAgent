@@ -850,10 +850,11 @@
                                     this._expectingBoundThread = newCtx.thread_id;
                                     // Track which RFQ owns this thread
                                     this._activeThreadRfqId = newCtx.id;
-                                    // Auto-open the agent panel
-                                    if (this.agentState === 'closed') {
-                                        this.agentState = 'panel';
-                                    }
+                                    // NB: do not auto-open the panel here. The
+                                    // open/closed choice is the user's (persisted
+                                    // in localStorage) and must survive navigation
+                                    // and reloads. Only the explicit Chat button
+                                    // reopens it.
                                 }
                                 // No thread bound yet for this RFQ — create one on demand.
                                 // Hard-bound mode: every RFQ gets its own thread.
@@ -866,9 +867,9 @@
                                     // Track whether this is a brand-new blank RFQ
                                     this._pendingNewRfq = !newCtx.customer;
                                     this._navigateChat('/chat');
-                                    if (this.agentState === 'closed') {
-                                        this.agentState = 'panel';
-                                    }
+                                    // As above: never force the panel open. A
+                                    // closed panel stays closed until the user
+                                    // opens it.
                                 }
 
                                 // Leaving an RFQ: anchor the panel on the user's
@@ -2274,7 +2275,7 @@
                         this.recipientName = recipientName;
                         this.cc = "";
                         this.subject = subject || 'Quote Request';
-                        this.bodyHtml = this._normalizeBodyHtml(this._withTrackingFooter(bodyHtml || ''));
+                        this.bodyHtml = this._normalizeBodyHtml(bodyHtml || '');
                         this.mode = 'editor';
                         this.composeUrl = null;
                         this.error = null;
@@ -2461,13 +2462,6 @@
                         const s = (subject || '').trim();
                         if (!this.trackingId || s.includes(this.trackingId)) return s;
                         return `[${this.trackingId}] ${s}`;
-                    },
-
-                    _withTrackingFooter(bodyHtml) {
-                        if (!this.trackingId) return bodyHtml;
-                        if (bodyHtml.includes(this.trackingId)) return bodyHtml;
-                        const footer = `<p style="margin-top:16px;font-size:10px;line-height:1.2;color:#6b7280;">Tracking ID: ${this.trackingId}</p>`;
-                        return `${bodyHtml}${footer}`;
                     },
 
                     _buildStyledTableHtml(colCount, rowCount) {
@@ -2657,7 +2651,7 @@
                         this.error = null;
                         this.success = null;
                         try {
-                            const bodyHtml = this._normalizeBodyHtml(this._withTrackingFooter(this._getBodyHtml()));
+                            const bodyHtml = this._normalizeBodyHtml(this._getBodyHtml());
                             const response = await fetch(`/api/rfqs/${this.rfqId}/send-email-direct`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
@@ -2694,7 +2688,7 @@
                         this.error = null;
                         this.composeUrl = null;
                         try {
-                            const bodyHtml = this._normalizeBodyHtml(this._withTrackingFooter(this._getBodyHtml()));
+                            const bodyHtml = this._normalizeBodyHtml(this._getBodyHtml());
                             const response = await fetch(`/api/rfqs/${this.rfqId}/send-email-draft`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
@@ -3221,21 +3215,12 @@
                 const ph = (text) =>
                     `<strong style="background:#fef3c7;border-radius:3px;padding:2px 8px;font-family:monospace;font-size:13px;color:#92400e;">${text}</strong>`;
                 const p = (html) => `<p style="margin:0 0 12px 0;">${html}</p>`;
-                const sig = this.userSignature ||
-                    `<strong>${this.userName || ''}</strong><br>` +
-                    `Eagle Exports<br>` +
-                    `<span style="font-size:14px;color:#6b7280;">Spare Parts | Industrial | Workshop | Procurement<br>Supporting heavy industry since 1993</span><br>` +
-                    `<span style="font-size:14px;">P: +61 7 3217 0050 &nbsp;|&nbsp; <a href="https://www.eaglexp.com.au">www.eaglexp.com.au</a></span><br>` +
-                    `<span style="font-size:14px;">Unit 1, 18 Gravel Pit Road, Darra, Queensland, 4076</span><br>` +
-                    `<span style="font-size:14px;">E: ${this.userEmail || ''}</span>`;
                 return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.45;color:#111827;">` +
                     p(ph('[[SALUTATION]]')) +
                     p('Could you please confirm price and availability on the following items for resale:') +
                     p(ph('[[ITEMS_TABLE]]')) +
                     p('Please also advise of any freight costs for delivery to Darra, Brisbane 4076, Australia.') +
                     p('Thank you.') +
-                    p('Regards,') +
-                    p(sig) +
                     `</div>`;
             },
 
@@ -3273,9 +3258,6 @@
                 // Fallback: Jodit may strip wrapping tags, leaving raw placeholder text
                 html = html.replace(/\[\[SALUTATION\]\]/g, salutation);
                 html = html.replace(/\[\[ITEMS_TABLE\]\]/g, tableHtml);
-                if (this.trackingId && !html.includes(this.trackingId)) {
-                    html += `<p style="margin-top:16px;font-size:10px;line-height:1.2;color:#6b7280;">Tracking ID: ${this.trackingId}</p>`;
-                }
                 return html;
             },
 

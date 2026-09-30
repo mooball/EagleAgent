@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Resp
 from sqlalchemy import func as sa_func
 
 from includes.dashboard.models import Supplier, Transaction, EmailTracking, Contact, Product
+from includes.dashboard.user_settings import load_user_settings, persist_user_settings
 from includes.tools.product_tools import normalize_part_number
 from includes.netsuite.departments import Department
 from . import _helpers
@@ -2004,30 +2005,64 @@ async def _fetch_rfqs(q: str = "", page: int = 1, mine: str = "", user_email: st
     return rfqs_page, total, has_more, page + 1
 
 
+async def _resolve_rfq_filters(
+    user_email: str,
+    *,
+    q: str | None,
+    mine: str | None,
+    status: str | None,
+    sort: str | None,
+    order: str | None,
+) -> dict:
+    """Resolve RFQ list filters, falling back to the user's saved filters.
+
+    Any filter explicitly present in the request wins; absent filters come
+    from the user's stored settings. When at least one filter was explicit,
+    the fully resolved set is persisted so the next bare ``/rfqs`` visit
+    restores it. This is what keeps the nav link and page reloads on the
+    user's last choice instead of the defaults.
+    """
+    stored = (await load_user_settings(user_email)).get("rfq_filters") or {}
+    resolved = {
+        "q": q if q is not None else stored.get("q", ""),
+        "mine": mine if mine is not None else stored.get("mine", "1"),
+        "status": status if status is not None else stored.get("status", "open"),
+        "sort": sort if sort is not None else stored.get("sort", "rfq_number"),
+        "order": order if order is not None else stored.get("order", "desc"),
+    }
+    explicit = any(v is not None for v in (q, mine, status, sort, order))
+    if explicit and resolved != stored:
+        await persist_user_settings(user_email, {"rfq_filters": resolved})
+    return resolved
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 @router.get("/rfqs")
 async def rfq_list(request: Request, user: dict = Depends(require_user),
-                   q: str = "", page: int = 1, mine: str = "1", status: str = "open",
-                   sort: str = "rfq_number", order: str = "desc"):
+                   q: str | None = None, page: int = 1, mine: str | None = None,
+                   status: str | None = None, sort: str | None = None,
+                   order: str | None = None):
     user_email = user.get("email", "")
+    filters = await _resolve_rfq_filters(
+        user_email, q=q, mine=mine, status=status, sort=sort, order=order)
     rfqs, total, has_more, next_page = await _fetch_rfqs(
-        q, page, mine=mine, user_email=user_email, status=status,
-        sort=sort, order=order)
+        filters["q"], page, mine=filters["mine"], user_email=user_email,
+        status=filters["status"], sort=filters["sort"], order=filters["order"])
 
     ctx = {
         "rfqs": rfqs,
-        "q": q,
+        "q": filters["q"],
         "page": page,
         "total": total,
         "has_more": has_more,
         "next_page": next_page,
         "active_nav": "rfqs",
-        "mine": mine,
-        "status": status,
-        "sort": sort,
-        "order": order,
+        "mine": filters["mine"],
+        "status": filters["status"],
+        "sort": filters["sort"],
+        "order": filters["order"],
         "all_users": _get_all_user_emails(),
         "current_user_email": user_email,
     }
@@ -2201,8 +2236,9 @@ async def rfq_detail_tab(request: Request, rfq_id: str, tab: str,
 
 @router.get("/partial/rfqs")
 async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
-                           q: str = "", page: int = 1, mine: str = "1", status: str = "open",
-                           sort: str = "rfq_number", order: str = "desc"):
+                           q: str | None = None, page: int = 1, mine: str | None = None,
+                           status: str | None = None, sort: str | None = None,
+                           order: str | None = None):
     # Redirect non-HTMX requests (direct URL visits / refreshes) to the full page
     if not _is_htmx(request):
         from fastapi.responses import RedirectResponse
@@ -2211,22 +2247,24 @@ async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
         return RedirectResponse(url=f"/rfqs?{urlencode(params)}", status_code=302)
 
     user_email = user.get("email", "")
+    filters = await _resolve_rfq_filters(
+        user_email, q=q, mine=mine, status=status, sort=sort, order=order)
     rfqs, total, has_more, next_page = await _fetch_rfqs(
-        q, page, mine=mine, user_email=user_email, status=status,
-        sort=sort, order=order)
+        filters["q"], page, mine=filters["mine"], user_email=user_email,
+        status=filters["status"], sort=filters["sort"], order=filters["order"])
 
     return templates.TemplateResponse(request, "partials/rfq_list.html", {
         "user": user,
         "rfqs": rfqs,
-        "q": q,
+        "q": filters["q"],
         "page": page,
         "total": total,
         "has_more": has_more,
         "next_page": next_page,
-        "mine": mine,
-        "status": status,
-        "sort": sort,
-        "order": order,
+        "mine": filters["mine"],
+        "status": filters["status"],
+        "sort": filters["sort"],
+        "order": filters["order"],
         "all_users": _get_all_user_emails(),
         "current_user_email": user_email,
     })
@@ -2234,8 +2272,9 @@ async def partial_rfq_list(request: Request, user: dict = Depends(require_user),
 
 @router.get("/partial/rfqs/rows")
 async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
-                           q: str = "", page: int = 1, mine: str = "1", status: str = "open",
-                           sort: str = "rfq_number", order: str = "desc"):
+                           q: str | None = None, page: int = 1, mine: str | None = None,
+                           status: str | None = None, sort: str | None = None,
+                           order: str | None = None):
     """Return just the RFQ card rows + sentinel for infinite scroll."""
     if not _is_htmx(request):
         from fastapi.responses import RedirectResponse
@@ -2244,20 +2283,22 @@ async def partial_rfq_rows(request: Request, user: dict = Depends(require_user),
         return RedirectResponse(url=f"/rfqs?{urlencode(params)}", status_code=302)
 
     user_email = user.get("email", "")
+    filters = await _resolve_rfq_filters(
+        user_email, q=q, mine=mine, status=status, sort=sort, order=order)
     rfqs, total, has_more, next_page = await _fetch_rfqs(
-        q, page, mine=mine, user_email=user_email, status=status,
-        sort=sort, order=order)
+        filters["q"], page, mine=filters["mine"], user_email=user_email,
+        status=filters["status"], sort=filters["sort"], order=filters["order"])
 
     return templates.TemplateResponse(request, "partials/_rfq_rows.html", {
         "rfqs": rfqs,
-        "q": q,
+        "q": filters["q"],
         "has_more": has_more,
         "next_page": next_page,
-        "mine": mine,
-        "status": status,
-        "sort": sort,
-        "order": order,
-        "show_rep_col": (mine in ("0", "all", "")),
+        "mine": filters["mine"],
+        "status": filters["status"],
+        "sort": filters["sort"],
+        "order": filters["order"],
+        "show_rep_col": (filters["mine"] in ("0", "all", "")),
     })
 
 
@@ -4068,6 +4109,7 @@ async def api_create_email_draft(
             opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal"),
             attachments=attachments,
             cc=cc,
+            sender_name=user.get("name"),
         )
         
         if draft_result["status"] != "ok":
@@ -4143,6 +4185,7 @@ async def api_send_email_direct(
             opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal"),
             attachments=attachments,
             cc=cc,
+            sender_name=user.get("name"),
         )
 
         if send_result["status"] != "ok":
