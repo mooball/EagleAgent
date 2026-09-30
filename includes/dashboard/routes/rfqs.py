@@ -4109,6 +4109,7 @@ async def api_create_email_draft(
             opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal"),
             attachments=attachments,
             cc=cc,
+            sender_name=user.get("name"),
         )
         
         if draft_result["status"] != "ok":
@@ -4184,6 +4185,7 @@ async def api_send_email_direct(
             opportunity_id=rfq.get("netsuite_opportunity") or rfq.get("hubspot_deal"),
             attachments=attachments,
             cc=cc,
+            sender_name=user.get("name"),
         )
 
         if send_result["status"] != "ok":

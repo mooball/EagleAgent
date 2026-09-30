@@ -21,6 +21,7 @@ from email.mime.text import MIMEText
 from urllib.parse import quote
 
 from includes.gmail import get_gmail_client, check_recipient_allowed, RecipientBlockedError
+from includes.gmail.signature import build_email_signature
 from includes.dashboard.database import get_session
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
@@ -79,6 +80,7 @@ def _build_mime_message(
     headers: dict,
     attachments: list[dict] | None = None,  # [{filename, mime_type, data}]
     body_plain: str | None = None,
+    sender_name: str | None = None,
 ) -> MIMEMultipart:
     """Build a properly nested MIME message:
 
@@ -89,7 +91,11 @@ def _build_mime_message(
     |  |  +- text/html            <- cid: references
     |  +- image/* (Content-ID, inline)
     +- application/pdf ...        <- Content-Disposition: attachment
+
+    The branded email signature is appended to the body here, at the single
+    point every outbound message passes through.
     """
+    body_html = f"{body_html or ''}{build_email_signature(sender_name, user_email)}"
     html, inline_parts = _inline_images_to_cid(body_html)
 
     alternative = MIMEMultipart("alternative")
@@ -170,6 +176,7 @@ def create_draft_email(
     body_plain: str | None = None,
     attachments: list[dict] | None = None,
     cc: str | None = None,
+    sender_name: str | None = None,
 ) -> dict:
     """Create a draft email with custom tracking headers.
     
@@ -184,6 +191,7 @@ def create_draft_email(
         body_plain: Plain text version (optional, falls back to html2text)
         attachments: Optional list of {filename, mime_type, data} dicts
         cc: Optional comma-separated CC recipient list
+        sender_name: Staff member display name for the email signature
         
     Returns:
         dict with:
@@ -218,6 +226,7 @@ def create_draft_email(
             headers=headers,
             attachments=attachments,
             body_plain=body_plain,
+            sender_name=sender_name,
         )
         
         # Create draft via Gmail API
@@ -284,6 +293,7 @@ def send_email_direct(
     opportunity_id: str | None = None,
     attachments: list[dict] | None = None,
     cc: str | None = None,
+    sender_name: str | None = None,
 ) -> dict:
     """Send an HTML email directly via Gmail API and track it as sent."""
     try:
@@ -308,6 +318,7 @@ def send_email_direct(
             body_html=body_html,
             headers=headers,
             attachments=attachments,
+            sender_name=sender_name,
         )
 
         send_result = _gmail_send(service, msg)

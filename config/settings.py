@@ -252,8 +252,33 @@ class Config:
     # Restrict outbound email to these domains (comma-separated). Empty = no restriction.
     # Use on dev/staging to prevent accidental sends to real addresses.
     GMAIL_ALLOW_DOMAINS = os.getenv("GMAIL_ALLOW_DOMAINS", "")
-    
-    
+
+    # Public base URL used to build absolute asset URLs in outbound email
+    # (e.g. the signature logo). No trailing slash.
+    PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://agent.eaglexp.com.au").rstrip("/")
+
+    # Signature branding — static company block appended to every outbound email.
+    # Sender-specific lines (name, email) are filled in per user at send time.
+    EMAIL_SIGNATURE_LOGO = os.getenv("EMAIL_SIGNATURE_LOGO", "/public/email-logo.png")
+    EMAIL_SIGNATURE_COMPANY = os.getenv("EMAIL_SIGNATURE_COMPANY", "Eagle Exports")
+    EMAIL_SIGNATURE_SERVICE_LINE = os.getenv(
+        "EMAIL_SIGNATURE_SERVICE_LINE", "Spare Parts | Industrial | Workshop | Procurement"
+    )
+    EMAIL_SIGNATURE_TAGLINE = os.getenv(
+        "EMAIL_SIGNATURE_TAGLINE", "Supporting heavy industry since 1993"
+    )
+    EMAIL_SIGNATURE_PHONE = os.getenv("EMAIL_SIGNATURE_PHONE", "+61 7 3217 0050")
+    EMAIL_SIGNATURE_WEBSITE = os.getenv("EMAIL_SIGNATURE_WEBSITE", "www.eaglexp.com.au")
+    EMAIL_SIGNATURE_WEBSITE_URL = os.getenv(
+        "EMAIL_SIGNATURE_WEBSITE_URL", "https://www.eaglexp.com.au"
+    )
+    EMAIL_SIGNATURE_ADDRESS = os.getenv(
+        "EMAIL_SIGNATURE_ADDRESS", "Unit 1, 18 Gravel Pit Road, Darra, Queensland, 4076"
+    )
+    EMAIL_SIGNATURE_GREEN = os.getenv("EMAIL_SIGNATURE_GREEN", "#8cc648")
+    EMAIL_SIGNATURE_BLUE = os.getenv("EMAIL_SIGNATURE_BLUE", "#0c4da2")
+
+
     # ==================== NetSuite Integration ====================
     
     # Enable background NetSuite entity sync (every 5 min). Disable for dev/staging.
