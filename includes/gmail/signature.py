@@ -62,9 +62,9 @@ def build_email_signature(sender_name: str | None, sender_email: str | None) -> 
         '<tr>'
         # Logo — left column
         '<td valign="top" style="padding:4px 20px 0 0;">'
-        f'<img src="{logo_url()}" alt="{company}" width="160" '
-        'style="display:block;border:0;outline:none;width:160px;'
-        'max-width:160px;height:auto;">'
+        f'<img src="{logo_url()}" alt="{company}" width="120" '
+        'style="display:block;border:0;outline:none;width:120px;'
+        'max-width:120px;height:auto;">'
         '</td>'
         # Details — right column
         '<td valign="top" style="padding:0;">'
