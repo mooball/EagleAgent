@@ -21,7 +21,7 @@ from email.mime.text import MIMEText
 from urllib.parse import quote
 
 from includes.gmail import get_gmail_client, check_recipient_allowed, RecipientBlockedError
-from includes.gmail.signature import build_email_signature
+from includes.gmail.signature import build_email_signature, build_email_signature_text
 from includes.dashboard.database import get_session
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
@@ -98,8 +98,16 @@ def _build_mime_message(
     body_html = f"{body_html or ''}{build_email_signature(sender_name, user_email)}"
     html, inline_parts = _inline_images_to_cid(body_html)
 
+    # The HTML part is always signed above. An explicitly supplied plain-text
+    # body bypasses html2text, so sign it here too — otherwise plain-text
+    # recipients of such a caller would get the footer-less body.
+    if body_plain is not None:
+        plain = f"{body_plain}{build_email_signature_text(sender_name, user_email)}"
+    else:
+        plain = _html_to_text(html)
+
     alternative = MIMEMultipart("alternative")
-    alternative.attach(MIMEText(body_plain if body_plain is not None else _html_to_text(html), "plain", "utf-8"))
+    alternative.attach(MIMEText(plain, "plain", "utf-8"))
     alternative.attach(MIMEText(html, "html", "utf-8"))
 
     if inline_parts:

@@ -293,7 +293,10 @@ class TestBuildMimeMessage:
         msg = self._build(body_plain="custom plain text")
         plain = msg.get_payload()[0].get_payload()[0]
         assert plain.get_content_type() == "text/plain"
-        assert plain.get_payload(decode=True).decode("utf-8") == "custom plain text"
+        text = plain.get_payload(decode=True).decode("utf-8")
+        # The supplied body overrides html2text; the signature is still appended.
+        assert text.startswith("custom plain text")
+        assert "Regards," in text
 
 
 class TestGmailTransport:

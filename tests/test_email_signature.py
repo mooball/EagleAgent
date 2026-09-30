@@ -87,3 +87,36 @@ class TestSignatureInMimeMessage:
         assert "Tom Cameron" in plain_text
         # The logo is an image, so it is dropped from the plain-text part.
         assert logo_url() not in plain_text
+
+
+class TestPlainTextSignature:
+    def test_signature_text_has_no_markup(self):
+        from includes.gmail.signature import build_email_signature_text
+
+        text = build_email_signature_text("Tom Cameron", "tom@eagle-exports.com")
+        assert "<" not in text
+        assert "Regards," in text
+        assert "Tom Cameron" in text
+        assert config.EMAIL_SIGNATURE_ADDRESS in text
+        assert "tom@eagle-exports.com" in text
+
+    def test_explicit_body_plain_is_signed(self):
+        from includes.gmail.draft_service import _build_mime_message
+
+        msg = _build_mime_message(
+            user_email="staff@eagle-exports.com",
+            recipient_email="supplier@acme.com",
+            subject="Quote Request",
+            body_html="<p>Please quote</p>",
+            headers={},
+            body_plain="Please quote",
+            sender_name="Tom Cameron",
+        )
+
+        plain_part = msg.get_payload()[0].get_payload()[0]
+        plain_text = plain_part.get_payload(decode=True).decode("utf-8")
+
+        assert plain_text.startswith("Please quote")
+        assert "Tom Cameron" in plain_text
+        assert "Regards," in plain_text
+        assert config.EMAIL_SIGNATURE_ADDRESS in plain_text

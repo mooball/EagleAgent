@@ -28,7 +28,6 @@ def _maps_url(address: str) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={quote(address)}"
 
 
-
 def logo_url() -> str:
     """Absolute URL of the signature logo (email clients require an absolute URL)."""
     return f"{config.PUBLIC_BASE_URL}{config.EMAIL_SIGNATURE_LOGO}"
@@ -88,4 +87,27 @@ def build_email_signature(sender_name: str | None, sender_email: str | None) -> 
         '</tr>'
         '</table>'
         '</div>'
+    )
+
+
+def build_email_signature_text(sender_name: str | None, sender_email: str | None) -> str:
+    """Plain-text equivalent of :func:`build_email_signature`.
+
+    Used whenever a caller supplies an explicit ``body_plain`` — the HTML form
+    carries the logo and links, which have no place in the text alternative.
+    """
+    name = sender_name or sender_email or ""
+    return "\n".join(
+        [
+            "",
+            "Regards,",
+            "",
+            name,
+            config.EMAIL_SIGNATURE_COMPANY,
+            config.EMAIL_SIGNATURE_SERVICE_LINE,
+            config.EMAIL_SIGNATURE_TAGLINE,
+            f"P: {config.EMAIL_SIGNATURE_PHONE} | {config.EMAIL_SIGNATURE_WEBSITE}",
+            config.EMAIL_SIGNATURE_ADDRESS,
+            f"E: {sender_email or ''}",
+        ]
     )
