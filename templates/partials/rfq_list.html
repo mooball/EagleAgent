@@ -7,7 +7,7 @@
                 class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 whitespace-nowrap">
             + New RFQ
         </button>
-        {{ search_form("/partial/rfqs", "Search RFQs…", q or '', {"mine": mine or '1', "status": status or 'open'}) }}
+        {{ search_form("/partial/rfqs", "Search RFQs…", q or '', {"mine": mine or '1', "status": status or 'open', "sort": sort or 'rfq_number', "order": order or 'desc'}) }}
     {% endcall %}
 
     <div class="flex items-center gap-3 mb-3 text-xs">
@@ -20,7 +20,7 @@
                 hx-get="/rfqs"
                 hx-target="#main-content"
                 hx-push-url="true"
-                hx-include="[name='status-filter'], [name='q']"
+                hx-vals='{{ {"status": status or "open", "sort": sort or "rfq_number", "order": order or "desc", "q": q or ""} | tojson }}'
                 name="mine"
                 hx-trigger="change">
             <option value="1" {% if selected_owner == '1' %}selected{% endif %}>My RFQs</option>
@@ -34,22 +34,24 @@
         <!-- Separator -->
         <span class="text-gray-400 dark:text-gray-500 select-none mx-1">—</span>
 
-        <!-- Status toggle group -->
+        <!-- Status toggle group. Each pill carries the full filter set so the
+             URL stays self-contained (Back/Forward) and the choice round-trips. -->
+        {% set pill_qs = "mine=" ~ (selected_owner | urlencode) ~ "&sort=" ~ (sort or 'rfq_number') ~ "&order=" ~ (order or 'desc') ~ ("&q=" ~ (q | urlencode) if q else "") %}
         <span class="inline-flex rounded-full shadow-xs">
-            <a hx-get="/partial/rfqs?mine={{ selected_owner }}&status=open{% if q %}&q={{ q }}{% endif %}"
-               hx-target="#main-content" hx-push-url="/rfqs?mine={{ selected_owner }}&status=open{% if q %}&q={{ q }}{% endif %}"
+            <a hx-get="/partial/rfqs?{{ pill_qs }}&status=open"
+               hx-target="#main-content" hx-push-url="/rfqs?{{ pill_qs }}&status=open"
                class="px-2.5 py-1 rounded-l-full cursor-pointer transition-colors border border-r-0
                       {% if status == 'open' or not status %}bg-blue-600 text-white border-blue-600{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
                 Open
             </a>
-            <a hx-get="/partial/rfqs?mine={{ selected_owner }}&status=quoted{% if q %}&q={{ q }}{% endif %}"
-               hx-target="#main-content" hx-push-url="/rfqs?mine={{ selected_owner }}&status=quoted{% if q %}&q={{ q }}{% endif %}"
+            <a hx-get="/partial/rfqs?{{ pill_qs }}&status=quoted"
+               hx-target="#main-content" hx-push-url="/rfqs?{{ pill_qs }}&status=quoted"
                class="px-2.5 py-1 cursor-pointer transition-colors border border-r-0
                       {% if status == 'quoted' %}bg-blue-600 text-white border-blue-600{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
                 Quoted
             </a>
-            <a hx-get="/partial/rfqs?mine={{ selected_owner }}&status=all{% if q %}&q={{ q }}{% endif %}"
-               hx-target="#main-content" hx-push-url="/rfqs?mine={{ selected_owner }}&status=all{% if q %}&q={{ q }}{% endif %}"
+            <a hx-get="/partial/rfqs?{{ pill_qs }}&status=all"
+               hx-target="#main-content" hx-push-url="/rfqs?{{ pill_qs }}&status=all"
                class="px-2.5 py-1 rounded-r-full cursor-pointer transition-colors border
                       {% if status == 'all' %}bg-blue-600 text-white border-blue-600{% else %}bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-gray-600{% endif %}">
                 All

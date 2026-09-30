@@ -850,10 +850,11 @@
                                     this._expectingBoundThread = newCtx.thread_id;
                                     // Track which RFQ owns this thread
                                     this._activeThreadRfqId = newCtx.id;
-                                    // Auto-open the agent panel
-                                    if (this.agentState === 'closed') {
-                                        this.agentState = 'panel';
-                                    }
+                                    // NB: do not auto-open the panel here. The
+                                    // open/closed choice is the user's (persisted
+                                    // in localStorage) and must survive navigation
+                                    // and reloads. Only the explicit Chat button
+                                    // reopens it.
                                 }
                                 // No thread bound yet for this RFQ — create one on demand.
                                 // Hard-bound mode: every RFQ gets its own thread.
@@ -866,9 +867,9 @@
                                     // Track whether this is a brand-new blank RFQ
                                     this._pendingNewRfq = !newCtx.customer;
                                     this._navigateChat('/chat');
-                                    if (this.agentState === 'closed') {
-                                        this.agentState = 'panel';
-                                    }
+                                    // As above: never force the panel open. A
+                                    // closed panel stays closed until the user
+                                    // opens it.
                                 }
 
                                 // Leaving an RFQ: anchor the panel on the user's
