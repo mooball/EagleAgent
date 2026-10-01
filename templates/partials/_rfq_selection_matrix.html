@@ -23,8 +23,8 @@
             <span x-text="gridFullscreen ? 'Close' : 'Expand'"></span>
         </button>
     </div>
-    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-x-auto overscroll-contain"
-         :class="gridFullscreen ? 'flex-1 min-h-0 overflow-auto' : ''"
+    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-x-auto"
+         :class="gridFullscreen ? 'flex-1 min-h-0 overflow-auto overscroll-contain' : ''"
          x-data="{ scrollX: 0 }" @scroll="scrollX = $el.scrollLeft">
     <style>
         .freeze-shadow { box-shadow: 1px 0 0 0 rgba(0,0,0,0.08); }
