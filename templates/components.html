@@ -130,3 +130,27 @@
     {{ label }}
 </span>
 {% endmacro %}
+
+
+{# ── Requested / supplied part number ───────────────────────────
+   When a supplier quoted an alternative part number, show both as
+   "REQUESTED / SUPPLIED" with an "alt" badge and a Preline tooltip.
+   Otherwise just the requested number. Pass the selected supplier's
+   name so the tooltip can name them. #}
+{% macro part_number_cell(item, supplier_name=none) %}
+{% set requested = item.part_number %}
+{% set supplied = item.supplied_part_number %}
+{% if item.is_alternative_part_number and supplied %}
+<span class="inline-flex items-center gap-1 max-w-full">
+    <span class="truncate">{{ requested or '—' }}</span>
+    <span class="text-gray-400 dark:text-gray-500 shrink-0">/</span>
+    <span class="hs-tooltip [--placement:top] inline-flex items-center gap-1 shrink-0">
+        <span class="text-amber-700 dark:text-amber-400 whitespace-nowrap">{{ supplied }}</span>
+        <span class="inline-flex items-center px-1 py-0.5 rounded text-[9px] leading-none font-semibold uppercase bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">alt</span>
+        <span class="hs-tooltip-content hidden z-50 max-w-xs py-1 px-2 bg-gray-900 text-xs font-medium text-white rounded-md shadow-sm dark:bg-neutral-700" role="tooltip">Alternative part quoted{% if supplier_name %} by {{ supplier_name }}{% endif %}</span>
+    </span>
+</span>
+{% else %}
+<span class="font-mono whitespace-nowrap">{{ requested or '—' }}</span>
+{% endif %}
+{% endmacro %}

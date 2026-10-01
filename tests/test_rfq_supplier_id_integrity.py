@@ -25,7 +25,7 @@ import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from includes.dashboard.models import RFQ, RFQItem, Supplier
+from includes.dashboard.models import RFQ, RFQItem, Supplier, Product
 
 # A syntactically valid UUID that exists nowhere in the database.
 BOGUS_ID = "5f448455-89f8-4e33-ae3f-36fa4429e64e"
@@ -340,3 +340,81 @@ class TestSyncReadinessToleratesDanglingId:
         assert selected["supplier_name"] == "Healthy Co"
         assert selected["supplier_url"] == "https://healthy.example"
         assert selected["supplier_email"] == "a@healthy.example"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — effective part number drives the readiness gate and product match
+# ---------------------------------------------------------------------------
+
+class TestSyncReadinessEffectivePartNumber:
+    """The part-number gate and product match key on the *effective* number
+    (supplied when set, else requested). See
+    `.github/prompts/plan-suppliedPartNumber.prompt.md` (todo.vu #33073)."""
+
+    @staticmethod
+    def _readiness(rfq_dict, session):
+        from includes.dashboard.routes import _helpers
+        from includes.dashboard.routes.rfqs import _rfq_sync_readiness
+
+        with patch.object(_helpers, "get_session", return_value=session):
+            return _rfq_sync_readiness(rfq_dict)
+
+    @staticmethod
+    def _item(**overrides):
+        item = {
+            "line": 1,
+            "brand": "Other",
+            "part_number": None,
+            "supplied_part_number": None,
+            "product_id": None,
+            "department_id": "8",
+            "quantity": 2,
+            "cost_price": 5.0,
+            "sale_price": 10.0,
+            "suppliers": [{
+                "name": "Acme",
+                "status": "shortlisted",
+                "quote_status": "selected",
+                "quote_cost": 5.0,
+            }],
+        }
+        item.update(overrides)
+        return item
+
+    @staticmethod
+    def _rfq_dict(item):
+        return {"id": "RFQ-TEST", "items": [item]}
+
+    def test_description_only_line_with_supplied_satisfies_gate(self, db_session):
+        item = self._item(supplied_part_number="SP-9")
+        self._readiness(self._rfq_dict(item), db_session)
+        assert "item" not in {i["key"] for i in item["sync_issues"]}
+        assert item["effective_part_number"] == "SP-9"
+        assert item["is_alternative_part_number"] is True
+
+    def test_alternative_does_not_reuse_requested_product(self, db_session):
+        product = Product(part_number="REQ-1", netsuite_id="555")
+        db_session.add(product)
+        db_session.flush()
+
+        item = self._item(
+            part_number="REQ-1",
+            supplied_part_number="SP-9",
+            product_id=str(product.id),
+        )
+        self._readiness(self._rfq_dict(item), db_session)
+
+        assert item["product_ns_id"] is None
+        assert item["is_alternative_part_number"] is True
+        assert "item_unmatched" in {w["key"] for w in item["sync_warnings"]}
+
+    def test_requested_product_reused_when_no_alternative(self, db_session):
+        product = Product(part_number="REQ-1", netsuite_id="555")
+        db_session.add(product)
+        db_session.flush()
+
+        item = self._item(part_number="REQ-1", product_id=str(product.id))
+        self._readiness(self._rfq_dict(item), db_session)
+
+        assert item["product_ns_id"] == "555"
+        assert item["is_alternative_part_number"] is False

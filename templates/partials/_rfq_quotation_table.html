@@ -1,4 +1,5 @@
 {# Quotation tab — item-level pricing with expandable supplier quotes #}
+{% from "components.html" import part_number_cell %}
 {% set items = rfq.get('items', []) %}
 {% if items %}
 <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-visible">
@@ -22,6 +23,7 @@
                     {% set _ = quote_suppliers.append(s) %}
                 {% endif %}
             {% endfor %}
+            {% set selected_sup = (quote_suppliers | selectattr('quote_status', 'equalto', 'selected') | list | first) %}
             <tr @click="toggle({{ item.line }})"
                 class="cursor-pointer transition-colors group"
                 :class="expanded[{{ item.line }}] ? 'bg-blue-50 dark:bg-blue-950' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'">
@@ -37,7 +39,7 @@
                         <span>{{ item.input_description or '—' }}</span>
                     </div>
                 </td>
-                <td class="px-3 py-2.5 font-mono">{{ item.part_number or '—' }}</td>
+                <td class="px-3 py-2.5 font-mono">{{ part_number_cell(item, selected_sup.name if selected_sup else none) }}</td>
                 <td class="px-3 py-2.5">{{ item.brand or '—' }}</td>
                 <td class="px-3 py-2.5 text-center">{{ item.quantity }}{{ ' ' + item.uom if item.uom else '' if item.quantity else '—' }}</td>
                 <td class="px-3 py-2.5 text-right font-mono" @click.stop>
@@ -72,6 +74,7 @@
                             <thead>
                                 <tr class="text-xs text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
                                     <th class="text-left py-1.5 pr-3 font-medium">Supplier</th>
+                                    <th class="text-left py-1.5 px-2 font-medium">Quoted Part #</th>
                                     <th class="text-left py-1.5 px-2 font-medium">Currency</th>
                                     <th class="text-left py-1.5 px-2 font-medium">Terms</th>
                                     <th class="text-right py-1.5 px-2 font-medium">Quoted Cost</th>
@@ -85,6 +88,18 @@
                                 {% set qs = sup.quote_status or 'unquoted' %}
                                 <tr>
                                     <td class="py-1.5 pr-3 text-gray-900 dark:text-gray-100">{{ sup.name }}</td>
+                                    <td class="py-1.5 px-2 font-mono text-xs" @click.stop>
+                                        <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1 py-0.5 -my-0.5 -mx-1 inline-block min-w-[80px]"
+                                              @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ sup.quote_part_number or '—' }}</span>
+                                        <input type="text"
+                                               class="hidden w-32 rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 px-1 py-0.5 font-mono text-sm focus:ring-1 focus:ring-blue-500"
+                                               value="{{ sup.quote_part_number or '' }}"
+                                               placeholder="Supplier part #"
+                                               data-supplier-name="{{ sup.name }}"
+                                               @blur="$el.classList.add('hidden'); $el.previousElementSibling.style.display=''; $el.previousElementSibling.textContent = $el.value.trim() || '—'; updateSupplierQuote({{ item.line }}, $el.dataset.supplierName, 'quote_part_number', $el.value.trim())"
+                                               @keydown.enter="$el.blur()"
+                                               @keydown.escape="$el.blur()">
+                                    </td>
                                     <td class="py-1.5 px-2" @click.stop>
                                         <span class="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1 py-0.5 -my-0.5 -mx-1 inline-block min-w-[40px]"
                                               @click="$el.style.display='none'; $el.nextElementSibling.classList.remove('hidden'); $el.nextElementSibling.focus()">{{ sup.quote_currency or sup.currency or '—' }}</span>

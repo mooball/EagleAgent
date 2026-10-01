@@ -484,6 +484,7 @@
                 <colgroup>
                     <col style="width: 40px;">
                     <col style="width: 140px;">
+                    <col style="width: 140px;">
                     <col>
                     <col style="width: 130px;">
                     <col style="width: 140px;">
@@ -494,6 +495,7 @@
                     <tr>
                         <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">#</th>
                         <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Part Number</th>
+                        <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Supplier Part #</th>
                         <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Description</th>
                         <th class="text-center px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Department</th>
                         <th class="text-left px-2 py-2.5 font-medium text-gray-500 dark:text-gray-400 text-xs" style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb;">Brand</th>
@@ -507,6 +509,15 @@
                             <td class="px-2 py-2 text-center font-mono text-xs text-gray-400" style="border-right: 1px solid #e5e7eb;" x-text="item.line"></td>
                             <td :style="'padding: 0; border-right: 1px solid #e5e7eb;' + (isEditAllDirty(item.line, 'part_number') ? ' background: var(--cell-dirty-bg);' : '')">
                                 <input type="text" x-model="item.part_number"
+                                       placeholder="Requested part #"
+                                       style="width: 100%; padding: 8px; font-size: 0.875rem; border: none; background: transparent; outline: none; font-family: ui-monospace, monospace;"
+                                       @focus="$el.style.backgroundColor='var(--cell-focus-bg)'" @blur="$el.style.backgroundColor='transparent'"
+                                       @input="updateDirtyCount()"
+                                       @keydown.escape="cancelEditAll()">
+                            </td>
+                            <td :style="'padding: 0; border-right: 1px solid #e5e7eb;' + (isEditAllDirty(item.line, 'supplied_part_number') ? ' background: var(--cell-dirty-bg);' : '')">
+                                <input type="text" x-model="item.supplied_part_number"
+                                       placeholder="Supplier part #"
                                        style="width: 100%; padding: 8px; font-size: 0.875rem; border: none; background: transparent; outline: none; font-family: ui-monospace, monospace;"
                                        @focus="$el.style.backgroundColor='var(--cell-focus-bg)'" @blur="$el.style.backgroundColor='transparent'"
                                        @input="updateDirtyCount()"

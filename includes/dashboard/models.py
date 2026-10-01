@@ -416,7 +416,15 @@ class RFQItem(Base):
     line = Column(Integer, nullable=False)
     input_description = Column(Text, nullable=True)
     input_code = Column(String, nullable=True)
+    # Requested part number — what the customer asked for (populated at RFQ
+    # creation). Never overwritten by supplier selection.
     part_number = Column(String, nullable=True)
+    # Supplied part number — the chosen supplier's own part number when it
+    # differs from the requested one. Auto-filled on supplier selection from
+    # the supplier's ``quote_part_number`` and clearable/overridable by hand.
+    # The "effective" part number pushed to NetSuite is supplied when set,
+    # else requested (see ``rfq_crud.effective_part_number``).
+    supplied_part_number = Column(String, nullable=True)
     brand = Column(String, nullable=True)
     # NetSuite department internal ID — maps to Department enum values
     # in includes/netsuite/departments.py (e.g. '5' = Truck Parts)
