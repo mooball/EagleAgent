@@ -103,97 +103,146 @@ part number it is handed. Feeding it the effective number is exactly the desired
 
 ---
 
-## Phase 1 — Data model & migration
+## Phase 1 — Data model & migration ✅
 
-### 1. Add `supplied_part_number` to `RFQItem` + Alembic migration
-- Add `supplied_part_number = Column(String, nullable=True)` to `RFQItem`
+### ~~1. Add `supplied_part_number` to `RFQItem` + Alembic migration~~ ✅
+- ~~Add `supplied_part_number = Column(String, nullable=True)` to `RFQItem`
   (`includes/dashboard/models.py`), with a comment explaining requested vs supplied
-  and the effective-number rule.
-- Add an Alembic revision (additive column, nullable — safe on the live table), modelled
+  and the effective-number rule.~~
+- ~~Add an Alembic revision (additive column, nullable — safe on the live table), modelled
   on `alembic/versions/c7d8e9f0a1b2_add_pipeline_activity_to_rfqs.py`.
   Current head is `d2e3f4a5b6c7` (`alembic heads`); set it as `down_revision` unless
-  a newer head has landed.
-- Include a `downgrade()` that drops the column.
+  a newer head has landed.~~
+- ~~Include a `downgrade()` that drops the column.~~
+- Implementation: added `supplied_part_number = Column(String, nullable=True)` to
+  `RFQItem` in `includes/dashboard/models.py`, directly after `part_number`, with
+  comments on requested/supplied/effective. Migration
+  `alembic/versions/e7a1b2c3d4f5_add_supplied_part_number_to_rfq_items.py`
+  (`down_revision = 'd2e3f4a5b6c7'`; `downgrade()` drops the column). `alembic heads`
+  reports the single head `e7a1b2c3d4f5`.
 
-### 2. Centralise effective-part-number resolution
-- In `includes/tools/rfq_crud.py`, beside `_is_empty_part_number` (`:84`), add:
+### ~~2. Centralise effective-part-number resolution~~ ✅
+- ~~In `includes/tools/rfq_crud.py`, beside `_is_empty_part_number` (`:84`), add:
   - `effective_part_number(requested, supplied) -> str | None` — supplied when
     non-empty (via `_is_empty_part_number`), else requested; both stripped.
   - `is_alternative_part_number(requested, supplied) -> bool` — True only when supplied
-    is non-empty **and** normalised (`normalize_part_number`) different from requested.
-- Use these everywhere instead of ad-hoc `or` fallbacks, so the rule lives in one place.
-- Unit tests for both helpers (empty/placeholder/normalised-equal cases).
+    is non-empty **and** normalised (`normalize_part_number`) different from requested.~~
+- ~~Use these everywhere instead of ad-hoc `or` fallbacks, so the rule lives in one place.~~
+- ~~Unit tests for both helpers (empty/placeholder/normalised-equal cases).~~
+- Implementation: added `effective_part_number(requested, supplied=None)` and
+  `is_alternative_part_number(requested, supplied)` beside `_is_empty_part_number` in
+  `includes/tools/rfq_crud.py`. The alternative check is separator- **and
+  case-insensitive** — a case-only difference is the same part, so not an alternative
+  (a deliberate refinement over the plan text). Tests in
+  `tests/tools/test_rfq_part_number_helpers.py` (14 passing).
 
 ---
 
-## Phase 2 — Selection & quote-edit recompute
+## Phase 2 — Selection & quote-edit recompute ✅
 
-### 3. Recompute supplied on supplier select/deselect (all three paths)
-The three selection paths currently copy into `part_number`; replace that with the
-supplied rule and remove the `part_number` overwrite entirely.
-- `_select_supplier_on_item` (`rfqs.py:1444–1457`) — bulk/select-all helper (operates on
+### ~~3. Recompute supplied on supplier select/deselect (all three paths)~~ ✅
+- ~~The three selection paths currently copy into `part_number`; replace that with the
+  supplied rule and remove the `part_number` overwrite entirely.~~
+- ~~`_select_supplier_on_item` (`rfqs.py:1444–1457`) — bulk/select-all helper (operates on
   the ORM `item`). On select: set `item.supplied_part_number` from the target's
   `quote_part_number` when it is an alternative, else `None`. On the deselect branch,
-  clear it.
-- `quotation_select_supplier` (`rfqs.py:3339–3357`) — single star endpoint. Same.
-- `_select_quote_core` (`rfq_crud.py:1866–1884`) — chat/tool path. Same, including the
-  deselect-at-`:1863` branch clearing supplied.
-- Delete the `_is_empty_part_number(...) → item.part_number = supplier_pn` blocks; the
-  requested number must never be overwritten by selection.
+  clear it.~~
+- ~~`quotation_select_supplier` (`rfqs.py:3339–3357`) — single star endpoint. Same.~~
+- ~~`_select_quote_core` (`rfq_crud.py:1866–1884`) — chat/tool path. Same, including the
+  deselect-at-`:1863` branch clearing supplied.~~
+- ~~Delete the `_is_empty_part_number(...) → item.part_number = supplier_pn` blocks; the
+  requested number must never be overwritten by selection.~~
+- Implementation: added `supplied_from_supplier(requested, supplier_entry)` to
+  `rfq_crud.py` to centralise the rule, and switched all three paths to it. The old
+  `part_number` overwrite is gone. `_select_supplier_on_item` and
+  `quotation_select_supplier` set supplied on select; `quotation_select_supplier` and
+  `_select_quote_core` clear it on deselect. `quotation_select_supplier_all` inherits the
+  behaviour via `_select_supplier_on_item`.
 
-### 4. Recompute supplied when the selected supplier's quote number is edited
-- Add `quote_part_number` to the editable `quote_fields` in
-  `quotation_update_supplier_quote` (`rfqs.py:3270`).
-- After applying the field changes, if the edited supplier is the line's **selected**
+### ~~4. Recompute supplied when the selected supplier's quote number is edited~~ ✅
+- ~~Add `quote_part_number` to the editable `quote_fields` in
+  `quotation_update_supplier_quote` (`rfqs.py:3270`).~~
+- ~~After applying the field changes, if the edited supplier is the line's **selected**
   supplier, recompute `line_item.supplied_part_number` from the (new)
-  `quote_part_number` using the same rule as Task 3.
-- Mirror the recompute in `_update_supplier_sync` (`rfq_crud.py`) so the chat/tool path
-  behaves identically.
+  `quote_part_number` using the same rule as Task 3.~~
+- ~~Mirror the recompute in `_update_supplier_sync` (`rfq_crud.py`) so the chat/tool path
+  behaves identically.~~
+- Implementation: `quotation_update_supplier_quote` now accepts `quote_part_number`
+  (trimmed; blank → `None`) and recomputes supplied when the edited supplier is the line's
+  selected supplier. The chat/tool path recomputes in `_update_supplier_core`, so
+  `_update_supplier_sync` and `_update_quotes_bulk_sync` inherit it. An edit to a
+  non-selected supplier's quote number leaves supplied untouched.
 
-### 5. Manual override via update_item / edit forms (backend)
-- Add `supplied_part_number` to the `updatable` list in `_update_item_core`
+### ~~5. Manual override via update_item / edit forms (backend)~~ ✅
+- ~~Add `supplied_part_number` to the `updatable` list in `_update_item_core`
   (`rfq_crud.py:848`) — **not** to `_no_clear` (blank must clear it) and **not** to the
-  `_identifying` set (editing it must not reset the pipeline or clear `product_id`).
-- Treat placeholder values as a clear (`_is_empty_part_number`), matching `part_number`
-  semantics elsewhere.
-- Route the dashboard edit-item form / edit-all grid fields through `update_item` so the
-  override reaches the same code path.
+  `_identifying` set (editing it must not reset the pipeline or clear `product_id`).~~
+- ~~Treat placeholder values as a clear (`_is_empty_part_number`), matching `part_number`
+  semantics elsewhere.~~
+- ~~Route the dashboard edit-item form / edit-all grid fields through `update_item` so the
+  override reaches the same code path.~~
+- Implementation: `supplied_part_number` is in the `updatable` list (not `_no_clear`, not
+  `_identifying`); blank/placeholder values normalise to `None`. Editing it does not reset
+  the pipeline or drop `product_id`. The dashboard edit-form / JS wiring is Phase 4
+  (task 11), so the field is backend-ready but not yet exposed in the UI.
+- Tests: `tests/tools/test_rfq_part_number_selection.py` (DB-free core paths) plus the
+  rewritten `tests/test_rfq_selection_row.py`. Verified against the local dev DB after
+  `alembic upgrade head`; the DB-backed `tests/test_rfq_supplier_id_integrity.py` and
+  `tests/tools/test_rfq_bulk.py::TestSelectQuotesBulk` pass.
 
 ---
 
-## Phase 3 — Readiness & NetSuite sync
+## Phase 3 — Readiness & NetSuite sync ✅
 
-### 6. Effective number in the readiness gate and product match
-In `_rfq_sync_readiness` (`rfqs.py:575–839`):
-- Compute `item["effective_part_number"]` and `item["is_alternative_part_number"]` once
-  per item (reuse the selected-supplier lookup already at `:702` — no new query).
-- "Part number not set" issue (`:760`) fires only when the **effective** number is empty,
-  so description-only lines with a supplied number become syncable.
-- Product-match guard (`:673–677`) compares `normalize_part_number(p_cand.part_number)`
-  to the **effective** number. When supplied differs, `product_ns_id` resolves to `None`
-  and the sync falls through to `ensure_item_with_vendor(effective)` — intended.
-- When effective ≠ requested and no linked product matches effective, raise the existing
-  `item_unmatched` warning text mentioning the supplied number (e.g. "…a new NetSuite
-  item will be created for <supplied>").
+### ~~6. Effective number in the readiness gate and product match~~ ✅
+- ~~In `_rfq_sync_readiness` (`rfqs.py:575–839`):
+  - Compute `item["effective_part_number"]` and `item["is_alternative_part_number"]` once
+    per item (reuse the selected-supplier lookup already at `:702` — no new query).
+  - "Part number not set" issue (`:760`) fires only when the **effective** number is empty,
+    so description-only lines with a supplied number become syncable.
+  - Product-match guard (`:673–677`) compares `normalize_part_number(p_cand.part_number)`
+    to the **effective** number. When supplied differs, `product_ns_id` resolves to `None`
+    and the sync falls through to `ensure_item_with_vendor(effective)` — intended.
+  - When effective ≠ requested and no linked product matches effective, raise the existing
+    `item_unmatched` warning text mentioning the supplied number (e.g. "…a new NetSuite
+    item will be created for <supplied>").~~
+- Implementation: `_rfq_sync_readiness` computes `requested_pn`/`supplied_pn` from the
+  persisted fields (no supplier lookup, no extra query) and annotates
+  `item["effective_part_number"]` + `item["is_alternative_part_number"]`. The product guard
+  and the "part number not set" gate both use the effective number. When the effective
+  number is an alternative with no matching linked product, the warning reads
+  "Supplier part '<n>' — a new NetSuite item will be created or matched".
 
-### 7. Effective number in the Opportunity sync + snapshot
-In `_sync_opportunity_items_sync` (`rfqs.py:916–1237`):
-- `effective = effective_part_number(item.get("part_number"), item.get("supplied_part_number"))`.
-- `ensure_item_with_vendor(part_number=effective, …)` (`:1067`).
-- `custcol_new_item_code = effective` (`:1128`).
-- Snapshot: store `part_number = effective`, and additionally
-  `requested_part_number` + `supplied_part_number` for audit (`:1139`, `:1173–1186`).
-- The post-sync product link (`:1201–1218`) uses `s["part_number"]` (now effective) via
-  `_find_product_by_code` — correct: the created/matched product is the effective one.
+### ~~7. Effective number in the Opportunity sync + snapshot~~ ✅
+- ~~In `_sync_opportunity_items_sync` (`rfqs.py:916–1237`):
+  - `effective = effective_part_number(item.get("part_number"), item.get("supplied_part_number"))`.
+  - `ensure_item_with_vendor(part_number=effective, …)` (`:1067`).
+  - `custcol_new_item_code = effective` (`:1128`).
+  - Snapshot: store `part_number = effective`, and additionally
+    `requested_part_number` + `supplied_part_number` for audit (`:1139`, `:1173–1186`).
+  - The post-sync product link (`:1201–1218`) uses `s["part_number"]` (now effective) via
+    `_find_product_by_code` — correct: the created/matched product is the effective one.~~
+- Implementation: `_sync_opportunity_items_sync` computes `effective_pn` per ready line and
+  uses it for `ensure_item_with_vendor(part_number=…)`, `custcol_new_item_code`, and the
+  synced record's `part_number`. The snapshot additionally stores `requested_part_number`
+  and `supplied_part_number`. Also added `supplied_part_number` to `_item_to_dict`
+  (`rfq_crud.py`) — without it the dict path would have silently dropped the field.
 
-### 8. Dirty detection uses the effective number
-- `_diff_sync_snapshot` (`rfqs.py:867–913`): compare the item's **effective** number to
+### ~~8. Dirty detection uses the effective number~~ ✅
+- ~~`_diff_sync_snapshot` (`rfqs.py:867–913`): compare the item's **effective** number to
   `snap.get("part_number")`, instead of `item.get("part_number")`. Keep the function pure
-  (no DB) by computing effective from the item dict itself.
-- This makes a supplier switch, a manual override, or a selected-supplier quote edit all
-  correctly mark the line dirty for re-sync.
-- Verify `_refq_sync_readiness` annotates the effective field **before** it calls
-  `_diff_sync_snapshot` (`:834`), or have the function compute it locally.
+  (no DB) by computing effective from the item dict itself.~~
+- ~~This makes a supplier switch, a manual override, or a selected-supplier quote edit all
+  correctly mark the line dirty for re-sync.~~
+- ~~Verify `_refq_sync_readiness` annotates the effective field **before** it calls
+  `_diff_sync_snapshot` (`:834`), or have the function compute it locally.~~
+- Implementation: `_diff_sync_snapshot` computes the effective number from the item dict
+  itself (stays pure) and compares it to the snapshot's `part_number`. A supplier switch, a
+  manual override, or a cleared override all mark the line dirty.
+- Tests: `tests/test_opportunity_sync.py` (sync-uses-supplied + three diff cases) and
+  `tests/test_rfq_supplier_id_integrity.py` (readiness gate + product match). Full RFQ
+  suite green: 154 passed across `test_rfq_crud`/`test_rfq_bulk`/`test_quote_tools`, 120
+  passed across the supplied/opportunity/readiness files.
 
 ---
 

@@ -14,6 +14,7 @@ from sqlalchemy import func as sa_func
 from includes.dashboard.models import Supplier, Transaction, EmailTracking, Contact, Product
 from includes.dashboard.user_settings import load_user_settings, persist_user_settings
 from includes.tools.product_tools import normalize_part_number
+from includes.tools.rfq_crud import effective_part_number, is_alternative_part_number
 from includes.netsuite.departments import Department
 from . import _helpers
 from ._helpers import router, templates, require_user, _render, _is_htmx
@@ -667,12 +668,29 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
 
         for item in items:
             item["ns_synced"] = item["line"] in synced_lines
+
+            # Requested vs supplied part number. ``supplied_part_number`` is the
+            # chosen supplier's own number (persisted when a supplier is
+            # selected); the *effective* number is what NetSuite sees and what
+            # product matching keys on. Both are computed from persisted fields,
+            # so no supplier lookup or extra query is needed here.
+            requested_pn = (item.get("part_number") or "").strip()
+            supplied_pn = (item.get("supplied_part_number") or "").strip()
+            effective_pn = effective_part_number(requested_pn, supplied_pn)
+            item["effective_part_number"] = effective_pn or ""
+            item["is_alternative_part_number"] = is_alternative_part_number(
+                requested_pn, supplied_pn
+            )
+
             product = None
             if item.get("product_id"):
                 p_cand = products.get(str(item["product_id"]))
-                # Guard against stale/mismatched product_id: product part number
-                # MUST match item part number
-                if p_cand and normalize_part_number(p_cand.part_number) == normalize_part_number(item.get("part_number") or ""):
+                # Guard against stale/mismatched product_id: the linked product's
+                # part number MUST match the effective number. When the supplier
+                # supplied an alternative, the requested product no longer
+                # matches, so product_ns_id stays None and the sync resolver
+                # creates/matches the supplied item instead.
+                if p_cand and normalize_part_number(p_cand.part_number) == normalize_part_number(effective_pn or ""):
                     product = p_cand
             item["product_ns_id"] = product.netsuite_id if product else None
             item["product_part_number"] = product.part_number if product else None
@@ -757,17 +775,26 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             from includes.netsuite.departments import DEPARTMENT_BY_ID
             issues = []
             warnings = []
-            if not (item.get("part_number") or "").strip():
+            if not effective_pn:
                 issues.append({
                     "key": "item",
                     "label": "Part number not set — classify the line against an inventory item",
                 })
             elif not item.get("product_id") or not product:
                 # A part number with no DB product match just means the part
-                # isn't in NetSuite yet — it gets created during the sync.
+                # isn't in NetSuite yet — it gets created during the sync. When
+                # the effective number is the supplier's alternative, say so.
+                unmatched_label = (
+                    "No matching product in the database — a new NetSuite item will be created"
+                )
+                if item["is_alternative_part_number"]:
+                    unmatched_label = (
+                        f"Supplier part '{effective_pn}' — a new NetSuite item "
+                        "will be created or matched"
+                    )
                 warnings.append({
                     "key": "item_unmatched",
-                    "label": "No matching product in the database — a new NetSuite item will be created",
+                    "label": unmatched_label,
                 })
             if not (item.get("brand") or "").strip():
                 issues.append({
@@ -898,7 +925,13 @@ def _diff_sync_snapshot(item: dict, snap: dict | None, quote_currency: str) -> l
         dirty.append("qty")
     if (item.get("department_id") or "") != (snap.get("department_id") or ""):
         dirty.append("department")
-    if (item.get("part_number") or "").strip() != (snap.get("part_number") or "").strip():
+    # Compare the effective number (supplied wins over requested) — the value
+    # the sync pushes and records in the snapshot. A supplier switch, a manual
+    # override, or an edited quote number therefore all mark the line dirty.
+    effective_pn = effective_part_number(
+        item.get("part_number"), item.get("supplied_part_number")
+    ) or ""
+    if effective_pn != (snap.get("part_number") or "").strip():
         dirty.append("item")
     # The line was pushed under a specific NetSuite item — if the line now
     # resolves to a different item (e.g. stale/cross-wired product_id),
@@ -1046,6 +1079,13 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
         # FROM that currency, not AUD.
         src_iso = (selected.get("quote_currency") or "").strip().upper() or "AUD"
 
+        # The part number pushed to NetSuite: the supplier's supplied number
+        # when set, else the requested one. This drives item create/match and
+        # the New Item Code custom field.
+        effective_pn = effective_part_number(
+            item.get("part_number"), item.get("supplied_part_number")
+        ) or ""
+
         try:
             # Resolve (or create) the brand record first — brands are pushed
             # to NetSuite alongside items, and the line's New Item Brand
@@ -1065,7 +1105,7 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
             ns_item_id = item.get("product_ns_id")
             if not ns_item_id:
                 result = ensure_item_with_vendor(
-                    part_number=(item.get("part_number") or "").strip(),
+                    part_number=effective_pn,
                     description=item.get("input_description") or "",
                     brand_name=brand_name,
                     vendor_netsuite_id=vendor_ns_id,
@@ -1125,7 +1165,7 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
             "costEstimateRate": float(est_rate),
             "costEstimate": float(est_amount),
             # New Item Code / New Item Brand custom fields
-            "custcol_new_item_code": (item.get("part_number") or "").strip(),
+            "custcol_new_item_code": effective_pn,
         }
         if brand_ns_id:
             payload["custcol_new_item_brand"] = {"id": str(brand_ns_id)}
@@ -1136,7 +1176,9 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
             "line": line,
             "label": label,
             "ns_item_id": str(ns_item_id),
-            "part_number": (item.get("part_number") or "").strip(),
+            "part_number": effective_pn,
+            "requested_part_number": (item.get("part_number") or "").strip(),
+            "supplied_part_number": (item.get("supplied_part_number") or "").strip(),
             "sale_price": float(item["sale_price"]),
             "cost_price": float(item["cost_price"]),
             "cost_currency": src_iso,
@@ -1173,6 +1215,8 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
                 "snapshot": {
                     str(s["line"]): {
                         "part_number": s["part_number"],
+                        "requested_part_number": s.get("requested_part_number", ""),
+                        "supplied_part_number": s.get("supplied_part_number", ""),
                         "ns_item_id": s["ns_item_id"],
                         "sale_price": s["sale_price"],
                         "cost_price": s["cost_price"],
@@ -1422,7 +1466,7 @@ def _select_supplier_on_item(item, name_lower: str) -> str:
     flagging the JSONB column (``flag_modified``) when the result is "changed".
     """
     from decimal import Decimal, InvalidOperation
-    from includes.tools.rfq_crud import _is_empty_part_number
+    from includes.tools.rfq_crud import supplied_from_supplier
 
     suppliers = list(item.suppliers or [])
     target = next(
@@ -1449,10 +1493,10 @@ def _select_supplier_on_item(item, name_lower: str) -> str:
         item.cost_price = Decimal(str(target.get("quote_cost")))
     except (InvalidOperation, ValueError):
         pass
-    if _is_empty_part_number(item.part_number):
-        supplier_pn = target.get("quote_part_number")
-        if supplier_pn:
-            item.part_number = str(supplier_pn)
+    # Store the chosen supplier's part number when it is an alternative to the
+    # requested one (cleared otherwise). The requested part_number is never
+    # overwritten by selection.
+    item.supplied_part_number = supplied_from_supplier(item.part_number, target)
     item.suppliers = suppliers
     return "changed"
 
@@ -3267,10 +3311,22 @@ async def quotation_update_supplier_quote(
         if not matched:
             return JSONResponse({"status": "error", "message": f"Supplier '{supplier_name}' not found on line {line}"}, status_code=404)
 
-        quote_fields = ("quote_status", "quote_cost", "quote_currency", "quote_leadtime")
+        quote_fields = ("quote_status", "quote_cost", "quote_currency", "quote_leadtime",
+                        "quote_part_number")
         for field in quote_fields:
             if field in body:
-                matched[field] = body[field]
+                value = body[field]
+                if field == "quote_part_number":
+                    value = (str(value).strip() or None) if value is not None else None
+                matched[field] = value
+
+        # Keep the item's supplied part number in step when the selected
+        # supplier's quoted number is edited.
+        if matched.get("quote_status") == "selected" and "quote_part_number" in body:
+            from includes.tools.rfq_crud import supplied_from_supplier
+            line_item.supplied_part_number = supplied_from_supplier(
+                line_item.part_number, matched
+            )
 
         line_item.suppliers = suppliers
         flag_modified(line_item, "suppliers")
@@ -3325,8 +3381,9 @@ async def quotation_select_supplier(
             return JSONResponse({"status": "error", "message": f"Supplier '{supplier_name}' not found on line {line}"}, status_code=404)
 
         if target_supplier.get("quote_status") == "selected":
-            # Deselect: revert to "quoted"
+            # Deselect: revert to "quoted" and drop the supplied part number
             target_supplier["quote_status"] = "quoted"
+            line_item.supplied_part_number = None
         else:
             # Same guard as the bulk helper: only shortlisted/selected suppliers
             # are offerable by the Selection matrix.
@@ -3349,12 +3406,13 @@ async def quotation_select_supplier(
                     line_item.cost_price = Decimal(str(quote_cost))
                 except (InvalidOperation, ValueError):
                     pass
-            # Copy supplier's part number if RFQ item doesn't have a real one yet
-            from includes.tools.rfq_crud import _is_empty_part_number
-            if _is_empty_part_number(line_item.part_number):
-                supplier_pn = target_supplier.get("quote_part_number")
-                if supplier_pn:
-                    line_item.part_number = str(supplier_pn)
+            # Store the chosen supplier's part number when it is an alternative
+            # to the requested one (cleared otherwise). The requested
+            # part_number is never overwritten by selection.
+            from includes.tools.rfq_crud import supplied_from_supplier
+            line_item.supplied_part_number = supplied_from_supplier(
+                line_item.part_number, target_supplier
+            )
 
         line_item.suppliers = suppliers
         flag_modified(line_item, "suppliers")

@@ -102,10 +102,12 @@ class TestSelectionRowJson:
 
 
 class _FakeItem:
-    def __init__(self, suppliers, part_number=None, cost_price=None):
+    def __init__(self, suppliers, part_number=None, cost_price=None,
+                 supplied_part_number=None):
         self.suppliers = suppliers
         self.part_number = part_number
         self.cost_price = cost_price
+        self.supplied_part_number = supplied_part_number
 
 
 def _sup(name, quote_status, quote_cost, part_number=None):
@@ -121,12 +123,15 @@ def _sup(name, quote_status, quote_cost, part_number=None):
 class TestSelectSupplierOnItem:
     """The bulk action must apply the same per-line state as one star click."""
 
-    def test_selects_and_copies_cost_and_part_number(self):
+    def test_selects_and_copies_cost_and_supplied_part_number(self):
+        # Description-only line (no requested number): the supplier's quoted
+        # number is a genuine supplied part number. part_number stays None.
         item = _FakeItem([_sup("Acme", "quoted", 5.0, "PN-9")])
         assert _select_supplier_on_item(item, "acme") == "changed"
         assert item.suppliers[0]["quote_status"] == "selected"
         assert float(item.cost_price) == 5.0
-        assert item.part_number == "PN-9"
+        assert item.part_number is None
+        assert item.supplied_part_number == "PN-9"
 
     def test_deselects_previous_selection(self):
         item = _FakeItem([
@@ -138,11 +143,28 @@ class TestSelectSupplierOnItem:
         assert item.suppliers[1]["quote_status"] == "selected"
         assert float(item.cost_price) == 7.0
 
-    def test_preserves_existing_part_number(self):
+    def test_sets_supplied_and_preserves_requested(self):
+        # Requested number is kept verbatim; the alternative is stored on
+        # supplied_part_number only.
         item = _FakeItem([_sup("Acme", "quoted", 5.0, "SUPPLIER-PN")],
                          part_number="EXISTING")
         assert _select_supplier_on_item(item, "acme") == "changed"
         assert item.part_number == "EXISTING"
+        assert item.supplied_part_number == "SUPPLIER-PN"
+
+    def test_equal_quoted_number_clears_supplied(self):
+        # A supplier quoting the same (normalised) number is not an alternative.
+        item = _FakeItem([_sup("Acme", "quoted", 5.0, "EXISTING")],
+                         part_number="EXISTING", supplied_part_number="STALE")
+        assert _select_supplier_on_item(item, "acme") == "changed"
+        assert item.part_number == "EXISTING"
+        assert item.supplied_part_number is None
+
+    def test_no_quoted_number_clears_supplied(self):
+        item = _FakeItem([_sup("Acme", "quoted", 5.0, None)],
+                         part_number="EXISTING", supplied_part_number="STALE")
+        assert _select_supplier_on_item(item, "acme") == "changed"
+        assert item.supplied_part_number is None
 
     def test_non_changing_outcomes(self):
         assert _select_supplier_on_item(_FakeItem([]), "acme") == "absent"

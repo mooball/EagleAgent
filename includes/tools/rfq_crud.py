@@ -88,6 +88,55 @@ def _is_empty_part_number(pn) -> bool:
     return str(pn).strip().lower() in _EMPTY_PART_NUMBERS
 
 
+def effective_part_number(requested, supplied=None) -> str | None:
+    """The part number to use for the chosen supplier and the NetSuite push.
+
+    ``supplied`` (the chosen supplier's own number) wins when it is a real
+    value; otherwise fall back to ``requested`` (what the customer asked for).
+    Returns ``None`` when neither is usable.
+
+    Single source of truth for the requested-vs-supplied rule — callers must
+    not re-implement the fallback.
+    """
+    if not _is_empty_part_number(supplied):
+        return str(supplied).strip()
+    if not _is_empty_part_number(requested):
+        return str(requested).strip()
+    return None
+
+
+def is_alternative_part_number(requested, supplied) -> bool:
+    """True when ``supplied`` is a genuinely different part number.
+
+    A description-only line (no requested number) with a supplied one counts as
+    an alternative. Separator- and case-only differences are not — they are the
+    same part, so the supplied value is redundant.
+    """
+    if _is_empty_part_number(supplied):
+        return False
+    if _is_empty_part_number(requested):
+        return True
+    return (
+        normalize_part_number(str(requested)).lower()
+        != normalize_part_number(str(supplied)).lower()
+    )
+
+
+def supplied_from_supplier(requested, supplier_entry) -> str | None:
+    """The ``supplied_part_number`` to store for a chosen supplier.
+
+    The supplier's ``quote_part_number`` is stored only when it is a genuine
+    alternative; otherwise supplied is cleared (``None``) so a redundant copy of
+    the requested number is never kept. ``None`` when there is no supplier.
+    """
+    if not supplier_entry:
+        return None
+    quote_pn = supplier_entry.get("quote_part_number")
+    if is_alternative_part_number(requested, quote_pn):
+        return str(quote_pn).strip()
+    return None
+
+
 def _resolve_department(data: dict) -> str | None:
     """Resolve department input to a canonical enum ID.
 
@@ -319,6 +368,7 @@ def _item_to_dict(item) -> dict:
         "input_description": item.input_description or "",
         "input_code": item.input_code or "",
         "part_number": item.part_number,
+        "supplied_part_number": item.supplied_part_number,
         "brand": item.brand,
         "department_id": department_id,
         "department": department,
@@ -846,8 +896,8 @@ def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
         changes.append("department_id")
 
     updatable = [
-        "input_description", "input_code", "part_number", "brand",
-        "product_id", "quantity", "uom", "match", "notes",
+        "input_description", "input_code", "part_number", "supplied_part_number",
+        "brand", "product_id", "quantity", "uom", "match", "notes",
         "sale_price",
     ]
     _no_clear = {"product_id", "match"}
@@ -856,6 +906,10 @@ def _update_item_core(session, rfq, line_item, data: dict, user_id: str):
             new_val = data[key]
             if key in _no_clear and not new_val and getattr(line_item, key, None):
                 continue
+            # The supplied part number is a manual override; a blank/placeholder
+            # value clears it rather than storing an empty string.
+            if key == "supplied_part_number" and _is_empty_part_number(new_val):
+                new_val = None
             setattr(line_item, key, new_val)
             changes.append(key)
 
@@ -1862,6 +1916,7 @@ def _select_quote_core(session, rfq, line_item, data):
     if target.get("quote_status") == "selected":
         target["quote_status"] = "quoted"
         line_item.cost_price = None
+        line_item.supplied_part_number = None
         action = f"Deselected '{name}' on line {line_item.line}"
     else:
         for s in suppliers:
@@ -1874,11 +1929,12 @@ def _select_quote_core(session, rfq, line_item, data):
                 line_item.cost_price = Decimal(str(qc))
             except (InvalidOperation, ValueError):
                 pass
-        # Copy supplier's part number if RFQ item doesn't have a real one yet
-        if _is_empty_part_number(line_item.part_number):
-            supplier_pn = target.get("quote_part_number")
-            if supplier_pn:
-                line_item.part_number = str(supplier_pn)
+        # Store the chosen supplier's part number when it is an alternative
+        # to the requested one (cleared otherwise). The requested part_number
+        # is never overwritten by selection.
+        line_item.supplied_part_number = supplied_from_supplier(
+            line_item.part_number, target
+        )
         action = f"Selected '{name}' on line {line_item.line}"
 
     line_item.suppliers = suppliers
@@ -2074,6 +2130,13 @@ def _update_supplier_core(session, rfq, line_item, data):
         if key in data:
             supplier[key] = data[key]
             changes.append(key)
+
+    # Keep the item's supplied part number in step when the selected supplier's
+    # quoted part number is edited (agent edit_supplier / update_quotes_bulk).
+    if supplier.get("quote_status") == "selected" and "quote_part_number" in data:
+        line_item.supplied_part_number = supplied_from_supplier(
+            line_item.part_number, supplier
+        )
 
     line_item.suppliers = current_suppliers
     flag_modified(line_item, "suppliers")

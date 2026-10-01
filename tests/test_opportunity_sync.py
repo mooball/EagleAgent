@@ -31,10 +31,12 @@ def _make_item(
     brand_ns_id=None,
     issues=None,
     selected=None,
+    supplied_part_number=None,
 ):
     return {
         "line": line,
         "part_number": part_number,
+        "supplied_part_number": supplied_part_number,
         "input_description": description,
         "brand": brand,
         "brand_is_excluded": brand_is_excluded,
@@ -394,6 +396,28 @@ class TestSyncOpportunityItems:
         assert kwargs["purchase_price"] == 10.5
         assert kwargs["department_id"] == "8"
 
+    def test_sync_uses_supplied_part_number_when_set(self, monkeypatch, base_stubs):
+        """The chosen supplier's alternative number is what NetSuite receives."""
+        rfq, opp = base_stubs
+        upsert = MagicMock(return_value=CreateResult(success=True))
+        ensure = MagicMock(return_value=CreateResult(success=True, netsuite_id="555"))
+        item = _make_item(
+            supplied_part_number="SP-9", selected=_make_selected(),
+            product_ns_id=None,
+        )
+        _patch_sync_env(monkeypatch, rfq, opp, [item], upsert=upsert, ensure=ensure)
+
+        result = rfqs_module._sync_opportunity_items_sync("RFQ-2026-0001", "tester")
+        assert result["status"] == "ok"
+        assert ensure.call_args.kwargs["part_number"] == "SP-9"
+        sent = upsert.call_args.args[1][0]
+        assert sent["custcol_new_item_code"] == "SP-9"
+        assert result["synced"][0]["part_number"] == "SP-9"
+        snap = rfq.opportunity_sync_state["snapshot"]["1"]
+        assert snap["part_number"] == "SP-9"
+        assert snap["requested_part_number"] == "BOLT-123"
+        assert snap["supplied_part_number"] == "SP-9"
+
     def test_sync_uses_existing_product_ns_id(self, monkeypatch, base_stubs):
         rfq, opp = base_stubs
         upsert = MagicMock(return_value=CreateResult(success=True))
@@ -619,6 +643,27 @@ class TestDiffSyncSnapshot:
         item = _clean_item()
         item["part_number"] = "NUT-42"
         assert "item" in rfqs_module._diff_sync_snapshot(item, SNAP, "AUD")
+
+    def test_supplied_number_matches_snapshot_is_clean(self):
+        """After syncing under the supplier's number, the line is clean."""
+        item = _clean_item()
+        item["supplied_part_number"] = "SP-9"
+        snap = dict(SNAP)
+        snap["part_number"] = "SP-9"
+        assert rfqs_module._diff_sync_snapshot(item, snap, "AUD") == []
+
+    def test_supplied_number_differs_from_snapshot_is_dirty(self):
+        item = _clean_item()
+        item["supplied_part_number"] = "SP-9"
+        assert "item" in rfqs_module._diff_sync_snapshot(item, SNAP, "AUD")
+
+    def test_supplied_number_cleared_is_dirty(self):
+        # Synced under the supplied number, then the override was cleared back
+        # to the requested number — that is an unsynced change.
+        item = _clean_item()
+        snap = dict(SNAP)
+        snap["part_number"] = "SP-9"
+        assert "item" in rfqs_module._diff_sync_snapshot(item, snap, "AUD")
 
     def test_ns_item_id_mismatch(self):
         """The line now resolves to a different NetSuite item than it was
