@@ -35,6 +35,7 @@ class TestEnsureItemVendorPrice:
 
         assert result.success
         assert result.netsuite_id == "555"
+        client.get.assert_called_once()
         client.update_record.assert_not_called()
 
     def test_rounding_difference_skips_write(self, monkeypatch):
@@ -58,6 +59,8 @@ class TestEnsureItemVendorPrice:
         result = ensure_item_vendor_price("555", "77", 12.5)
 
         assert result.success
+        # The compare step's read is reused by the writer — one GET, not two.
+        client.get.assert_called_once()
         assert client.update_record.call_count == 2
         clear_call, add_call = client.update_record.call_args_list
         assert clear_call.args[:2] == ("inventoryitem", "555")
@@ -78,6 +81,7 @@ class TestEnsureItemVendorPrice:
         result = ensure_item_vendor_price("555", "77", 10.0)
 
         assert result.success
+        client.get.assert_called_once()
         assert client.update_record.call_count == 2
 
     def test_read_failure_returns_error(self, monkeypatch):

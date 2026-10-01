@@ -281,6 +281,7 @@ def _write_vendor_price(
     item_netsuite_id: str,
     vendor_netsuite_id: str,
     converted_price: float,
+    item_data: Optional[dict] = None,
 ) -> CreateResult:
     """Rewrite an item's ``itemVendor`` sublist so the target vendor is
     preferred at ``converted_price`` (already in the vendor's currency).
@@ -292,20 +293,24 @@ def _write_vendor_price(
 
     Shared by :func:`set_vendor_price` (which converts the price first) and
     :func:`ensure_item_vendor_price` (which passes a vendor-currency price).
+    The latter already fetched the item for its compare step and passes it in
+    as ``item_data``, avoiding a second GET.
     """
     client = NetSuiteClient()
 
-    # Read current vendor lines so we can preserve lines for other vendors
-    try:
-        item_data = client.get(
-            f"record/v1/inventoryitem/{item_netsuite_id}?expandSubResources=true"
-        ).json()
-    except Exception as exc:
-        return CreateResult(
-            success=False,
-            error=f"Failed to read item {item_netsuite_id}: {exc}",
-            record_type="inventoryitem",
-        )
+    # Read current vendor lines so we can preserve lines for other vendors.
+    # Callers that already fetched the item pass it in to avoid a second GET.
+    if item_data is None:
+        try:
+            item_data = client.get(
+                f"record/v1/inventoryitem/{item_netsuite_id}?expandSubResources=true"
+            ).json()
+        except Exception as exc:
+            return CreateResult(
+                success=False,
+                error=f"Failed to read item {item_netsuite_id}: {exc}",
+                record_type="inventoryitem",
+            )
 
     rebuilt = []
     for line in (item_data.get("itemVendor") or {}).get("items", []) or []:
@@ -425,7 +430,8 @@ def ensure_item_vendor_price(
             )
 
     return _write_vendor_price(
-        item_netsuite_id, vendor_netsuite_id, float(vendor_purchase_price)
+        item_netsuite_id, vendor_netsuite_id, float(vendor_purchase_price),
+        item_data=item_data,
     )
 
 
