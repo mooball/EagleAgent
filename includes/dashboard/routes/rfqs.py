@@ -3326,6 +3326,8 @@ async def quotation_update_supplier_quote(
         if not matched:
             return JSONResponse({"status": "error", "message": f"Supplier '{supplier_name}' not found on line {line}"}, status_code=404)
 
+        was_selected = matched.get("quote_status") == "selected"
+
         quote_fields = ("quote_status", "quote_cost", "quote_currency", "quote_leadtime",
                         "quote_part_number")
         for field in quote_fields:
@@ -3335,13 +3337,15 @@ async def quotation_update_supplier_quote(
                     value = (str(value).strip() or None) if value is not None else None
                 matched[field] = value
 
-        # Keep the item's supplied part number in step when the selected
-        # supplier's quoted number is edited.
-        if matched.get("quote_status") == "selected" and "quote_part_number" in body:
-            from includes.tools.rfq_crud import supplied_from_supplier
-            line_item.supplied_part_number = supplied_from_supplier(
-                line_item.part_number, matched
+        # A quote_status or quoted-number edit can change the item's effective
+        # part number — e.g. declining the selected supplier must clear it.
+        if "quote_status" in body or "quote_part_number" in body:
+            from includes.tools.rfq_crud import supplied_after_supplier_change
+            apply_change, value = supplied_after_supplier_change(
+                line_item.part_number, matched, was_selected
             )
+            if apply_change:
+                line_item.supplied_part_number = value
 
         line_item.suppliers = suppliers
         flag_modified(line_item, "suppliers")

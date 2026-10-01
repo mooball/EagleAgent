@@ -137,6 +137,23 @@ def supplied_from_supplier(requested, supplier_entry) -> str | None:
     return None
 
 
+def supplied_after_supplier_change(requested, supplier_entry, was_selected):
+    """(apply, value) for ``line_item.supplied_part_number`` after editing a supplier.
+
+    ``apply`` is False when the edit does not concern the item's current
+    selection, so the caller leaves the stored value untouched — a manual
+    override must survive editing a supplier that is not (and was not) selected.
+    When the edited supplier is (now) selected, ``value`` is derived from its
+    quoted part number; when it *was* selected and no longer is (e.g. the quote
+    was declined), ``value`` is ``None`` so the effective number is cleared.
+    """
+    if supplier_entry.get("quote_status") == "selected":
+        return True, supplied_from_supplier(requested, supplier_entry)
+    if was_selected:
+        return True, None
+    return False, None
+
+
 def _resolve_department(data: dict) -> str | None:
     """Resolve department input to a canonical enum ID.
 
@@ -2115,6 +2132,8 @@ def _update_supplier_core(session, rfq, line_item, data):
     if not supplier:
         return None, f"Error: supplier '{name}' not found on line {line_item.line}."
 
+    was_selected = supplier.get("quote_status") == "selected"
+
     # Normalize: agent sends 'currency', we store as 'cost_currency'
     if "currency" in data and "cost_currency" not in data:
         data["cost_currency"] = data["currency"]
@@ -2131,12 +2150,15 @@ def _update_supplier_core(session, rfq, line_item, data):
             supplier[key] = data[key]
             changes.append(key)
 
-    # Keep the item's supplied part number in step when the selected supplier's
-    # quoted part number is edited (agent edit_supplier / update_quotes_bulk).
-    if supplier.get("quote_status") == "selected" and "quote_part_number" in data:
-        line_item.supplied_part_number = supplied_from_supplier(
-            line_item.part_number, supplier
+    # A quote_status or quoted-number edit can change the item's effective part
+    # number — e.g. declining the selected supplier must clear it. Re-derive
+    # from this supplier (leaving a manual override alone when it is unrelated).
+    if "quote_status" in data or "quote_part_number" in data:
+        apply_change, value = supplied_after_supplier_change(
+            line_item.part_number, supplier, was_selected
         )
+        if apply_change:
+            line_item.supplied_part_number = value
 
     line_item.suppliers = current_suppliers
     flag_modified(line_item, "suppliers")

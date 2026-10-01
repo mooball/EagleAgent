@@ -12,6 +12,7 @@ from includes.tools.rfq_crud import (
     _select_quote_core,
     _update_item_core,
     _update_supplier_core,
+    supplied_after_supplier_change,
 )
 
 
@@ -124,6 +125,63 @@ class TestUpdateSupplierCore:
                 None, None, item, {"name": "Acme", "quote_part_number": "NEW-9"}
             )
         assert item.supplied_part_number == "manual-keep"
+
+
+class TestSupplierStatusChange:
+    """Declining/deselecting via quote_status must clear the supplied number
+    (Copilot review findings on PR #223)."""
+
+    def test_declining_selected_supplier_clears_supplied(self):
+        item = _FakeLineItem(
+            part_number="REQ-1",
+            supplied_part_number="SP-9",
+            suppliers=[_sup("Acme", "selected", 5.0, "SP-9")],
+        )
+        with patch(_FLAG):
+            _update_supplier_core(
+                None, None, item, {"name": "Acme", "quote_status": "declined"}
+            )
+        assert item.supplied_part_number is None
+
+    def test_selecting_via_quote_status_populates_supplied(self):
+        item = _FakeLineItem(
+            part_number="REQ-1",
+            suppliers=[_sup("Acme", "quoted", 5.0, "SP-9")],
+        )
+        with patch(_FLAG):
+            _update_supplier_core(
+                None, None, item, {"name": "Acme", "quote_status": "selected"}
+            )
+        assert item.supplied_part_number == "SP-9"
+
+    def test_status_change_on_unselected_supplier_keeps_override(self):
+        item = _FakeLineItem(
+            part_number="REQ-1",
+            supplied_part_number="manual-keep",
+            suppliers=[_sup("Acme", "quoted", 5.0, "SP-9")],
+        )
+        with patch(_FLAG):
+            _update_supplier_core(
+                None, None, item, {"name": "Acme", "quote_status": "declined"}
+            )
+        assert item.supplied_part_number == "manual-keep"
+
+
+class TestSuppliedAfterSupplierChange:
+    def test_selected_derives_from_quote(self):
+        assert supplied_after_supplier_change(
+            "REQ-1", {"quote_status": "selected", "quote_part_number": "SP-9"}, False
+        ) == (True, "SP-9")
+
+    def test_was_selected_now_not_clears(self):
+        assert supplied_after_supplier_change(
+            "REQ-1", {"quote_status": "declined"}, True
+        ) == (True, None)
+
+    def test_unrelated_edit_is_not_applied(self):
+        assert supplied_after_supplier_change(
+            "REQ-1", {"quote_status": "quoted"}, False
+        ) == (False, None)
 
 
 class TestUpdateItemCoreManualOverride:

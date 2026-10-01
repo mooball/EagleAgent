@@ -355,6 +355,35 @@ part number it is handed. Feeding it the effective number is exactly the desired
 
 ---
 
+## Review fixes (PR #223)
+
+Copilot reviewed the PR and raised two medium findings, both the same root cause:
+
+- **`quotation_update_supplier_quote`** (`rfqs.py`) and **`_update_supplier_core`**
+  (`rfq_crud.py`) recomputed `supplied_part_number` only when the *quoted part number*
+  changed. But these paths also accept `quote_status` (used by `toggleDeclined` and
+  `cycleQuoteStatus`, and by `_decline_quote_sync` on the chat/tool path), so declining
+  the selected supplier left a stale supplied number.
+
+**Agreed and fixed.** Added `supplied_after_supplier_change(requested, supplier, was_selected)`
+→ `(apply, value)`: derives from the supplier when it is (now) selected; clears it when it
+*was* selected and no longer is; otherwise leaves the stored value untouched (so a manual
+override survives editing a non-selected supplier). Both write paths now call it whenever
+`quote_status` or `quote_part_number` changes. Tests added in
+`tests/tools/test_rfq_part_number_selection.py` (`TestSupplierStatusChange`,
+`TestSuppliedAfterSupplierChange`).
+
+Two further Copilot observations needed no change:
+
+- **"Tooltip trigger is missing"** (`components.html`) — **not a bug.** Preline defaults
+  `toggle` to the wrapper when there is no `.hs-tooltip-toggle` (verified in the vendored
+  `preline@4.2.0`); the existing brand/match tooltips use the same pattern.
+- **"Quoted part editor not in the visible flow"** — known, and accepted: the quoted-part
+  editor lives on the legacy `quotation-old` tab, and the Items-tab override is the
+  intended visible path.
+
+---
+
 ## Out of scope
 
 - Changing how the quote pipeline *extracts* supplier part numbers (already works).
