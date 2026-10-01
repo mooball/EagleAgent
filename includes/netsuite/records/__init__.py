@@ -10,6 +10,7 @@ from .opportunity import create_opportunity, create_and_link_opportunity, update
 from .item import (
     create_brand,
     create_item,
+    ensure_item_vendor_price,
     ensure_item_with_vendor,
     find_brand_by_name,
     find_item_by_part_number,
@@ -33,6 +34,7 @@ __all__ = [
     "update_opportunity_title",
     "create_brand",
     "create_item",
+    "ensure_item_vendor_price",
     "ensure_item_with_vendor",
     "find_brand_by_name",
     "find_item_by_part_number",

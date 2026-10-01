@@ -60,7 +60,7 @@ def _make_selected(name="Acme Supplies", ns_linked=True, netsuite_id="77", near_
 
 
 def _patch_sync_env(monkeypatch, rfq_stub, opp_stub, items, ensure=None, upsert=None,
-                    rfq_items=None, product=None):
+                    vendor_price=None, rfq_items=None, product=None):
     """Patch the environment around _sync_opportunity_items_sync.
 
     Every NetSuite-touching dependency is stubbed by default so tests can
@@ -127,6 +127,10 @@ def _patch_sync_env(monkeypatch, rfq_stub, opp_stub, items, ensure=None, upsert=
     monkeypatch.setattr(
         "includes.netsuite.records.item.ensure_item_with_vendor",
         ensure or MagicMock(return_value=CreateResult(success=True, netsuite_id="555")),
+    )
+    monkeypatch.setattr(
+        "includes.netsuite.records.item.ensure_item_vendor_price",
+        vendor_price or MagicMock(return_value=CreateResult(success=True)),
     )
     monkeypatch.setattr(
         "includes.netsuite.records.item.get_or_create_brand",
@@ -398,14 +402,35 @@ class TestSyncOpportunityItems:
         rfq, opp = base_stubs
         upsert = MagicMock(return_value=CreateResult(success=True))
         ensure = MagicMock()
+        vendor_price = MagicMock(return_value=CreateResult(success=True))
         item = _make_item(selected=_make_selected(), product_ns_id="555")
-        _patch_sync_env(monkeypatch, rfq, opp, [item], upsert=upsert, ensure=ensure)
+        _patch_sync_env(monkeypatch, rfq, opp, [item], upsert=upsert, ensure=ensure,
+                        vendor_price=vendor_price)
 
         result = rfqs_module._sync_opportunity_items_sync("RFQ-2026-0001", "tester")
         assert result["status"] == "ok"
+        # The product is already in NetSuite, so no item creation …
         ensure.assert_not_called()
+        # … but its item master must still be refreshed to match the line.
+        vendor_price.assert_called_once_with("555", "77", 10.5)
         sent = upsert.call_args.args[1]
         assert sent[0]["item"] == {"id": "555"}
+
+    def test_item_vendor_sync_failure_skips_line(self, monkeypatch, base_stubs):
+        rfq, opp = base_stubs
+        upsert = MagicMock(return_value=CreateResult(success=True))
+        vendor_price = MagicMock(
+            return_value=CreateResult(success=False, error="item vendor boom")
+        )
+        item = _make_item(selected=_make_selected(), product_ns_id="555")
+        _patch_sync_env(monkeypatch, rfq, opp, [item], upsert=upsert,
+                        vendor_price=vendor_price)
+
+        result = rfqs_module._sync_opportunity_items_sync("RFQ-2026-0001", "tester")
+        assert result["status"] == "ok"
+        assert result["synced"] == []
+        assert result["errors"][0]["error"] == "item vendor boom"
+        upsert.assert_not_called()
 
     def test_line_payload_fields(self, monkeypatch, base_stubs):
         rfq, opp = base_stubs
@@ -528,11 +553,11 @@ class TestSyncOpportunityItems:
         assert sent["costEstimateRate"] == 100.0
         assert sent["costEstimate"] == 400.0
 
-    def test_payload_sets_purchorderrate_estimate_type(self, monkeypatch, base_stubs):
-        """Regression (OP73275): lines must carry costEstimateType
-        PURCHORDERRATE or NetSuite defaults to AVGCOST and drops the
-        explicit estimate costs — the converted Quotation then has no
-        extended cost."""
+    def test_payload_sets_custom_estimate_type(self, monkeypatch, base_stubs):
+        """Lines must carry costEstimateType CUSTOM or NetSuite defaults to
+        AVGCOST and drops the explicit estimate costs — the converted
+        Quotation then has no extended cost. CUSTOM matches the hand-done and
+        legacy CSV-import flows."""
         rfq, opp = base_stubs
         upsert = MagicMock(return_value=CreateResult(success=True))
         item = _make_item(selected=_make_selected(), product_ns_id="555")
@@ -541,7 +566,7 @@ class TestSyncOpportunityItems:
         result = rfqs_module._sync_opportunity_items_sync("RFQ-2026-0001", "tester")
         assert result["status"] == "ok"
         sent = upsert.call_args.args[1][0]
-        assert sent["costEstimateType"] == {"id": "PURCHORDERRATE"}
+        assert sent["costEstimateType"] == {"id": "CUSTOM"}
         assert sent["costEstimateRate"] == 10.5
         assert sent["costEstimate"] == 42.0  # 10.5 × qty 4, rounded
 
