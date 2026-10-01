@@ -573,6 +573,20 @@ def _get_all_user_emails() -> list[dict]:
         session.close()
 
 
+def _annotate_part_numbers(item: dict) -> None:
+    """Annotate an item with its requested/supplied part numbers.
+
+    ``supplied_part_number`` (the chosen supplier's own number) wins over
+    ``part_number`` (requested). Pure — no DB. Every part-number column that
+    renders ``requested / supplied`` reads these two derived fields, so the
+    Selection tab, the Items tab and the Quotation tab all agree.
+    """
+    requested = (item.get("part_number") or "").strip()
+    supplied = (item.get("supplied_part_number") or "").strip()
+    item["effective_part_number"] = effective_part_number(requested, supplied) or ""
+    item["is_alternative_part_number"] = is_alternative_part_number(requested, supplied)
+
+
 def _rfq_sync_readiness(rfq: dict) -> dict:
     """Compute per-item NetSuite sync readiness for the Quotation tab (read-only).
 
@@ -672,15 +686,9 @@ def _rfq_sync_readiness(rfq: dict) -> dict:
             # Requested vs supplied part number. ``supplied_part_number`` is the
             # chosen supplier's own number (persisted when a supplier is
             # selected); the *effective* number is what NetSuite sees and what
-            # product matching keys on. Both are computed from persisted fields,
-            # so no supplier lookup or extra query is needed here.
-            requested_pn = (item.get("part_number") or "").strip()
-            supplied_pn = (item.get("supplied_part_number") or "").strip()
-            effective_pn = effective_part_number(requested_pn, supplied_pn)
-            item["effective_part_number"] = effective_pn or ""
-            item["is_alternative_part_number"] = is_alternative_part_number(
-                requested_pn, supplied_pn
-            )
+            # product matching keys on.
+            _annotate_part_numbers(item)
+            effective_pn = item["effective_part_number"]
 
             product = None
             if item.get("product_id"):
@@ -1315,6 +1323,12 @@ def _rfq_detail_context(rfq: dict, user: dict, active_tab: str) -> dict:
     }
     _add_pipeline_flags(ctx, rfq)
 
+    # Requested/supplied part numbers are derived once for every tab so the
+    # "requested / supplied" display works on Items, Selection and Quotation
+    # alike (cheap — no DB).
+    for item in (rfq.get("items") or []):
+        _annotate_part_numbers(item)
+
     # Each tab only pays for the enrichment it actually renders. Previously every
     # tab ran the full NetSuite readiness pass plus the brand scan — sequential
     # scans of products/brands that dominated large-RFQ renders (the Selection
@@ -1419,6 +1433,7 @@ def _annotate_selection_state(rfq: dict) -> None:
             (s for s in (item.get("suppliers") or []) if s.get("quote_status") == "selected"),
             None,
         )
+        _annotate_part_numbers(item)
 
 
 def _selection_supplier_names(items: list) -> list:
@@ -2635,7 +2650,7 @@ async def partial_rfq_update_item(request: Request, rfq_id: str,
         return HTMLResponse("<p>Invalid line number.</p>", status_code=400)
 
     data = {"line": line_num}
-    updatable = ["input_description", "part_number", "brand", "quantity", "uom", "department_id"]
+    updatable = ["input_description", "part_number", "supplied_part_number", "brand", "quantity", "uom", "department_id"]
     for key in updatable:
         val = form.get(key)
         if val is not None:
@@ -2744,7 +2759,7 @@ async def partial_rfq_bulk_update_items(request: Request, rfq_id: str,
         return JSONResponse({"status": "error", "message": "No items provided."}, status_code=400)
 
     # Sanitise each item
-    updatable = ["input_description", "part_number", "brand", "quantity", "uom", "department_id"]
+    updatable = ["input_description", "part_number", "supplied_part_number", "brand", "quantity", "uom", "department_id"]
     clean_items = []
     for raw in items_data:
         try:

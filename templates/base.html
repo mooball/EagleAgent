@@ -1403,6 +1403,7 @@
                             var row = {
                                 line: src.line,
                                 part_number: src.part_number || '',
+                                supplied_part_number: src.supplied_part_number || '',
                                 input_description: src.input_description || '',
                                 brand: src.brand || '',
                                 quantity: src.quantity != null ? String(src.quantity) : '',
@@ -1412,6 +1413,7 @@
                             items.push(row);
                             originals[src.line] = {
                                 part_number: row.part_number,
+                                supplied_part_number: row.supplied_part_number,
                                 input_description: row.input_description,
                                 brand: row.brand,
                                 quantity: row.quantity,
@@ -1441,7 +1443,7 @@
                     this.editAllItems.forEach(item => {
                         var orig = self.editAllOriginals[item.line];
                         if (!orig) return;
-                        var fields = ['part_number', 'input_description', 'brand', 'quantity', 'uom', 'department_id'];
+                        var fields = ['part_number', 'supplied_part_number', 'input_description', 'brand', 'quantity', 'uom', 'department_id'];
                         for (var i = 0; i < fields.length; i++) {
                             if ((item[fields[i]] || '') !== (orig[fields[i]] || '')) { count++; break; }
                         }
@@ -2071,6 +2073,14 @@
                         body: JSON.stringify(body)
                     }).then(function(resp) {
                         if (!resp.ok) { self._refreshSelectionFull(); return; }
+                        if (field === 'quote_part_number') {
+                            // The server re-derives the item's supplied part number
+                            // from the selected supplier's quote — refresh the tab
+                            // so the requested/supplied display updates.
+                            htmx.ajax('GET', '/partial/rfqs/' + self.rfqId + '/quotation-old',
+                                {target: '#main-content'});
+                            return;
+                        }
                         if (field !== 'quote_cost') { return; }
                         // If this is a selected supplier, also update the item's cost_price
                         if (isSelected) {

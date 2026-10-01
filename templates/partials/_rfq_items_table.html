@@ -1,5 +1,6 @@
 {# Reusable items table — expects: table_items (list), rfq (dict), show_add_row (bool),
    pipeline_active (bool, optional — renders read-only when true). #}
+{% from "components.html" import part_number_cell %}
 <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-visible">
     <table class="w-full text-sm table-fixed">
         <colgroup>
@@ -37,7 +38,8 @@
                 <td class="px-2 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
                 <td class="px-3 py-2.5 font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap overflow-hidden" title="{{ item.part_number or '' }}">
                     <span class="inline-flex items-center gap-1 max-w-full">
-                        <span class="block truncate">{{ item.part_number or '—' }}</span>
+                        {% set _sel = (item.suppliers or []) | selectattr('quote_status', 'equalto', 'selected') | list | first %}
+                        {{ part_number_cell(item, _sel.name if _sel else none) }}
                         {% if item.product_id %}
                         <svg class="w-3 h-3 text-blue-500 dark:text-blue-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="In database"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"/></svg>
                         {% endif %}
@@ -162,7 +164,12 @@
                 <td class="px-2 py-2.5 text-center font-mono text-xs text-gray-500">{{ item.line }}</td>
                 <td class="px-3 py-2.5 whitespace-nowrap">
                     <input type="text" name="part_number" value="{{ item.part_number or '' }}" form="edit-item-{{ item.line }}"
+                           placeholder="Requested part #"
                            class="w-full px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 font-mono">
+                    <input type="text" name="supplied_part_number" value="{{ item.supplied_part_number or '' }}" form="edit-item-{{ item.line }}"
+                           placeholder="Supplier part # (override)"
+                           title="The supplier's own part number. Blank clears it; selecting a supplier re-fills it from their quote."
+                           class="mt-1 w-full px-2 py-1 text-sm rounded border border-amber-300 dark:border-amber-600 bg-white dark:bg-gray-700 focus:ring-1 focus:ring-blue-500 font-mono text-amber-800 dark:text-amber-300">
                 </td>
                 <td class="pl-1.5 pr-3 py-2.5">
                     <form id="edit-item-{{ item.line }}" hx-post="/partial/rfqs/{{ rfq.id }}/update-item" hx-target="#main-content">

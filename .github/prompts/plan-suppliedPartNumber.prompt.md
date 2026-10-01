@@ -246,80 +246,112 @@ part number it is handed. Feeding it the effective number is exactly the desired
 
 ---
 
-## Phase 4 — UI
+## Phase 4 — UI ✅
 
-### 9. Part-number columns show `requested / supplied` with an "alt" badge
-- In `_rfq_selection_row.html` (`:18`), `_rfq_quotation_table.html` (`:40`) and
+### ~~9. Part-number columns show `requested / supplied` with an "alt" badge~~ ✅
+- ~~In `_rfq_selection_row.html` (`:18`), `_rfq_quotation_table.html` (`:40`) and
   `_rfq_quotation_final.html` (`:91`), render the requested number normally and, when
   `is_alternative_part_number` is true, append the supplied number as a distinct
-  secondary token (e.g. `BOLT-123` then a muted/amber `SP-1234`).
-- Add a small **"alt"** badge with a Preline tooltip: "Alternative part quoted by
+  secondary token (e.g. `BOLT-123` then a muted/amber `SP-1234`).~~
+- ~~Add a small **"alt"** badge with a Preline tooltip: "Alternative part quoted by
   {selected supplier}". When supplied is absent or equal, render the requested number
-  alone — no slash, no noise.
-- `_rfq_items_table.html` (`:38–40`) shows the requested number in an editable input
-  (`:164`); add the supplied override input here too (Task 11).
+  alone — no slash, no noise.~~
+- ~~`_rfq_items_table.html` (`:38–40`) shows the requested number in an editable input
+  (`:164`); add the supplied override input here too (Task 11).~~
+- Implementation: added a reusable `part_number_cell(item, supplier_name)` macro to
+  `templates/components.html` (requested / supplied + amber **alt** badge + Preline
+  tooltip naming the selected supplier). Applied in `_rfq_selection_row.html`,
+  `_rfq_items_table.html`, `_rfq_quotation_table.html` and `_rfq_quotation_final.html`.
+  Added `_annotate_part_numbers(item)` in `rfqs.py`, called by `_rfq_detail_context`
+  (all tabs), `_annotate_selection_state` and `_rfq_sync_readiness`, so every tab has
+  `effective_part_number` / `is_alternative_part_number` without a DB hit.
 
-### 10. Editable per-supplier "Quoted Part #" on the Quotation tab
-- Add a **Quoted Part #** column to the per-supplier table in `_rfq_quotation_table.html`
+### ~~10. Editable per-supplier "Quoted Part #" on the Quotation tab~~ ✅
+- ~~Add a **Quoted Part #** column to the per-supplier table in `_rfq_quotation_table.html`
   (`:75–80`), bound to `sup.quote_part_number`, editable inline in the existing
-  click-to-edit style.
-- Wire `updateSupplierQuote(line, name, 'quote_part_number', value)`; extend
+  click-to-edit style.~~
+- ~~Wire `updateSupplierQuote(line, name, 'quote_part_number', value)`; extend
   `updateSupplierQuote` in `base.html` (`:2063`) so the field persists and, for the
   selected supplier, triggers a selection-row refresh (the backend recompute from Task 4
-  updates the item's supplied number).
-- This is where users fix OCR/extraction mistakes; because it writes to the supplier
-  entry, the persisted supplied field updates automatically on save.
+  updates the item's supplied number).~~
+- ~~This is where users fix OCR/extraction mistakes; because it writes to the supplier
+  entry, the persisted supplied field updates automatically on save.~~
+- Implementation: added the **Quoted Part #** column to the per-supplier table in
+  `_rfq_quotation_table.html` (inline edit → `updateSupplierQuote(..., 'quote_part_number', ...)`);
+  `updateSupplierQuote` in `base.html` re-renders the tab on save so the item's
+  requested/supplied display updates.
+- ⚠️ **Deviation / caveat:** `_rfq_quotation_table.html` is the **legacy hidden tab**
+  (`quotation-old`, route live but no tab button). The visible path for correcting the
+  pushed number is the Items-tab override (Task 11). Moving this editor onto the visible
+  Selection or Quotation tab is a small follow-up — flagged for the user.
 
-### 11. Manual override input on the Items tab / edit-all
-- Add a `supplied_part_number` input to the Items tab (`_rfq_items_table.html`) and the
+### ~~11. Manual override input on the Items tab / edit-all~~ ✅
+- ~~Add a `supplied_part_number` input to the Items tab (`_rfq_items_table.html`) and the
   edit-all grid (`rfq_detail.html:508`), visually paired with the requested part number,
-  with a placeholder/help text "Supplier's part number (auto-filled on selection)".
-- Include the field in the client-side payloads assembled in `base.html`
-  (item edit form + edit-all save).
-- Blank clears the value (Task 5 semantics).
+  with a placeholder/help text "Supplier's part number (auto-filled on selection)".~~
+- ~~Include the field in the client-side payloads assembled in `base.html`
+  (item edit form + edit-all save).~~
+- ~~Blank clears the value (Task 5 semantics).~~
+- Implementation: added a "Supplier Part # (override)" input to the Items-tab edit row and
+  a "Supplier Part #" column to the edit-all grid (`rfq_detail.html`, incl. a `<col>` and
+  header). `base.html` now sends `supplied_part_number` from both payloads; the
+  `update-item` and `bulk-update-items` routes whitelist the field. Blank clears it
+  (backend `_update_item_core`).
 
-### 12. Sync modal shows the number to be pushed
-- In `_rfq_quotation_final.html` (`:284`) show the **effective** number and, when it is
+### ~~12. Sync modal shows the number to be pushed~~ ✅
+- ~~In `_rfq_quotation_final.html` (`:284`) show the **effective** number and, when it is
   an alternative, a callout: "Will push quoted part `SP-1234` (alternative) — a new
-  NetSuite item may be created."
-- Reuse the readiness `item_unmatched`/alternative warning rather than adding a second
-  source of truth.
+  NetSuite item may be created."~~
+- ~~Reuse the readiness `item_unmatched`/alternative warning rather than adding a second
+  source of truth.~~
+- Implementation: the sync-requirements modal now shows `effective_part_number` and, for
+  an alternative, "— quoted alternative (requested REQ-1)". The readiness
+  `item_unmatched` warning already names the supplied part (Phase 3).
 
 ---
 
 ## Phase 5 — Tests, verification & docs
 
-### 13. Update and extend tests
-- `tests/test_rfq_selection_row.py`:
+### ~~13. Update and extend tests~~ ✅
+- ~~`tests/test_rfq_selection_row.py`:
   - `test_selects_and_copies_cost_and_part_number` (`:124`) and
     `test_preserves_existing_part_number` (`:141`) encode the old "copy into
     `part_number`" rule — rewrite for supplied semantics (requested preserved, supplied
     set/cleared).
   - Add cases: supplier quotes equal number → supplied `None`; deselect → supplied
-    `None`; switch supplier → recompute.
-- `tests/test_rfq_selection_endpoints.py` (`_sup(...)` at `:92`) — extend the helper and
-  assert supplied on select/deselect.
-- `tests/test_opportunity_sync.py` — snapshot asserts (`:472`) still hold when supplied
+    `None`; switch supplier → recompute.~~
+- ~~`tests/test_rfq_selection_endpoints.py` (`_sup(...)` at `:92`) — extend the helper and
+  assert supplied on select/deselect.~~
+- ~~`tests/test_opportunity_sync.py` — snapshot asserts (`:472`) still hold when supplied
   is absent; add a case where supplied differs and assert `ensure_item_with_vendor` is
   called with the supplied number and the snapshot records it. Extend the
-  `_diff_sync_snapshot` cases (`:618`) for a supplied-number change.
-- Add readiness tests: description-only line + supplied number passes the part-number
-  gate; effective-number product match.
-- Add `_update_item_core` tests for the manual override (set, normalise, clear) and that
-  editing supplied does **not** reset the pipeline or clear `product_id`.
-- Add unit tests for `effective_part_number` / `is_alternative_part_number`.
+  `_diff_sync_snapshot` cases (`:618`) for a supplied-number change.~~
+- ~~Add readiness tests: description-only line + supplied number passes the part-number
+  gate; effective-number product match.~~
+- ~~Add `_update_item_core` tests for the manual override (set, normalise, clear) and that
+  editing supplied does **not** reset the pipeline or clear `product_id`.~~
+- ~~Add unit tests for `effective_part_number` / `is_alternative_part_number`.~~
+- Implementation: rewrote `tests/test_rfq_selection_row.py` (incl. a display test for the
+  `requested / supplied` macro); added `tests/tools/test_rfq_part_number_helpers.py`
+  (helpers, 14) and `tests/tools/test_rfq_part_number_selection.py` (write paths);
+  extended `tests/test_opportunity_sync.py` (sync-uses-supplied + 3 diff cases) and
+  `tests/test_rfq_supplier_id_integrity.py` (readiness gate + product match). Full
+  RFQ/template sweep green (183 passed in the focused run, plus 154 tool tests).
 
 ### 14. Verification and documentation
-- **No N+1:** confirm the new field adds no per-item query — effective/is-alternative are
+- ~~**No N+1:** confirm the new field adds no per-item query — effective/is-alternative are
   computed from data already loaded (`suppliers` JSONB + `part_number`). Re-check the
-  Selection/Quotation render timings against `plan-rfqSelectionPerformance.prompt.md`.
+  Selection/Quotation render timings against `plan-rfqSelectionPerformance.prompt.md`.~~
+  - Done: `_annotate_part_numbers` is pure (string ops on the item dict); the product
+    guard now compares against the same, already-loaded product rows.
 - **No duplicate NetSuite items:** dry-run a two-supplier line locally (supplied differs)
   and confirm the requested item is not created, the supplied item is created/matched,
-  and a re-sync marks the line clean (diff against the snapshot).
-- Confirm `last_sale`, price history and product search remain keyed on the requested
-  number (no change).
+  and a re-sync marks the line clean (diff against the snapshot). — *Remains for manual
+  local testing (NetSuite writes).*
+- ~~Confirm `last_sale`, price history and product search remain keyed on the requested
+  number (no change).~~ — Done: unchanged.
 - Update `AGENTS.md` RFQ notes if the requested/supplied distinction is worth recording;
-  cross-reference this plan from `docs/` if a relevant page exists.
+  cross-reference this plan from `docs/` if a relevant page exists. — *Pending review.*
 
 ---
 

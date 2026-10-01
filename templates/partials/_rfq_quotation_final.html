@@ -1,4 +1,5 @@
 {# Quotation final-prep tab — readiness review before pushing items to the NetSuite Opportunity #}
+{% from "components.html" import part_number_cell %}
 {% set items = rfq.get('items', []) %}
 {% if items %}
 <div id="quotation-final-container">
@@ -88,8 +89,10 @@
                     {# Description + part number + missing-info callouts #}
                     <td class="px-3 py-2.5 min-w-[240px] max-w-md">
                         <div class="flex items-center gap-2">
-                            {% if item.part_number %}
-                            <span class="font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">{{ item.part_number }}</span>
+                            {% if item.effective_part_number %}
+                            <span class="text-xs text-gray-600 dark:text-gray-400">
+                                {{ part_number_cell(item, item.selected_supplier.name if item.selected_supplier else none) }}
+                            </span>
                             {% if not item.product_ns_id %}
                             <span class="hs-tooltip inline-flex items-center shrink-0">
                                 <span class="hs-tooltip-toggle text-[9px] px-1 py-0.5 rounded font-semibold bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">NS</span>
@@ -281,7 +284,7 @@
                 <template x-if="syncModal.item">
                     <div>
                         <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
-                            <span class="font-mono" x-text="syncModal.item.part_number || '—'"></span> — <span x-text="syncModal.item.input_description || 'No description'"></span>
+                            <span class="font-mono" x-text="syncModal.item.effective_part_number || syncModal.item.part_number || '—'"></span><template x-if="syncModal.item && syncModal.item.is_alternative_part_number"><span class="text-amber-600 dark:text-amber-400"> — quoted alternative (requested <span class="font-mono" x-text="syncModal.item.part_number || '—'"></span>)</span></template> — <span x-text="syncModal.item.input_description || 'No description'"></span>
                         </p>
                         <template x-for="check in syncChecks" :key="check.key">
                             <div class="flex items-start gap-2 text-sm">

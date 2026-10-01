@@ -101,6 +101,30 @@ class TestSelectionRowJson:
         assert "$20.00" in data["totals"]
 
 
+class TestPartNumberDisplay:
+    """The part-number column shows requested / supplied with an 'alt' badge."""
+
+    def test_alternative_shows_requested_and_supplied(self):
+        item = _item(
+            1,
+            [{"name": "Acme", "status": "shortlisted", "quote_status": "selected",
+              "quote_cost": 5.0, "supplier_id": None, "quote_part_number": "SP-9"}],
+            part_number="REQ-1",
+            supplied_part_number="SP-9",
+        )
+        row = json.loads(_selection_row_json(_rfq([item]), 1).body)["row"]
+        assert "REQ-1" in row
+        assert "SP-9" in row
+        assert "alt" in row
+        assert "Alternative part quoted by Acme" in row
+
+    def test_no_alternative_shows_requested_only(self):
+        item = _item(1, [], part_number="REQ-1")
+        row = json.loads(_selection_row_json(_rfq([item]), 1).body)["row"]
+        assert "REQ-1" in row
+        assert "alt" not in row
+
+
 class _FakeItem:
     def __init__(self, suppliers, part_number=None, cost_price=None,
                  supplied_part_number=None):
