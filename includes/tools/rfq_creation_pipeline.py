@@ -554,12 +554,14 @@ def _extract_rfq_items_sync(email_tracking_id: int) -> tuple[list, Optional[dict
     prompt = _load_extraction_prompt()
     full_prompt = f"{prompt}\n\n---\n\n## Email Content\n\n{bundle.text}"
 
+    # No explicit timeout: inherit Config.LLM_REQUEST_TIMEOUT_MS. A hardcoded
+    # per-attempt timeout here could consume the whole LLM_MAX_ATTEMPT_SECONDS
+    # budget and leave no room for the model fallback (see llm_call_with_retry).
     response = llm_call_with_retry(
         pipeline="RFQ_CREATION",
         step="extract",
         contents=full_prompt,
         temperature=0.1,
-        timeout=120000,
     )
 
     raw_text = (response.text or "").strip()
