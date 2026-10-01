@@ -277,36 +277,23 @@ def create_item(
     return CreateResult(success=True, netsuite_id=netsuite_id, record_type="inventoryitem")
 
 
-def set_vendor_price(
+def _write_vendor_price(
     item_netsuite_id: str,
     vendor_netsuite_id: str,
-    purchase_price: float,
-    price_currency: str = "AUD",
+    converted_price: float,
 ) -> CreateResult:
-    """Set/refresh the vendor purchase price on an existing item.
+    """Rewrite an item's ``itemVendor`` sublist so the target vendor is
+    preferred at ``converted_price`` (already in the vendor's currency).
 
-    Mirrors the Suitelet's delete-and-re-add of the vendor line: NetSuite
-    REST ignores purchasePrice changes on existing itemVendor lines, so we
-    clear the sublist and re-add all lines (keeping other vendors' lines
-    and prices) with the target vendor's price updated.
+    NetSuite REST ignores ``purchasePrice`` changes on existing ``itemVendor``
+    lines, so we clear the sublist and re-add all lines (keeping other vendors'
+    lines and prices) with the target vendor's price updated. Requires two
+    PATCH calls.
 
-    Requires two PATCH calls:
-      1. PATCH ?replace=itemVendor with an empty items list (clears lines)
-      2. PATCH with the rebuilt items list (adds lines, prices apply)
+    Shared by :func:`set_vendor_price` (which converts the price first) and
+    :func:`ensure_item_vendor_price` (which passes a vendor-currency price).
     """
     client = NetSuiteClient()
-    try:
-        vendor_ctx = get_vendor_context(vendor_netsuite_id)
-        converted = round(
-            convert(float(purchase_price), price_currency.upper(), vendor_ctx["currency"]),
-            2,
-        )
-    except Exception as exc:
-        return CreateResult(
-            success=False,
-            error=f"Vendor lookup/conversion failed: {exc}",
-            record_type="inventoryitem",
-        )
 
     # Read current vendor lines so we can preserve lines for other vendors
     try:
@@ -336,7 +323,7 @@ def set_vendor_price(
     rebuilt.append({
         "vendor": {"id": str(vendor_netsuite_id)},
         "preferredVendor": True,
-        "purchasePrice": converted,
+        "purchasePrice": converted_price,
     })
 
     try:
@@ -363,6 +350,83 @@ def set_vendor_price(
 
     logger.info("Updated vendor price on item %s", item_netsuite_id)
     return CreateResult(success=True, netsuite_id=str(item_netsuite_id), record_type="inventoryitem")
+
+
+def set_vendor_price(
+    item_netsuite_id: str,
+    vendor_netsuite_id: str,
+    purchase_price: float,
+    price_currency: str = "AUD",
+) -> CreateResult:
+    """Set/refresh the vendor purchase price on an existing item.
+
+    ``purchase_price`` is in ``price_currency`` and is converted into the
+    vendor's own currency before writing. Mirrors the Suitelet's
+    delete-and-re-add of the vendor line (see :func:`_write_vendor_price`).
+    """
+    try:
+        vendor_ctx = get_vendor_context(vendor_netsuite_id)
+        converted = round(
+            convert(float(purchase_price), price_currency.upper(), vendor_ctx["currency"]),
+            2,
+        )
+    except Exception as exc:
+        return CreateResult(
+            success=False,
+            error=f"Vendor lookup/conversion failed: {exc}",
+            record_type="inventoryitem",
+        )
+
+    return _write_vendor_price(item_netsuite_id, vendor_netsuite_id, converted)
+
+
+def ensure_item_vendor_price(
+    item_netsuite_id: str,
+    vendor_netsuite_id: str,
+    vendor_purchase_price: float,
+) -> CreateResult:
+    """Make an item's preferred vendor and purchase price match a line.
+
+    Compare-first: reads the item's ``itemVendor`` sublist and only rewrites it
+    when the target vendor is not already preferred at
+    ``vendor_purchase_price``. ``vendor_purchase_price`` is in the vendor's own
+    currency — the same currency NetSuite stores ``itemVendor.purchasePrice``
+    in, and the same currency as the opportunity line's ``custcol_po_rate``.
+
+    This exists because NetSuite's own on-save propagation is driven by the
+    hidden opportunity-line field ``custcol_update_line_on_record_save``, which
+    is inert on REST writes (verified live): agent-synced lines never trigger
+    it, so pre-existing items keep a stale preferred vendor / purchase price.
+    """
+    client = NetSuiteClient()
+    try:
+        item_data = client.get(
+            f"record/v1/inventoryitem/{item_netsuite_id}?expandSubResources=true"
+        ).json()
+    except Exception as exc:
+        return CreateResult(
+            success=False,
+            error=f"Failed to read item {item_netsuite_id}: {exc}",
+            record_type="inventoryitem",
+        )
+
+    target = str(vendor_netsuite_id)
+    for line in (item_data.get("itemVendor") or {}).get("items", []) or []:
+        vid = str((line.get("vendor") or {}).get("id") or "")
+        if vid != target or not line.get("preferredVendor"):
+            continue
+        existing = line.get("purchasePrice")
+        if existing is not None and (
+            round(float(existing), 2) == round(float(vendor_purchase_price), 2)
+        ):
+            return CreateResult(
+                success=True, netsuite_id=str(item_netsuite_id),
+                record_type="inventoryitem",
+            )
+
+    return _write_vendor_price(
+        item_netsuite_id, vendor_netsuite_id, float(vendor_purchase_price)
+    )
 
 
 def ensure_item_with_vendor(

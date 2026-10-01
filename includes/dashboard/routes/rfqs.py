@@ -937,6 +937,7 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
         upsert_opportunity_lines,
     )
     from includes.netsuite.records.item import (
+        ensure_item_vendor_price,
         ensure_item_with_vendor,
         get_or_create_brand,
         get_vendor_context,
@@ -1099,6 +1100,25 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
             })
             continue
 
+        # Keep the item master's preferred vendor + purchase price in step
+        # with the line. Missing items get this when they are created, but
+        # pre-existing items (already linked to a local Product with a
+        # netsuite_id) were never refreshed: ensure_item_with_vendor is only
+        # called when product_ns_id is missing. NetSuite's own on-save
+        # propagation relies on the hidden line field
+        # custcol_update_line_on_record_save, which is inert on REST writes
+        # (verified live), so we do it explicitly here. Compare-first —
+        # ensure_item_vendor_price only writes when vendor/price differ.
+        vendor_sync = ensure_item_vendor_price(
+            str(ns_item_id), vendor_ns_id, float(po_rate),
+        )
+        if not vendor_sync.success:
+            errors.append({
+                "line": line, "label": label,
+                "error": vendor_sync.error or "Failed to update item vendor price",
+            })
+            continue
+
         payload: dict = {
             "item": {"id": str(ns_item_id)},
             "quantity": int(item.get("quantity") or 0),
@@ -1117,11 +1137,12 @@ def _sync_opportunity_items_sync(rfq_id: str, user_id: str, confirm_warnings: bo
             # computed amount = quantity × rate is recalculated.
             "custcol_po_rate": float(po_rate),
             "custcol_po_vendor": {"id": vendor_ns_id},
-            # PURCHORDERRATE makes NetSuite keep the explicit estimate costs
-            # below. New lines default to AVGCOST, which derives est. cost
-            # from the item's average cost — null for newly created items,
-            # leaving the converted Quotation without an extended cost.
-            "costEstimateType": {"id": "PURCHORDERRATE"},
+            # CUSTOM makes NetSuite keep the explicit estimate costs below
+            # (matching the hand-done / legacy-import flow). New lines default
+            # to AVGCOST, which derives est. cost from the item's average cost
+            # — null for newly created items — leaving the converted
+            # Quotation without an extended cost.
+            "costEstimateType": {"id": "CUSTOM"},
             "costEstimateRate": float(est_rate),
             "costEstimate": float(est_amount),
             # New Item Code / New Item Brand custom fields

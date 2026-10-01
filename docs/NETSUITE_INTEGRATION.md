@@ -158,12 +158,22 @@ typed helpers in `includes/netsuite/records/`:
 | Module | Helpers |
 |---|---|
 | `records/opportunity.py` | `create_opportunity`, `create_and_link_opportunity` — create Opportunities and link them to local RFQs |
-| `records/item.py` | `find_item_by_part_number`, `find_brand_by_name`, `create_brand`, `get_or_create_brand`, `create_item`, `set_vendor_price`, `ensure_item_with_vendor` — inventory items + brands |
+| `records/item.py` | `find_item_by_part_number`, `find_brand_by_name`, `create_brand`, `get_or_create_brand`, `create_item`, `set_vendor_price`, `ensure_item_vendor_price`, `ensure_item_with_vendor` — inventory items + brands |
 
 `ensure_item_with_vendor` is the high-level find-or-create flow: resolve brand
 (create if missing), find an existing item (local smart product match, then a
 NetSuite `itemid` lookup), then either refresh the vendor price or create the
 item. Vendor and brand are mandatory — if either is missing no item is created.
+
+`ensure_item_vendor_price` makes an **existing** item's preferred vendor and
+purchase price match a value: it reads the item's `itemVendor` sublist and only
+rewrites it when the target vendor is not already preferred at the requested
+price (compare-first). The opportunity sync calls it per line so pre-existing
+items are refreshed too. NetSuite's own on-save propagation is driven by the
+hidden opportunity-line field `custcol_update_line_on_record_save`, but that is
+**inert on REST writes** (verified live), so the agent updates the item master
+explicitly instead. The price passed in is in the vendor's own currency — the
+same currency NetSuite stores `itemVendor.purchasePrice` in.
 
 ### Item creation payload (verified live)
 
