@@ -946,6 +946,41 @@ async def on_rfq_find_brand_suppliers(payload: dict, ctx: ChatContext) -> None:
         await ctx.notify_dashboard("agent_done")
 
 
+async def on_retry_supplier_import(payload: dict, ctx: ChatContext) -> None:
+    """Manually re-run the supplier quote pipeline for one email.
+
+    For a supplier email whose quote import failed (e.g. the model was rate
+    limited). Forces a re-run past the "already processed" guard and gives it
+    the longer patient LLM budget, because the person asking has chosen to wait
+    rather than redo a painful import by hand.
+
+    Fire-and-forget: the email row shows a processing badge, and the dashboard
+    is refreshed when the pipeline writes its result.
+    """
+    try:
+        email_id = int(payload.get("email_id"))
+    except (TypeError, ValueError):
+        await ctx.say("Error: no valid email id provided.", author="EagleAgent")
+        return
+
+    from includes.tools.supplier_quote_pipeline import retry_supplier_quote_pipeline
+
+    await ctx.say(
+        "🔄 Re-running the supplier quote pipeline with a longer budget. "
+        "This can take a few minutes; the result will appear on the email row.",
+        author="EagleAgent",
+    )
+    try:
+        await asyncio.to_thread(
+            retry_supplier_quote_pipeline, email_id, _user_id(payload, ctx)
+        )
+    except Exception as e:
+        logger.exception(f"Retry supplier import failed for #{email_id}")
+        await ctx.say(f"❌ Could not start the retry: {e}", author="EagleAgent")
+        return
+    await ctx.notify_dashboard("dashboard_refresh")
+
+
 # ---------------------------------------------------------------------------
 # Registry — app.py adapts these onto Chainlit's @cl.action_callback
 # ---------------------------------------------------------------------------
@@ -972,6 +1007,7 @@ RFQ_ACTIONS: dict[str, ActionHandler] = {
     "rfq_add_brand_supplier": on_rfq_add_brand_supplier,
     "rfq_find_new_suppliers": on_rfq_find_new_suppliers,
     "rfq_find_brand_suppliers": on_rfq_find_brand_suppliers,
+    "rfq_retry_supplier_import": on_retry_supplier_import,
 }
 
 

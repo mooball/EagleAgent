@@ -1419,6 +1419,40 @@ async def api_run_email_pipeline(email_id: int, request: Request,
         session.close()
 
 
+@router.post("/api/emails/{email_id}/retry-pipeline")
+async def api_retry_email_pipeline(email_id: int, request: Request,
+                                    user: dict = Depends(_helpers.require_user)):
+    """Force a re-run of the supplier quote pipeline for one email (admin only).
+
+    Unlike ``/run-pipeline`` this ignores the "already processed" guard and uses
+    the longer patient LLM budget, so an import that failed (e.g. a 429) can be
+    retried by hand without rebuilding it manually.
+    """
+    if user.get("role") != "Admin":
+        return JSONResponse({"status": "error", "message": "Admin only"}, status_code=403)
+
+    session = _helpers.get_session()
+    try:
+        from includes.dashboard.models import EmailTracking
+        tracking = session.query(EmailTracking).filter(EmailTracking.id == email_id).first()
+        if not tracking:
+            return JSONResponse({"status": "error", "message": "Email not found"}, status_code=404)
+        if not (tracking.rfq_token or tracking.rfq_id):
+            return JSONResponse({"status": "error", "message": "Email not linked to an RFQ"}, status_code=400)
+        if not tracking.supplier_id:
+            return JSONResponse({"status": "error", "message": "Email not linked to a supplier"}, status_code=400)
+
+        from includes.tools.supplier_quote_pipeline import retry_supplier_quote_pipeline
+        retry_supplier_quote_pipeline(email_id, user_id=user.get("email", "admin"))
+        logger.info(f"Admin {user.get('email')} retried supplier pipeline for email #{email_id}")
+        return JSONResponse({"status": "ok", "message": f"Retry started for email #{email_id}"})
+    except Exception as e:
+        logger.error(f"Error retrying pipeline for email #{email_id}: {e}")
+        return JSONResponse({"status": "error", "message": str(e)})
+    finally:
+        session.close()
+
+
 @router.post("/api/emails/{email_id}/feedback")
 async def api_email_feedback(email_id: int, request: Request,
                               user: dict = Depends(_helpers.require_user)):

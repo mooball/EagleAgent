@@ -174,3 +174,68 @@ class TestModelResolution:
         scopes = [row["scope"] for row in captured]
         assert "pipeline:TESTP/somestep" in scopes
         assert "sync:TESTP/somestep" in scopes
+
+
+class TestPatientBudget:
+    """A user-triggered retry gets a longer LLM budget than background work."""
+
+    def test_patient_flag_scopes_and_restores(self):
+        assert not context.is_patient()
+        with context.patient():
+            assert context.is_patient()
+        assert not context.is_patient()
+
+    def test_enter_patient_mode_sets_the_flag_in_a_raw_thread(self):
+        """The retry runs in a raw Thread, which does not inherit the context."""
+        seen: dict = {}
+
+        def probe():
+            context.enter_patient_mode()
+            seen["patient"] = context.is_patient()
+
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join()
+        assert seen["patient"] is True
+
+    def test_patient_retry_uses_the_longer_budget(self, monkeypatch):
+        import includes.email_pipeline as ep
+        from config.settings import Config
+
+        monkeypatch.setattr(Config, "LLM_MAX_ATTEMPT_SECONDS", 60.0, raising=False)
+        monkeypatch.setattr(
+            Config, "LLM_PATIENT_MAX_ATTEMPT_SECONDS", 300.0, raising=False
+        )
+        # One candidate, so the whole remaining budget is available and the
+        # budget is the only thing that varies between the two calls.
+        monkeypatch.setattr(ep, "get_pipeline_candidates", lambda p, s: ["m"])
+
+        captured: list[int] = []
+
+        def fake_http_options(timeout_ms, service_tier=None):
+            captured.append(timeout_ms)
+            return object()
+
+        monkeypatch.setattr(ep, "_http_options", fake_http_options)
+
+        class FakeResponse:
+            usage_metadata = None
+            text = "ok"
+
+        class FakeModels:
+            def generate_content(self, **_kwargs):
+                return FakeResponse()
+
+        class FakeClient:
+            def __init__(self, **_kwargs):
+                self.models = FakeModels()
+
+        monkeypatch.setattr("google.genai.Client", FakeClient)
+
+        ep.llm_call_with_retry("TESTP", "somestep", ["x"], timeout=300_000)
+        assert 55_000 <= captured[-1] <= 60_000
+
+        with context.patient():
+            ep.llm_call_with_retry("TESTP", "somestep", ["x"], timeout=300_000)
+        assert 290_000 <= captured[-1] <= 300_000
+

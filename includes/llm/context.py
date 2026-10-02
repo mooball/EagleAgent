@@ -60,3 +60,46 @@ def current_service_tier() -> str | None:
     if is_sync():
         return Config.SYNC_SERVICE_TIER or None
     return Config.INTERACTIVE_SERVICE_TIER or None
+
+
+# ---------------------------------------------------------------------------
+# Patient mode — a longer LLM budget for user-triggered retries
+# ---------------------------------------------------------------------------
+# A manual retry means a human has chosen to wait, so the usual background
+# budget can be extended (see ``Config.LLM_PATIENT_MAX_ATTEMPT_SECONDS``). This
+# is deliberately separate from the workload: a retry is still background work
+# for model/quota purposes, it just gets more time.
+
+_patient: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "llm_patient", default=False
+)
+
+
+def is_patient() -> bool:
+    """True when the current work is a user-triggered retry with a longer budget."""
+    return _patient.get()
+
+
+@contextmanager
+def patient():
+    """Run the enclosed work with the patient LLM budget.
+
+    ``asyncio.to_thread`` copies the context, so setting this around the
+    ``to_thread`` call is enough for the sync pipeline that runs inside it.
+    """
+    token = _patient.set(True)
+    try:
+        yield
+    finally:
+        _patient.reset(token)
+
+
+def enter_patient_mode() -> None:
+    """Set patient mode for the current context, with no scope to exit.
+
+    For a raw ``threading.Thread``, where a ``with patient():`` block around
+    ``Thread.start()`` would not reach the new thread. Intended for a
+    short-lived worker thread that ends with the work; do not call it on a
+    pooled thread.
+    """
+    _patient.set(True)

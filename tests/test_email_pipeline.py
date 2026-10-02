@@ -367,6 +367,68 @@ class TestLlmCallWithRetry:
         timeout_ms = mock_http_options.call_args[0][0]
         assert timeout_ms <= 5000, f"attempt timeout {timeout_ms}ms exceeds the 5s budget"
 
+    def test_per_attempt_timeout_reserves_budget(self):
+        """Non-final attempts get a share, not the whole remainder."""
+        from includes.email_pipeline import _per_attempt_timeout_ms
+
+        # 3 candidates, 180s left, caller allows 300s -> only half is available.
+        assert _per_attempt_timeout_ms(180.0, 300_000, 3) == 90_000
+        # Final candidate: the whole remainder is available.
+        assert _per_attempt_timeout_ms(90.0, 300_000, 1) == 90_000
+        # The caller's own timeout still wins when it is the smaller.
+        assert _per_attempt_timeout_ms(180.0, 30_000, 3) == 30_000
+        # A tiny remainder still buys one real attempt (the floor applies).
+        assert _per_attempt_timeout_ms(0.2, 300_000, 3) == 1_000
+
+    def test_stalled_primary_still_reaches_fallback(self):
+        """A 429 after the primary uses its full allowance must try the next model.
+
+        Regression (prod, 2026-10-01): ``QUOTE/interpret`` handed attempt 1 the
+        entire remaining budget (its caller timeout of 300s was larger than the
+        budget). The 429 arrived as the budget ran out, ``remaining <= 0`` and
+        the loop gave up — the quote was never imported and no other model was
+        ever tried. This simulates each attempt stalling for exactly the timeout
+        it was given: the reserved share must keep a fallback alive.
+        """
+        from includes.email_pipeline import llm_call_with_retry
+
+        budget = 180.0
+        clock = {"t": 1000.0}
+        timeouts: list[int] = []
+
+        def fake_http_options(timeout_ms, service_tier=None):
+            timeouts.append(timeout_ms)
+            return MagicMock()
+
+        mock_client = MagicMock()
+
+        def generate(*args, **kwargs):
+            # Consume exactly the allowance this attempt was handed, then fail
+            # with a retryable rate-limit error.
+            clock["t"] += (timeouts[-1] / 1000.0) if timeouts else 0.0
+            raise Exception("429 RESOURCE_EXHAUSTED")
+
+        mock_client.models.generate_content.side_effect = generate
+
+        with patch(
+            "includes.email_pipeline.get_pipeline_model",
+            return_value="gemini-3.8-flash",
+        ), patch("includes.email_pipeline.Config.LLM_MAX_ATTEMPT_SECONDS", budget), patch(
+            "includes.email_pipeline.time.monotonic",
+            side_effect=lambda: clock["t"],
+        ), patch(
+            "includes.email_pipeline._http_options", side_effect=fake_http_options
+        ), patch("google.genai.Client", return_value=mock_client), patch("time.sleep"):
+            with pytest.raises(Exception, match="429"):
+                # A 300s caller timeout is the condition that broke interpret.
+                llm_call_with_retry("QUOTE", "classify", ["test"], timeout=300_000)
+
+        assert timeouts[0] < budget * 1000, (
+            f"primary was allowed the whole budget ({timeouts[0]}ms)"
+        )
+        # 3.8-flash -> 3.6-flash -> 3.5-flash-lite: every rung got a turn.
+        assert mock_client.models.generate_content.call_count == 3
+
     def test_gives_up_when_budget_is_exhausted(self):
         """Once the budget is gone, no further attempt is started."""
         from includes.email_pipeline import llm_call_with_retry

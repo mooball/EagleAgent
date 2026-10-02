@@ -795,21 +795,40 @@ def _apply_quote_data(rfq_id: str, supplier_name: str, quote_data: dict, user_id
 # Automated trigger — called from Gmail sync and manual email linking
 # ---------------------------------------------------------------------------
 
-def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "system") -> None:
+def trigger_supplier_quote_pipeline(
+    email_tracking_id: int,
+    user_id: str = "system",
+    force: bool = False,
+    patient_budget: bool = False,
+) -> None:
     """Run the supplier quote pipeline for an email if it's linked to both RFQ + supplier.
 
     Called from:
       - scripts/sync_gmail_mailboxes.py (after new received emails are committed)
       - includes/dashboard/routes/admin.py api_link_email (after manual linking)
+      - the manual-retry action (``force=True``, ``patient_budget=True``)
 
     Runs in a background thread to avoid blocking the caller.
     Failures are logged but don't propagate.
+
+    ``force`` re-runs an email that already has a ``supplier_pipeline_result``
+    (the normal path skips those) — this is what a manual retry after a failed
+    import needs. ``patient_budget`` gives the run the longer
+    ``LLM_PATIENT_MAX_ATTEMPT_SECONDS`` budget, since a human has chosen to wait.
     """
     import threading
 
     def _run():
+        if patient_budget:
+            # The contextvar does not cross a raw Thread boundary, so set it
+            # inside the thread that actually makes the LLM calls.
+            from includes.llm.context import enter_patient_mode
+            enter_patient_mode()
         try:
-            logger.info(f"[quote-pipeline] #{email_tracking_id}: thread started")
+            logger.info(
+                f"[quote-pipeline] #{email_tracking_id}: thread started "
+                f"(force={force}, patient={patient_budget})"
+            )
             session = _get_session()
             try:
                 tracking = _get_email_tracking(session, email_tracking_id)
@@ -827,20 +846,26 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                 if not tracking.supplier_id:
                     logger.warning(f"[quote-pipeline] #{email_tracking_id}: no supplier link (rfq_token={tracking.rfq_token})")
                     return
-                # Skip if already processed
-                if tracking.supplier_pipeline_result:
+                # Skip if already processed — unless this is a forced retry.
+                if tracking.supplier_pipeline_result and not force:
                     logger.info(f"[quote-pipeline] #{email_tracking_id}: already processed, skipping")
                     return
-                # Atomically claim the run: writes a visible "processing" marker
-                # for the UI and prevents concurrent triggers from double-running.
+                # Claim the run: writes a visible "processing" marker for the UI
+                # and, on the normal path, prevents concurrent triggers from
+                # double-running. A forced retry overwrites the previous result,
+                # which is exactly what the caller asked for.
                 from sqlalchemy import text as _text
-                claimed = session.execute(_text(
-                    "UPDATE email_tracking SET supplier_pipeline_result = CAST(:marker AS jsonb) "
-                    "WHERE id = :id AND supplier_pipeline_result IS NULL"
-                ), {
-                    "marker": json.dumps({"status": "processing", "started_at": _now_iso()}),
-                    "id": email_tracking_id,
-                }).rowcount
+                marker = json.dumps({"status": "processing", "started_at": _now_iso()})
+                if force:
+                    claimed = session.execute(_text(
+                        "UPDATE email_tracking SET supplier_pipeline_result = CAST(:marker AS jsonb) "
+                        "WHERE id = :id"
+                    ), {"marker": marker, "id": email_tracking_id}).rowcount
+                else:
+                    claimed = session.execute(_text(
+                        "UPDATE email_tracking SET supplier_pipeline_result = CAST(:marker AS jsonb) "
+                        "WHERE id = :id AND supplier_pipeline_result IS NULL"
+                    ), {"marker": marker, "id": email_tracking_id}).rowcount
                 session.commit()
                 if not claimed:
                     logger.info(f"[quote-pipeline] #{email_tracking_id}: run already claimed, skipping")
@@ -995,6 +1020,22 @@ def trigger_supplier_quote_pipeline(email_tracking_id: int, user_id: str = "syst
                 logger.exception(f"[quote-pipeline] #{email_tracking_id}: failed to save error result")
 
     threading.Thread(target=_run, daemon=True, name=f"quote-pipeline-{email_tracking_id}").start()
+
+
+def retry_supplier_quote_pipeline(
+    email_tracking_id: int, user_id: str = "system"
+) -> None:
+    """Manually re-run the supplier quote pipeline for one email.
+
+    Used when an import failed (e.g. the LLM was rate-limited) and a human is
+    willing to wait. Forces the run past the "already processed" guard and uses
+    the longer patient budget. Fire-and-forget, like the normal trigger — the
+    ``processing`` marker drives the UI.
+    """
+    logger.info(f"[quote-pipeline] #{email_tracking_id}: manual retry requested by {user_id}")
+    trigger_supplier_quote_pipeline(
+        email_tracking_id, user_id=user_id, force=True, patient_budget=True
+    )
 
 
 # ---------------------------------------------------------------------------
