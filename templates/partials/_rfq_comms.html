@@ -195,7 +195,7 @@
                                     {% endif %}
                                 {% endif %}
                                 {% set _spr = msg.supplier_pipeline_result or {} %}
-                                {% if msg.direction == 'received' and (_spr.get('classification') in ('quote_response', 'error') or _spr.get('error')) %}
+                                {% if msg.direction == 'received' and (_spr.get('error') or _spr.get('classification') == 'error') %}
                                 <button type="button"
                                         @click.stop="_sendAction({name: 'rfq_retry_supplier_import', payload: {email_id: {{ msg.id }}}, label: 'Retrying supplier import…'}, true)"
                                         class="shrink-0 px-1.5 py-px rounded-full text-[10px] font-medium border border-purple-300 text-purple-700 hover:bg-purple-50 dark:border-purple-600 dark:text-purple-300 dark:hover:bg-purple-900/40 transition-colors"

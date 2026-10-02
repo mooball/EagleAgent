@@ -204,13 +204,19 @@ def _per_attempt_timeout_ms(
 
     On the final candidate the whole remaining budget is available; otherwise
     only ``_ATTEMPT_BUDGET_FRACTION`` of it, so the next rung always has time to
-    run. Bounded by the caller's own ``timeout_ms`` and never below
-    ``_MIN_ATTEMPT_TIMEOUT_MS``.
+    run. The share is then divided by ``LLM_SDK_RETRY_ATTEMPTS``: the SDK may
+    retry the same model internally, each retry with its own HTTP timeout, so a
+    single instrumented attempt can otherwise run for a multiple of the timeout
+    and blow the reserved half. Bounded by the caller's own ``timeout_ms`` and
+    never below ``_MIN_ATTEMPT_TIMEOUT_MS``.
     """
     if candidates_left > 1:
         budget_ms = remaining_s * 1000.0 * _ATTEMPT_BUDGET_FRACTION
     else:
         budget_ms = remaining_s * 1000.0
+
+    sdk_attempts = max(1, int(getattr(Config, "LLM_SDK_RETRY_ATTEMPTS", 1) or 1))
+    budget_ms /= sdk_attempts
     return int(min(timeout_ms, max(budget_ms, _MIN_ATTEMPT_TIMEOUT_MS)))
 
 
@@ -341,7 +347,12 @@ def llm_call_with_retry(
                 if delay is None:
                     delay = 2.0 ** index
                 remaining = deadline - time.monotonic()
-                delay = min(delay, max(0.0, remaining))
+                # Reserve a share for the candidates still to try. Without this
+                # a long server `Retry-After` could sleep away the entire
+                # remaining budget, so the loop gave up before the fallback ran —
+                # the same failure the per-attempt reservation prevents, via a
+                # different path.
+                delay = min(delay, max(0.0, remaining) * _ATTEMPT_BUDGET_FRACTION)
                 if delay > 0:
                     time.sleep(delay)
 

@@ -206,6 +206,7 @@ class TestPatientBudget:
         monkeypatch.setattr(
             Config, "LLM_PATIENT_MAX_ATTEMPT_SECONDS", 300.0, raising=False
         )
+        monkeypatch.setattr(Config, "LLM_SDK_RETRY_ATTEMPTS", 1, raising=False)
         # One candidate, so the whole remaining budget is available and the
         # budget is the only thing that varies between the two calls.
         monkeypatch.setattr(ep, "get_pipeline_candidates", lambda p, s: ["m"])

@@ -28,6 +28,37 @@ def _user_id(payload: dict, ctx: ChatContext) -> str:
     return payload.get("user_id") or ctx.user_email or "unknown"
 
 
+def _email_belongs_to_thread_rfq(email_id: int, thread_id: str) -> tuple[bool, str]:
+    """True when the email's RFQ matches the RFQ this thread is bound to.
+
+    The client supplies ``email_id``, so this anchors a retry to the thread
+    server-side: without it a crafted payload could re-run (and mutate) an
+    unrelated RFQ. Returns ``(ok, reason)`` with a user-facing reason on failure.
+    """
+    from includes.dashboard.database import get_session
+    from includes.dashboard.models import EmailTracking, RFQThread
+
+    session = get_session()
+    try:
+        email = session.query(EmailTracking).filter(EmailTracking.id == email_id).first()
+        if not email:
+            return False, "That email no longer exists."
+        email_rfq = email.rfq_token or email.rfq_id
+        binding = (
+            session.query(RFQThread)
+            .filter(RFQThread.thread_id == thread_id)
+            .first()
+        )
+        thread_rfq = binding.rfq_number if binding else None
+        if not thread_rfq:
+            return False, "This chat thread is not bound to an RFQ."
+        if not email_rfq or email_rfq != thread_rfq:
+            return False, "That email does not belong to this RFQ."
+        return True, ""
+    finally:
+        session.close()
+
+
 async def _handle_stop(ctx: ChatContext) -> None:
     """Send a stopped message and clean up when a stop is detected."""
     await ctx.say("⏹ *Stopped by user.*", author="EagleAgent")
@@ -954,6 +985,10 @@ async def on_retry_supplier_import(payload: dict, ctx: ChatContext) -> None:
     the longer patient LLM budget, because the person asking has chosen to wait
     rather than redo a painful import by hand.
 
+    The ``email_id`` is client-supplied, so it is first anchored to the RFQ this
+    thread is bound to — a crafted payload must not be able to re-run an
+    unrelated email.
+
     Fire-and-forget: the email row shows a processing badge, and the dashboard
     is refreshed when the pipeline writes its result.
     """
@@ -961,6 +996,13 @@ async def on_retry_supplier_import(payload: dict, ctx: ChatContext) -> None:
         email_id = int(payload.get("email_id"))
     except (TypeError, ValueError):
         await ctx.say("Error: no valid email id provided.", author="EagleAgent")
+        return
+
+    ok, message = await asyncio.to_thread(
+        _email_belongs_to_thread_rfq, email_id, ctx.thread_id
+    )
+    if not ok:
+        await ctx.say(f"Error: {message}", author="EagleAgent")
         return
 
     from includes.tools.supplier_quote_pipeline import retry_supplier_quote_pipeline

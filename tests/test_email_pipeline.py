@@ -367,18 +367,76 @@ class TestLlmCallWithRetry:
         timeout_ms = mock_http_options.call_args[0][0]
         assert timeout_ms <= 5000, f"attempt timeout {timeout_ms}ms exceeds the 5s budget"
 
-    def test_per_attempt_timeout_reserves_budget(self):
+    def test_per_attempt_timeout_reserves_budget(self, monkeypatch):
         """Non-final attempts get a share, not the whole remainder."""
-        from includes.email_pipeline import _per_attempt_timeout_ms
+        import includes.email_pipeline as ep
+        from config.settings import Config
+
+        # Isolate the reservation maths from the SDK-retry multiplier.
+        monkeypatch.setattr(Config, "LLM_SDK_RETRY_ATTEMPTS", 1, raising=False)
 
         # 3 candidates, 180s left, caller allows 300s -> only half is available.
-        assert _per_attempt_timeout_ms(180.0, 300_000, 3) == 90_000
+        assert ep._per_attempt_timeout_ms(180.0, 300_000, 3) == 90_000
         # Final candidate: the whole remainder is available.
-        assert _per_attempt_timeout_ms(90.0, 300_000, 1) == 90_000
+        assert ep._per_attempt_timeout_ms(90.0, 300_000, 1) == 90_000
         # The caller's own timeout still wins when it is the smaller.
-        assert _per_attempt_timeout_ms(180.0, 30_000, 3) == 30_000
+        assert ep._per_attempt_timeout_ms(180.0, 30_000, 3) == 30_000
         # A tiny remainder still buys one real attempt (the floor applies).
-        assert _per_attempt_timeout_ms(0.2, 300_000, 3) == 1_000
+        assert ep._per_attempt_timeout_ms(0.2, 300_000, 3) == 1_000
+
+    def test_per_attempt_timeout_accounts_for_sdk_retries(self, monkeypatch):
+        """The SDK retries the same model within one attempt, so the share is split.
+
+        Its retry has its own HTTP timeout, so without dividing here a single
+        instrumented attempt could run for a multiple of ``attempt_timeout`` and
+        consume the budget reserved for the next model.
+        """
+        import includes.email_pipeline as ep
+        from config.settings import Config
+
+        monkeypatch.setattr(Config, "LLM_SDK_RETRY_ATTEMPTS", 2, raising=False)
+        # 180s, 3 candidates -> half (90s) across 2 SDK attempts = 45s.
+        assert ep._per_attempt_timeout_ms(180.0, 300_000, 3) == 45_000
+        # Never below the floor even when the split is tiny.
+        assert ep._per_attempt_timeout_ms(1.0, 300_000, 3) == 1_000
+
+    def test_long_retry_after_does_not_starve_the_fallback(self, monkeypatch):
+        """A huge server Retry-After must not sleep away the fallback's budget."""
+        import includes.email_pipeline as ep
+        from config.settings import Config
+
+        monkeypatch.setattr(Config, "LLM_SDK_RETRY_ATTEMPTS", 1, raising=False)
+        clock = {"t": 1000.0}
+        sleeps: list[float] = []
+        mock_client = MagicMock()
+        calls = {"n": 0}
+
+        def generate(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise Exception("429 RESOURCE_EXHAUSTED retry in 9999 seconds")
+            return MagicMock(text="ok")
+
+        mock_client.models.generate_content.side_effect = generate
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            clock["t"] += seconds
+
+        with patch(
+            "includes.email_pipeline.get_pipeline_model",
+            return_value="gemini-3.8-flash",
+        ), patch("includes.email_pipeline.Config.LLM_MAX_ATTEMPT_SECONDS", 60.0), patch(
+            "includes.email_pipeline.time.monotonic", side_effect=lambda: clock["t"]
+        ), patch("google.genai.Client", return_value=mock_client), patch(
+            "time.sleep", side_effect=fake_sleep
+        ):
+            result = ep.llm_call_with_retry("QUOTE", "classify", ["test"], timeout=300_000)
+
+        assert result.text == "ok"
+        # 60s budget -> at most half (30s) may be spent sleeping.
+        assert sleeps and sleeps[0] <= 60.0 * ep._ATTEMPT_BUDGET_FRACTION + 1e-6
+        assert mock_client.models.generate_content.call_count == 2
 
     def test_stalled_primary_still_reaches_fallback(self):
         """A 429 after the primary uses its full allowance must try the next model.
