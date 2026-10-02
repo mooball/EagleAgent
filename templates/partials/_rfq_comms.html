@@ -194,6 +194,13 @@
                                       @click.stop="$dispatch('show-pipeline-detail', Object.assign({}, JSON.parse($el.dataset.pipeline), { email_id: Number($el.dataset.emailId), feedback: JSON.parse($el.dataset.feedback || 'null') }))">Error</span>
                                     {% endif %}
                                 {% endif %}
+                                {% set _spr = msg.supplier_pipeline_result or {} %}
+                                {% if msg.direction == 'received' and (_spr.get('error') or _spr.get('classification') == 'error') %}
+                                <button type="button"
+                                        @click.stop="_sendAction({name: 'rfq_retry_supplier_import', payload: {email_id: {{ msg.id }}}, label: 'Retrying supplier import…'}, true)"
+                                        class="shrink-0 px-1.5 py-px rounded-full text-[10px] font-medium border border-purple-300 text-purple-700 hover:bg-purple-50 dark:border-purple-600 dark:text-purple-300 dark:hover:bg-purple-900/40 transition-colors"
+                                        title="Re-run the supplier quote pipeline for this email (uses a longer budget)">↻ Retry</button>
+                                {% endif %}
                                 {% if msg.rcr_stale %}
                                 <span class="shrink-0 text-[10px] px-1 py-px rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" title="RFQ creation appears stuck (server may have restarted)">RFQ timeout</span>
                                 {% elif msg.rcr_processing %}

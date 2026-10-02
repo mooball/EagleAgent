@@ -157,8 +157,10 @@ class Config:
     LLM_SDK_RETRY_ATTEMPTS = int(os.getenv("LLM_SDK_RETRY_ATTEMPTS", "2"))
     # Overall wall-clock budget for one pipeline call *across all candidates*,
     # so a retry storm cannot stall a background job indefinitely. This is
-    # enforced as a per-attempt HTTP timeout of min(remaining, request
-    # timeout), so a single attempt can no longer outlive the whole budget.
+    # enforced as a per-attempt HTTP timeout of min(request timeout, a share of
+    # the remaining budget): every attempt but the last is capped below the full
+    # remainder, so a single slow attempt can neither outlive the budget nor
+    # starve the models that follow it.
     #
     # 90s, not 45s: the budget must be able to accommodate one legitimately slow
     # call, or enforcing it would turn today's successes into failures. The
@@ -170,6 +172,15 @@ class Config:
     # both tighter and truthful.
     LLM_MAX_ATTEMPT_SECONDS = float(os.getenv("LLM_MAX_ATTEMPT_SECONDS", "90"))
     LLM_REQUEST_TIMEOUT_MS = int(os.getenv("LLM_REQUEST_TIMEOUT_MS", "120000"))
+
+    # Budget for a *manual* retry, where the user has explicitly opted to wait
+    # for a throttled model (or the quota behind it) to recover. Larger than the
+    # background budget so the model ladder gets a real shot. Applied via
+    # ``includes.llm.context.patient()`` — currently only the supplier-quote
+    # retry action, where a failed import is painful to redo by hand.
+    LLM_PATIENT_MAX_ATTEMPT_SECONDS = float(
+        os.getenv("LLM_PATIENT_MAX_ATTEMPT_SECONDS", "300")
+    )
 
     # ==================== LLM telemetry ====================
     # Records every LLM call to the llm_call_log table (plus a log line).

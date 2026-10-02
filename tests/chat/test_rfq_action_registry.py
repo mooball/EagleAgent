@@ -11,7 +11,8 @@ import pytest
 
 from includes.chat.rfq_actions import RFQ_ACTIONS
 
-# The 21 names that carried a @cl.action_callback decorator before Step 6.
+# The 21 names that carried a @cl.action_callback decorator before Step 6,
+# plus the manual-retry action added later.
 EXPECTED_NAMES = {
     "rfq_refresh",
     "rfq_update_supplier",
@@ -34,6 +35,7 @@ EXPECTED_NAMES = {
     "rfq_add_brand_supplier",
     "rfq_find_new_suppliers",
     "rfq_find_brand_suppliers",
+    "rfq_retry_supplier_import",
 }
 
 
@@ -41,8 +43,8 @@ def test_no_action_name_was_lost():
     assert set(RFQ_ACTIONS) == EXPECTED_NAMES
 
 
-def test_there_are_twenty_one_handlers():
-    assert len(RFQ_ACTIONS) == 21
+def test_there_are_twenty_two_handlers():
+    assert len(RFQ_ACTIONS) == 22
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_NAMES))

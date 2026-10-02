@@ -148,6 +148,14 @@ Object.assign(window._emailData || {}, {
                         hx-swap="outerHTML"
                         title="Run supplier quote pipeline">Run</button>
             {% endif %}
+            {% set _spr = e.supplier_pipeline_result or {} %}
+            {% if user and user.role == 'Admin' and (e.rfq_token or e.rfq_id) and e.direction == 'received' and (_spr.get('error') or _spr.get('classification') == 'error') %}
+                <button class="shrink-0 inline-flex items-center px-1.5 py-0 text-[10px] font-medium rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-800/40 cursor-pointer"
+                        @click.stop
+                        hx-post="/api/emails/{{ e.id }}/retry-pipeline"
+                        hx-swap="none"
+                        title="Force a re-run of the supplier quote pipeline (longer budget)">↻ Retry</button>
+            {% endif %}
         </div>
     </td>
     <td class="px-2 py-1.5 whitespace-nowrap text-gray-500 dark:text-gray-400">

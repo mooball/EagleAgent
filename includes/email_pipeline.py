@@ -36,6 +36,17 @@ _RETRY_HINT_RE = re.compile(r"retry in ([0-9.]+)\s*(s|seconds)?", re.IGNORECASE)
 # "no model candidates available" error.
 _MIN_ATTEMPT_TIMEOUT_MS = 1000
 
+# Share of the *remaining* budget a non-final attempt may use. The rest is
+# reserved for the models still to try, so one slow or throttled attempt can
+# never consume the whole budget and leave the failover with nothing.
+#
+# Why this exists: the per-attempt timeout used to be the entire remaining
+# budget, so a primary that stalled to its timeout left `remaining <= 0` and the
+# loop gave up without ever trying the next model. In prod a QUOTE/interpret 429
+# arrived at exactly the 45s budget mark and the quote was never imported.
+# Reserving half guarantees every rung after the current one gets a turn.
+_ATTEMPT_BUDGET_FRACTION = 0.5
+
 
 # ---------------------------------------------------------------------------
 # Model resolution
@@ -186,6 +197,29 @@ def _http_options(timeout_ms: int, service_tier: str | None):
     return options
 
 
+def _per_attempt_timeout_ms(
+    remaining_s: float, timeout_ms: int, candidates_left: int
+) -> int:
+    """HTTP timeout for one attempt, reserving budget for the models after it.
+
+    On the final candidate the whole remaining budget is available; otherwise
+    only ``_ATTEMPT_BUDGET_FRACTION`` of it, so the next rung always has time to
+    run. The share is then divided by ``LLM_SDK_RETRY_ATTEMPTS``: the SDK may
+    retry the same model internally, each retry with its own HTTP timeout, so a
+    single instrumented attempt can otherwise run for a multiple of the timeout
+    and blow the reserved half. Bounded by the caller's own ``timeout_ms`` and
+    never below ``_MIN_ATTEMPT_TIMEOUT_MS``.
+    """
+    if candidates_left > 1:
+        budget_ms = remaining_s * 1000.0 * _ATTEMPT_BUDGET_FRACTION
+    else:
+        budget_ms = remaining_s * 1000.0
+
+    sdk_attempts = max(1, int(getattr(Config, "LLM_SDK_RETRY_ATTEMPTS", 1) or 1))
+    budget_ms /= sdk_attempts
+    return int(min(timeout_ms, max(budget_ms, _MIN_ATTEMPT_TIMEOUT_MS)))
+
+
 def llm_call_with_retry(
     pipeline: str,
     step: str,
@@ -203,8 +237,9 @@ def llm_call_with_retry(
          sends one) and try the next model down the ladder.
       3. Give up at ``Config.LLM_MAX_ATTEMPT_SECONDS`` or when candidates run
          out, whichever comes first. The budget covers the *whole* call: each
-         attempt's HTTP timeout is the lesser of the remaining budget and
-         ``LLM_REQUEST_TIMEOUT_MS``, so no single attempt can outlive it.
+         attempt's HTTP timeout is the lesser of the caller's timeout and a
+         share of the remaining budget, and every attempt but the last is capped
+         below the full remainder so the models after it still get a turn.
 
     Permanent errors (400/401/403/404) raise immediately — retrying them just
     wastes the user's time.
@@ -228,7 +263,12 @@ def llm_call_with_retry(
 
     from includes.llm.telemetry import classify_error, instrument_call
 
-    from includes.llm.context import SYNC, current_service_tier, current_workload
+    from includes.llm.context import (
+        SYNC,
+        current_service_tier,
+        current_workload,
+        is_patient,
+    )
 
     timeout = timeout or Config.LLM_REQUEST_TIMEOUT_MS
     service_tier = current_service_tier()
@@ -238,25 +278,34 @@ def llm_call_with_retry(
         prefix = "sync" if current_workload() == SYNC else "pipeline"
         scope = f"{prefix}:{pipeline}/{step}"
     candidates = get_pipeline_candidates(pipeline, step)
-    deadline = time.monotonic() + Config.LLM_MAX_ATTEMPT_SECONDS
+    budget_s = (
+        Config.LLM_PATIENT_MAX_ATTEMPT_SECONDS
+        if is_patient()
+        else Config.LLM_MAX_ATTEMPT_SECONDS
+    )
+    deadline = time.monotonic() + budget_s
 
     last_error: BaseException | None = None
     previous_model: str | None = None
 
     for index, model in enumerate(candidates):
-        # Bound this attempt by what is left of the budget. Checking only at the
-        # top of the loop (as this did originally) let a single call run to the
-        # full per-request timeout and outlive its budget — observed in prod as
-        # a 91.4s attempt against a nominal 45s budget.
+        # Bound this attempt by what is left of the budget, but reserve part of
+        # it for the models still to try. Checking only at the top of the loop
+        # (as this did originally) let a single call run to the full per-request
+        # timeout and outlive its budget — observed in prod as a 91.4s attempt
+        # against a nominal 45s budget. Giving the attempt the *whole* remaining
+        # budget then caused the opposite failure: if it stalled to its timeout
+        # there was nothing left for a fallback. `_per_attempt_timeout_ms`
+        # reserves a share for the candidates that follow.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             logger.warning(
                 f"[email-pipeline] {pipeline}/{step}: giving up after "
-                f"{Config.LLM_MAX_ATTEMPT_SECONDS}s budget"
+                f"{budget_s}s budget"
             )
             break
-        attempt_timeout = int(
-            min(timeout, max(remaining * 1000, _MIN_ATTEMPT_TIMEOUT_MS))
+        attempt_timeout = _per_attempt_timeout_ms(
+            remaining, timeout, len(candidates) - index
         )
         try:
             with instrument_call(
@@ -298,7 +347,12 @@ def llm_call_with_retry(
                 if delay is None:
                     delay = 2.0 ** index
                 remaining = deadline - time.monotonic()
-                delay = min(delay, max(0.0, remaining))
+                # Reserve a share for the candidates still to try. Without this
+                # a long server `Retry-After` could sleep away the entire
+                # remaining budget, so the loop gave up before the fallback ran —
+                # the same failure the per-attempt reservation prevents, via a
+                # different path.
+                delay = min(delay, max(0.0, remaining) * _ATTEMPT_BUDGET_FRACTION)
                 if delay > 0:
                     time.sleep(delay)
 

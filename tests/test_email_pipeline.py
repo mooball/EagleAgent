@@ -367,6 +367,126 @@ class TestLlmCallWithRetry:
         timeout_ms = mock_http_options.call_args[0][0]
         assert timeout_ms <= 5000, f"attempt timeout {timeout_ms}ms exceeds the 5s budget"
 
+    def test_per_attempt_timeout_reserves_budget(self, monkeypatch):
+        """Non-final attempts get a share, not the whole remainder."""
+        import includes.email_pipeline as ep
+        from config.settings import Config
+
+        # Isolate the reservation maths from the SDK-retry multiplier.
+        monkeypatch.setattr(Config, "LLM_SDK_RETRY_ATTEMPTS", 1, raising=False)
+
+        # 3 candidates, 180s left, caller allows 300s -> only half is available.
+        assert ep._per_attempt_timeout_ms(180.0, 300_000, 3) == 90_000
+        # Final candidate: the whole remainder is available.
+        assert ep._per_attempt_timeout_ms(90.0, 300_000, 1) == 90_000
+        # The caller's own timeout still wins when it is the smaller.
+        assert ep._per_attempt_timeout_ms(180.0, 30_000, 3) == 30_000
+        # A tiny remainder still buys one real attempt (the floor applies).
+        assert ep._per_attempt_timeout_ms(0.2, 300_000, 3) == 1_000
+
+    def test_per_attempt_timeout_accounts_for_sdk_retries(self, monkeypatch):
+        """The SDK retries the same model within one attempt, so the share is split.
+
+        Its retry has its own HTTP timeout, so without dividing here a single
+        instrumented attempt could run for a multiple of ``attempt_timeout`` and
+        consume the budget reserved for the next model.
+        """
+        import includes.email_pipeline as ep
+        from config.settings import Config
+
+        monkeypatch.setattr(Config, "LLM_SDK_RETRY_ATTEMPTS", 2, raising=False)
+        # 180s, 3 candidates -> half (90s) across 2 SDK attempts = 45s.
+        assert ep._per_attempt_timeout_ms(180.0, 300_000, 3) == 45_000
+        # Never below the floor even when the split is tiny.
+        assert ep._per_attempt_timeout_ms(1.0, 300_000, 3) == 1_000
+
+    def test_long_retry_after_does_not_starve_the_fallback(self, monkeypatch):
+        """A huge server Retry-After must not sleep away the fallback's budget."""
+        import includes.email_pipeline as ep
+        from config.settings import Config
+
+        monkeypatch.setattr(Config, "LLM_SDK_RETRY_ATTEMPTS", 1, raising=False)
+        clock = {"t": 1000.0}
+        sleeps: list[float] = []
+        mock_client = MagicMock()
+        calls = {"n": 0}
+
+        def generate(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise Exception("429 RESOURCE_EXHAUSTED retry in 9999 seconds")
+            return MagicMock(text="ok")
+
+        mock_client.models.generate_content.side_effect = generate
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            clock["t"] += seconds
+
+        with patch(
+            "includes.email_pipeline.get_pipeline_model",
+            return_value="gemini-3.8-flash",
+        ), patch("includes.email_pipeline.Config.LLM_MAX_ATTEMPT_SECONDS", 60.0), patch(
+            "includes.email_pipeline.time.monotonic", side_effect=lambda: clock["t"]
+        ), patch("google.genai.Client", return_value=mock_client), patch(
+            "time.sleep", side_effect=fake_sleep
+        ):
+            result = ep.llm_call_with_retry("QUOTE", "classify", ["test"], timeout=300_000)
+
+        assert result.text == "ok"
+        # 60s budget -> at most half (30s) may be spent sleeping.
+        assert sleeps and sleeps[0] <= 60.0 * ep._ATTEMPT_BUDGET_FRACTION + 1e-6
+        assert mock_client.models.generate_content.call_count == 2
+
+    def test_stalled_primary_still_reaches_fallback(self):
+        """A 429 after the primary uses its full allowance must try the next model.
+
+        Regression (prod, 2026-10-01): ``QUOTE/interpret`` handed attempt 1 the
+        entire remaining budget (its caller timeout of 300s was larger than the
+        budget). The 429 arrived as the budget ran out, ``remaining <= 0`` and
+        the loop gave up — the quote was never imported and no other model was
+        ever tried. This simulates each attempt stalling for exactly the timeout
+        it was given: the reserved share must keep a fallback alive.
+        """
+        from includes.email_pipeline import llm_call_with_retry
+
+        budget = 180.0
+        clock = {"t": 1000.0}
+        timeouts: list[int] = []
+
+        def fake_http_options(timeout_ms, service_tier=None):
+            timeouts.append(timeout_ms)
+            return MagicMock()
+
+        mock_client = MagicMock()
+
+        def generate(*args, **kwargs):
+            # Consume exactly the allowance this attempt was handed, then fail
+            # with a retryable rate-limit error.
+            clock["t"] += (timeouts[-1] / 1000.0) if timeouts else 0.0
+            raise Exception("429 RESOURCE_EXHAUSTED")
+
+        mock_client.models.generate_content.side_effect = generate
+
+        with patch(
+            "includes.email_pipeline.get_pipeline_model",
+            return_value="gemini-3.8-flash",
+        ), patch("includes.email_pipeline.Config.LLM_MAX_ATTEMPT_SECONDS", budget), patch(
+            "includes.email_pipeline.time.monotonic",
+            side_effect=lambda: clock["t"],
+        ), patch(
+            "includes.email_pipeline._http_options", side_effect=fake_http_options
+        ), patch("google.genai.Client", return_value=mock_client), patch("time.sleep"):
+            with pytest.raises(Exception, match="429"):
+                # A 300s caller timeout is the condition that broke interpret.
+                llm_call_with_retry("QUOTE", "classify", ["test"], timeout=300_000)
+
+        assert timeouts[0] < budget * 1000, (
+            f"primary was allowed the whole budget ({timeouts[0]}ms)"
+        )
+        # 3.8-flash -> 3.6-flash -> 3.5-flash-lite: every rung got a turn.
+        assert mock_client.models.generate_content.call_count == 3
+
     def test_gives_up_when_budget_is_exhausted(self):
         """Once the budget is gone, no further attempt is started."""
         from includes.email_pipeline import llm_call_with_retry
